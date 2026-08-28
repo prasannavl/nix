@@ -293,6 +293,11 @@ impl StateStore {
                     }
                     if changed {
                         self.write_hold_unlocked(&existing)?;
+                    } else {
+                        // A durable hold and a start capability must never
+                        // coexist, including on an idempotent reconciliation
+                        // that does not rewrite the hold record.
+                        self.remove_activation_authorization_unlocked(resource)?;
                     }
                     (changed, existing)
                 }
@@ -366,6 +371,28 @@ impl StateStore {
             Some(evidence),
             apply,
         )
+    }
+
+    /// Validate that one incoming projection may succeed the durable evidence
+    /// already bound to this resource without changing the hold. NixOS uses
+    /// this at its pre-switch boundary so a stale system generation is refused
+    /// before `/run/current-system` or any projected latch can move backward.
+    pub fn preflight_projection_successor(
+        &self,
+        resource: &str,
+        evidence: &ActivationReleaseEvidence,
+    ) -> Result<()> {
+        validate_identifier("resource", resource)?;
+        evidence.validate()?;
+        self.with_lock(|| {
+            let Some(hold) = self.read_hold_unlocked(resource)? else {
+                return Ok(());
+            };
+            if let Some(existing) = &hold.projection {
+                validate_projection_successor(existing, evidence)?;
+            }
+            Ok(())
+        })
     }
 
     fn acquire_declared_with_projection_and_apply<F>(
@@ -479,6 +506,10 @@ impl StateStore {
                     }
                     if changed {
                         self.write_hold_unlocked(&existing)?;
+                    } else {
+                        // Reassert the invariant even when the exact projected
+                        // hold record is already current.
+                        self.remove_activation_authorization_unlocked(resource)?;
                     }
                     (changed, existing)
                 }
@@ -2061,6 +2092,45 @@ mod tests {
                 .activation_authorization_path("service:zulip")
                 .exists()
         );
+    }
+
+    #[test]
+    fn idempotent_projected_hold_reconciliation_revokes_stale_activation_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StateStore::new(temp.path());
+        let resource = "service:zulip";
+        let declaration = "tx-1:target:g3";
+        let services = vec![ServiceTarget::system("zulip.service")];
+        let evidence = ActivationReleaseEvidence {
+            intent_digest: "a".repeat(64),
+            projection_digest: "b".repeat(64),
+            generation: 3,
+            activation_requirement_digest: Some("c".repeat(64)),
+        };
+        store
+            .acquire_projected_and_apply(
+                resource,
+                "tx-1",
+                declaration,
+                services.clone(),
+                evidence.clone(),
+                |_| Ok(()),
+            )
+            .unwrap();
+        store
+            .write_activation_authorization_unlocked(resource, &evidence)
+            .unwrap();
+        assert!(store.activation_authorization_path(resource).exists());
+
+        let outcome = store
+            .acquire_projected_and_apply(resource, "tx-1", declaration, services, evidence, |_| {
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(!outcome.changed);
+        assert!(!store.activation_authorization_path(resource).exists());
+        assert!(store.status(resource).unwrap().held);
     }
 
     #[test]

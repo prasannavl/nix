@@ -30,6 +30,10 @@ class NixbotScriptTest(unittest.TestCase):
 
     def run_script(self, body, *, check=True, env=None):
         full_env = os.environ.copy()
+        # Unit tests must not inspect or depend on the workstation's installed
+        # host-agent state. Tests that exercise integration provide an exact
+        # fake agent explicitly.
+        full_env["NIXBOT_HOST_AGENT"] = str(self.work_dir / "missing-host-agent")
         full_env.update(env or {})
         return subprocess.run(
             [
@@ -1862,6 +1866,22 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertTrue(lines[0].endswith(" activation-command"))
         self.assertEqual(["activation-command", "activation-command"], lines[1:])
 
+    def test_address_match_marks_controller_deploy_as_self_target(self):
+        result = self.run_script(
+            """
+            init_vars
+            CURRENT_HOST_ALIASES=(abird-ci)
+            CURRENT_HOST_ADDRESSES=(127.0.0.1 10.10.30.80)
+            NIXBOT_HOST_LOCAL_LOCK_FD=9
+
+            local_host_matches_identifier 10.10.30.80
+            PREP_DEPLOY_SELF_TARGET=1
+            host_local_activation_lock_command activation-command
+            """
+        )
+
+        self.assertEqual("activation-command", result.stdout.strip())
+
     def test_skip_global_lock_does_not_skip_activation_lock_command(self):
         lock_file = self.work_dir / "nixbot-host-local.lock.d"
         result = self.run_script(
@@ -2069,6 +2089,87 @@ EOF_UNITS
         self.assertIn('"${nix_env_path}" -p /nix/var/nix/profiles/system --set', command)
         self.assertIn("post_promote_bootloader_goal=''", command)
         self.assertIn('if [ -n "${post_promote_bootloader_goal}" ]; then', command)
+
+    def test_rollback_activation_uses_current_generation_projection_admission(self):
+        result = self.run_script(
+            """
+            init_vars
+            nixbot_activation_command '/nix/store/rollback snapshot' switch 1 '' 0 1
+            """
+        )
+
+        command = result.stdout
+        admission_index = command.index(
+            '"${current_projection_preflight}" "${system_path}" "${goal}" rollback'
+        )
+        switch_index = command.index(
+            'NIXOS_INSTALL_BOOTLOADER=0 "${system_path}/bin/switch-to-configuration" "${goal}"'
+        )
+        self.assertLess(admission_index, switch_index)
+        self.assertIn("rollback_projection_admission=1", command)
+        self.assertIn(
+            "current_projection_preflight=/run/current-system/sw/bin/abird-host-agent-projection-preflight",
+            command,
+        )
+        self.assertIn("refusing automatic rollback because projection safety cannot be proven", command)
+        self.assertLess(command.index("exit 1"), switch_index)
+
+    def test_rollback_activation_without_current_projection_admission_does_not_switch(self):
+        fake_system = self.work_dir / "rollback-system"
+        true_path = shutil.which("true")
+        self.assertIsNotNone(true_path)
+        result = self.run_script(
+            f"""
+            init_vars
+            REMOTE_CURRENT_SYSTEM_PATH={self.work_dir / "legacy-current"}
+            mkdir -p {fake_system}/bin
+            ln -s {true_path} {fake_system}/bin/switch-to-configuration
+            activation_script="$(nixbot_activation_command {fake_system} switch 0 '' 0 1)"
+            set +e
+            bash -c "$activation_script"
+            printf 'rc:%s\n' "$?"
+            set -e
+            """
+        )
+
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertIn(
+            "refusing automatic rollback because projection safety cannot be proven",
+            result.stderr,
+        )
+
+    def test_rollback_activation_rejected_authority_does_not_switch(self):
+        fake_system = self.work_dir / "rollback-system"
+        current_system = self.work_dir / "current-system"
+        switch_marker = self.work_dir / "switched"
+        admission_args = self.work_dir / "admission-args"
+        switch = fake_system / "bin/switch-to-configuration"
+        preflight = current_system / "sw/bin/abird-host-agent-projection-preflight"
+        switch.parent.mkdir(parents=True)
+        preflight.parent.mkdir(parents=True)
+        switch.write_text(f"#!/bin/sh\ntouch {switch_marker}\n")
+        preflight.write_text(
+            f"#!/bin/sh\nprintf '%s\\n' \"$*\" > {admission_args}\nexit 23\n"
+        )
+        switch.chmod(0o700)
+        preflight.chmod(0o700)
+        result = self.run_script(
+            f"""
+            init_vars
+            REMOTE_CURRENT_SYSTEM_PATH={current_system}
+            activation_script="$(nixbot_activation_command {fake_system} switch 0 '' 0 1)"
+            set +e
+            bash -c "$activation_script"
+            printf 'rc:%s\n' "$?"
+            set -e
+            test ! -e {switch_marker}
+            """
+        )
+
+        self.assertEqual(["rc:23"], result.stdout.splitlines()[-1:])
+        self.assertEqual(
+            f"{fake_system} switch rollback\n", admission_args.read_text()
+        )
 
     def test_nixbot_activation_runner_decodes_script_without_login_shell(self):
         fake_system = self.work_dir / "fake system"
@@ -2858,6 +2959,40 @@ EOF_SCRIPT
             result.stdout.splitlines(),
         )
         self.assertNotIn("unexpected-sleep", result.stdout)
+
+    def test_activate_prepared_system_path_records_pre_switch_rejection(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            GOAL=switch
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            host_boot_is_container() {{ return 0; }}
+            wait_for_in_flight_nixbot_activation() {{ return 0; }}
+            report_activation_lock_contention_if_present() {{ printf 'unexpected-lock-report\n'; }}
+            verify_deploy_target_state_after_transport_loss() {{ printf 'unexpected-transport-verify\n'; }}
+            run_activation_with_progress() {{
+              local -n out_ref="$1"
+              out_ref=$'error: projection conflict\nPre-switch check `projection` failed\nPre-switch checks failed'
+              return 1
+            }}
+            set +e
+            activate_prepared_system_path app /nix/store/system
+            printf 'rc:%s\n' "$?"
+            set -e
+            printf 'marker:%s\n' "$(cat "$(deploy_pre_switch_rejection_marker_file app)")"
+            """
+        )
+
+        self.assertEqual(["rc:1", "marker:app"], result.stdout.splitlines())
+        self.assertNotIn("unexpected", result.stdout)
+        self.assertIn(
+            "Deploy activation for app was rejected before switching; current generation unchanged",
+            result.stderr,
+        )
 
     def test_activate_prepared_system_path_signal_does_not_recover_as_transport_loss(self):
         result = self.run_script(
@@ -4229,6 +4364,137 @@ EOF_SCRIPT
 
         self.assertEqual(1, result.returncode)
         self.assertIn("invalid durable host-agent hold response", result.stderr)
+
+    def test_remote_health_check_reports_safely_deferred_resources(self):
+        agent = self.work_dir / "abird-host-agent"
+        response = {
+            "ok": True,
+            "operation": "agent_status",
+            "result": {
+                "status_schema_version": 2,
+                "deferred_resources": {
+                    "count": 1,
+                    "resources": [
+                        {
+                            "resource": "service:zulip",
+                            "reason": "activation_job_specification_conflict",
+                            "generation": 3,
+                            "isolated": True,
+                        }
+                    ],
+                }
+            },
+        }
+        agent.write_text(
+            f"#!{shutil.which('bash')}\nprintf '%s\\n' \"$TEST_AGENT_RESPONSE\"\n",
+            encoding="utf-8",
+        )
+        agent.chmod(0o755)
+
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
+            _remote_health_check_deferred_resources
+            """,
+            env={
+                "TEST_HOST_AGENT": str(agent),
+                "TEST_AGENT_RESPONSE": json.dumps(response),
+            },
+        )
+
+        self.assertEqual(
+            ["service:zulip\tactivation_job_specification_conflict\t3"],
+            result.stdout.splitlines(),
+        )
+
+    def test_remote_health_check_accepts_legacy_agent_without_deferral_schema(self):
+        agent = self.work_dir / "abird-host-agent"
+        agent.write_text(
+            f"#!{shutil.which('bash')}\nprintf '%s\\n' '{{\"ok\":true,\"operation\":\"agent_status\",\"result\":{{\"schema_version\":1}}}}'\n",
+            encoding="utf-8",
+        )
+        agent.chmod(0o755)
+
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
+            output="$(_remote_health_check_deferred_resources)"
+            printf 'rc:%s output:%s\n' "$?" "$output"
+            """,
+            env={"TEST_HOST_AGENT": str(agent)},
+        )
+
+        self.assertEqual(["rc:0 output:"], result.stdout.splitlines())
+
+    def test_remote_health_check_rejects_unsafe_deferred_resource(self):
+        agent = self.work_dir / "abird-host-agent"
+        response = {
+            "ok": True,
+            "operation": "agent_status",
+            "result": {
+                "status_schema_version": 2,
+                "deferred_resources": {
+                    "count": 1,
+                    "resources": [
+                        {
+                            "resource": "service:zulip",
+                            "reason": "activation_failed",
+                            "generation": 3,
+                            "isolated": False,
+                        }
+                    ],
+                }
+            },
+        }
+        agent.write_text(
+            f"#!{shutil.which('bash')}\nprintf '%s\\n' \"$TEST_AGENT_RESPONSE\"\n",
+            encoding="utf-8",
+        )
+        agent.chmod(0o755)
+
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
+            _remote_health_check_deferred_resources
+            """,
+            check=False,
+            env={
+                "TEST_HOST_AGENT": str(agent),
+                "TEST_AGENT_RESPONSE": json.dumps(response),
+            },
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("invalid or unsafe deferred host-agent resource response", result.stderr)
+
+    def test_remote_health_check_names_safe_deferred_resource_without_failing_host(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() { :; }
+            _remote_managed_user_names() { :; }
+            _remote_health_check_held_user_units() { :; }
+            _remote_health_check_deferred_resources() {
+              printf 'service:zulip\tactivation_failed\t3\n'
+            }
+            _remote_health_check_podman_unhealthy_containers() { :; }
+            _remote_health_check_podman_starting_containers() { :; }
+            _remote_post_switch_user_health_check_once
+            """
+        )
+
+        self.assertIn(
+            "[health-check] host generation deployed with safely deferred held resources:",
+            result.stderr,
+        )
+        self.assertIn(
+            "resource=service:zulip outcome=deferred-held reason=activation_failed generation=3",
+            result.stderr,
+        )
+        self.assertIn("[health-check] ok", result.stderr)
 
     def test_remote_health_check_accepts_inactive_held_service(self):
         result = self.run_script(
@@ -5737,8 +6003,14 @@ EOF_SCRIPT
             init_vars
             DRY_RUN=0
             ROLLBACK_ON_FAILURE=1
-            NIXBOT_HOSTS_JSON='{{"prepared":{{}},"activated":{{}}}}'
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            NIXBOT_HOSTS_JSON='{{"prepared":{{}},"activated":{{}},"rejected":{{}}}}'
             host_deploy_reached_activation() {{ [ "$1" = activated ]; }}
+            mark_deploy_pre_switch_rejected rejected
             rollback_failed_hosts() {{
               shift 6
               printf 'rollback:%s\n' "$*"
@@ -5747,13 +6019,17 @@ EOF_SCRIPT
               {self.work_dir / "snapshot"} \
               {self.work_dir / "rollback-log"} \
               {self.work_dir / "rollback-status"} \
-              prepared activated
+              prepared activated rejected
             """
         )
 
         self.assertEqual(["rollback:activated"], result.stdout.splitlines())
         self.assertIn(
             "deploy failed for prepared before activation; current generation unchanged, skipping rollback",
+            result.stderr,
+        )
+        self.assertIn(
+            "deploy failed for rejected during pre-switch checks; current generation unchanged, skipping rollback",
             result.stderr,
         )
 

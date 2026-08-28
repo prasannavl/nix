@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -272,15 +273,207 @@ impl DesiredResourceStateReceiptStore {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesiredResourceStateDeferralReason {
+    ActivationJobSpecificationConflict,
+    ActivationFailed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesiredResourceStateDeferral {
+    pub schema_version: u32,
+    pub desired: DesiredResourceState,
+    pub reason: DesiredResourceStateDeferralReason,
+    pub detail: String,
+    pub deferred_at: Timestamp,
+}
+
+#[derive(Clone, Debug)]
+pub struct DesiredResourceStateDeferralStore {
+    root: PathBuf,
+}
+
+impl DesiredResourceStateDeferralStore {
+    pub fn new(state_root: impl AsRef<Path>) -> Self {
+        Self {
+            root: state_root.as_ref().join("desired-resource-state-deferrals"),
+        }
+    }
+
+    pub fn check_transition(&self, desired: &DesiredResourceState) -> Result<()> {
+        let Some(existing) = self.read(&desired.id)? else {
+            return Ok(());
+        };
+        if existing.desired.projection_id != desired.projection_id {
+            return Ok(());
+        }
+        if existing.desired.intent_digest != desired.intent_digest {
+            bail!(
+                "deferred desired resource {:?} changes immutable intent within projection {:?}",
+                desired.id,
+                desired.projection_id
+            );
+        }
+        if desired.generation < existing.desired.generation {
+            bail!(
+                "deferred desired resource {:?} projection generation regresses from {} to {}",
+                desired.id,
+                existing.desired.generation,
+                desired.generation
+            );
+        }
+        if desired.generation == existing.desired.generation && desired != &existing.desired {
+            bail!(
+                "deferred desired resource {:?} changes projection content at generation {}",
+                desired.id,
+                desired.generation
+            );
+        }
+        Ok(())
+    }
+
+    pub fn record(
+        &self,
+        desired: &DesiredResourceState,
+        reason: DesiredResourceStateDeferralReason,
+        detail: impl Into<String>,
+    ) -> Result<DesiredResourceStateDeferral> {
+        self.check_transition(desired)?;
+        let deferral = DesiredResourceStateDeferral {
+            schema_version: 1,
+            desired: desired.clone(),
+            reason,
+            detail: detail.into(),
+            deferred_at: Timestamp::now()?,
+        };
+        create_private_dir(&self.root)?;
+        let final_path = self.path(&desired.id);
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = self
+            .root
+            .join(format!(".{}.{}.tmp", std::process::id(), sequence));
+        let bytes = serde_json::to_vec_pretty(&deferral)?;
+        let write = (|| -> Result<()> {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(&temporary)
+                .with_context(|| format!("create {}", temporary.display()))?;
+            file.write_all(&bytes)?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            fs::rename(&temporary, &final_path).with_context(|| {
+                format!(
+                    "atomically replace desired resource deferral {}",
+                    final_path.display()
+                )
+            })?;
+            File::open(&self.root)?.sync_all()?;
+            Ok(())
+        })();
+        if write.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        write?;
+        Ok(deferral)
+    }
+
+    pub fn clear(&self, resource: &str) -> Result<()> {
+        let path = self.path(resource);
+        match fs::remove_file(&path) {
+            Ok(()) => File::open(&self.root)?.sync_all().map_err(Into::into),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).with_context(|| format!("remove {}", path.display())),
+        }
+    }
+
+    /// Remove deferral evidence that is no longer named by the authoritative
+    /// desired-state manifest.
+    pub fn clear_absent<'a>(
+        &self,
+        resources: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Vec<String>> {
+        let resources = resources.into_iter().collect::<BTreeSet<_>>();
+        let mut cleared = Vec::new();
+        for deferral in self.list()? {
+            let resource = &deferral.desired.id;
+            if resources.contains(resource.as_str()) {
+                continue;
+            }
+            self.clear(resource)?;
+            cleared.push(resource.clone());
+        }
+        Ok(cleared)
+    }
+
+    pub fn read(&self, resource: &str) -> Result<Option<DesiredResourceStateDeferral>> {
+        let path = self.path(resource);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+        };
+        let deferral: DesiredResourceStateDeferral =
+            serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
+        if deferral.schema_version != 1 || deferral.desired.id != resource {
+            bail!(
+                "desired resource state deferral integrity error in {}",
+                path.display()
+            );
+        }
+        deferral.desired.validate()?;
+        Ok(Some(deferral))
+    }
+
+    pub fn list(&self) -> Result<Vec<DesiredResourceStateDeferral>> {
+        let entries = match fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(error).with_context(|| format!("list {}", self.root.display()));
+            }
+        };
+        let mut deferrals = entries
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        deferrals.retain(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        });
+        deferrals.sort();
+        let mut result = Vec::with_capacity(deferrals.len());
+        for path in deferrals {
+            let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+            let deferral: DesiredResourceStateDeferral = serde_json::from_slice(&bytes)
+                .with_context(|| format!("parse {}", path.display()))?;
+            if deferral.schema_version != 1 || self.path(&deferral.desired.id) != path {
+                bail!(
+                    "desired resource state deferral integrity error in {}",
+                    path.display()
+                );
+            }
+            deferral.desired.validate()?;
+            result.push(deferral);
+        }
+        result.sort_by(|left, right| left.desired.id.cmp(&right.desired.id));
+        Ok(result)
+    }
+
+    fn path(&self, resource: &str) -> PathBuf {
+        self.root
+            .join(format!("{}.json", digest_bytes(resource.as_bytes())))
+    }
+}
+
 fn create_private_dir(path: &Path) -> Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true).mode(0o700);
-    builder.create(path).with_context(|| {
-        format!(
-            "create desired resource receipt directory {}",
-            path.display()
-        )
-    })
+    builder
+        .create(path)
+        .with_context(|| format!("create desired resource state directory {}", path.display()))
 }
 
 fn validate_identifier(label: &str, value: &str) -> Result<()> {
@@ -360,5 +553,51 @@ mod tests {
         let second = store.record(&desired).unwrap();
         assert_eq!(first, second);
         assert_eq!(store.read(&desired.id).unwrap().unwrap().desired, desired);
+    }
+
+    #[test]
+    fn deferral_store_tracks_non_success_evidence_monotonically_and_clears_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DesiredResourceStateDeferralStore::new(temp.path());
+        let active = desired(2, DesiredResourceStateKind::Active);
+        let recorded = store
+            .record(
+                &active,
+                DesiredResourceStateDeferralReason::ActivationFailed,
+                "readiness did not converge",
+            )
+            .unwrap();
+        assert_eq!(store.read(&active.id).unwrap().unwrap(), recorded);
+        assert_eq!(store.list().unwrap(), vec![recorded]);
+        assert!(
+            store
+                .check_transition(&desired(1, DesiredResourceStateKind::Held))
+                .is_err()
+        );
+        let mut drift = active.clone();
+        drift.phase = "different".to_owned();
+        assert!(store.check_transition(&drift).is_err());
+        store.clear(&active.id).unwrap();
+        assert!(store.read(&active.id).unwrap().is_none());
+        assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn deferral_store_clears_resources_absent_from_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DesiredResourceStateDeferralStore::new(temp.path());
+        let active = desired(2, DesiredResourceStateKind::Active);
+        store
+            .record(
+                &active,
+                DesiredResourceStateDeferralReason::ActivationFailed,
+                "readiness did not converge",
+            )
+            .unwrap();
+
+        assert!(store.clear_absent([active.id.as_str()]).unwrap().is_empty());
+        assert!(store.read(&active.id).unwrap().is_some());
+        assert_eq!(store.clear_absent([]).unwrap(), [active.id.clone()]);
+        assert!(store.read(&active.id).unwrap().is_none());
     }
 }

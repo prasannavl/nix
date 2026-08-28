@@ -2,7 +2,6 @@
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
 }: let
-  tests = import ./tests {pkgs = pkgs;};
   app = pkgs.writeShellApplication {
     name = "nixbot";
     meta = {
@@ -18,6 +17,9 @@
       gawk
       git
       jq
+      getent
+      inetutils
+      iproute2
       nix
       openssh
       opentofu
@@ -28,6 +30,9 @@
       export NIXBOT_IN_NIX_SHELL=1
       exec ${pkgs.bash}/bin/bash ${./nixbot.sh} "$@"
     '';
+  };
+  tests = import ./tests {
+    inherit pkgs app;
   };
   drv = pkgHelper.mkShellScriptDerivation {
     inherit pkgs;

@@ -308,7 +308,7 @@ pub fn transfer_with_excludes_progress_policy(
         )?;
     };
 
-    let execution = match output {
+    let mut execution = match output {
         Ok(output) if output.success => CopyExecution {
             engine: CopyEngine::Rsync,
             rsync_attempted: true,
@@ -430,10 +430,10 @@ pub fn transfer_with_excludes_progress_policy(
         }
     };
 
-    let engine_note = execution.engine_note();
-    let outcome = if let Some(outcome) = execution.verified_outcome {
+    let mut outcome = if let Some(outcome) = execution.verified_outcome.take() {
         outcome
     } else {
+        let engine_note = execution.engine_note();
         report(
             &mut progress,
             "verifying",
@@ -451,6 +451,63 @@ pub fn transfer_with_excludes_progress_policy(
             verification_policy,
         )?
     };
+    let mut source_changed_during_copy = outcome.source_changed_during_copy;
+    while !outcome.accepted()
+        && execution.engine == CopyEngine::Rsync
+        && verification_policy == PostCopyVerification::RequireMatch
+        && outcome.mismatch_explained_by_source_drift
+        && rsync_attempts < MAX_TRANSIENT_RSYNC_ATTEMPTS
+    {
+        let retry_source_manifest = source_manifest(transfer, excludes)?;
+        let (retry_source_entries, retry_source_bytes) = manifest_stats(&retry_source_manifest)?;
+        report(
+            &mut progress,
+            "copying",
+            Some(CopyEngine::Rsync),
+            0,
+            0,
+            retry_source_entries,
+            retry_source_bytes,
+            "source changed during exact verification; retrying an incremental convergence pass",
+        )?;
+        rsync_attempts += 1;
+        let output = run_rsync(
+            transfer,
+            excludes,
+            retry_source_entries,
+            retry_source_bytes,
+            &mut progress,
+        )?;
+        let retry_warning = (!output.success).then(|| {
+            format!(
+                "rsync convergence pass {rsync_attempts} exited with status {:?}: {}",
+                output.exit_code,
+                output.stderr.trim()
+            )
+        });
+        execution.rsync_output = Some(output);
+        report(
+            &mut progress,
+            "verifying",
+            Some(CopyEngine::Rsync),
+            retry_source_entries,
+            retry_source_bytes,
+            retry_source_entries,
+            retry_source_bytes,
+            "hashing source and destination after the convergence pass",
+        )?;
+        outcome = verify_copy_outcome(
+            transfer,
+            excludes,
+            &retry_source_manifest,
+            verification_policy,
+        )?;
+        source_changed_during_copy |= outcome.source_changed_during_copy;
+        if outcome.accepted() {
+            execution.rsync_warning = retry_warning;
+        }
+    }
+    let engine_note = execution.engine_note();
     if !outcome.accepted() {
         bail!(
             "post-copy verification failed{}: {}",
@@ -462,7 +519,7 @@ pub fn transfer_with_excludes_progress_policy(
         format!(
             "copy completed; all mismatches were limited to paths changed at the source during the live copy; exact verification is deferred until the source is quiesced{engine_note}"
         )
-    } else if outcome.source_changed_during_copy {
+    } else if source_changed_during_copy {
         format!(
             "copy and independent verification succeeded despite source changes during the copy{engine_note}"
         )
@@ -512,7 +569,7 @@ pub fn transfer_with_excludes_progress_policy(
         rsync_stderr_truncated_bytes,
         rsync_warning: execution.rsync_warning,
         fallback_reason: execution.fallback_reason,
-        source_changed_during_copy: outcome.source_changed_during_copy,
+        source_changed_during_copy,
         verification_deferred: outcome.verification_deferred,
         verification: outcome.verification,
     })
@@ -546,6 +603,7 @@ struct PostCopyOutcome {
     source_entries: usize,
     source_bytes: u64,
     source_changed_during_copy: bool,
+    mismatch_explained_by_source_drift: bool,
     verification_deferred: bool,
     verification: VerificationResult,
 }
@@ -570,13 +628,16 @@ fn verify_copy_outcome(
     let source_drift = compare_manifests(initial_source_manifest, &final_source_manifest)?;
     let verification = verify_with_source_manifest(transfer, excludes, final_source_manifest)?;
     let source_changed_during_copy = !source_drift.matches;
+    let mismatch_explained_by_source_drift = !verification.matches
+        && verification_is_explained_by_source_drift(&verification, &source_drift);
     let verification_deferred = !verification.matches
         && verification_policy == PostCopyVerification::AllowSourceDrift
-        && verification_is_explained_by_source_drift(&verification, &source_drift);
+        && mismatch_explained_by_source_drift;
     Ok(PostCopyOutcome {
         source_entries,
         source_bytes,
         source_changed_during_copy,
+        mismatch_explained_by_source_drift,
         verification_deferred,
         verification,
     })
@@ -1998,6 +2059,43 @@ mod tests {
         assert!(result.rsync_warning.is_none());
         assert!(result.fallback_reason.is_some());
         assert!(result.verification.matches);
+    }
+
+    #[test]
+    fn exact_rsync_converges_when_a_source_child_disappears_before_verification() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("data"), b"stable").unwrap();
+        fs::write(source.join("postmaster.pid"), b"123").unwrap();
+        let definition = TransferDefinition {
+            source: source.clone(),
+            destination: destination.clone(),
+            rsync_program: executable_in_path("rsync"),
+            remote_source: None,
+            remote_destination: None,
+            tar_program: PathBuf::from("/bin/tar"),
+            delete: true,
+            fallback_copy: true,
+        };
+
+        let mut removed = false;
+        let result = transfer_with_progress(&definition, |progress| {
+            if progress.stage == "verifying" && !removed {
+                fs::remove_file(source.join("postmaster.pid")).unwrap();
+                removed = true;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(result.engine, CopyEngine::Rsync);
+        assert_eq!(result.rsync_attempts, 2);
+        assert!(result.source_changed_during_copy);
+        assert!(result.verification.matches);
+        assert!(!destination.join("postmaster.pid").exists());
     }
 
     #[test]

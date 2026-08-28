@@ -5,7 +5,7 @@
   heldProjectionDigest = builtins.concatStringsSep "" (lib.replicate 64 "1");
   activeProjectionDigest = builtins.concatStringsSep "" (lib.replicate 64 "2");
   projectionId = "move-vm";
-  resources = ["service:deploy-first" "service:controller-first"];
+  resources = ["service:deploy-first" "service:controller-first" "service:deferred"];
   userHeldResource = "service:user-held";
   identityFor = resource: let
     name = lib.removePrefix "service:" resource;
@@ -56,6 +56,10 @@
       })
       resources;
   });
+  emptyManifest = pkgs.writeText "phase-projection-empty.json" (builtins.toJSON {
+    schema_version = 1;
+    resources = [];
+  });
   projectionBinding = builtins.toJSON {
     intent_digest = intentDigest;
     projection_digest = activeProjectionDigest;
@@ -98,6 +102,7 @@ in
         services = {
           deploy-first.units = [{unit = "deploy-first.service";}];
           controller-first.units = [{unit = "controller-first.service";}];
+          deferred.units = [{unit = "deferred.service";}];
           user-held.units = [
             {
               scope = "user";
@@ -117,12 +122,26 @@ in
           Type = "simple";
           ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
         };
-      };
-      systemd.user.services.user-held = {
-        wantedBy = ["default.target"];
-        serviceConfig = {
+        deferred.serviceConfig = {
           Type = "simple";
           ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
+        };
+      };
+      systemd.user.services = {
+        user-held = {
+          wantedBy = ["default.target"];
+          serviceConfig = {
+            Type = "simple";
+            ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
+          };
+        };
+        user-held-child = {
+          unitConfig.PartOf = ["user-held.service"];
+          serviceConfig = {
+            Type = "simple";
+            ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
+            Restart = "always";
+          };
         };
       };
 
@@ -147,7 +166,18 @@ in
       machine.succeed("systemctl --user -M operator@ start user-held.service")
       machine.fail("systemctl --user -M operator@ is-active user-held.service")
 
-      for unit in ["deploy-first.service", "controller-first.service"]:
+      # A generated runtime child that starts outside the public wrapper is
+      # still part of its systemd ownership closure. Hold enforcement must name
+      # the child in the explicit stop transaction so Restart=always cannot
+      # bring it back.
+      machine.succeed("systemctl --user -M operator@ start user-held-child.service")
+      machine.succeed("systemctl --user -M operator@ is-active user-held-child.service")
+      machine.succeed("abird-host-agent --json _reconcile hold apply --resource service:user-held | jq -e '.result.count == 1'")
+      machine.fail("systemctl --user -M operator@ is-active user-held-child.service")
+      machine.sleep(2)
+      machine.fail("systemctl --user -M operator@ is-active user-held-child.service")
+
+      for unit in ["deploy-first.service", "controller-first.service", "deferred.service"]:
           machine.succeed(f"systemctl start {unit}")
           machine.fail(f"systemctl is-active {unit}")
 
@@ -157,8 +187,16 @@ in
       machine.succeed("abird-host-agent --json job submit --spec /tmp/controller-first.json | jq -e '.result.job.status == \"succeeded\"'")
       machine.wait_for_unit("controller-first.service")
 
-      # The deploy reconciler adopts that job and creates the deploy-first job.
-      machine.succeed("abird-host-agent --json _reconcile desired-resource-states --manifest ${activeManifest} | jq -e '.result.count == 2'")
+      # A prior failed activation with the same canonical ID but an obsolete
+      # immutable readiness contract blocks only this exact service resource.
+      # It must never block the host generation or activate from the stale job.
+      machine.succeed("${materialize "service:deferred"} | jq -e '.result.spec | .readiness = [{\"type\":\"path\",\"path\":\"/run/never-ready\"}]' > /tmp/deferred-obsolete.json")
+      machine.succeed("abird-host-agent --json job submit --spec /tmp/deferred-obsolete.json | jq -e '.result.job.status == \"failed\"'")
+      machine.fail("systemctl is-active deferred.service")
+
+      # The deploy reconciler adopts the controller-first job, creates the
+      # deploy-first job, and safely defers only the conflicted service.
+      machine.succeed("abird-host-agent --json _reconcile desired-resource-states --manifest ${activeManifest} --convergence-mode defer-held | jq -e '.result.count == 3 and ([.result.resources[] | select(.outcome == \"deferred_held\") | .resource] == [\"service:deferred\"])'")
       machine.wait_for_unit("deploy-first.service")
 
       # Controller-after-deploy submits the identical deploy-first spec and
@@ -173,5 +211,19 @@ in
           machine.succeed(f"abird-host-agent --json job status --job-id {job} | jq -e '.result.status == \"succeeded\" and .result.attempts == 1'")
 
       machine.succeed("systemctl is-active deploy-first.service controller-first.service")
+      machine.fail("systemctl is-active deferred.service")
+      machine.succeed("abird-host-agent --json status | jq -e '.result.deferred_resources.count == 1 and .result.deferred_resources.resources[0].resource == \"service:deferred\" and .result.deferred_resources.resources[0].isolated == true'")
+      machine.succeed("abird-host-agent --json job status --job-id move-vm--deferred-cutover-activate-target | jq -e '.result.status == \"failed\" and .result.attempts == 1'")
+
+      # An automatic rollback may not interpret omitted authority as closeout:
+      # the current durable hold and deferral must remain unchanged.
+      machine.fail("abird-host-agent _reconcile desired-resource-states --manifest ${emptyManifest} --preflight-only --require-complete-authority --convergence-mode defer-held")
+      machine.fail("systemctl is-active deferred.service")
+      machine.succeed("abird-host-agent --json status | jq -e '.result.holds >= 1 and .result.deferred_resources.count == 1 and .result.deferred_resources.resources[0].resource == \"service:deferred\"'")
+
+      # When closeout removes a resource from desired-state authority, its
+      # former deferral is no longer actionable isolation evidence.
+      machine.succeed("abird-host-agent --json _reconcile desired-resource-states --manifest ${emptyManifest} --convergence-mode defer-held | jq -e '.result.count == 0 and .result.cleared_deferrals.count == 1 and .result.cleared_deferrals.resources == [\"service:deferred\"]'")
+      machine.succeed("abird-host-agent --json status | jq -e '.result.deferred_resources.count == 0'")
     '';
   }

@@ -118,6 +118,29 @@ fn visit(
     if relative != Path::new(".") && is_excluded(relative, excludes) {
         return Ok(());
     }
+
+    // Directory iteration returns names, not durable handles. A child may be
+    // removed after read_dir(2) yields it but before any of the observations
+    // below. Treat that child as absent from this manifest snapshot. The
+    // source/destination comparison still reports a peer-only copy, while a
+    // missing declared root remains a hard error.
+    let entry_checkpoint = entries.len();
+    match visit_present(absolute, relative, excludes, entries) {
+        Ok(()) => Ok(()),
+        Err(error) if relative != Path::new(".") && error_is_not_found(&error) => {
+            entries.truncate(entry_checkpoint);
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn visit_present(
+    absolute: &Path,
+    relative: &Path,
+    excludes: &[PathBuf],
+    entries: &mut Vec<ManifestEntry>,
+) -> Result<()> {
     let metadata = fs::symlink_metadata(absolute)
         .with_context(|| format!("read metadata for {}", absolute.display()))?;
     let file_type = metadata.file_type();
@@ -185,6 +208,14 @@ fn visit(
         }
     }
     Ok(())
+}
+
+fn error_is_not_found(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    })
 }
 
 pub(crate) fn is_excluded(relative: &Path, excludes: &[PathBuf]) -> bool {
@@ -281,5 +312,20 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!paths.iter().any(|path| path.starts_with("cache/")));
         assert!(paths.contains(&"cache-other/kept"));
+    }
+
+    #[test]
+    fn omits_a_child_that_disappears_but_requires_the_declared_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let vanished = temp.path().join("postmaster.pid");
+        fs::write(&vanished, b"123").unwrap();
+        fs::remove_file(&vanished).unwrap();
+
+        let mut entries = Vec::new();
+        visit(&vanished, Path::new("postmaster.pid"), &[], &mut entries).unwrap();
+        assert!(entries.is_empty());
+
+        let missing_root = temp.path().join("missing-root");
+        assert!(visit(&missing_root, Path::new("."), &[], &mut entries).is_err());
     }
 }

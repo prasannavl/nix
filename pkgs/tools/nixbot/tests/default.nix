@@ -1,4 +1,7 @@
-{pkgs}: {
+{
+  pkgs,
+  app,
+}: {
   helper =
     pkgs.runCommand "nixbot-helper-test" {
       nativeBuildInputs = [
@@ -24,6 +27,24 @@
       python -m unittest discover \
         --start-directory "$repo/pkgs/tools/nixbot/tests" \
         --pattern 'test_*.py'
+      touch "$out"
+    '';
+  runtime =
+    pkgs.runCommand "nixbot-runtime-test" {
+      nativeBuildInputs = [pkgs.gnugrep];
+    } ''
+      for command in \
+        ${pkgs.inetutils}/bin/hostname \
+        ${pkgs.getent}/bin/getent \
+        ${pkgs.iproute2}/bin/ip; do
+        test -x "$command"
+      done
+      for runtime_bin in \
+        ${pkgs.inetutils}/bin \
+        ${pkgs.getent}/bin \
+        ${pkgs.iproute2}/bin; do
+        grep -Fq "$runtime_bin" ${app}/bin/nixbot
+      done
       touch "$out"
     '';
 }

@@ -1808,6 +1808,14 @@ deploy_activation_marker_file() {
 	printf '%s/%s.activation\n' "${TMP_DEPLOY_JOB_DIR}" "${node_hash}"
 }
 
+deploy_pre_switch_rejection_marker_file() {
+	local node="$1" node_hash=""
+
+	ensure_tmp_dir
+	node_hash="$(printf '%s' "${node}" | sha256sum | cut -d ' ' -f 1)"
+	printf '%s/%s.pre-switch-rejected\n' "${TMP_DEPLOY_JOB_DIR}" "${node_hash}"
+}
+
 nixbot_run_id() {
 	local run_id=""
 
@@ -1849,7 +1857,7 @@ rollback_activation_unit_name() {
 }
 
 nixbot_activation_command() {
-	local system_path="$1" goal="$2" persist_profile="$3" post_promote_bootloader_goal="$4" restart_managed="${5:-0}"
+	local system_path="$1" goal="$2" persist_profile="$3" post_promote_bootloader_goal="$4" restart_managed="${5:-0}" rollback_projection_admission="${6:-0}"
 
 	printf 'set -Eeuo pipefail\n'
 	printf 'system_path=%q\n' "${system_path}"
@@ -1857,12 +1865,25 @@ nixbot_activation_command() {
 	printf 'persist_profile=%q\n' "${persist_profile}"
 	printf 'post_promote_bootloader_goal=%q\n' "${post_promote_bootloader_goal}"
 	printf 'restart_managed=%q\n' "${restart_managed}"
+	printf 'rollback_projection_admission=%q\n' "${rollback_projection_admission}"
+	printf 'current_projection_preflight=%q\n' "${REMOTE_CURRENT_SYSTEM_PATH}/sw/bin/abird-host-agent-projection-preflight"
 	cat <<'EOF_ACTIVATION'
 nix_env_path="${system_path}/sw/bin/nix-env"
 
 if [ ! -x "${system_path}/bin/switch-to-configuration" ]; then
 	echo "system path is not activatable: ${system_path}" >&2
 	exit 1
+fi
+
+if [ "${rollback_projection_admission}" -eq 1 ]; then
+	if [ -x "${current_projection_preflight}" ]; then
+		echo "[rollback-admission] validating ${system_path} against durable host-agent state"
+		"${current_projection_preflight}" "${system_path}" "${goal}" rollback
+	else
+		echo "[rollback-admission] current generation has no projection preflight;" \
+			"refusing automatic rollback because projection safety cannot be proven" >&2
+		exit 1
+	fi
 fi
 
 NIXOS_INSTALL_BOOTLOADER=0 "${system_path}/bin/switch-to-configuration" "${goal}"
@@ -2136,6 +2157,13 @@ mark_deploy_activation_started() {
 	printf '%s\n' "${node}" >"${marker_file}"
 }
 
+mark_deploy_pre_switch_rejected() {
+	local node="$1" marker_file=""
+
+	marker_file="$(deploy_pre_switch_rejection_marker_file "${node}")"
+	printf '%s\n' "${node}" >"${marker_file}"
+}
+
 deploy_jobs_started() {
 	[ "${NIXBOT_DEPLOY_STARTED:-0}" -eq 1 ]
 }
@@ -2231,6 +2259,21 @@ host_deploy_reached_activation() {
 		return 0
 	fi
 	host_deploy_activation_unit_running "${node}"
+}
+
+host_deploy_was_rejected_before_switch() {
+	local node="$1"
+
+	[ -s "$(deploy_pre_switch_rejection_marker_file "${node}")" ]
+}
+
+host_deploy_requires_rollback() {
+	local node="$1"
+
+	if host_deploy_was_rejected_before_switch "${node}"; then
+		return 1
+	fi
+	host_deploy_reached_activation "${node}"
 }
 
 terminate_pre_activation_deploy_jobs() {
@@ -8708,7 +8751,7 @@ rollback_host_to_snapshot() {
 		fi
 	fi
 	post_promote_bootloader_goal="$(activation_post_promote_bootloader_goal "${node}" switch)" || return "$?"
-	rollback_script="$(nixbot_activation_command "${snapshot_path}" switch 1 "${post_promote_bootloader_goal}")"
+	rollback_script="$(nixbot_activation_command "${snapshot_path}" switch 1 "${post_promote_bootloader_goal}" 0 1)"
 	rollback_runner="$(nixbot_activation_runner_command "${rollback_script}" "${rollback_unit}")"
 	rollback_runner="$(host_local_activation_lock_command "${rollback_runner}")"
 	rollback_observer="$(nixbot_activation_observer_command "${rollback_unit}")"
@@ -9157,7 +9200,12 @@ rollback_optional_deploy_hosts() {
 
 	[ "$#" -gt 0 ] || return 0
 	for node in "$@"; do
-		if ! host_deploy_reached_activation "${node}"; then
+		if host_deploy_was_rejected_before_switch "${node}"; then
+			echo "Optional deploy failed for ${node} during pre-switch checks;" \
+				"current generation unchanged, skipping rollback" >&2
+			continue
+		fi
+		if ! host_deploy_requires_rollback "${node}"; then
 			echo "Optional deploy failed for ${node} before activation; current generation unchanged, skipping rollback" >&2
 			continue
 		fi
@@ -9187,10 +9235,12 @@ rollback_failed_deploy_hosts() {
 
 	[ "$#" -gt 0 ] || return 0
 	for node in "$@"; do
-		if host_deploy_reached_activation "${node}"; then
-			admitted_hosts+=("${node}")
-		else
+		if host_deploy_was_rejected_before_switch "${node}"; then
+			echo "deploy failed for ${node} during pre-switch checks; current generation unchanged, skipping rollback" >&2
+		elif ! host_deploy_requires_rollback "${node}"; then
 			echo "deploy failed for ${node} before activation; current generation unchanged, skipping rollback" >&2
+		else
+			admitted_hosts+=("${node}")
 		fi
 	done
 	[ "${#admitted_hosts[@]}" -gt 0 ] || return 0
@@ -9410,6 +9460,13 @@ command_output_is_pre_admission_ssh_failure() {
 		<<<"${output}"
 }
 
+command_output_is_pre_switch_rejection() {
+	local output="$1"
+
+	[ -n "${output}" ] || return 1
+	grep -Fq 'Pre-switch checks failed' <<<"${output}"
+}
+
 command_failure_is_transport_loss() {
 	local output_path="$1"
 
@@ -9605,6 +9662,49 @@ _remote_health_check_held_user_units() {
 		| .services[]?
 		| select(.scope == "user" and (.user | type == "string") and (.unit | type == "string"))
 		| [.user, .unit]
+		| @tsv
+	' <<<"${output}" | sort -u
+}
+
+_remote_health_check_deferred_resources() {
+	local agent="${NIXBOT_HOST_AGENT:-/run/current-system/sw/bin/abird-host-agent}" output=""
+
+	[ -x "${agent}" ] || return 0
+	if ! output="$("${agent}" --json status)"; then
+		echo "[health-check] unable to query deferred host-agent resources" >&2
+		return 1
+	fi
+	if ! jq -e '
+		.ok == true
+		and .operation == "agent_status"
+		and (.result | type == "object")
+	' >/dev/null <<<"${output}"; then
+		echo "[health-check] invalid deferred host-agent resource response" >&2
+		return 1
+	fi
+	# Generations predating granular deferral cannot have produced deferral
+	# evidence. Keep rolling deployment compatible, but require the complete
+	# contract as soon as the agent advertises status schema version 2.
+	if ! jq -e '.result | has("status_schema_version")' >/dev/null <<<"${output}"; then
+		return 0
+	fi
+	if ! jq -e '
+		.result.status_schema_version == 2
+		and (.result.deferred_resources.count | type == "number")
+		and (.result.deferred_resources.resources | type == "array")
+		and .result.deferred_resources.count == (.result.deferred_resources.resources | length)
+		and all(.result.deferred_resources.resources[];
+			(.resource | type == "string")
+			and (.reason | type == "string")
+			and (.generation | type == "number")
+			and .isolated == true)
+	' >/dev/null <<<"${output}"; then
+		echo "[health-check] invalid or unsafe deferred host-agent resource response" >&2
+		return 1
+	fi
+	jq -r '
+		.result.deferred_resources.resources[]
+		| [.resource, .reason, (.generation | tostring)]
 		| @tsv
 	' <<<"${output}" | sort -u
 }
@@ -10026,6 +10126,11 @@ activate_prepared_system_path() {
 			activation_rc="$?"
 		fi
 		if is_signal_exit_status "${activation_rc}"; then
+			return "${activation_rc}"
+		fi
+		if command_output_is_pre_switch_rejection "${activation_output}"; then
+			mark_deploy_pre_switch_rejected "${node}"
+			echo "==> Deploy activation for ${node} was rejected before switching; current generation unchanged" >&2
 			return "${activation_rc}"
 		fi
 
@@ -10552,6 +10657,7 @@ phase_dir_item_duration_file() {
 _remote_post_switch_user_health_check_once() {
 	local units="" unit="" user="" uid="" home="" runtime_dir="" bus=""
 	local held_user_units="" held_units="" held_unit="" held_state=""
+	local deferred_resources=""
 	local expected_units="" expected_unit="" expected_state=""
 	local load_state="" active_state="" sub_state="" need_daemon_reload=""
 	local raw_user_jobs="" pending_start_job=""
@@ -10573,6 +10679,10 @@ _remote_post_switch_user_health_check_once() {
 	if ! held_user_units="$(_remote_health_check_held_user_units)"; then
 		echo "[health-check] FAILED — durable hold state is unavailable" >&2
 		return 1
+	fi
+	if ! deferred_resources="$(_remote_health_check_deferred_resources)"; then
+		echo "[health-check] FAILED — deferred resource isolation is unavailable" >&2
+		return 3
 	fi
 
 	raw_system_failed_output="$(systemctl list-units --failed --no-legend --plain 2>/dev/null || true)"
@@ -10822,6 +10932,13 @@ EOF_HC_UNITS
 		echo "[health-check] durable held user units are stopped:" >&2
 		echo "${held_output}" >&2
 	fi
+	if [ -n "${deferred_resources}" ]; then
+		echo "[health-check] host generation deployed with safely deferred held resources:" >&2
+		while IFS=$'\t' read -r resource reason generation; do
+			[ -n "${resource}" ] || continue
+			echo "resource=${resource} outcome=deferred-held reason=${reason} generation=${generation}" >&2
+		done <<<"${deferred_resources}"
+	fi
 	if [ -n "${held_failure_output}" ]; then
 		echo "[health-check] FAILED durable held user units:" >&2
 		echo "${held_failure_output}" >&2
@@ -11007,6 +11124,7 @@ build_post_switch_health_check_cmd() {
 		_remote_health_check_starting_timeout_seconds \
 		_remote_managed_user_names \
 		_remote_health_check_held_user_units \
+		_remote_health_check_deferred_resources \
 		_remote_health_check_expected_user_units \
 		_remote_health_check_expected_runtime \
 		_remote_health_check_pending_start_job_for_unit \

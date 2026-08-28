@@ -254,6 +254,36 @@ impl Systemctl {
             .collect()
     }
 
+    /// Explicitly stop a lifecycle root and every currently loaded unit it
+    /// owns in one systemd transaction. Naming each child in the stop job is
+    /// important for units with `Restart=always`: a propagated `PartOf=` stop
+    /// alone can otherwise be followed by an automatic restart while a hold is
+    /// being enforced.
+    pub fn stop_together(&self, targets: &[ServiceTarget]) -> Result<()> {
+        let Some(first) = targets.first() else {
+            return Ok(());
+        };
+        if targets
+            .iter()
+            .any(|target| target.scope != first.scope || target.user != first.user)
+        {
+            bail!("stop targets must share one systemd manager");
+        }
+
+        let mut arguments = first.systemctl_scope_args();
+        arguments.extend(["stop".to_owned(), "--".to_owned()]);
+        arguments.extend(targets.iter().map(|target| target.unit.clone()));
+        let output = self.query_with_retry(&arguments)?;
+        if !output.status.success() {
+            bail!(
+                "stop lifecycle closure for {first} failed with status {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
     /// Clear failure state only after a successful explicit stop, and only for
     /// the stopped service plus units systemd declares it owns.
     pub fn reset_failed(&self, targets: &[ServiceTarget]) -> Result<()> {

@@ -7,6 +7,7 @@
 }: let
   cfg = config.services.abird-host-agent;
   phaseProjection = import ./phase-projection.nix {lib = lib;};
+  holdGate = import ./hold-gate.nix;
   runuserProgram = lib.getExe' pkgs.util-linux "runuser";
   systemctlProgram = pkgs.writeShellApplication {
     name = "abird-host-agent-systemctl";
@@ -62,7 +63,7 @@
         lib.optional (builtins.isInt uid) "user@${toString uid}.service"
     )
     declaredGatedUsers;
-  userHoldReadyUnit = "abird-host-agent-holds-ready.service";
+  userHoldReadyUnit = holdGate.userReadinessUnit;
   userHoldReadyGeneration = builtins.substring 0 16 (builtins.hashString "sha256" (builtins.unsafeDiscardStringContext "${resourceManifest}\n${desiredResourceStateManifest}\n${builtins.toJSON effectiveDeclaredHolds}"));
   userHoldReadyMarker = "/run/abird-host-agent-holds-ready-${userHoldReadyGeneration}";
   waitForUserHoldReady = pkgs.writeShellScript "abird-host-agent-wait-for-holds" ''
@@ -126,7 +127,6 @@
       ];
     }
     else null;
-  holdFileName = resource: "${builtins.hashString "sha256" resource}.json";
   validServiceTarget = service:
     if service.scope == "user"
     then service.user != null && service.user != ""
@@ -142,8 +142,6 @@
       && !lib.hasPrefix "/" exclude
       && lib.all (component: component != "" && component != "." && component != "..") (lib.splitString "/" exclude))
     root.excludes;
-  holdFile = resource: "${cfg.stateDirectory}/holds/${holdFileName resource}";
-  activationAuthorization = resource: "${cfg.stateDirectory}/activation-authorizations/${builtins.hashString "sha256" resource}.json";
   desiredStateDocument = resource: desired: {
     id = resource;
     state = desired.state;
@@ -179,6 +177,44 @@
         --set ABIRD_HOST_AGENT_PODMAN ${lib.escapeShellArg "${pkgs.podman}/bin/podman"} \
         --set ABIRD_HOST_AGENT_NIX_COLLECT_GARBAGE ${lib.escapeShellArg "${pkgs.nix}/bin/nix-collect-garbage"} \
         --set ABIRD_HOST_AGENT_SSH_HOST_ED25519_PUBLIC_KEY ${lib.escapeShellArg sshHostEd25519PublicKey}
+    '';
+  };
+  projectionPreflight = pkgs.writeShellApplication {
+    name = "abird-host-agent-projection-preflight";
+    text = ''
+      incoming="$1"
+      action="$2"
+      mode="''${3:-normal}"
+
+      case "$mode" in
+        normal|rollback) ;;
+        *)
+          echo "unsupported projection preflight mode: $mode" >&2
+          exit 2
+          ;;
+      esac
+
+      case "$action" in
+        switch|test)
+          desired="$incoming/etc/abird-host-agent/desired-resource-states.json"
+          resources="$incoming/etc/abird-host-agent/resources.json"
+          if [ ! -e "$desired" ] || [ ! -e "$resources" ]; then
+            echo "incoming system path is missing host-agent projection authority: $incoming" >&2
+            exit 1
+          fi
+
+          complete_authority=()
+          if [ "$mode" = rollback ]; then
+            complete_authority+=(--require-complete-authority)
+          fi
+          ${configuredPackage}/bin/abird-host-agent \
+            --resource-manifest "$resources" \
+            _reconcile desired-resource-states \
+            --manifest "$desired" \
+            --preflight-only \
+            "''${complete_authority[@]}" >/dev/null
+          ;;
+      esac
     '';
   };
   resourceManifest = pkgs.writeText "abird-host-agent-resources.json" (builtins.toJSON {
@@ -319,12 +355,11 @@
   # host agent has installed its stable, exact-evidence capability. The agent
   # clears that capability whenever any new hold is acquired.
   conditionsFor = resource:
-    if resource == hostResourceId
-    then ["!${holdFile resource}"]
-    else [
-      "|!${holdFile resource}"
-      "|${activationAuthorization resource}"
-    ];
+    holdGate.conditionsFor {
+      stateDirectory = cfg.stateDirectory;
+      resource = resource;
+      isHostResource = resource == hostResourceId;
+    };
   systemServicesFor = spec:
     lib.unique (
       map
@@ -644,20 +679,20 @@ in {
     ];
 
     environment = {
-      systemPackages = [configuredPackage];
+      systemPackages = [configuredPackage projectionPreflight];
       etc =
         {
           "abird-host-agent/resources.json".source = resourceManifest;
           "abird-host-agent/desired-resource-states.json".source = desiredResourceStateManifest;
         }
         // lib.mapAttrs' (resource: transaction:
-          lib.nameValuePair "abird-host-agent/declared-holds/${holdFileName resource}" {
+          lib.nameValuePair "abird-host-agent/declared-holds/${holdGate.holdFileName resource}" {
             text = "${transaction}\n";
             mode = "0444";
           })
         effectiveDeclaredHolds
         // lib.mapAttrs' (resource: desired:
-          lib.nameValuePair "abird-host-agent/desired-resource-states/${holdFileName resource}" {
+          lib.nameValuePair "abird-host-agent/desired-resource-states/${holdGate.holdFileName resource}" {
             text = "${builtins.toJSON (desiredStateDocument resource desired)}\n";
             mode = "0444";
           })
@@ -683,6 +718,16 @@ in {
       '';
     };
 
+    # Reject host-level safety violations before switch-to-configuration changes
+    # /run/current-system or runs any activation script. A non-host resource
+    # with an exact projected hold may instead be admitted as deferred-held;
+    # activation then refreshes and enforces only that granular resource latch.
+    # This remains the rollback safety boundary: an older NixOS snapshot may
+    # never overwrite a newer durable host-agent hold epoch.
+    system.preSwitchChecks.abird-host-agent-projection = ''
+      ${projectionPreflight}/bin/abird-host-agent-projection-preflight "$1" "$2"
+    '';
+
     systemd = {
       tmpfiles.rules =
         [
@@ -694,6 +739,7 @@ in {
           # authorization receipts remain unreadable and unlistable.
           "d ${cfg.stateDirectory}/activation-authorizations 0711 root root -"
           "d ${cfg.stateDirectory}/desired-resource-state-receipts 0700 root root -"
+          "d ${cfg.stateDirectory}/desired-resource-state-deferrals 0700 root root -"
           "d ${cfg.stateDirectory}/jobs 0700 root root -"
           "d ${cfg.backupRoot} 0700 root root -"
           "d /run/abird-host-agent 0700 root root -"
@@ -743,7 +789,7 @@ in {
               restartTriggers = [desiredResourceStateManifest];
               serviceConfig = {
                 Type = "oneshot";
-                ExecStart = "${configuredPackage}/bin/abird-host-agent _reconcile desired-resource-states --manifest ${lib.escapeShellArg cfg.desiredResourceStateManifestPath}";
+                ExecStart = "${configuredPackage}/bin/abird-host-agent _reconcile desired-resource-states --manifest ${lib.escapeShellArg cfg.desiredResourceStateManifestPath} --convergence-mode defer-held";
                 Restart = "on-failure";
                 RestartSec = "5s";
                 TimeoutStartSec = "infinity";

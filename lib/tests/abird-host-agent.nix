@@ -291,6 +291,8 @@
   ];
   holdCommands = config.systemd.services.abird-host-agent-holds.serviceConfig.ExecStart;
   holdActivation = config.system.activationScripts.abird-host-agent-holds;
+  projectionPreSwitchCheck = config.system.preSwitchChecks.abird-host-agent-projection;
+  projectionPreflightPackage = builtins.head (lib.filter (package: lib.hasInfix "abird-host-agent-projection-preflight" package.name) config.environment.systemPackages);
   configuredAgent = builtins.head (lib.splitString " " config.systemd.services.abird-host-agent-jobs.serviceConfig.ExecStart);
   configuredRoot = builtins.dirOf (builtins.dirOf configuredAgent);
   resourceManifest = config.environment.etc."abird-host-agent/resources.json".source;
@@ -347,6 +349,8 @@ in
   assert lib.hasInfix "_reconcile desired-resource-holds" holdActivation.text;
   assert lib.hasInfix "_reconcile hold apply" holdActivation.text;
   assert lib.hasInfix "/run/abird-host-agent-holds-ready" holdActivation.text;
+  assert lib.hasInfix "abird-host-agent-projection-preflight" projectionPreSwitchCheck;
+  assert lib.hasInfix "abird-host-agent-projection-preflight" projectionPreflightPackage.name;
   assert config.systemd.paths.abird-host-agent-jobs.pathConfig.PathChanged == "/var/lib/abird-host-agent/jobs-wakeup";
   assert config.systemd.services.abird-host-agent-jobs.unitConfig.ConditionPathExists == "/var/lib/abird-host-agent/jobs-wakeup";
   assert config.systemd.services.abird-host-agent-jobs.wantedBy == ["multi-user.target"];
@@ -358,9 +362,11 @@ in
   assert builtins.elem "abird-host-agent-desired-resource-states.service" config.systemd.services.abird-host-agent-jobs.after;
   assert config.systemd.services.abird-host-agent-desired-resource-states.serviceConfig.Restart == "on-failure";
   assert lib.hasInfix "_reconcile desired-resource-states" config.systemd.services.abird-host-agent-desired-resource-states.serviceConfig.ExecStart;
+  assert lib.hasInfix "--convergence-mode defer-held" config.systemd.services.abird-host-agent-desired-resource-states.serviceConfig.ExecStart;
   assert config.systemd.paths.abird-host-agent-desired-resource-states.pathConfig.PathChanged == "/etc/abird-host-agent/desired-resource-states.json";
   assert config.systemd.paths.abird-host-agent-desired-resource-states.pathConfig.Unit == "abird-host-agent-desired-resource-states.service";
   assert builtins.elem "d /var/lib/abird-host-agent/desired-resource-state-receipts 0700 root root -" config.systemd.tmpfiles.rules;
+  assert builtins.elem "d /var/lib/abird-host-agent/desired-resource-state-deferrals 0700 root root -" config.systemd.tmpfiles.rules;
   assert builtins.elem "d /var/lib/abird-host-agent/activation-authorizations 0711 root root -" config.systemd.tmpfiles.rules;
   assert config.environment.etc."abird-host-agent/declared-holds/${holdFileName}".text == "${transaction}\n";
   assert !(builtins.hasAttr "abird-host-agent/declared-holds/${moveTargetHoldFileName}" config.environment.etc);
@@ -383,6 +389,23 @@ in
       jq -e '.resources | any(.id == "${hostResource}" and (.data_paths | index("/var/lib/demo")) != null and (.data_paths | index("/var/lib/demo-instance")) != null)' ${resourceManifest}
       jq -e '.schema_version == 1 and (.resources | any(.id == "${moveTargetResource}" and .state == "held" and .phase == "cutover" and .generation == 3 and .projection_digest == "${projectionDigest}" and .hold_epoch == "move:source-prepared"))' ${desiredResourceStateManifest}
       jq -e '.resources | any(.id == "${moveSourceResource}" and .state == "active" and .transaction_id == "move-demo--item-001" and .activation_job_id == "move-demo--item-001-cutover-activate-target" and .activation_requirement_digest == "${receiptRequirement}")' ${desiredResourceStateManifest}
+
+      preflight=${projectionPreflightPackage}/bin/abird-host-agent-projection-preflight
+      grep -F -- 'incoming system path is missing host-agent projection authority' "$preflight"
+      grep -F -- '--require-complete-authority' "$preflight"
+      incoming="$TMPDIR/incoming"
+      mkdir -p "$incoming/etc/abird-host-agent"
+      if "$preflight" "$incoming" switch; then
+        echo "projection preflight accepted missing manifests" >&2
+        exit 1
+      fi
+      touch "$incoming/etc/abird-host-agent/resources.json"
+      if "$preflight" "$incoming" switch; then
+        echo "projection preflight accepted a missing desired-state manifest" >&2
+        exit 1
+      fi
+      touch "$incoming/etc/abird-host-agent/desired-resource-states.json"
+      "$preflight" "$incoming" switch rollback
 
       touch "$out"
     ''

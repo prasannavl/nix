@@ -1,13 +1,21 @@
 use anyhow::{Context, Result};
 
 use crate::cmd;
-use crate::command::CommandResult;
+use crate::command::{CommandResult, CommandStream};
 use crate::deployment::{
     NixbotDeployPolicy, NixbotDeployRequest, validate_nixbot_deploy_policy,
     validate_nixbot_deploy_request,
 };
 
 pub fn deploy(policy: &NixbotDeployPolicy, request: &NixbotDeployRequest) -> Result<CommandResult> {
+    deploy_with_lines(policy, request, |_, _| {})
+}
+
+pub fn deploy_with_lines(
+    policy: &NixbotDeployPolicy,
+    request: &NixbotDeployRequest,
+    on_line: impl FnMut(CommandStream, &str),
+) -> Result<CommandResult> {
     validate_nixbot_deploy_policy(policy)?;
     validate_nixbot_deploy_request(request)?;
 
@@ -47,9 +55,10 @@ pub fn deploy(policy: &NixbotDeployPolicy, request: &NixbotDeployRequest) -> Res
             config_override_path.display()
         ));
     }
+    let revision = request.revision.as_deref().unwrap_or(&policy.revision);
     command = command
         .arg(&policy.program)
-        .args(["deploy", "--sha", &policy.revision]);
+        .args(["deploy", "--sha", revision]);
     if request.exclude_hosts.is_empty() {
         command = command.args(["--host", request.host.as_str()]);
     } else {
@@ -82,7 +91,7 @@ pub fn deploy(policy: &NixbotDeployPolicy, request: &NixbotDeployRequest) -> Res
             "1",
         ])
         .arg("--no-rollback")
-        .output()
+        .output_with_lines(on_line)
 }
 
 #[cfg(test)]
@@ -120,6 +129,7 @@ mod tests {
         };
         let request = NixbotDeployRequest {
             host: "abird-gondor-proxy".to_owned(),
+            revision: Some("fedcba9876543210".to_owned()),
             nix_config: Some("abird-gondor-proxy-zulip-target".to_owned()),
             exclude_hosts: vec!["gap3-gondor".to_owned()],
         };
@@ -129,6 +139,7 @@ mod tests {
         assert!(argv.contains("NIXBOT_CONFIG_OVERRIDE_PATH="));
         assert!(argv.contains("abird-gondor-proxy,-gap3-gondor"));
         assert!(argv.contains("abird-gondor-proxy-zulip-target"));
+        assert!(argv.contains("--sha\nfedcba9876543210"));
         assert!(argv.contains("--build-plan-jobs\n1\n"));
         assert!(argv.contains("--build-jobs\n1\n"));
         assert!(argv.contains("--deploy-jobs\n1\n"));

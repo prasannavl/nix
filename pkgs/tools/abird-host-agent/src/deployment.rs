@@ -52,6 +52,8 @@ pub struct NixbotDeployPolicy {
 #[serde(deny_unknown_fields)]
 pub struct NixbotDeployRequest {
     pub host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
     #[serde(default)]
     pub nix_config: Option<String>,
     #[serde(default)]
@@ -115,6 +117,13 @@ pub fn validate_nixbot_deploy_request(request: &NixbotDeployRequest) -> Result<(
         .is_some_and(|nix_config| !is_safe_name(nix_config))
     {
         bail!("Nixbot deployment Nix config is invalid");
+    }
+    if request
+        .revision
+        .as_deref()
+        .is_some_and(|revision| !is_commit_revision(revision))
+    {
+        bail!("Nixbot deployment request revision must be a commit ID");
     }
     for host in &request.exclude_hosts {
         if !is_safe_name(host) || host == &request.host {
@@ -211,10 +220,14 @@ mod tests {
         };
         let request = NixbotDeployRequest {
             host: "abird-gondor-proxy".to_owned(),
+            revision: None,
             nix_config: Some("abird-gondor-proxy-zulip-target".to_owned()),
             exclude_hosts: vec!["gap3-gondor".to_owned()],
         };
         validate_nixbot_deploy_policy(&policy).unwrap();
         validate_nixbot_deploy_request(&request).unwrap();
+        let mut invalid = request;
+        invalid.revision = Some("not-a-commit".to_owned());
+        assert!(validate_nixbot_deploy_request(&invalid).is_err());
     }
 }

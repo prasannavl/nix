@@ -1,14 +1,30 @@
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
-use std::io::{self, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 const CAPTURE_LIMIT: usize = 256 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandStream {
+    Stdout,
+    Stderr,
+}
+
+impl CommandStream {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct CommandSpec {
@@ -129,6 +145,13 @@ impl CommandSpec {
     }
 
     pub fn output(&self) -> Result<CommandResult> {
+        self.output_with_lines(|_, _| {})
+    }
+
+    pub fn output_with_lines(
+        &self,
+        mut on_line: impl FnMut(CommandStream, &str),
+    ) -> Result<CommandResult> {
         if !self.program.is_absolute() {
             bail!(
                 "external program must be an absolute path: {}",
@@ -150,8 +173,15 @@ impl CommandSpec {
             .stderr
             .take()
             .context("command stderr pipe is unavailable")?;
-        let stdout_reader = thread::spawn(move || read_bounded(stdout));
-        let stderr_reader = thread::spawn(move || read_bounded(stderr));
+        let (sender, receiver) = mpsc::channel();
+        let stdout_sender = sender.clone();
+        let stdout_reader =
+            thread::spawn(move || read_bounded_lines(stdout, CommandStream::Stdout, stdout_sender));
+        let stderr_reader =
+            thread::spawn(move || read_bounded_lines(stderr, CommandStream::Stderr, sender));
+        for (stream, line) in receiver {
+            on_line(stream, &line);
+        }
         let status = child.wait()?;
         let stdout = stdout_reader
             .join()
@@ -218,21 +248,32 @@ impl BoundedCapture {
     }
 }
 
-fn read_bounded(mut reader: impl Read) -> io::Result<BoundedCapture> {
+fn read_bounded_lines(
+    reader: impl Read,
+    stream: CommandStream,
+    sender: mpsc::Sender<(CommandStream, String)>,
+) -> io::Result<BoundedCapture> {
+    let mut reader = BufReader::new(reader);
     let mut capture = BoundedCapture {
         bytes: Vec::with_capacity(CAPTURE_LIMIT),
         truncated_bytes: 0,
     };
-    let mut buffer = [0_u8; 16 * 1024];
+    let mut line = Vec::new();
     loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
             break;
         }
         let remaining = CAPTURE_LIMIT.saturating_sub(capture.bytes.len());
-        let retained = remaining.min(read);
-        capture.bytes.extend_from_slice(&buffer[..retained]);
-        capture.truncated_bytes += (read - retained) as u64;
+        let retained = remaining.min(line.len());
+        capture.bytes.extend_from_slice(&line[..retained]);
+        capture.truncated_bytes += (line.len() - retained) as u64;
+        let rendered = String::from_utf8_lossy(&line)
+            .trim_end_matches(['\r', '\n'])
+            .to_owned();
+        if !rendered.is_empty() && sender.send((stream, rendered)).is_err() {
+            break;
+        }
     }
     Ok(capture)
 }
@@ -274,5 +315,23 @@ mod tests {
         assert!(output.success);
         assert!(output.stdout_truncated_bytes > 0);
         assert!(output.stderr_truncated_bytes > 0);
+    }
+
+    #[test]
+    fn streamed_output_reports_lines_from_both_streams() {
+        let mut lines = Vec::new();
+        let output = CommandSpec::new("/bin/sh")
+            .args([
+                "-c",
+                "printf 'out one\\nout two\\n'; printf 'err one\\n' >&2",
+            ])
+            .output_with_lines(|stream, line| lines.push((stream, line.to_owned())))
+            .unwrap();
+        assert!(output.success);
+        assert!(lines.contains(&(CommandStream::Stdout, "out one".to_owned())));
+        assert!(lines.contains(&(CommandStream::Stdout, "out two".to_owned())));
+        assert!(lines.contains(&(CommandStream::Stderr, "err one".to_owned())));
+        assert_eq!(output.stdout, "out one\nout two\n");
+        assert_eq!(output.stderr, "err one\n");
     }
 }

@@ -1,19 +1,21 @@
+use std::collections::{BTreeSet, VecDeque};
 use std::env;
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
 use crate::broker::{BrokerTransferRequest, run_broker_transfer_with_progress};
 use crate::deployment::{DeploymentDefinition, activate};
 use crate::desired_state::{
-    DesiredResourceState, DesiredResourceStateKind, DesiredResourceStateManifest,
-    DesiredResourceStateReceiptStore,
+    DesiredResourceState, DesiredResourceStateDeferralReason, DesiredResourceStateDeferralStore,
+    DesiredResourceStateKind, DesiredResourceStateManifest, DesiredResourceStateReceiptStore,
 };
 use crate::file_state::{FileStateDefinition, apply_file_state_with_reload};
 use crate::instance::{
@@ -31,7 +33,7 @@ use crate::manifest::{create_manifest, create_manifest_roots};
 use crate::programs::nix::NixCollectGarbage;
 use crate::programs::nixbot;
 use crate::programs::systemd::Systemd;
-use crate::readiness::{ReadinessCheck, run_checks, wait_for_checks};
+use crate::readiness::{ReadinessCheck, ReadinessResult, run_checks, wait_for_checks};
 use crate::resource::{
     BackupConsistency, DataRoot, DataRootPlan, ExpectedState, ResourceManifest,
     validate_data_root_plan,
@@ -363,6 +365,21 @@ enum ReconcileCommand {
     DesiredResourceStates {
         #[arg(long, default_value = DEFAULT_DESIRED_RESOURCE_STATE_MANIFEST)]
         manifest: PathBuf,
+        /// Validate the complete desired-state transition without mutation.
+        #[arg(long, hide = true)]
+        preflight_only: bool,
+        /// Require rollback authority to name every durable projected resource.
+        #[arg(long, requires = "preflight_only", hide = true)]
+        require_complete_authority: bool,
+        /// Permit safely isolated non-host resources to remain held while the
+        /// rest of an admitted host generation converges.
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = DesiredResourceConvergenceMode::Strict,
+            hide = true
+        )]
+        convergence_mode: DesiredResourceConvergenceMode,
     },
     /// Establish or hand off projected hold epochs before ordinary units start.
     DesiredResourceHolds {
@@ -370,6 +387,12 @@ enum ReconcileCommand {
         manifest: PathBuf,
     },
     Jobs,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum DesiredResourceConvergenceMode {
+    Strict,
+    DeferHeld,
 }
 
 #[derive(Debug, Subcommand)]
@@ -787,6 +810,7 @@ pub fn execute(cli: Cli) -> Result<CommandOutput> {
     let json_output = cli.json;
     let store = StateStore::new(&cli.state_dir);
     let desired_receipts = DesiredResourceStateReceiptStore::new(&cli.state_dir);
+    let desired_deferrals = DesiredResourceStateDeferralStore::new(&cli.state_dir);
     let jobs = JobStore::new(&cli.state_dir);
     let systemctl = Systemctl::new(&cli.systemctl);
     let journalctl = Journalctl::new(&cli.journalctl, &cli.runuser);
@@ -796,7 +820,13 @@ pub fn execute(cli: Cli) -> Result<CommandOutput> {
     let ssh_host_ed25519_public_key = cli.ssh_host_ed25519_public_key;
 
     match cli.command {
-        Command::Status => execute_agent_status(&store, &jobs, &resource_manifest),
+        Command::Status => execute_agent_status(
+            &store,
+            &jobs,
+            &desired_deferrals,
+            &systemctl,
+            &resource_manifest,
+        ),
         Command::Logs(args) => execute_logs(
             args,
             &store,
@@ -840,16 +870,22 @@ pub fn execute(cli: Cli) -> Result<CommandOutput> {
                 &systemctl,
                 &resource_manifest,
             ),
-            ReconcileCommand::DesiredResourceStates { manifest } => {
-                execute_desired_resource_states(
-                    &manifest,
-                    &resource_manifest,
-                    &store,
-                    &jobs,
-                    &desired_receipts,
-                    &systemctl,
-                )
-            }
+            ReconcileCommand::DesiredResourceStates {
+                manifest,
+                preflight_only,
+                require_complete_authority,
+                convergence_mode,
+            } => execute_desired_resource_states_with_mode(
+                &manifest,
+                &resource_manifest,
+                &store,
+                &jobs,
+                &desired_receipts,
+                &systemctl,
+                preflight_only,
+                require_complete_authority,
+                convergence_mode,
+            ),
             ReconcileCommand::DesiredResourceHolds { manifest } => {
                 execute_desired_resource_holds(&manifest, &resource_manifest, &store, &systemctl)
             }
@@ -860,17 +896,12 @@ pub fn execute(cli: Cli) -> Result<CommandOutput> {
     }
 }
 
-fn desired_release_evidence(
-    desired: &DesiredResourceState,
-    include_activation_requirement: bool,
-) -> ActivationReleaseEvidence {
+fn desired_projection_evidence(desired: &DesiredResourceState) -> ActivationReleaseEvidence {
     ActivationReleaseEvidence {
         intent_digest: desired.intent_digest.clone(),
         projection_digest: desired.projection_digest.clone(),
         generation: desired.generation,
-        activation_requirement_digest: include_activation_requirement
-            .then(|| desired.activation_requirement_digest.clone())
-            .flatten(),
+        activation_requirement_digest: desired.activation_requirement_digest.clone(),
     }
 }
 
@@ -888,6 +919,14 @@ fn execute_desired_resource_holds(
     let resources = ResourceManifest::load(resource_manifest_path)?;
     let mut reconciled = Vec::new();
 
+    // Validate every projected successor before changing any durable latch.
+    // The pre-switch check invokes the fuller desired-state preflight, while
+    // this keeps boot and direct reconciliation fail-closed as well.
+    for desired in &desired_manifest.resources {
+        resources.resource(&desired.id)?;
+        store.preflight_projection_successor(&desired.id, &desired_projection_evidence(desired))?;
+    }
+
     for desired in &desired_manifest.resources {
         let Some(declaration_id) = desired.hold_declaration_id() else {
             continue;
@@ -903,7 +942,7 @@ fn execute_desired_resource_holds(
                     &desired.id,
                     transaction_id,
                     &declaration_id,
-                    desired_release_evidence(desired, false),
+                    desired_projection_evidence(desired),
                 )?
             }),
             DesiredResourceStateKind::Active
@@ -912,7 +951,7 @@ fn execute_desired_resource_holds(
                         .declaration_release(&desired.id, &declaration_id)?
                         .is_some() =>
             {
-                let evidence = desired_release_evidence(desired, true);
+                let evidence = desired_projection_evidence(desired);
                 let release = store
                     .declaration_release(&desired.id, &declaration_id)?
                     .context("projected activation release disappeared")?;
@@ -934,7 +973,7 @@ fn execute_desired_resource_holds(
                     transaction_id,
                     &declaration_id,
                     resource.services.clone(),
-                    desired_release_evidence(desired, true),
+                    desired_projection_evidence(desired),
                     |_| Ok(()),
                 )?
             }),
@@ -959,6 +998,7 @@ fn execute_desired_resource_holds(
     })
 }
 
+#[cfg(test)]
 fn execute_desired_resource_states(
     desired_manifest_path: &Path,
     resource_manifest_path: &Path,
@@ -966,32 +1006,147 @@ fn execute_desired_resource_states(
     jobs: &JobStore,
     receipts: &DesiredResourceStateReceiptStore,
     systemctl: &Systemctl,
+    preflight_only: bool,
+) -> Result<CommandOutput> {
+    execute_desired_resource_states_with_mode(
+        desired_manifest_path,
+        resource_manifest_path,
+        store,
+        jobs,
+        receipts,
+        systemctl,
+        preflight_only,
+        false,
+        DesiredResourceConvergenceMode::Strict,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_desired_resource_states_with_mode(
+    desired_manifest_path: &Path,
+    resource_manifest_path: &Path,
+    store: &StateStore,
+    jobs: &JobStore,
+    receipts: &DesiredResourceStateReceiptStore,
+    systemctl: &Systemctl,
+    preflight_only: bool,
+    require_complete_authority: bool,
+    convergence_mode: DesiredResourceConvergenceMode,
 ) -> Result<CommandOutput> {
     let desired_manifest = DesiredResourceStateManifest::load(desired_manifest_path)?;
     let resources = ResourceManifest::load(resource_manifest_path)?;
+    let deferrals = DesiredResourceStateDeferralStore::new(store.root());
 
-    // Fail before mutation when any declaration is unknown or regresses its
-    // last applied projection. Runtime state is rechecked per resource below.
-    for desired in &desired_manifest.resources {
-        resources.resource(&desired.id)?;
-        receipts.check_transition(desired)?;
-        if desired.state == DesiredResourceStateKind::Active {
-            preflight_desired_active_resource(
-                desired,
-                resources.resource(&desired.id)?,
-                store,
-                jobs,
-            )?;
-        } else if desired.state == DesiredResourceStateKind::Unheld {
-            preflight_desired_unheld_resource(desired, resources.resource(&desired.id)?, store)?;
+    if preflight_only && require_complete_authority {
+        let desired_resources = desired_manifest
+            .resources
+            .iter()
+            .map(|desired| desired.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut omitted = store
+            .list()?
+            .into_iter()
+            .filter(|hold| {
+                hold.projection.is_some() && !desired_resources.contains(hold.resource.as_str())
+            })
+            .map(|hold| hold.resource)
+            .collect::<BTreeSet<_>>();
+        omitted.extend(
+            deferrals
+                .list()?
+                .into_iter()
+                .filter(|deferral| !desired_resources.contains(deferral.desired.id.as_str()))
+                .map(|deferral| deferral.desired.id),
+        );
+        if !omitted.is_empty() {
+            bail!(
+                "incoming desired resource state authority omits durable projected resources: {}",
+                omitted.into_iter().collect::<Vec<_>>().join(", ")
+            );
         }
     }
 
-    let mut reconciled = Vec::with_capacity(desired_manifest.resources.len());
+    let mut admissions = Vec::with_capacity(desired_manifest.resources.len());
+
+    // Host admission is atomic and read-only. Unknown resources, lineage
+    // regressions, ownership drift, released resources, and host-scoped
+    // conflicts reject the generation. Only an exactly held, non-host resource
+    // may be admitted as deferred-held.
     for desired in &desired_manifest.resources {
         let resource = resources.resource(&desired.id)?;
-        let result = match desired.state {
-            DesiredResourceStateKind::Held | DesiredResourceStateKind::Inactive => {
+        receipts.check_transition(desired)?;
+        deferrals.check_transition(desired)?;
+        store.preflight_projection_successor(&desired.id, &desired_projection_evidence(desired))?;
+        let admission = if desired.state == DesiredResourceStateKind::Active {
+            preflight_desired_active_resource(desired, resource, store, jobs)?
+        } else if desired.state == DesiredResourceStateKind::Unheld {
+            preflight_desired_unheld_resource(desired, resource, store)?;
+            DesiredResourceAdmission::Converge
+        } else {
+            DesiredResourceAdmission::Converge
+        };
+        admissions.push(admission);
+    }
+
+    if preflight_only {
+        let deferred = admissions
+            .iter()
+            .filter(|admission| matches!(admission, DesiredResourceAdmission::DeferredHeld { .. }))
+            .count();
+        let resources = desired_manifest
+            .resources
+            .iter()
+            .zip(&admissions)
+            .map(|(desired, admission)| admission.as_json(&desired.id))
+            .collect::<Vec<_>>();
+        return Ok(CommandOutput {
+            human: format!(
+                "admitted {} desired resource transition(s); {deferred} safely deferred-held",
+                desired_manifest.resources.len(),
+            ),
+            value: json!({
+                "ok": true,
+                "operation": "desired_resource_states_preflight",
+                "result": {
+                    "count": desired_manifest.resources.len(),
+                    "deferred_held": deferred,
+                    "resources": resources,
+                },
+            }),
+        });
+    }
+
+    let mut reconciled = Vec::with_capacity(desired_manifest.resources.len());
+    for (desired, admission) in desired_manifest.resources.iter().zip(admissions) {
+        let resource = resources.resource(&desired.id)?;
+        let result = match (&admission, desired.state) {
+            (
+                DesiredResourceAdmission::DeferredHeld { reason, detail },
+                DesiredResourceStateKind::Active,
+            ) => {
+                if convergence_mode != DesiredResourceConvergenceMode::DeferHeld {
+                    bail!(
+                        "resource {:?} requires deferred-held convergence: {detail}",
+                        desired.id
+                    );
+                }
+                let result = defer_desired_active_resource(
+                    desired,
+                    resource,
+                    store,
+                    &deferrals,
+                    systemctl,
+                    *reason,
+                    detail.clone(),
+                )?;
+                reconciled.push(result);
+                continue;
+            }
+            (DesiredResourceAdmission::DeferredHeld { .. }, _) => {
+                unreachable!("only active resources can be deferred-held")
+            }
+            (DesiredResourceAdmission::Converge, DesiredResourceStateKind::Held)
+            | (DesiredResourceAdmission::Converge, DesiredResourceStateKind::Inactive) => {
                 let declaration_id = desired
                     .hold_declaration_id()
                     .context("held desired resource has no hold epoch")?;
@@ -1005,6 +1160,9 @@ fn execute_desired_resource_states(
                         resource_manifest_path,
                         |progress| {
                             jobs.update_progress(&spec.job_id, serde_json::to_value(progress)?)
+                        },
+                        |progress| {
+                            let _ = jobs.update_progress(&spec.job_id, progress);
                         },
                     )
                 })?;
@@ -1020,7 +1178,7 @@ fn execute_desired_resource_states(
                     .hold
                     .context("canonical hold job retained no durable hold")?;
                 if hold.declaration_id.as_deref() != Some(&declaration_id)
-                    || hold.projection.as_ref() != Some(&desired_release_evidence(desired, true))
+                    || hold.projection.as_ref() != Some(&desired_projection_evidence(desired))
                 {
                     bail!("canonical hold job retained mismatched projection evidence");
                 }
@@ -1030,15 +1188,47 @@ fn execute_desired_resource_states(
                     "replayed": !submitted.changed,
                 })
             }
-            DesiredResourceStateKind::Active => reconcile_desired_active_resource(
-                desired,
-                resource,
-                resource_manifest_path,
-                store,
-                jobs,
-                systemctl,
-            )?,
-            DesiredResourceStateKind::Unheld => {
+            (DesiredResourceAdmission::Converge, DesiredResourceStateKind::Active) => {
+                match reconcile_desired_active_resource(
+                    desired,
+                    resource,
+                    resource_manifest_path,
+                    store,
+                    jobs,
+                    systemctl,
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let terminal_failed_job = desired
+                            .activation_job_id
+                            .as_deref()
+                            .map(|job_id| jobs.status_optional(job_id))
+                            .transpose()?
+                            .flatten()
+                            .is_some_and(|job| job.status == JobStatus::Failed);
+                        if convergence_mode == DesiredResourceConvergenceMode::DeferHeld
+                            && !desired.id.starts_with("host:")
+                            && desired.hold_declaration_id().is_some()
+                            && terminal_failed_job
+                        {
+                            let detail = format!("{error:#}");
+                            let result = defer_desired_active_resource(
+                                desired,
+                                resource,
+                                store,
+                                &deferrals,
+                                systemctl,
+                                DesiredResourceStateDeferralReason::ActivationFailed,
+                                detail,
+                            )?;
+                            reconciled.push(result);
+                            continue;
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            (DesiredResourceAdmission::Converge, DesiredResourceStateKind::Unheld) => {
                 let declaration_id = desired
                     .hold_declaration_id()
                     .context("unheld desired resource has no hold epoch")?;
@@ -1052,6 +1242,9 @@ fn execute_desired_resource_states(
                         resource_manifest_path,
                         |progress| {
                             jobs.update_progress(&spec.job_id, serde_json::to_value(progress)?)
+                        },
+                        |progress| {
+                            let _ = jobs.update_progress(&spec.job_id, progress);
                         },
                     )
                 })?;
@@ -1073,9 +1266,11 @@ fn execute_desired_resource_states(
             }
         };
         let receipt = receipts.record(desired)?;
+        deferrals.clear(&desired.id)?;
         reconciled.push(json!({
             "resource": desired.id,
             "state": desired.state,
+            "outcome": "converged",
             "projection_id": desired.projection_id,
             "projection_digest": desired.projection_digest,
             "generation": desired.generation,
@@ -1083,6 +1278,12 @@ fn execute_desired_resource_states(
             "receipt": receipt,
         }));
     }
+    let cleared_deferrals = deferrals.clear_absent(
+        desired_manifest
+            .resources
+            .iter()
+            .map(|desired| desired.id.as_str()),
+    )?;
 
     Ok(CommandOutput {
         human: format!("reconciled {} desired resource state(s)", reconciled.len()),
@@ -1092,9 +1293,39 @@ fn execute_desired_resource_states(
             "result": {
                 "count": reconciled.len(),
                 "resources": reconciled,
+                "cleared_deferrals": {
+                    "count": cleared_deferrals.len(),
+                    "resources": cleared_deferrals,
+                },
             },
         }),
     })
+}
+
+#[derive(Clone, Debug)]
+enum DesiredResourceAdmission {
+    Converge,
+    DeferredHeld {
+        reason: DesiredResourceStateDeferralReason,
+        detail: String,
+    },
+}
+
+impl DesiredResourceAdmission {
+    fn as_json(&self, resource: &str) -> Value {
+        match self {
+            Self::Converge => json!({
+                "resource": resource,
+                "outcome": "converge",
+            }),
+            Self::DeferredHeld { reason, detail } => json!({
+                "resource": resource,
+                "outcome": "deferred_held",
+                "reason": reason,
+                "detail": detail,
+            }),
+        }
+    }
 }
 
 fn preflight_desired_unheld_resource(
@@ -1109,7 +1340,7 @@ fn preflight_desired_unheld_resource(
         .transaction_id
         .as_deref()
         .context("unheld desired resource has no transaction identity")?;
-    let evidence = desired_release_evidence(desired, false);
+    let evidence = desired_projection_evidence(desired);
     let status = store.status(&desired.id)?;
     if let Some(hold) = status.hold {
         if hold.transaction_id != transaction_id
@@ -1145,7 +1376,7 @@ fn preflight_desired_active_resource(
     resource: &crate::resource::ResourceDefinition,
     store: &StateStore,
     jobs: &JobStore,
-) -> Result<()> {
+) -> Result<DesiredResourceAdmission> {
     let status = store.status(&desired.id)?;
     let Some(declaration_id) = desired.hold_declaration_id() else {
         if status.held {
@@ -1154,7 +1385,7 @@ fn preflight_desired_active_resource(
                 desired.id
             );
         }
-        return Ok(());
+        return Ok(DesiredResourceAdmission::Converge);
     };
     let activation_requirement_digest = desired
         .activation_requirement_digest
@@ -1171,14 +1402,9 @@ fn preflight_desired_active_resource(
         .as_deref()
         .context("active projected hold has no transaction identity")?;
     let activation_job = desired_activation_job_spec(desired, resource)?;
-    if let Some(existing) = jobs.status_optional(&activation_job.job_id)?
-        && existing.spec != activation_job
-    {
-        bail!(
-            "activation job {:?} already exists with a different immutable specification",
-            existing.spec.job_id
-        );
-    }
+    let activation_job_conflict = jobs
+        .status_optional(&activation_job.job_id)?
+        .filter(|existing| existing.spec != activation_job);
     if let Some(hold) = status.hold {
         if hold.transaction_id != transaction_id {
             bail!(
@@ -1202,7 +1428,26 @@ fn preflight_desired_active_resource(
                 desired.id
             );
         }
-        return Ok(());
+        if let Some(existing) = activation_job_conflict.as_ref() {
+            let detail = format!(
+                "activation job {:?} already exists with a different immutable specification",
+                existing.spec.job_id
+            );
+            if desired.id.starts_with("host:") {
+                bail!("host-scoped {detail}");
+            }
+            if existing.status != JobStatus::Failed {
+                bail!(
+                    "{detail} and has unsafe status {:?}; only terminal failed jobs may defer",
+                    existing.status
+                );
+            }
+            return Ok(DesiredResourceAdmission::DeferredHeld {
+                reason: DesiredResourceStateDeferralReason::ActivationJobSpecificationConflict,
+                detail,
+            });
+        }
+        return Ok(DesiredResourceAdmission::Converge);
     }
     let release = store
         .declaration_release(&desired.id, &declaration_id)?
@@ -1218,7 +1463,80 @@ fn preflight_desired_active_resource(
             desired.id
         );
     }
-    Ok(())
+    if let Some(existing) = activation_job_conflict.as_ref() {
+        bail!(
+            "activation job {:?} already exists with a different immutable specification and resource {:?} is already released",
+            existing.spec.job_id,
+            desired.id
+        );
+    }
+    Ok(DesiredResourceAdmission::Converge)
+}
+
+fn defer_desired_active_resource(
+    desired: &DesiredResourceState,
+    resource: &crate::resource::ResourceDefinition,
+    store: &StateStore,
+    deferrals: &DesiredResourceStateDeferralStore,
+    systemctl: &Systemctl,
+    reason: DesiredResourceStateDeferralReason,
+    detail: String,
+) -> Result<Value> {
+    if desired.id.starts_with("host:") {
+        bail!(
+            "host-scoped resource {:?} cannot use deferred-held convergence",
+            desired.id
+        );
+    }
+    let declaration_id = desired
+        .hold_declaration_id()
+        .context("deferred active resource has no hold epoch")?;
+    let transaction_id = desired
+        .transaction_id
+        .as_deref()
+        .context("deferred active resource has no transaction identity")?;
+    let acquired = store.acquire_projected_and_apply(
+        &desired.id,
+        transaction_id,
+        &declaration_id,
+        resource.services.clone(),
+        desired_projection_evidence(desired),
+        |hold| enforce_hold(hold, systemctl),
+    )?;
+    let hold = store
+        .status(&desired.id)?
+        .hold
+        .context("deferred active resource retained no durable hold")?;
+    if hold.transaction_id != transaction_id
+        || hold.declaration_id.as_deref() != Some(&declaration_id)
+        || hold.services != resource.services
+        || hold.projection.as_ref() != Some(&desired_projection_evidence(desired))
+    {
+        bail!(
+            "deferred active resource {:?} retained mismatched isolation evidence",
+            desired.id
+        );
+    }
+    let services = run_resource_services(ServiceOperation::Status, &resource.services, systemctl)?;
+    if !services.iter().all(service_is_confirmed_inactive) {
+        bail!(
+            "deferred active resource {:?} does not have confirmed inactive service state after enforcing its hold",
+            desired.id
+        );
+    }
+    let deferral = deferrals.record(desired, reason, detail)?;
+    Ok(json!({
+        "resource": desired.id,
+        "state": desired.state,
+        "outcome": "deferred_held",
+        "projection_id": desired.projection_id,
+        "projection_digest": desired.projection_digest,
+        "generation": desired.generation,
+        "hold": hold,
+        "hold_changed": acquired.changed,
+        "services": services,
+        "deferral": deferral,
+    }))
 }
 
 fn reconcile_desired_active_resource(
@@ -1249,6 +1567,9 @@ fn reconcile_desired_active_resource(
                 systemctl,
                 resource_manifest_path,
                 |progress| jobs.update_progress(&spec.job_id, serde_json::to_value(progress)?),
+                |progress| {
+                    let _ = jobs.update_progress(&spec.job_id, progress);
+                },
             )
         })?;
         if job.status != JobStatus::Succeeded {
@@ -1401,7 +1722,7 @@ fn desired_release_job_spec(desired: &DesiredResourceState) -> Result<JobSpec> {
             projection_digest: desired.projection_digest.clone(),
             generation: desired.generation,
             hold_epoch: desired.hold_epoch.clone(),
-            activation_requirement_digest: None,
+            activation_requirement_digest: desired.activation_requirement_digest.clone(),
         }),
         resource: desired.id.clone(),
         operation: JobOperation::Release,
@@ -1430,16 +1751,7 @@ fn activate_and_verify_declared_resource(
     let services = run_resource_services(ServiceOperation::Start, &resource.services, systemctl)?;
     let checks = wait_for_checks(&resource.readiness);
     if checks.iter().any(|check| !check.success) {
-        let stop_error =
-            run_resource_services(ServiceOperation::Stop, &resource.services, systemctl)
-                .err()
-                .map(|error| format!("{error:#}"));
-        match stop_error {
-            Some(stop_error) => bail!(
-                "resource readiness failed after activation and stopping it also failed: {stop_error}"
-            ),
-            None => bail!("resource readiness failed after activation; services were stopped"),
-        }
+        return fail_activation_after_readiness(&checks, &resource.services, systemctl);
     }
     Ok(json!({
         "services": services,
@@ -1448,14 +1760,69 @@ fn activate_and_verify_declared_resource(
     }))
 }
 
+fn fail_activation_after_readiness<T>(
+    checks: &[ReadinessResult],
+    services: &[ServiceTarget],
+    systemctl: &Systemctl,
+) -> Result<T> {
+    let details = checks
+        .iter()
+        .filter(|check| !check.success)
+        .map(|check| check.detail.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    let stop_error = run_resource_services(ServiceOperation::Stop, services, systemctl)
+        .err()
+        .map(|error| format!("{error:#}"));
+    match stop_error {
+        Some(stop_error) => bail!(
+            "resource readiness failed after activation: {details}; stopping services also failed: {stop_error}"
+        ),
+        None => {
+            bail!("resource readiness failed after activation: {details}; services were stopped")
+        }
+    }
+}
+
 fn execute_agent_status(
     store: &StateStore,
     jobs: &JobStore,
+    deferrals: &DesiredResourceStateDeferralStore,
+    systemctl: &Systemctl,
     resource_manifest_path: &Path,
 ) -> Result<CommandOutput> {
     let manifest = ResourceManifest::load(resource_manifest_path)?;
     let holds = store.list()?;
     let jobs = jobs.list()?;
+    let mut deferred_resources = Vec::new();
+    for deferral in deferrals.list()? {
+        let desired = &deferral.desired;
+        let resource = manifest.resource(&desired.id)?;
+        let hold = store.status(&desired.id)?.hold;
+        let exactly_held = hold.as_ref().is_some_and(|hold| {
+            hold.transaction_id == desired.transaction_id.as_deref().unwrap_or_default()
+                && hold.declaration_id == desired.hold_declaration_id()
+                && hold.services == resource.services
+                && hold.projection.as_ref() == Some(&desired_projection_evidence(desired))
+        });
+        let services =
+            run_resource_services(ServiceOperation::Status, &resource.services, systemctl)?;
+        let all_inactive = services.iter().all(service_is_confirmed_inactive);
+        deferred_resources.push(json!({
+            "resource": desired.id,
+            "state": desired.state,
+            "projection_id": desired.projection_id,
+            "projection_digest": desired.projection_digest,
+            "generation": desired.generation,
+            "reason": deferral.reason,
+            "detail": deferral.detail,
+            "deferred_at": deferral.deferred_at,
+            "exactly_held": exactly_held,
+            "all_inactive": all_inactive,
+            "isolated": exactly_held && all_inactive,
+            "services": services,
+        }));
+    }
     let pending = jobs
         .iter()
         .filter(|job| job.status == JobStatus::Pending)
@@ -1470,18 +1837,24 @@ fn execute_agent_status(
         .count();
     Ok(CommandOutput {
         human: format!(
-            "agent ready: {} resource(s), {} hold(s), {} durable job(s)",
+            "agent ready: {} resource(s), {} hold(s), {} deferred-held, {} durable job(s)",
             manifest.resources.len(),
             holds.len(),
+            deferred_resources.len(),
             jobs.len()
         ),
         value: json!({
             "ok": true,
             "operation": "agent_status",
             "result": {
+                "status_schema_version": 2,
                 "schema_version": manifest.schema_version,
                 "resources": manifest.resources.len(),
                 "holds": holds.len(),
+                "deferred_resources": {
+                    "count": deferred_resources.len(),
+                    "resources": deferred_resources,
+                },
                 "jobs": {
                     "total": jobs.len(),
                     "pending": pending,
@@ -1786,7 +2159,7 @@ fn enforce_hold(hold: &HoldRecord, systemctl: &Systemctl) -> Result<()> {
                 stopped_units.push(owned);
             }
         }
-        systemctl.run(ServiceOperation::Stop, service)?;
+        systemctl.stop_together(&stopped_units)?;
         systemctl.reset_failed(&stopped_units)?;
     }
     if let Some(request) = &hold.instance_gate {
@@ -2022,6 +2395,10 @@ fn run_resource_services(
         .collect()
 }
 
+fn service_is_confirmed_inactive(service: &ServiceResult) -> bool {
+    !service.success && service.exit_code == Some(3)
+}
+
 fn operation_name(operation: ServiceOperation) -> &'static str {
     match operation {
         ServiceOperation::Start => "service_start",
@@ -2056,6 +2433,9 @@ fn execute_job(
                         resource_manifest_path,
                         |progress| {
                             jobs.update_progress(&spec.job_id, serde_json::to_value(progress)?)
+                        },
+                        |progress| {
+                            let _ = jobs.update_progress(&spec.job_id, progress);
                         },
                     )
                 })?
@@ -2123,6 +2503,9 @@ fn execute_job(
                     systemctl,
                     resource_manifest_path,
                     |progress| jobs.update_progress(&spec.job_id, serde_json::to_value(progress)?),
+                    |progress| {
+                        let _ = jobs.update_progress(&spec.job_id, progress);
+                    },
                 )
             })?;
             let count = completed.len();
@@ -2478,9 +2861,14 @@ fn execute_job_spec(
     store: &StateStore,
     systemctl: &Systemctl,
 ) -> Result<JobExecution> {
-    execute_job_spec_with_progress(spec, store, systemctl, Path::new("/does/not/exist"), |_| {
-        Ok(())
-    })
+    execute_job_spec_with_progress(
+        spec,
+        store,
+        systemctl,
+        Path::new("/does/not/exist"),
+        |_| Ok(()),
+        |_| {},
+    )
 }
 
 fn execute_job_spec_with_progress(
@@ -2489,6 +2877,7 @@ fn execute_job_spec_with_progress(
     systemctl: &Systemctl,
     resource_manifest_path: &Path,
     mut progress: impl FnMut(&crate::transfer::TransferProgress) -> Result<()>,
+    mut job_progress: impl FnMut(Value),
 ) -> Result<JobExecution> {
     match &spec.operation {
         JobOperation::Reserve => {
@@ -2531,22 +2920,12 @@ fn execute_job_spec_with_progress(
         }
         JobOperation::Release => {
             let outcome = match projection_hold_declaration_id(spec) {
-                Some(declaration_id) => {
-                    let projection = spec.projection.as_ref().context(
-                        "projection hold declaration requires an immutable projection binding",
-                    )?;
-                    store.release_projected(
-                        &spec.resource,
-                        &spec.transaction_id,
-                        &declaration_id,
-                        ActivationReleaseEvidence {
-                            intent_digest: projection.intent_digest.clone(),
-                            projection_digest: projection.projection_digest.clone(),
-                            generation: projection.generation,
-                            activation_requirement_digest: None,
-                        },
-                    )?
-                }
+                Some(declaration_id) => store.release_projected(
+                    &spec.resource,
+                    &spec.transaction_id,
+                    &declaration_id,
+                    projection_hold_evidence(spec)?,
+                )?,
                 None => store.release(&spec.resource, &spec.transaction_id)?,
             };
             Ok(JobExecution::succeeded(json!({ "release": outcome })))
@@ -2567,12 +2946,9 @@ fn execute_job_spec_with_progress(
                             projection_digest: projection.projection_digest.clone(),
                             generation: projection.generation,
                             activation_requirement_digest: Some(
-                                projection
-                                    .activation_requirement_digest
-                                    .clone()
-                                    .context(
-                                        "projection activation requires a requirement digest",
-                                    )?,
+                                projection.activation_requirement_digest.clone().context(
+                                    "projection activation requires a requirement digest",
+                                )?,
                             ),
                         },
                         || {
@@ -2583,21 +2959,11 @@ fn execute_job_spec_with_progress(
                             )?;
                             let checks = wait_for_checks(&spec.readiness);
                             if checks.iter().any(|check| !check.success) {
-                                let stop_error = run_resource_services(
-                                    ServiceOperation::Stop,
+                                return fail_activation_after_readiness(
+                                    &checks,
                                     &spec.services,
                                     systemctl,
-                                )
-                                .err()
-                                .map(|error| format!("{error:#}"));
-                                match stop_error {
-                                    Some(stop_error) => bail!(
-                                        "resource readiness failed after activation and stopping it also failed: {stop_error}"
-                                    ),
-                                    None => bail!(
-                                        "resource readiness failed after activation; services were stopped"
-                                    ),
-                                }
+                                );
                             }
                             Ok((services, checks))
                         },
@@ -2615,21 +2981,11 @@ fn execute_job_spec_with_progress(
                         )?;
                         let checks = wait_for_checks(&spec.readiness);
                         if checks.iter().any(|check| !check.success) {
-                            let stop_error = run_resource_services(
-                                ServiceOperation::Stop,
+                            return fail_activation_after_readiness(
+                                &checks,
                                 &spec.services,
                                 systemctl,
-                            )
-                            .err()
-                            .map(|error| format!("{error:#}"));
-                            match stop_error {
-                                Some(stop_error) => bail!(
-                                    "resource readiness failed after activation and stopping it also failed: {stop_error}"
-                                ),
-                                None => bail!(
-                                    "resource readiness failed after activation; services were stopped"
-                                ),
-                            }
+                            );
                         }
                         Ok((services, checks))
                     },
@@ -3017,7 +3373,38 @@ fn execute_job_spec_with_progress(
                 .nixbot_deploy
                 .as_ref()
                 .context("Nixbot deploy job has no resolved controller policy")?;
-            let result = nixbot::deploy(policy, request)?;
+            let mut sequence = 0_u64;
+            let mut tail = VecDeque::with_capacity(20);
+            let mut last_update = Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now);
+            let result = nixbot::deploy_with_lines(policy, request, |stream, line| {
+                sequence = sequence.saturating_add(1);
+                if tail.len() == 20 {
+                    tail.pop_front();
+                }
+                tail.push_back(json!({
+                    "sequence": sequence,
+                    "stream": stream.as_str(),
+                    "line": line,
+                }));
+                if last_update.elapsed() >= Duration::from_millis(250) {
+                    job_progress(json!({
+                        "kind": "command_log",
+                        "stage": "deploying",
+                        "sequence": sequence,
+                        "tail": tail,
+                    }));
+                    last_update = Instant::now();
+                }
+            })?;
+            job_progress(json!({
+                "kind": "command_log",
+                "stage": "deploying",
+                "sequence": sequence,
+                "tail": tail,
+                "complete": true,
+            }));
             let value = json!({
                     "nixbot_deploy": result,
                     "host": request.host,
@@ -4196,6 +4583,140 @@ mod tests {
     }
 
     #[test]
+    fn activation_failure_preserves_readiness_details_and_stops_services() {
+        let temp = tempfile::tempdir().unwrap();
+        let calls = temp.path().join("calls");
+        let systemctl_path = temp.path().join("systemctl");
+        fs::write(
+            &systemctl_path,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+                calls.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&systemctl_path, fs::Permissions::from_mode(0o700)).unwrap();
+        let checks = vec![ReadinessResult {
+            check: ReadinessCheck::Http {
+                address: "127.0.0.1:18082".to_owned(),
+                host: "zulip.abird.ai".to_owned(),
+                path: "/".to_owned(),
+                expected_statuses: vec![200, 302],
+                timeout_ms: 120_000,
+            },
+            success: false,
+            detail: "connect to readiness address 127.0.0.1:18082: connection refused".to_owned(),
+        }];
+        let services = vec![
+            "user:abird:abird-zulip.service"
+                .parse::<ServiceTarget>()
+                .unwrap(),
+        ];
+
+        let error = fail_activation_after_readiness::<()>(
+            &checks,
+            &services,
+            &Systemctl::new(systemctl_path),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            format!("{error:#}"),
+            "resource readiness failed after activation: connect to readiness address \
+             127.0.0.1:18082: connection refused; services were stopped"
+        );
+        assert!(
+            fs::read_to_string(calls)
+                .unwrap()
+                .contains("--user --machine abird@ stop -- abird-zulip.service")
+        );
+    }
+
+    #[test]
+    fn activation_failure_reports_probe_and_stop_failures_together() {
+        let temp = tempfile::tempdir().unwrap();
+        let systemctl_path = temp.path().join("systemctl");
+        fs::write(&systemctl_path, "#!/bin/sh\nexit 19\n").unwrap();
+        fs::set_permissions(&systemctl_path, fs::Permissions::from_mode(0o700)).unwrap();
+        let checks = vec![ReadinessResult {
+            check: ReadinessCheck::Path {
+                path: PathBuf::from("/run/ready"),
+                requirement: crate::readiness::PathRequirement::Exists,
+            },
+            success: false,
+            detail: "readiness path /run/ready is absent".to_owned(),
+        }];
+        let services = vec![
+            "user:abird:abird-zulip.service"
+                .parse::<ServiceTarget>()
+                .unwrap(),
+        ];
+
+        let error = fail_activation_after_readiness::<()>(
+            &checks,
+            &services,
+            &Systemctl::new(systemctl_path),
+        )
+        .unwrap_err();
+        let error = format!("{error:#}");
+
+        assert!(error.contains("readiness path /run/ready is absent"));
+        assert!(error.contains("stopping services also failed"));
+        assert!(
+            error.contains("stop user:abird:abird-zulip.service failed with status Some(19)"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn hold_explicitly_stops_owned_runtime_units() {
+        let temp = tempfile::tempdir().unwrap();
+        let calls = temp.path().join("calls");
+        let systemctl_path = temp.path().join("systemctl");
+        fs::write(
+            &systemctl_path,
+            format!(
+                r#"#!/bin/sh
+printf '%s\n' "$*" >> '{}'
+case "$*" in
+  *'show --property=ConsistsOf --value -- abird-zulip.service')
+    printf '%s\n' 'abird-zulip-zulip-container.service abird-zulip-network-network.service'
+    ;;
+esac
+"#,
+                calls.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&systemctl_path, fs::Permissions::from_mode(0o700)).unwrap();
+        let hold = HoldRecord {
+            schema_version: 1,
+            resource: "service:abird-zulip".to_owned(),
+            transaction_id: "move-1--item-001".to_owned(),
+            declaration_id: None,
+            services: vec![
+                "user:abird:abird-zulip.service"
+                    .parse::<ServiceTarget>()
+                    .unwrap(),
+            ],
+            instance_gate: None,
+            projection: None,
+            acquired_at: crate::state::Timestamp {
+                seconds: 1,
+                nanoseconds: 0,
+            },
+        };
+
+        enforce_hold(&hold, &Systemctl::new(systemctl_path)).unwrap();
+
+        let calls = fs::read_to_string(calls).unwrap();
+        assert!(calls.contains(
+            "--user --machine abird@ stop -- abird-zulip.service \
+             abird-zulip-zulip-container.service abird-zulip-network-network.service"
+        ));
+    }
+
+    #[test]
     fn parses_global_configuration_after_subcommands() {
         let cli = Cli::try_parse_from([
             "abird-host-agent",
@@ -4237,6 +4758,7 @@ mod tests {
             &jobs,
             &receipts,
             &systemctl,
+            false,
         )
         .unwrap();
         assert!(store.status(&held.id).unwrap().held);
@@ -4279,6 +4801,7 @@ mod tests {
             &jobs,
             &receipts,
             &systemctl,
+            false,
         )
         .unwrap();
         assert_eq!(receipts.read(&active.id).unwrap().unwrap().desired, active);
@@ -4302,6 +4825,7 @@ mod tests {
             &jobs,
             &receipts,
             &systemctl,
+            false,
         )
         .unwrap();
 
@@ -4313,6 +4837,7 @@ mod tests {
             &jobs,
             &receipts,
             &systemctl,
+            false,
         )
         .unwrap();
 
@@ -4350,6 +4875,7 @@ mod tests {
             &jobs,
             &receipts,
             &systemctl,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -4357,6 +4883,537 @@ mod tests {
                 .unwrap()
                 .attempts,
             1
+        );
+    }
+
+    #[test]
+    fn desired_preflight_defers_held_service_activation_spec_drift_without_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_manifest = write_reconcile_resource_manifest(temp.path());
+        let systemctl = fake_systemctl(temp.path());
+        let state_root = temp.path().join("state");
+        let store = StateStore::new(&state_root);
+        let jobs = JobStore::new(&state_root);
+        let receipts = DesiredResourceStateReceiptStore::new(&state_root);
+        let held = desired_resource(1, DesiredResourceStateKind::Held, Some("target"));
+        execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), held.clone()),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            false,
+        )
+        .unwrap();
+
+        let active = desired_resource(2, DesiredResourceStateKind::Active, Some("target"));
+        let original_resources = ResourceManifest::load(&resource_manifest).unwrap();
+        let old_spec = desired_activation_job_spec(
+            &active,
+            original_resources.resource("service:zulip").unwrap(),
+        )
+        .unwrap();
+        jobs.submit(old_spec.clone()).unwrap();
+        fs::write(
+            &resource_manifest,
+            serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "resources": [{
+                    "id": "service:zulip",
+                    "services": [{"scope": "system", "unit": "zulip.service"}],
+                    "readiness": [{
+                        "type": "http",
+                        "address": "127.0.0.1:18082",
+                        "host": "zulip.abird.ai",
+                        "path": "/",
+                        "expected_statuses": [200, 302],
+                        "timeout_ms": 120000
+                    }]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let active_manifest = write_desired_manifest(temp.path(), active.clone());
+        let error = execute_desired_resource_states(
+            &active_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            true,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("only terminal failed jobs may defer"));
+        jobs.run_job(&old_spec.job_id, |_| {
+            Ok(JobExecution::failed(
+                json!({"ready": false}),
+                "old readiness contract failed",
+            ))
+        })
+        .unwrap();
+        let output = execute_desired_resource_states(
+            &active_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(output.value["result"]["deferred_held"], 1);
+        assert_eq!(
+            output.value["result"]["resources"][0]["outcome"],
+            "deferred_held"
+        );
+        assert_eq!(
+            store
+                .status(&held.id)
+                .unwrap()
+                .hold
+                .unwrap()
+                .projection
+                .unwrap()
+                .generation,
+            1
+        );
+        assert_eq!(receipts.read(&held.id).unwrap().unwrap().desired, held);
+        assert_eq!(jobs.status(&old_spec.job_id).unwrap().attempts, 1);
+
+        let error = execute_desired_resource_states(
+            &active_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            false,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("requires deferred-held convergence"));
+
+        fs::write(
+            temp.path().join("systemctl"),
+            "#!/bin/sh\ncase \"$*\" in *is-active*) exit 3;; esac\nexit 0\n",
+        )
+        .unwrap();
+        let output = execute_desired_resource_states_with_mode(
+            &active_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            false,
+            false,
+            DesiredResourceConvergenceMode::DeferHeld,
+        )
+        .unwrap();
+        assert_eq!(
+            output.value["result"]["resources"][0]["outcome"],
+            "deferred_held"
+        );
+        assert_eq!(
+            store
+                .status(&active.id)
+                .unwrap()
+                .hold
+                .unwrap()
+                .projection
+                .unwrap()
+                .generation,
+            2
+        );
+        assert_eq!(receipts.read(&active.id).unwrap().unwrap().desired, held);
+        let deferral = DesiredResourceStateDeferralStore::new(&state_root)
+            .read(&active.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(deferral.desired, active);
+        assert_eq!(
+            deferral.reason,
+            DesiredResourceStateDeferralReason::ActivationJobSpecificationConflict
+        );
+        assert_eq!(jobs.status(&old_spec.job_id).unwrap().attempts, 1);
+    }
+
+    #[test]
+    fn deployment_convergence_defers_failed_service_activation_and_keeps_strict_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_manifest = write_reconcile_resource_manifest(temp.path());
+        let systemctl_path = temp.path().join("systemctl");
+        fs::write(
+            &systemctl_path,
+            "#!/bin/sh\ncase \"$*\" in start\\ --\\ *|*\" start -- \"*) exit 19;; *is-active*) exit 3;; esac\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&systemctl_path, fs::Permissions::from_mode(0o700)).unwrap();
+        let systemctl = Systemctl::new(systemctl_path);
+        let state_root = temp.path().join("state");
+        let store = StateStore::new(&state_root);
+        let jobs = JobStore::new(&state_root);
+        let receipts = DesiredResourceStateReceiptStore::new(&state_root);
+        let held = desired_resource(1, DesiredResourceStateKind::Held, Some("target"));
+        execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), held.clone()),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            false,
+        )
+        .unwrap();
+
+        let active = desired_resource(2, DesiredResourceStateKind::Active, Some("target"));
+        let output = execute_desired_resource_states_with_mode(
+            &write_desired_manifest(temp.path(), active.clone()),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            false,
+            false,
+            DesiredResourceConvergenceMode::DeferHeld,
+        )
+        .unwrap();
+
+        assert_eq!(
+            output.value["result"]["resources"][0]["outcome"],
+            "deferred_held"
+        );
+        assert!(store.status(&active.id).unwrap().held);
+        assert_eq!(receipts.read(&active.id).unwrap().unwrap().desired, held);
+        let deferrals = DesiredResourceStateDeferralStore::new(&state_root);
+        let deferral = deferrals.read(&active.id).unwrap().unwrap();
+        assert_eq!(
+            deferral.reason,
+            DesiredResourceStateDeferralReason::ActivationFailed
+        );
+        assert!(deferral.detail.contains("canonical activation job"));
+        assert_eq!(
+            jobs.status(active.activation_job_id.as_deref().unwrap())
+                .unwrap()
+                .status,
+            JobStatus::Failed
+        );
+
+        let status =
+            execute_agent_status(&store, &jobs, &deferrals, &systemctl, &resource_manifest)
+                .unwrap();
+        assert_eq!(status.value["result"]["deferred_resources"]["count"], 1);
+        assert_eq!(
+            status.value["result"]["deferred_resources"]["resources"][0]["isolated"],
+            true
+        );
+
+        fs::write(
+            temp.path().join("systemctl"),
+            "#!/bin/sh\ncase \"$*\" in *is-active*) exit 3;; esac\nexit 0\n",
+        )
+        .unwrap();
+        let mut retry = desired_resource(3, DesiredResourceStateKind::Active, Some("target"));
+        retry.activation_job_id =
+            Some("move-1--item-001-cutover-activate-target-attempt-1".to_owned());
+        execute_desired_resource_states_with_mode(
+            &write_desired_manifest(temp.path(), retry.clone()),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            false,
+            false,
+            DesiredResourceConvergenceMode::DeferHeld,
+        )
+        .unwrap();
+        assert!(!store.status(&retry.id).unwrap().held);
+        assert_eq!(receipts.read(&retry.id).unwrap().unwrap().desired, retry);
+        assert!(deferrals.read(&active.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn desired_reconcile_clears_deferral_absent_from_authoritative_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_manifest = write_reconcile_resource_manifest(temp.path());
+        let systemctl_path = temp.path().join("systemctl");
+        fs::write(
+            &systemctl_path,
+            "#!/bin/sh\ncase \"$*\" in start\\ --\\ *|*\" start -- \"*) exit 19;; *is-active*) exit 3;; esac\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&systemctl_path, fs::Permissions::from_mode(0o700)).unwrap();
+        let systemctl = Systemctl::new(systemctl_path);
+        let state_root = temp.path().join("state");
+        let store = StateStore::new(&state_root);
+        let jobs = JobStore::new(&state_root);
+        let receipts = DesiredResourceStateReceiptStore::new(&state_root);
+        let held = desired_resource(1, DesiredResourceStateKind::Held, Some("target"));
+        execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), held),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            false,
+        )
+        .unwrap();
+        let active = desired_resource(2, DesiredResourceStateKind::Active, Some("target"));
+        let active_manifest = write_desired_manifest(temp.path(), active.clone());
+        execute_desired_resource_states_with_mode(
+            &active_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            false,
+            false,
+            DesiredResourceConvergenceMode::DeferHeld,
+        )
+        .unwrap();
+        let deferrals = DesiredResourceStateDeferralStore::new(&state_root);
+        assert!(deferrals.read(&active.id).unwrap().is_some());
+
+        let preview = execute_desired_resource_states_with_mode(
+            &active_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            true,
+            true,
+            DesiredResourceConvergenceMode::DeferHeld,
+        )
+        .unwrap();
+        assert_eq!(preview.value["result"]["count"], 1);
+
+        let empty_manifest = temp.path().join("empty-desired.json");
+        fs::write(
+            &empty_manifest,
+            serde_json::to_vec(&DesiredResourceStateManifest {
+                schema_version: 1,
+                resources: Vec::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let error = execute_desired_resource_states_with_mode(
+            &empty_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            true,
+            true,
+            DesiredResourceConvergenceMode::DeferHeld,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("omits durable projected resources"));
+        assert!(store.status(&active.id).unwrap().held);
+        assert!(deferrals.read(&active.id).unwrap().is_some());
+
+        store
+            .release_projected(
+                &active.id,
+                active.transaction_id.as_deref().unwrap(),
+                &active.hold_declaration_id().unwrap(),
+                desired_projection_evidence(&active),
+            )
+            .unwrap();
+        let error = execute_desired_resource_states_with_mode(
+            &empty_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            true,
+            true,
+            DesiredResourceConvergenceMode::DeferHeld,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("omits durable projected resources"));
+        assert!(!store.status(&active.id).unwrap().held);
+        assert!(deferrals.read(&active.id).unwrap().is_some());
+
+        let preview = execute_desired_resource_states_with_mode(
+            &empty_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            true,
+            false,
+            DesiredResourceConvergenceMode::DeferHeld,
+        )
+        .unwrap();
+        assert_eq!(preview.value["result"]["count"], 0);
+        assert!(deferrals.read(&active.id).unwrap().is_some());
+
+        let output = execute_desired_resource_states_with_mode(
+            &empty_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            false,
+            false,
+            DesiredResourceConvergenceMode::DeferHeld,
+        )
+        .unwrap();
+
+        assert_eq!(output.value["result"]["count"], 0);
+        assert_eq!(output.value["result"]["cleared_deferrals"]["count"], 1);
+        assert_eq!(
+            output.value["result"]["cleared_deferrals"]["resources"][0],
+            active.id
+        );
+        assert!(deferrals.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn desired_preflight_never_defers_host_scoped_activation_conflicts() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_manifest = temp.path().join("resources.json");
+        let write_resources = |timeout_ms: u64| {
+            fs::write(
+                &resource_manifest,
+                serde_json::to_vec(&json!({
+                    "schema_version": 1,
+                    "resources": [{
+                        "id": "host:test",
+                        "services": [{"scope": "system", "unit": "managed.target"}],
+                        "readiness": [{
+                            "type": "http",
+                            "address": "127.0.0.1:18082",
+                            "host": "host.test",
+                            "path": "/",
+                            "expected_statuses": [200],
+                            "timeout_ms": timeout_ms
+                        }]
+                    }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        write_resources(10_000);
+        let state_root = temp.path().join("state");
+        let store = StateStore::new(&state_root);
+        let jobs = JobStore::new(&state_root);
+        let receipts = DesiredResourceStateReceiptStore::new(&state_root);
+        let mut held = desired_resource(1, DesiredResourceStateKind::Held, Some("target"));
+        held.id = "host:test".to_owned();
+        store
+            .acquire_projected_and_apply(
+                &held.id,
+                held.transaction_id.as_deref().unwrap(),
+                &held.hold_declaration_id().unwrap(),
+                vec![ServiceTarget::system("managed.target")],
+                desired_projection_evidence(&held),
+                |_| Ok(()),
+            )
+            .unwrap();
+        receipts.record(&held).unwrap();
+        let mut active = desired_resource(2, DesiredResourceStateKind::Active, Some("target"));
+        active.id = "host:test".to_owned();
+        let original = ResourceManifest::load(&resource_manifest).unwrap();
+        let old_spec =
+            desired_activation_job_spec(&active, original.resource("host:test").unwrap()).unwrap();
+        jobs.submit(old_spec).unwrap();
+        write_resources(120_000);
+
+        let error = execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), active),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &fake_systemctl(temp.path()),
+            true,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("host-scoped activation job"));
+        assert_eq!(
+            store
+                .status("host:test")
+                .unwrap()
+                .hold
+                .unwrap()
+                .projection
+                .unwrap()
+                .generation,
+            1
+        );
+    }
+
+    #[test]
+    fn desired_preflight_rejects_stale_generation_from_durable_hold() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_manifest = write_reconcile_resource_manifest(temp.path());
+        let systemctl = fake_systemctl(temp.path());
+        let state_root = temp.path().join("state");
+        let store = StateStore::new(&state_root);
+        let jobs = JobStore::new(&state_root);
+        let receipts = DesiredResourceStateReceiptStore::new(&state_root);
+        let prepared = desired_resource(2, DesiredResourceStateKind::Held, Some("target"));
+        execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), prepared.clone()),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            false,
+        )
+        .unwrap();
+        let cutover = desired_resource(3, DesiredResourceStateKind::Active, Some("target"));
+        store
+            .acquire_projected_and_apply(
+                &cutover.id,
+                cutover.transaction_id.as_deref().unwrap(),
+                &cutover.hold_declaration_id().unwrap(),
+                vec![ServiceTarget::system("zulip.service")],
+                desired_projection_evidence(&cutover),
+                |_| Ok(()),
+            )
+            .unwrap();
+
+        let error = execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), prepared),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+            true,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("generation regressed from 3 to 2"));
+        assert_eq!(
+            store
+                .status("service:zulip")
+                .unwrap()
+                .hold
+                .unwrap()
+                .projection
+                .unwrap()
+                .generation,
+            3
         );
     }
 
@@ -4413,6 +5470,7 @@ mod tests {
             &jobs,
             &receipts,
             &systemctl,
+            false,
         )
         .unwrap();
 
@@ -4426,6 +5484,7 @@ mod tests {
             &jobs,
             &receipts,
             &systemctl,
+            false,
         )
         .unwrap();
 
@@ -4464,6 +5523,56 @@ mod tests {
     }
 
     #[test]
+    fn projected_release_preserves_exact_hold_evidence_without_activation() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_root = temp.path().join("state");
+        let store = StateStore::new(&state_root);
+        let desired = desired_resource(3, DesiredResourceStateKind::Unheld, Some("target"));
+        let declaration_id = desired.hold_declaration_id().unwrap();
+        let transaction_id = desired.transaction_id.as_deref().unwrap();
+        let expected = desired_projection_evidence(&desired);
+        store
+            .acquire_projected_and_apply(
+                &desired.id,
+                transaction_id,
+                &declaration_id,
+                vec![ServiceTarget::system("zulip.service")],
+                expected.clone(),
+                |_| Ok(()),
+            )
+            .unwrap();
+
+        let spec = desired_release_job_spec(&desired).unwrap();
+        assert_eq!(
+            spec.projection
+                .as_ref()
+                .unwrap()
+                .activation_requirement_digest,
+            desired.activation_requirement_digest
+        );
+        let execution =
+            execute_job_spec(&spec, &store, &Systemctl::new("/does/not/exist")).unwrap();
+
+        assert!(execution.error.is_none());
+        assert!(!store.status(&desired.id).unwrap().held);
+        let release = store
+            .declaration_release(&desired.id, &declaration_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(release.projection, Some(expected));
+        assert_eq!(
+            execution.result.pointer("/release/services_started"),
+            Some(&json!(false))
+        );
+        assert!(
+            !store
+                .activation_authorization_path(&desired.id)
+                .try_exists()
+                .unwrap()
+        );
+    }
+
+    #[test]
     fn desired_reconcile_adopts_the_controller_activation_job() {
         let temp = tempfile::tempdir().unwrap();
         let resource_manifest = write_reconcile_resource_manifest(temp.path());
@@ -4481,6 +5590,7 @@ mod tests {
             &jobs,
             &receipts,
             &systemctl,
+            false,
         )
         .unwrap();
 
@@ -4504,6 +5614,7 @@ mod tests {
             &jobs,
             &receipts,
             &systemctl,
+            false,
         )
         .unwrap();
         assert_eq!(receipts.read(&active.id).unwrap().unwrap().desired, active);
@@ -4528,6 +5639,7 @@ mod tests {
             &jobs,
             &receipts,
             &systemctl,
+            false,
         )
         .unwrap();
 
@@ -4541,6 +5653,7 @@ mod tests {
                 &jobs,
                 &receipts,
                 &systemctl,
+                false,
             )
             .is_err()
         );
@@ -4573,6 +5686,7 @@ mod tests {
                 &jobs,
                 &receipts,
                 &systemctl,
+                false,
             )
             .is_err()
         );
@@ -5707,6 +6821,7 @@ mod tests {
             &systemctl,
             &manifest_path,
             |_| Ok(()),
+            |_| {},
         )
         .unwrap_err();
         assert!(error.to_string().contains("immutable host declaration"));
@@ -5800,18 +6915,30 @@ mod tests {
         let store = StateStore::new(&state_dir);
         let systemctl = Systemctl::new("/does/not/exist");
 
-        let error =
-            execute_job_spec_with_progress(&spec, &store, &systemctl, &manifest_path, |_| Ok(()))
-                .unwrap_err();
+        let error = execute_job_spec_with_progress(
+            &spec,
+            &store,
+            &systemctl,
+            &manifest_path,
+            |_| Ok(()),
+            |_| {},
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("requires resource"));
         assert!(data_path.join("database").exists());
 
         store
             .acquire_and_apply("service:zulip", "wipe-owner", Vec::new(), |_| Ok(()))
             .unwrap();
-        let result =
-            execute_job_spec_with_progress(&spec, &store, &systemctl, &manifest_path, |_| Ok(()))
-                .unwrap();
+        let result = execute_job_spec_with_progress(
+            &spec,
+            &store,
+            &systemctl,
+            &manifest_path,
+            |_| Ok(()),
+            |_| {},
+        )
+        .unwrap();
 
         assert!(result.result["wipe"]["verified_empty"].as_bool().unwrap());
         assert!(!data_path.join("database").exists());
