@@ -137,6 +137,29 @@ live migration records:
 The generated Cargo test derivation also forces `doCheck = true`, independently
 of a final package build that deliberately disables its own check phase.
 
+## Nix-Native Service Move Follow-up
+
+The shared control plane now accepts high-level Nix move declarations and
+derives the exact phase projection, service placement admission contract,
+affected hosts, and runtime intent from one pure evaluator. Stable placement
+uses schema-2 role assignments; schema-1 JSON placement and phase projections
+remain compatibility inputs for existing transactions only.
+
+Host-manager writes and executes only evaluated Nix move intent. Close uses an
+adoption deployment that retains the recovery lease followed by a clean stable
+deployment; only successful cleanup may release the inactive-side lease and
+archive the runtime journal. Every host installs the placement admission
+contract, and pre-switch rejects a stateful role change without exactly one
+matching adoption declaration before the existing desired-resource proof runs.
+
+Pvl retains `servicePlacementFile = null`, `serviceMoveDirectory = null`, and
+`phaseProjectionDirectory = null` by default. It has no service migration
+capsule or multi-role placement topology, so the evaluated move and admission
+contracts are empty and the feature remains inert. Enabling move authoring later
+requires Pvl-owned schema-2 placement state, an explicit move directory, and a
+service capsule with at least two eligible roles; Abird Zulip placement,
+closeout, and plan state are not portable.
+
 ## Ownership Rules
 
 - Holds are persistent host-agent state. Disconnects and elapsed time never

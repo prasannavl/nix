@@ -17,6 +17,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 - `.agents/docs/design-patterns/dns.md`: Durable DNS change-management rules for
   the repo Cloudflare stack.
+- `.agents/docs/design-patterns/nix-native-service-moves.md`: Canonical
+  Nix-authored service-move, two-stage closeout, admission, and compatibility
+  boundaries.
 - `.agents/docs/design-patterns/external-service-secret-placement.md`:
   Stack-scoped external-provider secret placement under
   `data/secrets/<stack>/ext/<provider>`.
@@ -482,8 +485,12 @@ Use this index as the canonical map for `.agents/docs/**`.
   projection-aware host control, Quadlet readiness, complete per-commit
   dispositions, the provider-transition test correction, and final parity.
 - `.agents/docs/notes/tooling/abird-post-156-port-2026-08.md`: Records the
-  August 28 audit of all 64 commits after `15609f9e`, shared host-manager and
+  August 28 audit of all 65 commits after `15609f9e`, shared host-manager and
   host-agent lifecycle/admission changes, Quadlet and Nixbot safety, complete
+  per-commit dispositions, repository-owned exclusions, and final parity.
+- `.agents/docs/notes/tooling/abird-post-8ed-port-2026-08.md`: Records the
+  August 28 audit of all eight commits after `8ed010e7`, Nix-native service-move
+  evaluation and admission, host-manager lifecycle integration, complete
   per-commit dispositions, repository-owned exclusions, and final parity.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,

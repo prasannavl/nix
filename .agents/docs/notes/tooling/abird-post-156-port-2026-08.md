@@ -6,6 +6,7 @@
   `master` worktree.
 - Previous shared Abird tip: `15609f9e1411b35fe922365deff086b907eb716a`.
 - Frozen and fetched Abird tip: `8ed010e74e12ddfbf482e4e789f39117b761c092`.
+- Final Pvl port tip: `8760e8553ca0ce0caca24160db1a2662f9c1fe15`.
 - Audit window: `15609f9e..8ed010e7`, 65 commits in source order.
 - Landing surface: the primary `/home/pvl/src/nix` worktree on `master`.
 
