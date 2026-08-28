@@ -481,16 +481,23 @@ Use this index as the canonical map for `.agents/docs/**`.
   August 26 audit of all 11 commits after `17986f2a`, Nixbot routing,
   projection-aware host control, Quadlet readiness, complete per-commit
   dispositions, the provider-transition test correction, and final parity.
+- `.agents/docs/notes/tooling/abird-post-156-port-2026-08.md`: Records the
+  August 28 audit of all 64 commits after `15609f9e`, shared host-manager and
+  host-agent lifecycle/admission changes, Quadlet and Nixbot safety, complete
+  per-commit dispositions, repository-owned exclusions, and final parity.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
 - `.agents/docs/notes/tooling/host-manager-operations-2026-07.md`: Records the
   superseded Bash host-manager remote operation surface, nixbot SSH inventory
   routing, mutation safety gates, and package-owned local Pvl policy.
+- `.agents/docs/notes/tooling/abird-host-manager-output-ux-2026-08.md`: Records
+  the shared structured, stream, and passthrough output contracts, semantic
+  human views, nested progress, and TTY-only color behavior.
 - `.agents/docs/notes/tooling/native-host-control-plane-2026-08.md`: Records the
   native Rust manager/agent ownership split, retired compatibility surfaces,
-  durable hold boundary, and narrow Pvl workspace, manifest, stack, and host
-  generation adaptations.
+  durable hold boundary, lifecycle/retry/admission follow-ups, and narrow Pvl
+  workspace, manifest, stack, and host generation adaptations.
 - `.agents/docs/notes/tooling/cargo-workspace-2026-04.md`: Records the root Rust
   workspace, filtered Crane source and dependency boundaries, derivation-backed
   vendoring, and no-IFD external-source contract.

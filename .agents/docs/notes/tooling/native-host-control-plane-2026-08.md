@@ -89,6 +89,54 @@ Projected reconciliation also keeps routing and recovery authority explicit:
   ordering, so `--ci-first` cannot activate a controller ahead of its projection
   hosts.
 
+## Post-156 Lifecycle and Admission Follow-up
+
+The Abird series through `f0bc59bf` extends the same repository-neutral control
+plane without importing Abird placements, projections, model catalogs, plans, or
+live migration records:
+
+- public migration decisions are entity-owned `move`, `prepare`, `run`, and
+  `close` commands; hidden digest-bound reconciliation remains deployment-only;
+- an optional canonical service-placement document applies role overrides before
+  phase projections and records exact deployed closeouts. Pvl passes an empty
+  document by default, so the evaluator, flake output, and controller closeout
+  machinery remain inert until Pvl deliberately owns placement state;
+- `--local` is an explicit local journal and publication authority, distinct
+  from the ad hoc `--local-run` state-directory shortcut. Local authority never
+  fetches, pushes, or invokes the controller reconciler;
+- every command declares a structured, stream, or passthrough output contract.
+  Human presentation, nested progress, and TTY-only color never alter JSON,
+  JSONL, redirected output, SSH, or exec bytes;
+- filesystem manifests tolerate a non-root child disappearing during a live
+  walk, while strict transfer convergence still requires a complete exact
+  source/destination match after a bounded incremental retry;
+- repository validation isolates every Git child process from inherited Git
+  environment variables and evaluates affected hosts with bounded parallelism
+  and deterministic failure ordering;
+- native runtime child units share the parent resource's exact hold and
+  activation gates. Hold enforcement stops the public unit and its `ConsistsOf=`
+  closure in one transaction, while readiness failures retain the original probe
+  diagnostics as well as any cleanup failure;
+- lifecycle retries allocate a new deterministic child-job epoch before
+  rendering the next projection. Failed run work may be retired only after its
+  immutable job is proven terminal, and fresh closeouts reconcile only exact
+  digest, decision, endpoint, and terminal-phase evidence;
+- desired-state preflight validates projection lineage, hold generations,
+  release evidence, and immutable activation jobs before a forward switch or
+  rollback mutates the current system. Exactly held non-host resources may be
+  recorded as safely deferred only after isolation is proven; successful later
+  reconciliation prunes obsolete deferral evidence; and
+- Nixbot distinguishes a pre-switch rejection from an activation failure, skips
+  rollback when the current generation was never changed, and refuses an
+  automatic snapshot rollback when the running generation cannot prove
+  projection admission. Rollback authority must include both projection
+  manifests and name every durable projected hold or deferral; omission is not
+  accepted as closeout evidence. Ordinary forward reconciliation retains the
+  explicit empty-authority closeout path that prunes obsolete deferrals.
+
+The generated Cargo test derivation also forces `doCheck = true`, independently
+of a final package build that deliberately disables its own check phase.
+
 ## Ownership Rules
 
 - Holds are persistent host-agent state. Disconnects and elapsed time never
