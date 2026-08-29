@@ -354,8 +354,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   Records delete-policy stop cleanup as a successful stop when direct cleanup
   removes project containers.
 - `.agents/docs/notes/services/podman-compose-ready-repair-2026-07.md`: Records
-  ready-state verification repair, dependency-level start fanout, and local
-  image tarball support for generated Podman Compose instances.
+  ready-state verification repair, dependency-level start fanout, local image
+  tarball support, and ready-target convergence before user-unit health sampling
+  for generated Podman Compose instances.
 - `.agents/docs/notes/services/podman-data-dir-ownership-2026-04.md`: Records
   the standard `dirs`/container-scope ownership model for service-local Podman
   data directories plus absolute `dirs` entries for external data roots.
@@ -492,6 +493,14 @@ Use this index as the canonical map for `.agents/docs/**`.
   August 28 audit of all eight commits after `8ed010e7`, Nix-native service-move
   evaluation and admission, host-manager lifecycle integration, complete
   per-commit dispositions, repository-owned exclusions, and final parity.
+- `.agents/docs/notes/tooling/abird-post-3fc-port-2026-08.md`: Records the
+  August 29 audit of all 42 commits after `3fcaea2c`, the already-exact
+  host-manager `jq` test dependency, Abird product-owned model-directed-goal
+  exclusions, complete per-commit dispositions, and final byte parity.
+- `.agents/docs/notes/tooling/abird-post-22e-port-2026-08.md`: Records the
+  August 29 audit of all four commits after `22e85790`, exact Quadlet
+  ready-target and Nixbot health-ordering convergence, Gap3 and product-plan
+  exclusions, complete per-commit dispositions, and final byte parity.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
