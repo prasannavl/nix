@@ -489,7 +489,7 @@ expected_compose_runtime() {
 }
 
 expected_quadlet_runtime() {
-	local owner excluded_units encoded entry uid runtime_dir bus_path home service_name unit verify_unit probe_pid runtime_units runtime_unit
+	local owner excluded_units encoded entry uid runtime_dir bus_path home service_name unit ready_unit probe_pid runtime_units runtime_unit
 	local -a probe_pids=()
 	owner="$1"
 	shift
@@ -501,7 +501,7 @@ expected_quadlet_runtime() {
 		uid="$(jq -r '.uid' <<<"$entry")"
 		service_name="$(jq -r '.serviceName' <<<"$entry")"
 		unit="$(jq -r '.unit' <<<"$entry")"
-		verify_unit="${service_name}-verify.service"
+		ready_unit="$(jq -r '.readyUnit // empty' <<<"$entry")"
 		runtime_dir="/run/user/$uid"
 		bus_path="$runtime_dir/bus"
 		home="$(getent passwd "$owner" | cut -d: -f6)"
@@ -509,11 +509,13 @@ expected_quadlet_runtime() {
 		require_runtime_dir "$runtime_dir"
 		require_user_bus "$bus_path"
 		(
-			if ! run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+			if [ -z "$ready_unit" ]; then
+				printf '%s\n' "missing-ready-unit service=$service_name"
+			elif ! run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
 				env HOME="$home" systemctl --user is-active --quiet "$unit"; then
 				printf '%s\n' "inactive-unit service=$service_name unit=$unit"
 			elif ! run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
-				env HOME="$home" systemctl --user start "$verify_unit" >/dev/null 2>&1; then
+				env HOME="$home" systemctl --user start "$ready_unit" >/dev/null 2>&1; then
 				printf '%s\n' "probe-failed service=$service_name"
 			elif ! runtime_units="$(quadlet_runtime_units "$owner" "$uid" "$runtime_dir" "$bus_path" "$home" "$service_name" "$unit")"; then
 				printf '%s\n' "graph-query-failed service=$service_name"

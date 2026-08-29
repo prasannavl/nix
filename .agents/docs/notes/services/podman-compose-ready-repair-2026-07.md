@@ -42,3 +42,19 @@ Quadlet is opt-in and supports only the strict, single-service conversion
 surface documented in the Podman Quadlet backend note. Existing Compose
 instances are not migrated automatically, and provider changes require a
 proven-clean handoff.
+
+## Converge readiness before sampling health
+
+The 2026-08-29 `gap3-rivendell` deploy exposed a health-ordering race after an
+intentional cold Quadlet recreation. Zulip's first verifier exhausted its
+service-owned budget. Nixbot sampled the failed verifier and inactive ready
+target, then its expected-runtime query retried the verifier successfully. The
+health result still reported the earlier sample, and starting the verifier
+directly did not activate the declared ready target.
+
+Expected-runtime convergence must therefore happen before expected-unit and
+failed-unit sampling. For a declared Quadlet service it starts the registry's
+explicit `readyUnit`, not a derived verifier name, after confirming the owning
+main unit is active. This records successful convergence at the lifecycle
+target. Held main units remain filtered before this operation, and a missing
+`readyUnit` fails closed instead of guessing a unit name.

@@ -574,6 +574,7 @@ class PodmanComposeCtlTest(unittest.TestCase):
                             "user": owner,
                             "uid": str(os.getuid()),
                             "unit": "native.service",
+                            "readyUnit": "native-ready.target",
                             "serviceName": "native",
                             "expectedContainers": [
                                 {"name": "native-container", "labels": expected_labels}
@@ -800,6 +801,7 @@ class PodmanComposeCtlTest(unittest.TestCase):
                             "user": owner,
                             "uid": str(os.getuid()),
                             "unit": "native.service",
+                            "readyUnit": "native-ready.target",
                             "serviceName": "native",
                             "autoStart": True,
                             "state": "running",
@@ -824,7 +826,7 @@ class PodmanComposeCtlTest(unittest.TestCase):
                       shift 4
                       case "$*" in
                         *' is-active --quiet native.service') return 0 ;;
-                        *' start native-verify.service') return 0 ;;
+                        *' start native-ready.target') return 0 ;;
                         *' list-dependencies '*)
                           printf '%s\n' \
                             native-stage.service \

@@ -4824,6 +4824,73 @@ EOF_SCRIPT
         )
         self.assertNotIn("FAILED declared managed user units", result.stderr)
 
+    def test_remote_health_check_converges_runtime_before_sampling_unit_state(self):
+        marker = self.work_dir / "runtime-converged"
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() {
+              case "$*" in
+                "is-active --quiet user@1000.service") return 0 ;;
+              esac
+              return 0
+            }
+            id() {
+              case "$*" in
+                "-u abird"|"-g abird") printf '1000\n'; return 0 ;;
+              esac
+              command id "$@"
+            }
+            getent() {
+              case "$*" in
+                "passwd abird") printf 'abird:x:1000:1000::/home/abird:/bin/bash\n'; return 0 ;;
+              esac
+              command getent "$@"
+            }
+            _remote_managed_user_names() { printf 'abird\n'; }
+            _remote_health_check_held_user_units() { :; }
+            _remote_health_check_deferred_resources() { :; }
+            _remote_health_check_expected_user_units() { printf 'abird-zulip-ready.target\n'; }
+            _remote_health_check_expected_runtime() {
+              touch "$TEST_RUNTIME_CONVERGED"
+            }
+            _remote_health_check_podman_unhealthy_containers() { :; }
+            _remote_health_check_podman_starting_containers() { :; }
+            _remote_health_check_rootless_mutations() { :; }
+            setpriv() {
+              case "$*" in
+                *"systemctl --user show"*)
+                  if [ -e "$TEST_RUNTIME_CONVERGED" ]; then
+                    printf '%s\n' \
+                      'LoadState=loaded' \
+                      'ActiveState=active' \
+                      'SubState=active' \
+                      'NeedDaemonReload=no'
+                  else
+                    printf '%s\n' \
+                      'LoadState=loaded' \
+                      'ActiveState=inactive' \
+                      'SubState=dead' \
+                      'NeedDaemonReload=no'
+                  fi
+                  ;;
+                *"systemctl --user list-units --failed"*)
+                  [ -e "$TEST_RUNTIME_CONVERGED" ] || \
+                    printf 'abird-zulip-verify.service loaded failed failed probe\n'
+                  ;;
+              esac
+              return 0
+            }
+
+            _remote_post_switch_user_health_check_once
+            """,
+            env={"TEST_RUNTIME_CONVERGED": str(marker)},
+        )
+
+        self.assertTrue(marker.is_file())
+        self.assertIn("[health-check] ok", result.stderr)
+        self.assertNotIn("FAILED", result.stderr)
+
     def test_remote_health_check_rejects_inactive_unit_without_own_start_job(self):
         result = self.run_script(
             """

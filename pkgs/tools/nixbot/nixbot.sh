@@ -10763,6 +10763,31 @@ ${system_podman_starting_output}"
 				env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
 				systemctl --user list-jobs --no-legend --plain 2>/dev/null || true
 		)"
+		# Quadlet runtime verification starts the declared ready target. Run it
+		# before sampling unit state so a successful retry cannot leave this
+		# health pass reporting the failed probe state that it just repaired.
+		expected_runtime_status=0
+		expected_runtime_output="$(_remote_health_check_expected_runtime \
+			"${user}" "${held_units}")" || expected_runtime_status="$?"
+		if [ "${expected_runtime_status}" -ne 0 ]; then
+			unhealthy_output="${unhealthy_output}${unhealthy_output:+
+}[user ${user} expected compose runtime]
+query-failed user=${user}"
+		elif [ -n "${expected_runtime_output}" ]; then
+			runtime_starting_output="$(grep '^starting ' <<<"${expected_runtime_output}" || true)"
+			runtime_failure_output="$(grep -v '^starting ' <<<"${expected_runtime_output}" || true)"
+			if [ -n "${runtime_starting_output}" ]; then
+				had_starting=1
+				starting_output="${starting_output}${starting_output:+
+}[user ${user} expected compose runtime still settling]
+${runtime_starting_output}"
+			fi
+			if [ -n "${runtime_failure_output}" ]; then
+				unhealthy_output="${unhealthy_output}${unhealthy_output:+
+}[user ${user} expected compose runtime]
+${runtime_failure_output}"
+			fi
+		fi
 		while IFS= read -r held_unit; do
 			[ -n "${held_unit}" ] || continue
 			held_state="$(_remote_health_check_user_unit_state \
@@ -10872,28 +10897,6 @@ ${transitional_output}"
 				_remote_health_check_record_user_unit_timeout \
 					"${user}" "${runtime_dir}" "${bus}" "${unit}"
 			done <<<"${transitional_output}"
-		fi
-		expected_runtime_status=0
-		expected_runtime_output="$(_remote_health_check_expected_runtime \
-			"${user}" "${held_units}")" || expected_runtime_status="$?"
-		if [ "${expected_runtime_status}" -ne 0 ]; then
-			unhealthy_output="${unhealthy_output}${unhealthy_output:+
-}[user ${user} expected compose runtime]
-query-failed user=${user}"
-		elif [ -n "${expected_runtime_output}" ]; then
-			runtime_starting_output="$(grep '^starting ' <<<"${expected_runtime_output}" || true)"
-			runtime_failure_output="$(grep -v '^starting ' <<<"${expected_runtime_output}" || true)"
-			if [ -n "${runtime_starting_output}" ]; then
-				had_starting=1
-				starting_output="${starting_output}${starting_output:+
-}[user ${user} expected compose runtime still settling]
-${runtime_starting_output}"
-			fi
-			if [ -n "${runtime_failure_output}" ]; then
-				unhealthy_output="${unhealthy_output}${unhealthy_output:+
-}[user ${user} expected compose runtime]
-${runtime_failure_output}"
-			fi
 		fi
 		podman_mutation_output="$(_remote_health_check_rootless_mutations "${runtime_dir}")"
 		if [ -n "${podman_mutation_output}" ]; then
