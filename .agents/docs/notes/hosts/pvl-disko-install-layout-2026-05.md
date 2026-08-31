@@ -34,7 +34,7 @@ automated installation with `nixos-anywhere`.
 - The disko configs pin the existing partition UUIDs and LUKS UUIDs so current
   installed systems can keep using the same stable device identities.
 - The generated Btrfs subvolumes are `@` for `/` and `@home` for `/home`;
-  `pvl-a1` also has `@swap` mounted at `/swap` for `/swap/swap0`.
+  `pvl-x2` and `pvl-a1` also have `@swap` mounted at `/swap` for `/swap/swap0`.
 
 Keep hardware-only boot details such as `boot.initrd.availableKernelModules`
 beside the `lib/disko` import in `sys.nix`. Let disko own `fileSystems` and
