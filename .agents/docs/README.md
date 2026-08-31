@@ -207,8 +207,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-x2-incus-project-routes-2026-06.md`: Records the
   project-owned Incus route API, helper-based route reconciler, `pvl-x2` route
   to the still-live `10.10.30.0/24` subnet through `gap3-gondor`, and parent
-  fabric `forwardRules` for narrow project-to-project exceptions, plus
-  project-qualified readiness selectors for delegated projects.
+  fabric `forwardRules` for narrow DNS and cache exceptions, restart coupling
+  for routes on Incus-managed bridges, and project-qualified readiness selectors
+  for delegated projects.
 - `.agents/docs/notes/hosts/pvl-x2-incus-preseed-reactivation-2026-07.md`:
   Records the `pvl-x2` deploy failure where `abird-stage` was missing from live
   Incus while declared preseed already contained it, plus the fix that makes
@@ -217,8 +218,8 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-x2-incus-capacity-admission-2026-07.md`:
   Physical-host OOM/watchdog and Btrfs cold-boot storm evidence, the separation
   between deploy and guest-start admission, bounded priority/readiness Incus
-  waves, live-reconciled limit envelopes, and the remaining storage enforcement
-  boundary.
+  waves, create-time and live-reconciled limit envelopes, and the remaining
+  storage enforcement boundary.
 - `.agents/docs/notes/hosts/pvl-x2-host-network-qos-2026-07.md`: Records the
   host-owned CAKE/IFB policy that keeps host traffic above forwarded Incus
   traffic while allowing idle bandwidth borrowing.

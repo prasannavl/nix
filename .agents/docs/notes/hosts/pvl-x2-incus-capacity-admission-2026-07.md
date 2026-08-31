@@ -143,6 +143,14 @@ part of the public API because Incus only applies it for specific queued NIC
 types. Unset options remain unmanaged, so existing manual values are not claimed
 or removed.
 
+The parent `abird-dev` project deliberately blocks low-level container config.
+Its guests therefore leave `limits.memory.oomScoreAdjustment` null: Incus
+classifies the rendered `limits.memory.oom_priority` key as low-level and
+rejects instance creation when that project restriction is active. Do not weaken
+`restricted.containers.lowlevel` for this optional tuning. The outer
+`gap3-gondor` guest remains in the unrestricted default project and keeps its
+declared `-250` adjustment.
+
 Container swap policy is typed as `limits.memory.swap.enable` plus optional
 `limits.memory.swap.max`. The default `{ enable = true; max = null; }` emits no
 Incus key and inherits native swap behavior. Disabling emits `false`; an enabled
@@ -154,6 +162,48 @@ oneshot reconciles only the declared config and device limit keys on an existing
 owned guest, and the normal lifecycle path applies the same limits when creating
 or adopting one. Removing a declared limit unsets only keys previously recorded
 as module-owned.
+
+The limits oneshot can run before lifecycle attachment when recovering a
+partially created guest. If Incus reports that a declared device is not yet
+available as a profile device, limit reconciliation defers that device; the
+machine lifecycle attaches it and applies the same limits. Other override errors
+remain fatal.
+
+Project limit admission happens inside Incus before an instance exists. When a
+project declares aggregate CPU or memory limits, `incus create` rejects a new
+instance unless its per-instance `limits.cpu` and `limits.memory` are part of
+the create request; setting them immediately afterward is too late. The shared
+helper therefore passes every rendered config limit as a create-time `--config`
+argument and still runs normal post-create reconciliation. The 2026-08-30 Nest
+activation exposed this ordering bug while creating the seven declared
+`abird-dev` replicas.
+
+Machine lifecycle units include both their rendered state and the shared helper
+in `restartTriggers`. Otherwise a helper-only repair updates settlement units
+but leaves failed or inactive machine units untouched during a NixOS switch;
+settlement then waits for instances whose corrected lifecycle command never ran.
+
+Bounded-start orchestration targets and every wave gate set
+`X-StopOnReconfiguration=true`. NixOS otherwise leaves active targets running
+across a switch; reset failed machine units remain inactive, and already-active
+gates let newly restarted settlements race ahead. Stopping and starting the
+targets re-pulls the lifecycle units through the declared wave ordering.
+
+The same admission check requires a size on the root disk when the project has
+`limits.disk`. The parent-owned `abird-dev` default profile sets `root.size` to
+32 GiB from `rootVolumeSize`, and its storage pool sets the default
+custom-volume size to 32 GiB from `storageVolumeSize`. The names describe the
+two Incus volume objects even though the root value is rendered through the
+profile's `root` disk device. Because admission runs before storage-driver
+defaults and a restricted remote may not expose that pool config, the
+`abird-dev` projection also renders the same 32 GiB value into every `state`
+device. The helper passes the rendered value explicitly when it creates each
+custom volume and uses the visible pool default only as a fallback. It removes
+this volume-creation-only `size` before attaching the non-root disk because
+Incus accepts size quotas on custom volume creation but not on a non-root disk
+device. Seven roots plus seven `state` volumes therefore declare 448 GiB before
+the base image under the 512 GiB project ceiling. Disk-I/O rate limits remain
+instance-owned and continue to reconcile after creation.
 
 All pools remain on their existing physical storage by explicit policy; this
 change does not use or migrate to the unused NVMe. The deployed Incus 7.2

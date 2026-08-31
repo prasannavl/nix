@@ -46,9 +46,11 @@ project-to-project deny matrix. Return traffic is still handled by connection
 tracking, so an exception grants only new flows in the declared direction.
 
 For the current delegated Abird fabrics on `pvl-x2`, `abird-platform` may reach
-only the preserved Gondor DNS proxy at `10.10.30.20` on TCP/UDP 53 through the
-`default` fabric. The clean empty `abird` and `abird-dev` fabrics have no
-cross-project exceptions.
+the preserved Gondor DNS proxy at `10.10.30.20` on TCP/UDP 53 and the Gondor
+Harmonia cache at `10.10.30.80` on TCP 5000 through the `default` fabric. It may
+also reach TCP 22 across `10.10.220.0/24` in `abird-dev`, which lets Nest's
+bounded-start settlement verify SSH readiness without granting broad fabric
+trust. The clean empty `abird` fabric has no cross-project exceptions.
 
 ## Project-Qualified Readiness Selectors
 
@@ -85,6 +87,28 @@ The helper owns only routes recorded in its state file. It removes obsolete
 owned routes and applies current routes with `ip -4 route replace` using
 `proto static`, avoiding unrelated host route mutation.
 
+### Incus restart coupling
+
+The route unit must be `PartOf=incus.service` as well as ordered
+`After=incus.service`. Incus can restart during a NixOS switch after
+`sysinit-reactivation.target` has already run the route reconciler. Recreating
+an Incus-managed bridge deletes host routes attached to that bridge; without
+restart propagation, the oneshot remains active-exited and does not restore
+them.
+
+This occurred on `pvl-x2` on 2026-08-30: the route reconciler installed
+`10.10.30.0/24` at 08:00:25, then Incus restarted at 08:00:27 and rebuilt
+`incusbr0`. The missing route broke private DNS for `abird-nest`, so Nixbot
+could neither fetch `ci.abird.internal` from the target nor use its local relay
+fallback. Coupling the route unit to Incus makes the restart transaction stop
+the reconciler before Incus and run it again after Incus is ready.
+
+Restoring the route exposed a separate policy omission: DNS succeeded, but the
+existing narrow forward exception did not permit the resolved cache endpoint.
+Keep the `10.10.30.80:5000` exception alongside DNS; changing Nixbot to a
+Tailscale hostname would bypass the declared fabric ownership instead of fixing
+it.
+
 ## Validation Expectations
 
 For `pvl-x2`, generated route JSON should resolve the default project route to:
@@ -113,5 +137,6 @@ bash -n lib/incus/helper.sh
 shellcheck lib/incus/helper.sh
 nix build --no-link .#nixosConfigurations.pvl-x2.config.system.build.toplevel
 nix build --no-link .#nixosConfigurations.pvl-a1.config.system.build.toplevel
+nix build --no-link .#checks.x86_64-linux.lib-incus-module
 nix run .#lint -- --diff --base HEAD --system x86_64-linux
 ```

@@ -22,6 +22,20 @@
             tcp = [53];
             udp = [53];
           }
+          {
+            to = {
+              project = "default";
+              address = "10.10.30.80";
+            };
+            tcp = [5000];
+          }
+          {
+            to = {
+              project = "abird-dev";
+              address = "10.10.220.0/24";
+            };
+            tcp = [22];
+          }
         ];
       };
       instances = {
@@ -103,6 +117,8 @@
     };
     abird-dev = {
       pool = "abird-dev";
+      rootVolumeSize = "32GiB";
+      storageVolumeSize = "32GiB";
       network = {
         policy = fpp.containedPublic;
         name = "iabirdbr2";
@@ -139,15 +155,22 @@
     builtins.map
     (project: mkBridgeNetwork projects.${project}.network)
     projectNames;
-  mkStoragePool = name: {
-    config = {
-      source = "/var/lib/incus/storage-pools/${name}";
-    };
+  mkStoragePool = project: let
+    projectConfig = projects.${project};
+    name = projectConfig.pool;
+  in {
+    config =
+      {
+        source = "/var/lib/incus/storage-pools/${name}";
+      }
+      // lib.optionalAttrs (projectConfig ? storageVolumeSize) {
+        "volume.size" = projectConfig.storageVolumeSize;
+      };
     description = "";
     name = name;
     driver = "btrfs";
   };
-  projectStoragePools = builtins.map (project: mkStoragePool projects.${project}.pool) projectNames;
+  projectStoragePools = map mkStoragePool projectNames;
   mkProjectProfile = project: let
     projectConfig = projects.${project};
   in {
@@ -159,11 +182,15 @@
         network = projectConfig.network.name;
         type = "nic";
       };
-      root = {
-        path = "/";
-        pool = projectConfig.pool;
-        type = "disk";
-      };
+      root =
+        {
+          path = "/";
+          pool = projectConfig.pool;
+          type = "disk";
+        }
+        // lib.optionalAttrs (projectConfig ? rootVolumeSize) {
+          size = projectConfig.rootVolumeSize;
+        };
     };
     name = "default";
     project = project;
