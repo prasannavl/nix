@@ -502,6 +502,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   August 29 audit of all four commits after `22e85790`, exact Quadlet
   ready-target and Nixbot health-ordering convergence, Gap3 and product-plan
   exclusions, complete per-commit dispositions, and final byte parity.
+- `.agents/docs/notes/tooling/abird-post-c3b-port-2026-08.md`: Records the
+  August 31 union audit after `c3b35904` across diverged Abird local and remote
+  branches, the shared dependency and Incus units, split parent/guest topology
+  adaptations, complete per-commit dispositions, and final byte parity.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
