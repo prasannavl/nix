@@ -28,18 +28,22 @@ three subnet octets, platform instance octets, and outbound `network.allow`
 relationships. Local normalization feeds the narrow result to
 `incusLib.mkManagedFabricPolicy`.
 
-The platform fabric uses the `containedPublic` baseline and has one cross-fabric
-exception:
+The platform fabric uses the `containedPublic` baseline and has three
+cross-fabric exceptions:
 
 - `abird-platform` may reach `default` destination `10.10.30.20` on TCP/UDP 53
-  for the preserved Gondor DNS proxy.
+  for the preserved Gondor DNS proxy;
+- `abird-platform` may reach `default` destination `10.10.30.80` on TCP 5000 for
+  the Gondor Harmonia cache;
+- `abird-platform` may reach `abird-dev` destination `10.10.220.0/24` on TCP 22
+  so bounded-start settlement can verify guest SSH readiness.
 
-No broad `forwardTo` grant is used. The empty application fabrics have no
-cross-project exceptions. Each project has its own bridge, pool, default
-profile, and certificate delegation. The fresh Nest receives all three
-delegation paths, but its z-side remote manager initially declares only
-`abird-platform`, so no application guest can be created from current desired
-state.
+No broad `forwardTo` grant is used. The empty `abird` fabric has no
+cross-project exceptions, and `abird-dev` has only the narrow inbound SSH path
+from `abird-platform`. Each project has its own bridge, pool, default profile,
+and certificate delegation. The fresh Nest receives all three delegation paths,
+but its z-side remote manager initially declares only `abird-platform`, so no
+application guest can be created from current desired state.
 
 ## Destructive Transition Boundary
 
@@ -122,6 +126,8 @@ Evaluation currently renders:
 - parent platform instances: only `abird-nest`;
 - parent application instances: none;
 - preseed migrations: none;
-- platform access: only Gondor DNS at `10.10.30.20` on TCP/UDP 53.
+- platform access: Gondor DNS at `10.10.30.20` on TCP/UDP 53, the Gondor cache
+  at `10.10.30.80` on TCP 5000, and `abird-dev` SSH across `10.10.220.0/24` on
+  TCP 22.
 
 The full `pvl-x2` NixOS build and repository diff lint gate passed.

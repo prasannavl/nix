@@ -202,14 +202,15 @@ Use this index as the canonical map for `.agents/docs/**`.
   `abird-platform`, and empty application-project pool set.
 - `.agents/docs/notes/hosts/pvl-x2-abird-platform-project-2026-07.md`: Current
   fresh-platform ownership, clean empty `abird`/`abird-dev` fabrics, Gondor DNS
-  exception, retirement of stage and old project contents, destructive rollout
-  gates, and the validated Nest/CI bootstrap state.
+  and cache exceptions, bounded `abird-dev` SSH access, retirement of stage and
+  old project contents, destructive rollout gates, and the validated Nest/CI
+  bootstrap state.
 - `.agents/docs/notes/hosts/pvl-x2-incus-project-routes-2026-06.md`: Records the
   project-owned Incus route API, helper-based route reconciler, `pvl-x2` route
   to the still-live `10.10.30.0/24` subnet through `gap3-gondor`, and parent
-  fabric `forwardRules` for narrow DNS and cache exceptions, restart coupling
-  for routes on Incus-managed bridges, and project-qualified readiness selectors
-  for delegated projects.
+  fabric `forwardRules` for narrow DNS, cache, and SSH exceptions, restart
+  coupling for routes on Incus-managed bridges, and project-qualified readiness
+  selectors for delegated projects.
 - `.agents/docs/notes/hosts/pvl-x2-incus-preseed-reactivation-2026-07.md`:
   Records the `pvl-x2` deploy failure where `abird-stage` was missing from live
   Incus while declared preseed already contained it, plus the fix that makes
