@@ -459,7 +459,12 @@ class IncusHelperTest(unittest.TestCase):
         self.assertFalse((self.state_dir / "host-suspend/stopped-instances.json").exists())
 
     def test_machine_main_recreate_tag_recreates_existing_instance(self):
-        state_file = self.write_machine_state(self.machine_state(recreate_tag="recreate-2"))
+        state = self.machine_state(recreate_tag="recreate-2")
+        state["limitConfig"] = {
+            "limits.cpu": "2",
+            "limits.memory": "4GiB",
+        }
+        state_file = self.write_machine_state(state)
 
         self.run_helper(
             "machine_main",
@@ -474,7 +479,18 @@ class IncusHelperTest(unittest.TestCase):
         mutations = [command for _, command in self.mutation_commands()]
         self.assertIn(["stop", "web", "--force"], mutations)
         self.assertIn(["delete", "web", "--force"], mutations)
-        self.assertIn(["create", "local:nixos-test", "web"], mutations)
+        self.assertIn(
+            [
+                "create",
+                "local:nixos-test",
+                "web",
+                "--config",
+                "limits.cpu=2",
+                "--config",
+                "limits.memory=4GiB",
+            ],
+            mutations,
+        )
 
     def test_machine_main_boot_tag_restarts_running_but_not_stopped_instances(self):
         running_state = self.write_machine_state(self.machine_state(boot_tag="boot-2"))
@@ -691,6 +707,30 @@ class IncusHelperTest(unittest.TestCase):
         self.assertNotIn("delete web", flattened)
         self.assertNotIn("create local:nixos-test web", flattened)
 
+    def test_limits_main_defers_declared_device_until_lifecycle_attaches_it(self):
+        state = self.machine_state()
+        state["limitDevices"] = {"state": {"limits.read": "100MiB"}}
+        self.write_machine_state(state)
+
+        result = self.run_helper(
+            "limits_main --all",
+            INCUS_MACHINES_DECLARED_INSTANCES='["web"]',
+            INCUS_MACHINES_INSTANCE_NAMES='{"web":"web"}',
+            INCUS_MACHINES_INSTANCE_PROJECTS='{"web":"default"}',
+            INCUS_MACHINES_INSTANCE_RECONCILE_POLICIES='{"web":"auto"}',
+            INCUS_MACHINES_INSTANCE_STATE_DIR=str(self.work_dir),
+            TEST_INCUS_QUERY_RESPONSES=json.dumps(self.machine_query_responses()),
+            TEST_INCUS_FAIL_PREFIXES=json.dumps(
+                [["--project", "default", "config", "device", "override", "web", "state"]]
+            ),
+            TEST_INCUS_FAIL_MESSAGE="The profile device doesn't exist",
+        )
+
+        self.assertIn(
+            "Skipping limits for unavailable device default/web/state until lifecycle reconciliation",
+            result.stdout,
+        )
+
     def test_limits_main_resolves_relative_cpu_count_against_effective_parent_cpus(self):
         current_meta = self.machine_meta()
         current_meta["limits"] = {
@@ -763,7 +803,124 @@ class IncusHelperTest(unittest.TestCase):
         )
 
         mutations = [command for _, command in self.mutation_commands()]
+        self.assertIn(
+            [
+                "create",
+                "local:nixos-test",
+                "web",
+                "--config",
+                "limits.cpu=17",
+            ],
+            mutations,
+        )
         self.assertIn(["config", "set", "web", "limits.cpu=17"], mutations)
+
+    def test_machine_creation_passes_pool_default_size_to_new_storage_volume(self):
+        state = self.machine_state()
+        state["desiredDisks"] = {
+            "state": {
+                "type": "disk",
+                "source": "web",
+                "pool": "default",
+                "path": "/var/lib",
+            }
+        }
+        state_file = self.write_machine_state(state)
+
+        self.run_helper(
+            "machine_main",
+            INCUS_MACHINES_INSTANCE_STATE_FILE=str(state_file),
+            TEST_INCUS_FAIL_PREFIXES=json.dumps(
+                [
+                    ["--project", "default", "info", "web"],
+                    [
+                        "--project",
+                        "default",
+                        "storage",
+                        "volume",
+                        "show",
+                        "default",
+                        "web",
+                    ],
+                ]
+            ),
+            TEST_INCUS_QUERY_RESPONSES=json.dumps(self.machine_query_responses()),
+            TEST_INCUS_STORAGE_VOLUME_SIZE="32GiB",
+        )
+
+        commands = self.read_incus_log()
+        self.assertIn(
+            ["--project", "default", "storage", "get", "default", "volume.size"],
+            commands,
+        )
+        self.assertIn(
+            [
+                "--project",
+                "default",
+                "storage",
+                "volume",
+                "create",
+                "default",
+                "web",
+                "size=32GiB",
+            ],
+            commands,
+        )
+
+    def test_machine_creation_keeps_explicit_volume_size_off_disk_device(self):
+        state = self.machine_state()
+        state["desiredDisks"] = {
+            "state": {
+                "type": "disk",
+                "source": "web",
+                "pool": "default",
+                "path": "/var/lib",
+                "size": "32GiB",
+            }
+        }
+        state_file = self.write_machine_state(state)
+
+        self.run_helper(
+            "machine_main",
+            INCUS_MACHINES_INSTANCE_STATE_FILE=str(state_file),
+            TEST_INCUS_FAIL_PREFIXES=json.dumps(
+                [
+                    ["--project", "default", "info", "web"],
+                    [
+                        "--project",
+                        "default",
+                        "storage",
+                        "volume",
+                        "show",
+                        "default",
+                        "web",
+                    ],
+                ]
+            ),
+            TEST_INCUS_QUERY_RESPONSES=json.dumps(self.machine_query_responses()),
+        )
+
+        commands = self.read_incus_log()
+        self.assertIn(
+            [
+                "--project",
+                "default",
+                "storage",
+                "volume",
+                "create",
+                "default",
+                "web",
+                "size=32GiB",
+            ],
+            commands,
+        )
+        device_add = next(
+            command
+            for command in commands
+            if command[:7]
+            == ["--project", "default", "config", "device", "add", "web", "state"]
+        )
+        self.assertNotIn("size=32GiB", device_add)
 
     def test_remote_relative_cpu_count_requires_explicit_capacity(self):
         result = self.run_helper(

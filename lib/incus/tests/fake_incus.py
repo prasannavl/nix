@@ -49,6 +49,8 @@ def main():
     args = sys.argv[1:]
     write_log(args)
 
+    command_args = args[2:] if len(args) >= 2 and args[0] == "--project" else args
+
     if should_fail(args):
         print(os.environ.get("TEST_INCUS_FAIL_MESSAGE", "fake incus failure"), file=sys.stderr)
         return 1
@@ -75,6 +77,10 @@ def main():
             print(os.environ.get("TEST_INCUS_LIST_ALL_JSON", "[]"))
         else:
             print(os.environ.get("TEST_INCUS_PROJECT_LIST_JSON", "[]"))
+        return 0
+
+    if command_args[:2] == ["storage", "get"] and command_args[-1:] == ["volume.size"]:
+        print(os.environ.get("TEST_INCUS_STORAGE_VOLUME_SIZE", ""))
         return 0
 
     if args[0] in {"start", "stop", "delete", "config", "copy", "move"}:

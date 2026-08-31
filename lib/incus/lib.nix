@@ -97,6 +97,7 @@
     nestedContainers ? false,
     interceptMounts ? false,
     interceptMountShift ? true,
+    stateVolumeSize ? null,
     limits ? {},
     extraConfig ? {},
     extraDevices ? {},
@@ -130,6 +131,9 @@
             source = name;
             path = "/var/lib";
             removalPolicy = "keep";
+            extraProperties = lib.optionalAttrs (stateVolumeSize != null) {
+              size = stateVolumeSize;
+            };
           };
         }
         // lib.optionalAttrs nestedContainers {

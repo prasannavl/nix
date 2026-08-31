@@ -2656,7 +2656,10 @@
       after = machineLifecycleDeps;
       wants = machineLifecycleDeps;
       requires = machineRequiredDeps;
-      restartTriggers = lib.optional (!ignored) lifecycleStateFile;
+      restartTriggers = lib.optionals (!ignored) [
+        lifecycleStateFile
+        helperScript
+      ];
       restartIfChanged = !ignored;
       stopIfChanged = !ignored;
       serviceConfig = {
@@ -2677,6 +2680,7 @@
       description = "Admit Incus automatic-start wave ${toString (index + 1)}";
       before = autoStartMachineUnits wave;
       after = lib.optional (index > 0) (autoStartSettlementUnit (index - 1));
+      unitConfig.X-StopOnReconfiguration = true;
     };
 
   mkAutoStartSettlement = index: wave: let
@@ -3400,6 +3404,7 @@ in {
           incus-machines-routes = lib.mkIf hasRouteReconciler {
             description = "Reconcile Incus project host routes";
             wantedBy = ["multi-user.target" "sysinit-reactivation.target"];
+            partOf = ["incus.service"];
             after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
             wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
             before =
@@ -3570,6 +3575,7 @@ in {
             description = "Start declared Incus instances in bounded readiness waves";
             wantedBy = ["multi-user.target"];
             wants = autoStartRootWants;
+            unitConfig.X-StopOnReconfiguration = true;
           };
         }
         // builtins.listToAttrs (lib.imap0 mkAutoStartGate autoStartWaves)

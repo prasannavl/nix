@@ -1597,7 +1597,17 @@ reconcile_instance_limits() {
 
 		if [ "$current_props" = "null" ]; then
 			if [ "$(printf '%s' "$desired_props" | jq 'length')" -gt 0 ]; then
-				override_device_from_properties "$instance_name" "$device" "$desired_props"
+				local override_output
+				if ! override_output="$(override_device_from_properties "$instance_name" "$device" "$desired_props" 2>&1)"; then
+					if grep -Fq "The profile device doesn't exist" <<<"$override_output"; then
+						echo "Skipping limits for unavailable device $current_project/$instance_name/$device until lifecycle reconciliation"
+					else
+						printf '%s\n' "$override_output" >&2
+						return 1
+					fi
+				elif [ -n "$override_output" ]; then
+					printf '%s\n' "$override_output"
+				fi
 			fi
 			continue
 		fi
@@ -2763,11 +2773,11 @@ machine_main() {
 	local desired_state reconcile_policy force_policy
 	local needs_create needs_recreate needs_restart needs_recreate_from_drift needs_recreate_from_tag pending_recreate_drift adopting_existing current_config_hash current_recreate_tag current_boot_tag
 	local current_instance current_devices current_config current_status desired_disks desired_disk_gc_metadata
-	local current_ipv4 current_managed_by current_project desired_props current_props dev dev_exists dev_source dev_pool key props query_name image_tag
+	local current_ipv4 current_managed_by current_project desired_props desired_device_props current_props dev dev_exists dev_source dev_pool dev_volume_size key props query_name image_tag
 	local current_controller current_meta desired_meta_json desired_user_meta_json
 	local instance_image image_alias create_only_devices user_meta_json nixos_meta_json config_json limit_config limit_devices desired_ipv4 desired_adopt cpu_capacity
 	local desired_kind desired_incus_type current_incus_type recovery_attempted start_output
-	local -a create_args create_only_device_names current_disk_names desired_disk_names current_prop_keys
+	local -a create_args create_limit_config create_only_device_names current_disk_names desired_disk_names current_prop_keys volume_create_args
 
 	force_policy=0
 	while [ "$#" -gt 0 ]; do
@@ -2916,6 +2926,13 @@ machine_main() {
 			if [ "$desired_kind" = "vm" ]; then
 				create_args+=(--vm)
 			fi
+			mapfile -t create_limit_config < <(
+				printf '%s' "$limit_config" |
+					jq -r 'to_entries[] | "\(.key)=\(.value)"'
+			)
+			for key in "${create_limit_config[@]}"; do
+				create_args+=(--config "$key")
+			done
 			incus_project create "${create_args[@]}"
 
 			if [ "$config_json" != "null" ]; then
@@ -2989,6 +3006,7 @@ machine_main() {
 		if [ "${#desired_disk_names[@]}" -gt 0 ]; then
 			for dev in "${desired_disk_names[@]}"; do
 				desired_props="$(printf '%s' "$desired_disks" | jq -c --arg d "$dev" '.[$d]')"
+				desired_device_props="$(printf '%s' "$desired_props" | jq -c 'del(.size)')"
 				current_props="$(printf '%s' "$current_devices" | jq -c --arg d "$dev" '.[$d] // null')"
 				dev_exists=0
 				if [ "$current_props" != "null" ]; then
@@ -3000,20 +3018,28 @@ machine_main() {
 				if [ -n "$dev_source" ] && [ -n "$dev_pool" ]; then
 					if ! incus_project storage volume show "$(storage_pool_ref "$dev_pool")" "$dev_source" >/dev/null 2>&1; then
 						echo "  Creating storage volume $dev_pool/$dev_source"
-						incus_project storage volume create "$(storage_pool_ref "$dev_pool")" "$dev_source"
+						volume_create_args=("$(storage_pool_ref "$dev_pool")" "$dev_source")
+						dev_volume_size="$(printf '%s' "$desired_props" | jq -r '.size // empty')"
+						if [ -z "$dev_volume_size" ]; then
+							dev_volume_size="$(incus_project storage get "$(storage_pool_ref "$dev_pool")" volume.size 2>/dev/null || true)"
+						fi
+						if [ -n "$dev_volume_size" ]; then
+							volume_create_args+=("size=$dev_volume_size")
+						fi
+						incus_project storage volume create "${volume_create_args[@]}"
 					fi
 				fi
 
 				if [ "$dev_exists" -eq 0 ]; then
 					echo "  Adding disk device $dev"
-					add_device_from_props_idempotent "$instance_name" "$dev" "$desired_props"
+					add_device_from_props_idempotent "$instance_name" "$dev" "$desired_device_props"
 				fi
 
 				if [ "$dev_exists" -ne 0 ]; then
 					mapfile -t current_prop_keys < <(json_property_keys "$current_props")
 					if [ "${#current_prop_keys[@]}" -gt 0 ]; then
 						for key in "${current_prop_keys[@]}"; do
-							if ! printf '%s' "$desired_props" | jq -e --arg k "$key" 'has($k)' >/dev/null 2>&1; then
+							if ! printf '%s' "$desired_device_props" | jq -e --arg k "$key" 'has($k)' >/dev/null 2>&1; then
 								if ! incus_project_retry_etag config device unset "$(instance_ref "$instance_name")" "$dev" "$key"; then
 									echo "  Could not unset disk device $dev property $key; continuing" >&2
 								fi
@@ -3021,7 +3047,7 @@ machine_main() {
 						done
 					fi
 
-					set_device_config_json_if_changed "$instance_name" "$dev" "$current_props" "$desired_props"
+					set_device_config_json_if_changed "$instance_name" "$dev" "$current_props" "$desired_device_props"
 				fi
 			done
 		fi

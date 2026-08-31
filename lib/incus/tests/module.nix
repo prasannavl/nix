@@ -229,6 +229,7 @@
   reconcilerUnit = config.systemd.services.incus-machines-reconciler;
   imagesUnit = config.systemd.services.incus-images;
   preseedUnit = config.systemd.services.incus-preseed;
+  routesUnit = config.systemd.services.incus-machines-routes;
   certificatesUnit = config.systemd.services.incus-machines-certificates;
   limitsUnit = config.systemd.services.incus-machines-limits;
   autoStartTarget = config.systemd.targets.incus-machines-autostart;
@@ -318,6 +319,8 @@ in
   assert lib.hasSuffix " machine" webUnit.serviceConfig.ExecStart;
   assert lib.hasInfix " stop-instance web default" webUnit.serviceConfig.ExecStop;
   assert webUnit.restartIfChanged == true;
+  assert builtins.length webUnit.restartTriggers == 2;
+  assert lib.any (trigger: lib.hasSuffix "/bin/incus-machines-helper" (toString trigger)) webUnit.restartTriggers;
   assert webUnit.stopIfChanged == true;
   assert ignoredUnit.wantedBy == [];
   assert lib.hasInfix " start-instance ignored default" ignoredUnit.serviceConfig.ExecStart;
@@ -334,6 +337,10 @@ in
   assert builtins.elem "sysinit-reactivation.target" preseedUnit.wantedBy;
   assert preseedUnit.restartTriggers != [];
   assert preseedUnit.restartIfChanged == true;
+  assert routesUnit.partOf == ["incus.service"];
+  assert builtins.elem "incus.service" routesUnit.after;
+  assert builtins.elem "incus.service" routesUnit.wants;
+  assert routesUnit.serviceConfig.RemainAfterExit == true;
   assert certificatesUnit.wantedBy == ["sysinit-reactivation.target"];
   assert limitsUnit.wantedBy == ["sysinit-reactivation.target"];
   assert limitsUnit.restartTriggers != [];
@@ -347,8 +354,11 @@ in
   assert lib.hasInfix "incus-machines-host-suspend pre" config.powerManagement.powerDownCommands;
   assert lib.hasInfix "incus-machines-host-suspend post" config.powerManagement.resumeCommands;
   assert autoStartTarget.wantedBy == ["multi-user.target"];
+  assert autoStartTarget.unitConfig.X-StopOnReconfiguration == true;
   assert builtins.elem "incus-web.service" autoStartTarget.wants;
   assert builtins.elem "incus-ignored.service" autoStartTarget.wants;
+  assert autoStartGate0.unitConfig.X-StopOnReconfiguration == true;
+  assert autoStartGate1.unitConfig.X-StopOnReconfiguration == true;
   assert autoStartGate0.before == ["incus-web.service"];
   assert autoStartGate1.after == ["incus-machines-autostart-settle-0.service"];
   assert autoStartGate1.before == ["incus-ignored.service"];
