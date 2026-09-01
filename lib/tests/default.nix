@@ -88,6 +88,7 @@ in
     lib-ollama-module = ollamaTests.module;
     lib-podman-image-report = podmanImageReportTest;
     lib-service-module = serviceModuleTest;
+    lib-swap-auto = import ./swap-auto.nix {inherit pkgs;};
     lib-podman-compose-helper = podmanComposeTests.helper;
     lib-podman-compose-module = podmanComposeTests.module;
     lib-abird-host-agent = import ./abird-host-agent.nix {inherit pkgs;};
@@ -106,4 +107,6 @@ in
     lib-podman-compose-quadlet-generator-lifecycle = podmanComposeTests.quadlet-generator-lifecycle;
     lib-podman-compose-quadlet-provider-transition = podmanComposeTests.quadlet-provider-transition;
     lib-podman-compose-systemd-user-lifecycle = podmanComposeTests.systemd-user-lifecycle;
+    lib-swap-auto-remote-vm = import ./swap-auto-remote-vm.nix {pkgs = pkgs;};
+    lib-swap-auto-vm = import ./swap-auto-vm.nix {inherit pkgs;};
   }

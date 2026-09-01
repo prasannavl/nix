@@ -181,6 +181,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-disko-install-layout-2026-05.md`: Records the
   disko automated-install layout for `pvl-x2` and `pvl-a1`, including target
   disk IDs, pinned partition identities, LUKS, and Btrfs subvolumes.
+- `.agents/docs/notes/hosts/pvl-btrfs-swap-migration-safety-2026-08.md`: Records
+  why a Disko-only `@swap` addition cannot migrate an installed host, the
+  build-time safety contract, automatic live-switch provisioning and retry, and
+  the non-fatal remote-recovery behavior.
 - `.agents/docs/notes/hosts/pvl-x2-services-layout.md`: Canonical `pvl-x2`
   service module split and aggregation layout.
 - `.agents/docs/notes/hosts/pvl-x2-media-services-2026-08.md`: Records the

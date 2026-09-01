@@ -33,8 +33,14 @@ automated installation with `nixos-anywhere`.
   `boot` is a 512 MiB ESP labeled `ESP`, and root is plain ext4 labeled `nixos`.
 - The disko configs pin the existing partition UUIDs and LUKS UUIDs so current
   installed systems can keep using the same stable device identities.
-- The generated Btrfs subvolumes are `@` for `/` and `@home` for `/home`;
-  `pvl-x2` and `pvl-a1` also have `@swap` mounted at `/swap` for `/swap/swap0`.
+- The generated Btrfs subvolumes are `@` for `/` and `@home` for `/home`.
+  Current `pvl-x2`, `pvl-a1`, and `pvl-l5` configs also declare `@swap` mounted
+  at `/swap` for `/swap/swap0`.
+- A newly added Disko subvolume is not created by a normal configuration switch.
+  Sized Btrfs swapfile migrations therefore use `lib/swap-auto.nix` to create
+  `@swap` before the mount and require `nofail` on both the mount and swap
+  entry. See `pvl-btrfs-swap-migration-safety-2026-08.md` for the failure and
+  recovery contract.
 
 Keep hardware-only boot details such as `boot.initrd.availableKernelModules`
 beside the `lib/disko` import in `sys.nix`. Let disko own `fileSystems` and
