@@ -32,7 +32,10 @@ in {
           mountpoint = "/home";
           mountOptions = ["compress=zstd"];
         };
-        "@swap".mountpoint = "/swap";
+        "@swap" = {
+          mountpoint = "/swap";
+          mountOptions = ["nofail"];
+        };
       };
     };
   };
@@ -52,6 +55,7 @@ in {
     {
       device = "/swap/swap0";
       size = 65536;
+      options = ["nofail"];
     }
   ];
 }
