@@ -37,11 +37,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1787826217,
-        "narHash": "sha256-cqvukKd9jzytRTvPwsFOy2SO81Ch9fpRzSbimlT+f3E=",
+        "lastModified": 1788246982,
+        "narHash": "sha256-1taZcKbaBuSYyO+kbQ8vmy6uSNg++5kUc39rXqhuMnk=",
         "owner": "jacopone",
         "repo": "antigravity-nix",
-        "rev": "cc74d8ab4679b432e5697b70140869e467564f4a",
+        "rev": "57606073a65af70f3daa19cfa5066dec50d9d939",
         "type": "github"
       },
       "original": {
@@ -232,11 +232,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1788225587,
-        "narHash": "sha256-aBbnOXun6q0ry9jUiCUmZmMuJIfv30SL6nbSyaTVWOc=",
+        "lastModified": 1788248327,
+        "narHash": "sha256-tyldMcr6qS8XrZdFKc6iqnkLPNxaRujzuJ09jOGES+s=",
         "owner": "numtide",
         "repo": "llm-agents.nix",
-        "rev": "ea1dc2132fb2669899dc8b3cbe6fe82ed10d23d6",
+        "rev": "9300f2adc8ff27f02c92b48efc5ab76955ba1046",
         "type": "github"
       },
       "original": {
@@ -482,11 +482,11 @@
         "nixpkgs-50": "nixpkgs-50"
       },
       "locked": {
-        "lastModified": 1788240689,
-        "narHash": "sha256-6LGU1OIaTWSVt2d9clnyG8FxymwYYAySIL0uV8AqvwU=",
+        "lastModified": 1788250587,
+        "narHash": "sha256-9NOcCVLXtayROPHaZVdjS5nPMCrgCV7q7n10MlVz3Ds=",
         "owner": "prasannavl",
         "repo": "p7-borders-shell-extension",
-        "rev": "fd7beba13af6f752383aa86a4330b189245f266a",
+        "rev": "65c79c863f625ad2b57214f7a0e91a3f3695cd6e",
         "type": "github"
       },
       "original": {
