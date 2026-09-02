@@ -286,6 +286,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   the successful deploy obscured by an unrelated long fstrim health timeout, the
   concurrent superseding activation, and the remaining NVIDIA reboot and Ollama
   iGPU validation gates.
+- `.agents/docs/notes/nixbot/pvl-a1-nvidia-wmi-backlight-health-2026-09.md`:
+  Records why pre-switch `reset-failed` correctly exposed a fresh post-reset
+  NVIDIA WMI backlight failure, the underlying ACPI `AE_NOT_FOUND`, and the
+  exact host-scoped failed-unit health policy.
 - `.agents/docs/notes/nixbot/local-self-deploy-network-race-2026-08.md`: Records
   the `pvl-l5` self-deploy NetworkManager outage that broke a parallel `pvl-x2`
   closure copy, the unchanged target boundary, and required self-target
