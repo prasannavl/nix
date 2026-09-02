@@ -233,11 +233,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1788320444,
-        "narHash": "sha256-t16G5E/dXM2vHehL0hxiUI+/Sg2l9dOBY948AK8bXOk=",
+        "lastModified": 1788339185,
+        "narHash": "sha256-HHM3n39H3DcgV+FWhxiVKVYKlxr8oQpUHmsGPY1wRLA=",
         "owner": "numtide",
         "repo": "llm-agents.nix",
-        "rev": "b096325ad8cc471f5b34321c01a5cb98457c7782",
+        "rev": "2ad12d8ff5c08ef36dcc15ff2ab2b03aad7f3c1f",
         "type": "github"
       },
       "original": {
@@ -579,11 +579,11 @@
         "nixpkgs-50": "nixpkgs-50"
       },
       "locked": {
-        "lastModified": 1788250587,
-        "narHash": "sha256-9NOcCVLXtayROPHaZVdjS5nPMCrgCV7q7n10MlVz3Ds=",
+        "lastModified": 1788341345,
+        "narHash": "sha256-urtCNPMkzBDCf+oOx0xcHY/lMaAVhMlIFM4SD7bD/kA=",
         "owner": "prasannavl",
         "repo": "p7-borders-shell-extension",
-        "rev": "65c79c863f625ad2b57214f7a0e91a3f3695cd6e",
+        "rev": "eba05db697fd6d858b3a61d507765ff49aa13973",
         "type": "github"
       },
       "original": {
@@ -605,11 +605,11 @@
         "nixpkgs-50": "nixpkgs-50_2"
       },
       "locked": {
-        "lastModified": 1788308795,
-        "narHash": "sha256-3O0a2pMPFAPzxUZlsW4Bfkeax3DBRheFFbopQqXfZns=",
+        "lastModified": 1788341334,
+        "narHash": "sha256-NtLwSCns7ftA7wsRQaj/t4ilXciqKBOkU1Ex6bKKDzo=",
         "owner": "prasannavl",
         "repo": "p7-cmds-shell-extension",
-        "rev": "2e298e884755e524ca9058c476f8299baedbee39",
+        "rev": "654f942f7a39ba8402af852f7c5a0e5b0bf4d5b5",
         "type": "github"
       },
       "original": {
