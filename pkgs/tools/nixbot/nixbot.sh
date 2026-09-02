@@ -3746,9 +3746,35 @@ derive_group_dependency_exclusions_json() {
   ' <<<"${config_json}"
 }
 
+validate_host_health_check_config() {
+	local config_json="$1"
+
+	jq -e '
+    all((.hosts // {})[];
+      if has("healthCheck") then
+        (.healthCheck | type == "object")
+        and (.healthCheck as $health
+          | if $health | has("ignoredFailedSystemUnits") then
+              $health.ignoredFailedSystemUnits as $units
+              | ($units | type == "array")
+              and all($units[];
+                type == "string"
+                and length > 0
+                and (test("[[:space:]]") | not))
+              and (($units | unique | length) == ($units | length))
+            else true
+            end)
+      else true
+      end)
+  ' <<<"${config_json}" >/dev/null ||
+		die "Nixbot hosts[].healthCheck.ignoredFailedSystemUnits must be a unique list of non-empty unit names without whitespace"
+}
+
 init_deploy_settings() {
 	local config_json="$1"
 	local resolved_config_path=""
+
+	validate_host_health_check_config "${config_json}"
 
 	resolved_config_path="$(resolve_config_path "${NIXBOT_CONFIG_PATH}")"
 	NIXBOT_CONFIG_DIR="$(cd "$(dirname "${resolved_config_path}")" && pwd -P)"
@@ -4958,6 +4984,17 @@ inventory_host_for_role() {
       else $role
       end
   ' <<<"${NIXBOT_HOSTS_JSON}"
+}
+
+health_check_ignored_failed_system_units_for() {
+	local node="$1" inventory_host=""
+
+	inventory_host="$(inventory_host_for_role "${node}")" ||
+		die "Cannot resolve host capability ${node} to one inventory endpoint"
+
+	jq -r --arg h "${inventory_host}" \
+		'.[$h].healthCheck.ignoredFailedSystemUnits // [] | .[]' \
+		<<<"${NIXBOT_HOSTS_JSON}"
 }
 
 resolve_deploy_target() {
@@ -10655,6 +10692,7 @@ phase_dir_item_duration_file() {
 }
 
 _remote_post_switch_user_health_check_once() {
+	local ignored_failed_system_units="${1:-}"
 	local units="" unit="" user="" uid="" home="" runtime_dir="" bus=""
 	local held_user_units="" held_units="" held_unit="" held_state=""
 	local deferred_resources=""
@@ -10663,6 +10701,7 @@ _remote_post_switch_user_health_check_once() {
 	local raw_user_jobs="" pending_start_job=""
 	local raw_failed_output="" failed_output="" ignored_failed_output=""
 	local raw_system_failed_output="" system_failed_output="" ignored_system_failed_output=""
+	local policy_ignored_system_failed_output=""
 	local raw_transitional_output="" transitional_output=""
 	local raw_system_transitional_output="" system_transitional_output=""
 	local podman_unhealthy_output="" podman_starting_output=""
@@ -10686,11 +10725,24 @@ _remote_post_switch_user_health_check_once() {
 	fi
 
 	raw_system_failed_output="$(systemctl list-units --failed --no-legend --plain 2>/dev/null || true)"
-	system_failed_output="$(printf '%s\n' "${raw_system_failed_output}" | _remote_health_check_filter_failed_units)"
+	system_failed_output="$(
+		printf '%s\n' "${raw_system_failed_output}" |
+			_remote_health_check_filter_failed_units |
+			_remote_health_check_failed_system_unit_policy_rows checked "${ignored_failed_system_units}"
+	)"
 	ignored_system_failed_output="$(printf '%s\n' "${raw_system_failed_output}" | _remote_health_check_ignored_failed_units)"
+	policy_ignored_system_failed_output="$(
+		printf '%s\n' "${raw_system_failed_output}" |
+			_remote_health_check_filter_failed_units |
+			_remote_health_check_failed_system_unit_policy_rows ignored "${ignored_failed_system_units}"
+	)"
 	if [ -n "${ignored_system_failed_output}" ]; then
 		echo "[health-check] transient system Podman healthcheck units observed; checking current container health:" >&2
 		echo "${ignored_system_failed_output}" >&2
+	fi
+	if [ -n "${policy_ignored_system_failed_output}" ]; then
+		echo "[health-check] failed system units ignored by host policy:" >&2
+		echo "${policy_ignored_system_failed_output}" >&2
 	fi
 	if [ -n "${system_failed_output}" ]; then
 		had_service_failures=1
@@ -11007,6 +11059,7 @@ _remote_health_check_starting_timeout_seconds() {
 }
 
 _remote_post_switch_user_health_check() {
+	local ignored_failed_system_units="${1:-}"
 	local timeout_seconds="" poll_seconds=5 start_epoch="" now_epoch="" rc=0
 	local NIXBOT_HEALTH_BASELINE_TIMER_UNITS=""
 
@@ -11018,7 +11071,7 @@ _remote_post_switch_user_health_check() {
 	fi
 
 	while :; do
-		if _remote_post_switch_user_health_check_once; then
+		if _remote_post_switch_user_health_check_once "${ignored_failed_system_units}"; then
 			return 0
 		else
 			rc="$?"
@@ -11052,6 +11105,33 @@ _remote_health_check_filter_failed_units() {
 
 _remote_health_check_ignored_failed_units() {
 	awk '($0 ~ /\[systemd-run\].*podman.*healthcheck run / || $0 ~ /\.podman-wrapped healthcheck run /)'
+}
+
+_remote_health_check_failed_system_unit_policy_rows() {
+	local mode="$1" ignored_units="${2:-}"
+
+	case "${mode}" in
+	checked | ignored) ;;
+	*) return 2 ;;
+	esac
+
+	awk -v mode="${mode}" -v ignored_units="${ignored_units}" '
+		BEGIN {
+			count = split(ignored_units, units, "\n")
+			for (unit_index = 1; unit_index <= count; unit_index++) {
+				if (units[unit_index] != "") {
+					ignored[units[unit_index]] = 1
+				}
+			}
+		}
+		{
+			is_ignored = $1 in ignored
+			if ((mode == "checked" && !is_ignored) ||
+				(mode == "ignored" && is_ignored)) {
+				print
+			}
+		}
+	'
 }
 
 _remote_health_check_filter_transitional_units() {
@@ -11115,10 +11195,15 @@ _remote_health_check_rootless_mutations() {
 }
 
 build_post_switch_health_check_cmd() {
+	local ignored_failed_system_units="${1:-}" invoke_cmd=""
+
+	printf -v invoke_cmd '_remote_post_switch_user_health_check %q' \
+		"${ignored_failed_system_units}"
 	emit_remote_function_command \
-		"_remote_post_switch_user_health_check" \
+		"${invoke_cmd}" \
 		_remote_health_check_filter_failed_units \
 		_remote_health_check_ignored_failed_units \
+		_remote_health_check_failed_system_unit_policy_rows \
 		_remote_health_check_filter_transitional_units \
 		_remote_health_check_baseline_timer_units \
 		_remote_health_check_podman_unhealthy_containers \
@@ -11153,13 +11238,14 @@ run_prepared_post_switch_health_check() {
 }
 
 run_post_switch_health_check() {
-	local node="$1" log_file="${2:-}" health_check_cmd=""
+	local node="$1" log_file="${2:-}" health_check_cmd="" ignored_failed_system_units=""
 
 	if [ "${DRY_RUN}" -eq 1 ]; then
 		return 0
 	fi
 
-	health_check_cmd="$(build_post_switch_health_check_cmd)"
+	ignored_failed_system_units="$(health_check_ignored_failed_system_units_for "${node}")"
+	health_check_cmd="$(build_post_switch_health_check_cmd "${ignored_failed_system_units}")"
 	run_with_prefixed_combined_output \
 		health \
 		"${node}" \
@@ -14050,6 +14136,11 @@ format_host_console_logs() {
 		if (line ~ /^\[health-check\] /) {
 			context = ""
 			context_user = ""
+			if (line == "[health-check] failed system units ignored by host policy:") {
+				context = "health-ignored-system"
+				emit(line, yellow)
+				next
+			}
 			if (match(line, /^\[health-check\] transient Podman healthcheck units observed for user [^;]+;/)) {
 				context = "health-transient-user"
 				context_user = line
@@ -14163,6 +14254,12 @@ format_host_console_logs() {
 			formatted = format_unit_row(line, "[health-check]", "failed-system", "", 0)
 			if (formatted != "") {
 				emit(formatted, red)
+				next
+			}
+		} else if (context == "health-ignored-system") {
+			formatted = format_unit_row(line, "[health-check]", "ignored-failed-system", "", 0)
+			if (formatted != "") {
+				emit(formatted, yellow)
 				next
 			}
 		} else if (context == "health-podman-user" || context == "health-podman-system") {

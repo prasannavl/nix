@@ -263,6 +263,41 @@ class NixbotScriptTest(unittest.TestCase):
 
         self.assertEqual("10.10.30.80|gateway", result.stdout.strip())
 
+    def test_health_check_ignored_failed_system_units_follow_inventory_endpoint(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_CONFIG_PATH={self.work_dir / "nixbot.nix"}
+            config_json='{{
+              "hosts": {{
+                "a1-endpoint": {{
+                  "resourceId": "pvl-a1",
+                  "healthCheck": {{
+                    "ignoredFailedSystemUnits": [
+                      "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service"
+                    ]
+                  }}
+                }},
+                "pvl-l5": {{}}
+              }},
+              "config": {{}}
+            }}'
+            init_deploy_settings "$config_json"
+            printf 'a1:'
+            health_check_ignored_failed_system_units_for pvl-a1 | paste -sd, -
+            printf 'l5:'
+            health_check_ignored_failed_system_units_for pvl-l5 | paste -sd, -
+            """
+        )
+
+        self.assertEqual(
+            [
+                "a1:systemd-backlight@backlight:nvidia_wmi_ec_backlight.service",
+                "l5:",
+            ],
+            result.stdout.splitlines(),
+        )
+
     def test_explicit_build_host_overrides_capability_default(self):
         result = self.run_script(
             """
@@ -5194,6 +5229,207 @@ EOF_SCRIPT
 
         self.assertIn("abird-nginx.service loaded failed failed", result.stdout)
 
+    def test_remote_health_check_system_unit_policy_matches_exact_names(self):
+        ignored_unit = "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service"
+        result = self.run_script(
+            f"""
+            units="$(printf '%s\n' \\
+              '{ignored_unit} loaded failed failed NVIDIA WMI backlight' \\
+              '{ignored_unit}-similar.service loaded failed failed Similar unit')"
+            printf '%s\n' "$units" |
+              _remote_health_check_failed_system_unit_policy_rows checked '{ignored_unit}'
+            printf '%s\n' "$units" |
+              _remote_health_check_failed_system_unit_policy_rows ignored '{ignored_unit}'
+            """
+        )
+
+        self.assertEqual(
+            [
+                f"{ignored_unit}-similar.service loaded failed failed Similar unit",
+                f"{ignored_unit} loaded failed failed NVIDIA WMI backlight",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_remote_health_check_reports_but_accepts_policy_ignored_system_unit(self):
+        ignored_unit = "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service"
+        result = self.run_script(
+            f"""
+            init_vars
+            systemctl() {{
+              case "$*" in
+                "list-units --failed --no-legend --plain")
+                  printf '{ignored_unit} loaded failed failed NVIDIA WMI backlight\n'
+                  ;;
+              esac
+            }}
+            _remote_managed_user_names() {{ :; }}
+            _remote_health_check_held_user_units() {{ :; }}
+            _remote_health_check_deferred_resources() {{ :; }}
+            _remote_health_check_podman_unhealthy_containers() {{ :; }}
+            _remote_health_check_podman_starting_containers() {{ :; }}
+
+            _remote_post_switch_user_health_check_once '{ignored_unit}'
+            """
+        )
+
+        self.assertIn("[health-check] failed system units ignored by host policy:", result.stderr)
+        self.assertIn(ignored_unit, result.stderr)
+        self.assertIn("[health-check] ok", result.stderr)
+        self.assertNotIn("FAILED", result.stderr)
+
+    def test_remote_health_check_policy_does_not_hide_similarly_named_unit(self):
+        ignored_unit = "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service"
+        similar_unit = "systemd-backlight@backlight:nvidia_wmi_ec_backlight-similar.service"
+        result = self.run_script(
+            f"""
+            init_vars
+            systemctl() {{
+              case "$*" in
+                "list-units --failed --no-legend --plain")
+                  printf '%s\n' \\
+                    '{ignored_unit} loaded failed failed NVIDIA WMI backlight' \\
+                    '{similar_unit} loaded failed failed Similar unit'
+                  ;;
+              esac
+            }}
+            _remote_managed_user_names() {{ :; }}
+            _remote_health_check_held_user_units() {{ :; }}
+            _remote_health_check_deferred_resources() {{ :; }}
+            _remote_health_check_podman_unhealthy_containers() {{ :; }}
+            _remote_health_check_podman_starting_containers() {{ :; }}
+
+            set +e
+            _remote_post_switch_user_health_check_once '{ignored_unit}'
+            rc=$?
+            set -e
+            printf 'rc:%s\n' "$rc"
+            """
+        )
+
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertIn("[health-check] failed system units ignored by host policy:", result.stderr)
+        self.assertIn("[health-check] FAILED system units:", result.stderr)
+        self.assertIn(similar_unit, result.stderr)
+
+    def test_remote_health_check_system_unit_policy_does_not_apply_to_user_units(self):
+        ignored_unit = "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service"
+        result = self.run_script(
+            f"""
+            init_vars
+            systemctl() {{
+              case "$*" in
+                "is-active --quiet user@1000.service") return 0 ;;
+              esac
+              return 0
+            }}
+            id() {{
+              case "$*" in
+                "-u pvl"|"-g pvl") printf '1000\n'; return 0 ;;
+              esac
+              command id "$@"
+            }}
+            getent() {{
+              case "$*" in
+                "passwd pvl") printf 'pvl:x:1000:1000::/home/pvl:/bin/bash\n'; return 0 ;;
+              esac
+              command getent "$@"
+            }}
+            setpriv() {{
+              case "$*" in
+                *"systemctl --user list-units --failed"*)
+                  printf '{ignored_unit} loaded failed failed User backlight unit\n'
+                  ;;
+              esac
+              return 0
+            }}
+            _remote_managed_user_names() {{ printf 'pvl\n'; }}
+            _remote_health_check_held_user_units() {{ :; }}
+            _remote_health_check_deferred_resources() {{ :; }}
+            _remote_health_check_expected_user_units() {{ :; }}
+            _remote_health_check_expected_runtime() {{ :; }}
+            _remote_health_check_podman_unhealthy_containers() {{ :; }}
+            _remote_health_check_podman_starting_containers() {{ :; }}
+            _remote_health_check_rootless_mutations() {{ :; }}
+
+            set +e
+            _remote_post_switch_user_health_check_once '{ignored_unit}'
+            rc=$?
+            set -e
+            printf 'rc:%s\n' "$rc"
+            """
+        )
+
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertIn("[health-check] FAILED units for user pvl:", result.stderr)
+        self.assertIn(ignored_unit, result.stderr)
+
+    def test_health_check_ignored_failed_system_units_reject_invalid_inventory(self):
+        invalid_values = [
+            "null",
+            '"not-a-list"',
+            '[""]',
+            '["unit with whitespace.service"]',
+            '["duplicate.service", "duplicate.service"]',
+        ]
+
+        for invalid_value in invalid_values:
+            with self.subTest(invalid_value=invalid_value):
+                result = self.run_script(
+                    f"""
+                    init_vars
+                    NIXBOT_CONFIG_PATH={self.work_dir / "nixbot.nix"}
+                    config_json='{{
+                      "hosts": {{
+                        "app": {{
+                          "healthCheck": {{
+                            "ignoredFailedSystemUnits": {invalid_value}
+                          }}
+                        }}
+                      }},
+                      "config": {{}}
+                    }}'
+                    init_deploy_settings "$config_json"
+                    """,
+                    check=False,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(
+                    "hosts[].healthCheck.ignoredFailedSystemUnits must be a unique list",
+                    result.stderr,
+                )
+
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_CONFIG_PATH={self.work_dir / "nixbot.nix"}
+            init_deploy_settings '{{
+              "hosts": {{"app": {{"healthCheck": "not-an-object"}}}},
+              "config": {{}}
+            }}'
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "hosts[].healthCheck.ignoredFailedSystemUnits must be a unique list",
+            result.stderr,
+        )
+
+    def test_post_switch_health_command_preserves_multiple_ignored_unit_names(self):
+        result = self.run_script(
+            """
+            build_post_switch_health_check_cmd $'one.service\ntwo.service' | tail -n 1
+            """
+        )
+
+        self.assertEqual(
+            r"_remote_post_switch_user_health_check $'one.service\ntwo.service'",
+            result.stdout.strip(),
+        )
+
     def test_pre_switch_admission_repairs_managers_and_preserves_failed_units(self):
         result = self.run_script(
             """
@@ -6877,6 +7113,26 @@ EOF_SCRIPT
                 "[health-check] user=abird unit=abird-superset.service load=loaded state=failed/failed",
                 "[health-check] failed system units:",
                 "[health-check] failed-system unit=nginx.service load=loaded state=failed/failed",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_format_host_console_logs_normalizes_policy_ignored_system_unit_rows(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            printf '%s\n' \
+              '[health-check] failed system units ignored by host policy:' \
+              'systemd-backlight@backlight:nvidia_wmi_ec_backlight.service loaded failed failed NVIDIA WMI backlight' |
+              format_host_console_logs pvl-a1 health
+            """
+        )
+
+        self.assertEqual(
+            [
+                "[health-check] failed system units ignored by host policy:",
+                "[health-check] ignored-failed-system unit=systemd-backlight@backlight:nvidia_wmi_ec_backlight.service load=loaded state=failed/failed",
             ],
             result.stdout.splitlines(),
         )

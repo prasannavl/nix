@@ -351,6 +351,23 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   at the new generation. User-service failures should still be scoped to the
   deploy window, not stale display-session failures left behind by earlier
   compositor logout/login churn.
+- A host may declare exact system-unit exceptions under
+  `healthCheck.ignoredFailedSystemUnits` in the Nixbot inventory:
+
+  ```nix
+  hosts.pvl-a1.healthCheck.ignoredFailedSystemUnits = [
+    "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service"
+  ];
+  ```
+
+  Nixbot validates this as a unique list of non-empty, whitespace-free unit
+  names. The selected host's policy follows canonical `resourceId` resolution
+  into its remote health command. Matching uses the exact first field from
+  `systemctl list-units --failed`; it is not a regular expression or substring
+  match. Policy-ignored rows remain logged as ignored system units, but do not
+  contribute to the failed system-unit verdict. The policy does not affect user
+  units, similarly named units, activation diagnostics, or other inventory
+  hosts.
 - Post-switch health checks ignore transient failed Podman healthcheck runner
   units and instead query current Podman container health. The health check
   still fails immediately on ordinary failed system/user units and on Podman
