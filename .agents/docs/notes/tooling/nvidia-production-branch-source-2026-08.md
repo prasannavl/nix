@@ -13,6 +13,13 @@ Explicit `--version` requests remain authoritative. Automatic and report-only
 runs use the production branch entry for Linux x86_64 and fail without changing
 the target when that entry cannot be parsed.
 
+## Manual rollback on 2026-09-07
+
+The repository pin was deliberately moved from `595.99.02` back to `595.91.07`
+at the user's request. The updater's production-branch discovery behavior
+remains unchanged, so a later automatic update may propose a newer production
+release.
+
 Validation:
 
 - `lib/ext/nvidia/update.sh --report --color=never`
