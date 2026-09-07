@@ -103,6 +103,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-a1-desktop-media-apps-2026-08.md`: Records the
   `pvl-a1` desktop media and ChatGPT package set, unconditional `pvl` MIME
   policy, and Euphonica file-handler boundary.
+- `.agents/docs/notes/hosts/pvl-a1-cloudflare-secure-dns-2026-09.md`: Records
+  the shared, overridable Cloudflare DNS-over-TLS and DNSSEC policy for Pvl core
+  hosts, including systemd-resolved routing and Tailscale MagicDNS.
 - `.agents/docs/notes/hosts/pvl-l5-home-manager-vscode-extensions-2026-06.md`:
   Records the `pvl-l5` Home Manager activation conflict where
   `mutableExtensionsDir = false` made Home Manager own `.vscode/extensions`,
