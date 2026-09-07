@@ -285,6 +285,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   CI's real dependents. `NIXBOT_CI_FIRST=1` or `--ci-first` reverses that
   preference and gives CI the first deploy wave when its predecessors permit.
   Neither preference discards graph edges.
+- Nixbot evaluates the flake key `nixbot.deployDependencies` by default and
+  merges its generated edges into inventory `deps`. A repository with a
+  different output may override the key with `config.deployDepsKey`.
 - Deploy parallelism defaults to 8 jobs per dependency wave. Rollback-snapshot
   and post-switch health-check work use a separate verify parallelism budget
   controlled by `--verify-jobs` / `NIXBOT_VERIFY_JOBS`, also defaulting to 16.

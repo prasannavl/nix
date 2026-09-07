@@ -9,6 +9,7 @@ readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/
 readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settlement --timeout {timeout}{resourceArgs}"
 readonly NIXBOT_SSH_KEYSCAN_TIMEOUT_SECS="${NIXBOT_SSH_KEYSCAN_TIMEOUT_SECS:-5}"
 readonly NIXBOT_DEFAULT_CONFIG_PATH="hosts/nixbot.nix"
+readonly NIXBOT_DEFAULT_DEPLOY_DEPS_KEY="nixbot.deployDependencies"
 
 readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
 	nixpkgs#age
@@ -3610,22 +3611,19 @@ merge_deploy_dependencies_json() {
 }
 
 apply_configured_deploy_dependencies_json() {
-	local config_json="$1" config_path="$2" attr="" dependencies_json="" flake_root=""
+	local config_json="$1" config_path="$2" key="" dependencies_json="" flake_root=""
 
-	attr="$(jq -r '.config.deployDependenciesAttr // empty' <<<"${config_json}")"
-	if [ -z "${attr}" ]; then
-		printf '%s\n' "${config_json}"
-		return 0
-	fi
-	if [[ ! "${attr}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-		die "config.deployDependenciesAttr must be a non-empty flake attribute path"
+	key="$(jq -r --arg default "${NIXBOT_DEFAULT_DEPLOY_DEPS_KEY}" \
+		'.config.deployDepsKey // $default' <<<"${config_json}")"
+	if [[ ! "${key}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+		die "config.deployDepsKey must be a non-empty flake attribute path"
 	fi
 	flake_root="$(git -C "$(dirname "${config_path}")" rev-parse --show-toplevel 2>/dev/null)" ||
-		die "config.deployDependenciesAttr requires the deploy config to belong to a flake worktree"
+		die "config.deployDepsKey requires the deploy config to belong to a flake worktree"
 	run_supervised_stdout_capture \
 		dependencies_json \
 		"" \
-		nix eval --json --no-write-lock-file "${flake_root}#${attr}" || return "$?"
+		nix eval --json --no-write-lock-file "${flake_root}#${key}" || return "$?"
 	merge_deploy_dependencies_json "${config_json}" "${dependencies_json}"
 }
 

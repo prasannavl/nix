@@ -1233,6 +1233,41 @@ class NixbotScriptTest(unittest.TestCase):
 
         self.assertEqual(["id", "proxy", "zulip"], json.loads(result.stdout))
 
+    def test_deploy_dependencies_use_default_and_override_keys(self):
+        result = self.run_script(
+            """
+            init_vars
+            git() {
+              printf '%s\n' "$PWD"
+            }
+            run_supervised_stdout_capture() {
+              local output_name="$1"
+              shift 2
+              printf -v "$output_name" '%s' '{"ci":["runtime"]}'
+              printf 'installable:%s\n' "${!#}" >&2
+            }
+            config='{
+              "hosts":{"ci":{},"runtime":{}},
+              "config":{}
+            }'
+            apply_configured_deploy_dependencies_json \
+              "$config" hosts/nixbot.nix | jq -c .hosts.ci.deps
+            config='{
+              "hosts":{"ci":{},"runtime":{}},
+              "config":{"deployDepsKey":"custom.deployDeps"}
+            }'
+            apply_configured_deploy_dependencies_json \
+              "$config" hosts/nixbot.nix | jq -c .hosts.ci.deps
+            """
+        )
+
+        self.assertEqual(
+            [["runtime"], ["runtime"]],
+            [json.loads(line) for line in result.stdout.splitlines()],
+        )
+        self.assertIn("#nixbot.deployDependencies", result.stderr)
+        self.assertIn("#custom.deployDeps", result.stderr)
+
     def test_deploy_dependencies_reject_unknown_inventory_hosts(self):
         result = self.run_script(
             """
