@@ -124,7 +124,7 @@ Clean Action Options (`clean` or `--clean`):
                    With --ci-trigger, runs the same cleanup on the CI host.
 
 Host Workflow Ordering Options (`run`, `deploy`, `build`, `check-bootstrap`):
-  --ci-first  Prioritize CI host first when the CI host is selected
+  --ci-first  Override the default late CI position and prioritize it first
 
 Workflow Behavior Options:
   --dry            Print commands without applying changes
@@ -3754,8 +3754,9 @@ validate_host_health_check_config() {
       if has("healthCheck") then
         (.healthCheck | type == "object")
         and (.healthCheck as $health
-          | if $health | has("ignoredFailedSystemUnits") then
-              $health.ignoredFailedSystemUnits as $units
+          | (($health | keys - ["ignore"] | length) == 0)
+          and (if $health | has("ignore") then
+              $health.ignore as $units
               | ($units | type == "array")
               and all($units[];
                 type == "string"
@@ -3763,11 +3764,11 @@ validate_host_health_check_config() {
                 and (test("[[:space:]]") | not))
               and (($units | unique | length) == ($units | length))
             else true
-            end)
+            end))
       else true
       end)
   ' <<<"${config_json}" >/dev/null ||
-		die "Nixbot hosts[].healthCheck.ignoredFailedSystemUnits must be a unique list of non-empty unit names without whitespace"
+		die "Nixbot hosts[].healthCheck.ignore must be a unique list of non-empty unit names without whitespace"
 }
 
 init_deploy_settings() {
@@ -4517,6 +4518,7 @@ expand_selected_hosts_json() {
 
 order_selected_hosts_json() {
 	local selected_json="$1" all_hosts_json="$2" node="" dep="" progress="" ci_host="${CI_TRIGGER_HOST}"
+	local prioritize_ci_last=0
 	local -a selected_hosts=() runnable_selected_hosts=() skipped_hosts=() ordered_hosts=()
 	declare -A all_host_set=()
 	declare -A selected_host_set=()
@@ -4551,8 +4553,14 @@ order_selected_hosts_json() {
 			fi
 		done < <(host_predecessors_for "${node}")
 	done
+	if [ "${PRIORITIZE_CI_FIRST}" -eq 0 ] &&
+		[ -n "${ci_host}" ] &&
+		[ -n "${selected_host_set["${ci_host}"]+x}" ]; then
+		prioritize_ci_last=1
+	fi
 
 	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] &&
+		[ -n "${ci_host}" ] &&
 		[ -n "${selected_host_set["${ci_host}"]+x}" ] &&
 		[ "${indegree["${ci_host}"]}" -eq 0 ]; then
 		emitted_host_set["${ci_host}"]=1
@@ -4570,6 +4578,9 @@ order_selected_hosts_json() {
 			if [ -n "${emitted_host_set["${node}"]+x}" ]; then
 				continue
 			fi
+			if [ "${prioritize_ci_last}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
+				continue
+			fi
 			if [ "${indegree["${node}"]}" -ne 0 ]; then
 				continue
 			fi
@@ -4583,6 +4594,20 @@ order_selected_hosts_json() {
 				indegree["${dep}"]=$((indegree["${dep}"] - 1))
 			done <<<"${dependents["${node}"]:-}"
 		done
+
+		if [ "${progress}" -eq 0 ] &&
+			[ "${prioritize_ci_last}" -eq 1 ] &&
+			[ -z "${emitted_host_set["${ci_host}"]+x}" ] &&
+			[ "${indegree["${ci_host}"]}" -eq 0 ]; then
+			emitted_host_set["${ci_host}"]=1
+			ordered_hosts+=("${ci_host}")
+			progress=1
+
+			while IFS= read -r dep; do
+				[ -n "${dep}" ] || continue
+				indegree["${dep}"]=$((indegree["${dep}"] - 1))
+			done <<<"${dependents["${ci_host}"]:-}"
+		fi
 
 		if [ "${progress}" -eq 0 ]; then
 			local -a cycle_hosts=()
@@ -4604,13 +4629,16 @@ order_selected_hosts_json() {
 selected_host_levels_json() {
 	local selected_json="$1" node="" dep="" dep_level="" node_level=""
 	local max_level="" level="" ci_host="${CI_TRIGGER_HOST}" ci_first_ready=0
+	local ci_last_ready=0 ci_last_prior_seen=0
 	local -a selected_hosts=()
 	declare -A selected_host_set=()
 	declare -A host_level=()
 
 	json_array_to_bash_array "${selected_json}" selected_hosts
 	json_array_to_bash_set "${selected_json}" selected_host_set
-	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] && [ -n "${selected_host_set["${ci_host}"]+x}" ]; then
+	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] &&
+		[ -n "${ci_host}" ] &&
+		[ -n "${selected_host_set["${ci_host}"]+x}" ]; then
 		ci_first_ready=1
 		while IFS= read -r dep; do
 			[ -n "${dep}" ] || continue
@@ -4619,6 +4647,8 @@ selected_host_levels_json() {
 				break
 			fi
 		done < <(host_predecessors_for "${ci_host}")
+	elif [ -n "${ci_host}" ] && [ -n "${selected_host_set["${ci_host}"]+x}" ]; then
+		ci_last_ready=1
 	fi
 
 	max_level=0
@@ -4639,6 +4669,13 @@ selected_host_levels_json() {
 				fi
 			fi
 		done < <(host_predecessors_for "${node}")
+		if [ "${ci_last_ready}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
+			if [ "${ci_last_prior_seen}" -eq 1 ] && [ "${node_level}" -le "${max_level}" ]; then
+				node_level=$((max_level + 1))
+			fi
+		elif [ "${ci_last_ready}" -eq 1 ]; then
+			ci_last_prior_seen=1
+		fi
 
 		if [ "${ci_first_ready}" -eq 1 ] && [ "${node_level}" -lt 1 ]; then
 			node_level=1
@@ -4993,7 +5030,7 @@ health_check_ignored_failed_system_units_for() {
 		die "Cannot resolve host capability ${node} to one inventory endpoint"
 
 	jq -r --arg h "${inventory_host}" \
-		'.[$h].healthCheck.ignoredFailedSystemUnits // [] | .[]' \
+		'.[$h].healthCheck.ignore // [] | .[]' \
 		<<<"${NIXBOT_HOSTS_JSON}"
 }
 

@@ -218,8 +218,10 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
   work and rollback execution.
 - Verification parallelism: `NIXBOT_VERIFY_JOBS` / `--verify-jobs` (default:
   `16`) for rollback snapshots and health checks.
-- `NIXBOT_CI_FIRST` / `--ci-first` prioritizes the CI host first for both build
-  ordering and deploy waves when selected.
+- By default, Nixbot defers the selected CI host until all hosts that can deploy
+  without it have finished. Real dependents still follow it. `NIXBOT_CI_FIRST`
+  or `--ci-first` instead prioritizes the CI host for build ordering and gives
+  it the first deploy wave when its predecessors permit.
 - Deploy derives dependency waves from `deps`.
 
 ## Package Conventions

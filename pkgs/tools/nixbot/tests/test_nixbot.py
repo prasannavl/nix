@@ -273,7 +273,7 @@ class NixbotScriptTest(unittest.TestCase):
                 "a1-endpoint": {{
                   "resourceId": "pvl-a1",
                   "healthCheck": {{
-                    "ignoredFailedSystemUnits": [
+                    "ignore": [
                       "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service"
                     ]
                   }}
@@ -1137,6 +1137,59 @@ class NixbotScriptTest(unittest.TestCase):
         normal, ci_first = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual([["ci", "parent"], ["db"], ["app"], ["worker"]], normal)
         self.assertEqual([["ci"], ["parent", "db"], ["app"], ["worker"]], ci_first)
+
+    def test_ci_defaults_late_and_explicit_first_for_pvl_topology(self):
+        result = self.run_script(
+            """
+            unset NIXBOT_CI_FIRST
+            init_vars
+            NIXBOT_HOSTS_JSON='{
+              "pvl-a1": {},
+              "pvl-l5": {},
+              "pvl-x2": {},
+              "pvl-vlab": {"parent":"pvl-x2"},
+              "pvl-vlab-1": {"parent":"pvl-x2"},
+              "pvl-vk": {"parent":"pvl-vlab"},
+              "pvl-vk-1": {"parent":"pvl-vlab-1"}
+            }'
+            CI_TRIGGER_HOST=pvl-x2
+            selected='[
+              "pvl-a1","pvl-l5","pvl-x2","pvl-vlab",
+              "pvl-vlab-1","pvl-vk","pvl-vk-1"
+            ]'
+            ordered="$(order_selected_hosts_json "$selected" "$selected")"
+            printf '%s\n' "$ordered"
+            selected_host_levels_json "$ordered" | jq -c .
+
+            PRIORITIZE_CI_FIRST=1
+            ordered="$(order_selected_hosts_json "$selected" "$selected")"
+            printf '%s\n' "$ordered"
+            selected_host_levels_json "$ordered" | jq -c .
+            """
+        )
+
+        default_order, default_levels, first_order, first_levels = [
+            json.loads(line) for line in result.stdout.splitlines()
+        ]
+        self.assertLess(default_order.index("pvl-l5"), default_order.index("pvl-x2"))
+        self.assertEqual(
+            [
+                ["pvl-a1", "pvl-l5"],
+                ["pvl-x2"],
+                ["pvl-vlab", "pvl-vlab-1"],
+                ["pvl-vk", "pvl-vk-1"],
+            ],
+            default_levels,
+        )
+        self.assertEqual("pvl-x2", first_order[0])
+        self.assertEqual(
+            [
+                ["pvl-x2"],
+                ["pvl-a1", "pvl-l5", "pvl-vlab", "pvl-vlab-1"],
+                ["pvl-vk", "pvl-vk-1"],
+            ],
+            first_levels,
+        )
 
     def test_ci_first_preserves_controller_dependencies(self):
         result = self.run_script(
@@ -5383,7 +5436,7 @@ EOF_SCRIPT
                       "hosts": {{
                         "app": {{
                           "healthCheck": {{
-                            "ignoredFailedSystemUnits": {invalid_value}
+                            "ignore": {invalid_value}
                           }}
                         }}
                       }},
@@ -5396,7 +5449,7 @@ EOF_SCRIPT
 
                 self.assertNotEqual(0, result.returncode)
                 self.assertIn(
-                    "hosts[].healthCheck.ignoredFailedSystemUnits must be a unique list",
+                    "hosts[].healthCheck.ignore must be a unique list",
                     result.stderr,
                 )
 
@@ -5414,9 +5467,26 @@ EOF_SCRIPT
 
         self.assertNotEqual(0, result.returncode)
         self.assertIn(
-            "hosts[].healthCheck.ignoredFailedSystemUnits must be a unique list",
+            "hosts[].healthCheck.ignore must be a unique list",
             result.stderr,
         )
+
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_CONFIG_PATH={self.work_dir / "nixbot.nix"}
+            init_deploy_settings '{{
+              "hosts": {{"app": {{"healthCheck": {{
+                "ignoredFailedSystemUnits": []
+              }}}}}},
+              "config": {{}}
+            }}'
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("hosts[].healthCheck.ignore", result.stderr)
 
     def test_post_switch_health_command_preserves_multiple_ignored_unit_names(self):
         result = self.run_script(

@@ -280,6 +280,11 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   budget within a dependency wave. Rollback execution walks dependency levels in
   reverse, so child/dependent hosts roll back before parents while hosts inside
   each rollback level can still fan out up to the deploy job limit.
+- The selected CI host defaults to the latest position allowed by the dependency
+  graph. Nixbot first deploys every host that does not require CI, then CI, then
+  CI's real dependents. `NIXBOT_CI_FIRST=1` or `--ci-first` reverses that
+  preference and gives CI the first deploy wave when its predecessors permit.
+  Neither preference discards graph edges.
 - Deploy parallelism defaults to 8 jobs per dependency wave. Rollback-snapshot
   and post-switch health-check work use a separate verify parallelism budget
   controlled by `--verify-jobs` / `NIXBOT_VERIFY_JOBS`, also defaulting to 16.
@@ -351,11 +356,11 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   at the new generation. User-service failures should still be scoped to the
   deploy window, not stale display-session failures left behind by earlier
   compositor logout/login churn.
-- A host may declare exact system-unit exceptions under
-  `healthCheck.ignoredFailedSystemUnits` in the Nixbot inventory:
+- A host may declare exact system-unit exceptions under `healthCheck.ignore` in
+  the Nixbot inventory:
 
   ```nix
-  hosts.pvl-a1.healthCheck.ignoredFailedSystemUnits = [
+  hosts.pvl-a1.healthCheck.ignore = [
     "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service"
   ];
   ```

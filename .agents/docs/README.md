@@ -300,6 +300,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   the `pvl-l5` self-deploy NetworkManager outage that broke a parallel `pvl-x2`
   closure copy, the unchanged target boundary, and required self-target
   isolation.
+- `.agents/docs/notes/nixbot/cache-owner-race-and-vk1-dotfiles-2026-09.md`:
+  Records run `NlBSxs`, where concurrent `pvl-x2` activation interrupted the
+  `pvl-l5` cache transfer and a GitHub-dependent dotfiles sync failed `pvl-vk-1`
+  activation before successful rollback, plus the dotfiles isolation and
+  cache-consumer-first scheduling repairs.
 - `.agents/docs/notes/nixbot/pvl-x2-self-cache-negative-narinfo-2026-08.md`:
   Records the `pvl-x2` self-cache handoff failure where a one-hour negative
   narinfo entry hid an already-valid new closure member, plus the canonical

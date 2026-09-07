@@ -10,7 +10,7 @@ in {
     pvl-a1 = {
       target = "pvl-a1";
       ageIdentityKey = secretPaths.machine "pvl-a1";
-      healthCheck.ignoredFailedSystemUnits = [
+      healthCheck.ignore = [
         "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service"
       ];
     };

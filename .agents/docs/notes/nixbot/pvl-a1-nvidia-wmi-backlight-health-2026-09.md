@@ -69,7 +69,7 @@ add an exact-name, host-scoped Nixbot inventory policy. The intended shape is:
 
 ```nix
 pvl-a1 = {
-  healthCheck.ignoredFailedSystemUnits = [
+  healthCheck.ignore = [
     "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service"
   ];
 };
@@ -95,9 +95,8 @@ validating the desired brightness path:
 ## Implementation and validation
 
 The inventory now assigns only the NVIDIA WMI backlight instance to `pvl-a1`'s
-`healthCheck.ignoredFailedSystemUnits`. Nixbot validates and resolves that
-policy generically; the exception is not hard-coded into the health
-implementation.
+`healthCheck.ignore`. Nixbot validates and resolves that policy generically; the
+exception is not hard-coded into the health implementation.
 
 Regression coverage proves valid canonical-resource resolution, invalid-policy
 rejection, exact matching, continued failure for similar system units and user

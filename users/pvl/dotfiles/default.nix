@@ -7,62 +7,65 @@
     ...
   }: let
     syncDotfiles = pkgs.writeShellScript "sync-dotfiles" ''
-      set -eu
+      set -Eeuo pipefail
 
-      vars() {
+      init_vars() {
         home_dir="${config.home.homeDirectory}"
         dotfiles_dir="$home_dir/dotfiles"
         bin_dir="$home_dir/bin"
+        repo_host="github.com"
+        repo_url="https://$repo_host/prasannavl/dotfiles.git"
+        network_attempts=5
+        network_retry_seconds=2
+        git_timeout=60s
         getent="${pkgs.getent}/bin/getent"
         git="${pkgs.git}/bin/git"
         ln="${pkgs.coreutils}/bin/ln"
         mkdir="${pkgs.coreutils}/bin/mkdir"
         sleep="${pkgs.coreutils}/bin/sleep"
+        timeout="${pkgs.coreutils}/bin/timeout"
       }
 
       wait_for_network() {
-        local attempts host
-        attempts=5
-        host="github.com"
-
-        while ! "$getent" hosts "$host" >/dev/null; do
+        local attempts="$network_attempts"
+        while ! "$getent" hosts "$repo_host" >/dev/null; do
           attempts=$((attempts - 1))
-          if [ "$attempts" -le 0 ]; then
-            echo "Timed out waiting for DNS resolution of $host" >&2
-            return 1
-          fi
-
-          "$sleep" 2
+          [ "$attempts" -gt 0 ] || return 1
+          "$sleep" "$network_retry_seconds"
         done
       }
 
-      sync_dotfiles() {
-        local repo_url
-        repo_url="https://github.com/prasannavl/dotfiles.git"
-        export GIT_SSH_COMMAND="${pkgs.openssh}/bin/ssh"
+      main() {
+        init_vars
 
-        if [ -d "$dotfiles_dir/.git" ]; then
-          "$git" -C "$dotfiles_dir" fetch --all --prune
-          "$git" -C "$dotfiles_dir" pull --ff-only
-        else
-          "$mkdir" -p "$home_dir"
-          "$git" clone "$repo_url" "$dotfiles_dir"
+        if [ -e "$dotfiles_dir" ] && [ ! -d "$dotfiles_dir/.git" ]; then
+          echo "Refusing to replace non-Git path: $dotfiles_dir" >&2
+          return 1
         fi
-      }
-
-      link_editable_bin() {
         if [ -e "$bin_dir" ] && [ ! -L "$bin_dir" ]; then
           echo "Refusing to replace non-symlink path: $bin_dir" >&2
           return 1
         fi
 
-        "$ln" -sfn "$dotfiles_dir/bin" "$bin_dir"
+        "$mkdir" -p "$home_dir"
+        if ! wait_for_network; then
+          echo "Dotfiles network unavailable; the timer will retry later" >&2
+        elif [ -d "$dotfiles_dir/.git" ]; then
+          if "$timeout" "$git_timeout" "$git" -C "$dotfiles_dir" fetch --all --prune; then
+            "$git" -C "$dotfiles_dir" merge --ff-only '@{upstream}'
+          else
+            echo "Dotfiles fetch unavailable; keeping the existing checkout" >&2
+          fi
+        elif ! "$timeout" "$git_timeout" "$git" clone "$repo_url" "$dotfiles_dir"; then
+          echo "Dotfiles clone unavailable; the timer will retry later" >&2
+        fi
+
+        if [ -d "$dotfiles_dir/.git" ]; then
+          "$ln" -sfn "$dotfiles_dir/bin" "$bin_dir"
+        fi
       }
 
-      vars
-      wait_for_network
-      sync_dotfiles
-      link_editable_bin
+      main "$@"
     '';
   in {
     systemd.user.services.dotfiles-sync = {
@@ -71,6 +74,7 @@
         Documentation = "https://github.com/prasannavl/dotfiles";
         Wants = ["network-online.target"];
         After = ["network-online.target"];
+        X-SwitchMethod = "keep-old";
       };
 
       Service = {
