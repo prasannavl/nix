@@ -59,6 +59,7 @@
 
     # Key remaps
     keyd = {
+      enable = true;
       keyboards = {
         default = {
           ids = ["0001:0001:3cf016cc"];

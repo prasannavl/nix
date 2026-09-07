@@ -106,6 +106,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-a1-cloudflare-secure-dns-2026-09.md`: Records
   the shared, overridable Cloudflare DNS-over-TLS and DNSSEC policy for Pvl core
   hosts, including systemd-resolved routing and Tailscale MagicDNS.
+- `.agents/docs/notes/hosts/pvl-a1-copilot-keyd-regression-2026-09.md`: Records
+  the lost host-local keyd enablement that left the FA401WV
+  Copilot-to-Right-Ctrl mapping evaluated but inactive on `pvl-a1`.
 - `.agents/docs/notes/hosts/pvl-l5-home-manager-vscode-extensions-2026-06.md`:
   Records the `pvl-l5` Home Manager activation conflict where
   `mutableExtensionsDir = false` made Home Manager own `.vscode/extensions`,
