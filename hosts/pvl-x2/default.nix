@@ -29,23 +29,25 @@ in {
 
   networking.firewall.allowedTCPPorts = [5000];
 
-  services.nix-builder-gc-coordination.enable = true;
+  services = {
+    nix-builder-gc-coordination.enable = true;
 
-  services.tailscale = {
-    useRoutingFeatures = "both";
-    extraSetFlags = ["--advertise-exit-node"];
-  };
-
-  services.harmonia = let
-    cacheConfig = {
-      enable = true;
-      signKeyPaths = [signingKey];
-      settings.bind = "0.0.0.0:5000";
+    tailscale = {
+      useRoutingFeatures = "both";
+      extraSetFlags = ["--advertise-exit-node"];
     };
-  in
-    if harmoniaLessThan3 pkgs.harmonia.version || !(options.services.harmonia ? cache)
-    then cacheConfig
-    else {cache = cacheConfig;};
+
+    harmonia = let
+      cacheConfig = {
+        enable = true;
+        signKeyPaths = [signingKey];
+        settings.bind = "0.0.0.0:5000";
+      };
+    in
+      if harmoniaLessThan3 pkgs.harmonia.version || !(options.services.harmonia ? cache)
+      then cacheConfig
+      else {cache = cacheConfig;};
+  };
 
   age.secrets.nix-builder-pvl-signing-key = {
     file = ../../data/secrets/globals/nix/builder-pvl.key.age;
