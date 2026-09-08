@@ -3,6 +3,7 @@
   buildNpmPackage,
   dockerTools,
   fetchFromGitHub,
+  fetchNpmDeps,
   geist-font,
   lib,
   nodejs_24,
@@ -29,27 +30,38 @@
     hash = "sha256-2N9Y4AMMXjXzXU+VWN6cQq0BGpIERfPGJmI0L9WbTtg=";
   };
 
+  patches = [
+    ./calendar-organizer-attendee-shape.patch
+    ./local-geist-fonts.patch
+    ./server-logout-route.patch
+  ];
+
+  postPatch = ''
+    substituteInPlace package.json \
+      --replace-fail '"build": "next build --turbopack"' '"build": "next build --webpack"'
+
+    mkdir -p app/fonts
+    cp ${geist-font}/share/fonts/opentype/Geist-Regular.otf app/fonts/Geist-Regular.otf
+    cp ${geist-font}/share/fonts/opentype/GeistMono-Regular.otf app/fonts/GeistMono-Regular.otf
+  '';
+
+  npmDeps = fetchNpmDeps {
+    name = "${pname}-${version}-npm-deps";
+    inherit src patches postPatch;
+    hash = "sha256-ffXwwvyodHRLpQ0B4M8tJHnes8KtAfX9fLsyZL68+KQ=";
+
+    # prefetch-npm-deps otherwise fans out to every builder core. Large parallel
+    # HTTP/2 batches intermittently fail against registry.npmjs.org with curl
+    # error 92, which its retry classifier treats as permanent.
+    NIX_BUILD_CORES = "1";
+  };
+
   patchedApp = buildNpmPackage {
-    inherit pname version src;
+    inherit pname version src npmDeps patches postPatch;
     nodejs = nodejs_24;
-    npmDepsHash = "sha256-ffXwwvyodHRLpQ0B4M8tJHnes8KtAfX9fLsyZL68+KQ=";
-    patches = [
-      ./calendar-organizer-attendee-shape.patch
-      ./local-geist-fonts.patch
-      ./server-logout-route.patch
-    ];
 
     NEXT_TELEMETRY_DISABLED = "1";
     GIT_COMMIT = shortRev;
-
-    postPatch = ''
-      substituteInPlace package.json \
-        --replace-fail '"build": "next build --turbopack"' '"build": "next build --webpack"'
-
-      mkdir -p app/fonts
-      cp ${geist-font}/share/fonts/opentype/Geist-Regular.otf app/fonts/Geist-Regular.otf
-      cp ${geist-font}/share/fonts/opentype/GeistMono-Regular.otf app/fonts/GeistMono-Regular.otf
-    '';
 
     installPhase = ''
       runHook preInstall
