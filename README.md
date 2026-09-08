@@ -158,6 +158,11 @@ Primary files for deployment are:
   executes the packaged nixbot entrypoint without depending on repo-relative
   flake discovery.
 
+`abird-host-manager fleet` contains the native Rust implementation of the same
+workflow for explicit pre-cutover validation. It does not replace the packaged
+`nixbot`, its callers, or its Bash implementation until a separate reviewed
+cutover.
+
 ## Deploy Actions
 
 `nixbot` supports multiple top-level actions:
@@ -218,10 +223,11 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
   work and rollback execution.
 - Verification parallelism: `NIXBOT_VERIFY_JOBS` / `--verify-jobs` (default:
   `16`) for rollback snapshots and health checks.
-- By default, Nixbot defers the selected CI host until all hosts that can deploy
-  without it have finished. Real dependents still follow it. `NIXBOT_CI_FIRST`
-  or `--ci-first` instead prioritizes the CI host for build ordering and gives
-  it the first deploy wave when its predecessors permit.
+- The control-plane unit is the controller followed by each distinct registry
+  host. It runs last by default for both build ordering and deploy waves.
+- `NIXBOT_CONTROL_PLANE_FIRST` / `--control-plane-first` moves that same unit to
+  the front. Declared dependency and parent edges remain authoritative, so
+  prerequisites still run before the controller when required.
 - Deploy derives dependency waves from `deps`.
 
 ## Package Conventions

@@ -296,11 +296,36 @@ deterministic projection if it did not. Runtime reconciliation cannot start
 until that exact revision is confirmed published, so the retry neither creates a
 second transaction nor replays a migration job.
 
-The Nixbot package explicitly carries the hostname and address-discovery tools
-used to classify a controller self-deployment. A self-target reuses the outer
-host-local deployment lock instead of attempting to acquire it again inside its
-transient activation unit. This keeps controller closeout deployment serialized
-without allowing a nested lock to deadlock its own deploy.
+The host-manager fleet package explicitly carries the hostname and
+address-discovery tools used to classify a controller self-deployment. A
+self-target reuses the outer host-local deployment lock instead of attempting to
+acquire it again inside its transient activation unit. This keeps controller
+closeout deployment serialized without allowing a nested lock to deadlock its
+own deploy.
+
+## Fleet commands
+
+`abird-host-manager fleet` implements the complete Nixbot workflow: inventory
+and group listing, dependency checks, repository synchronization, builds,
+development builds, deployment, rollback, managed-user health convergence,
+bootstrap checks, OpenTofu phases, CI triggering, and bounded runtime cleanup.
+It is available for explicit validation, but the packaged `nixbot` command,
+NixOS module, workflows, move-command deployment adapter, and repository wrapper
+continue to use the existing Bash implementation until a separate cutover.
+
+Human output follows the same progress grammar as move commands. Interactive
+terminals keep one active status line, redirected output emits stable start and
+completion lines, and GitHub Actions mode uses groups and annotations. Normal
+output is concise. `--verbose` streams detailed command output, automatically
+attributed when phases can run concurrently, while failure diagnostics retain
+raw, uncolored stdout, stderr, status, and duration files in the reported
+private diagnostics directory. `--prefix-host-logs` forces attribution; an
+explicit false `NIXBOT_PREFIX_HOST_LOGS` disables the automatic behavior.
+
+The Rust compatibility binary remains covered by the Cargo suite so the later
+cutover is packaging and caller wiring rather than another implementation port.
+It is deliberately removed from the installed `abird-host-manager` output to
+avoid colliding with or shadowing the active `nixbot` package.
 
 The operator checkout may be behind the authoritative branch because the
 controller publishes projection commits. It may not have unpublished commits or
@@ -346,14 +371,14 @@ deployment identities without a generated mirror file. Proxy hops are resolved
 from inventory to concrete OpenSSH commands, with an explicit null OpenSSH
 configuration and global trust store, so they do not depend on ambient aliases
 or credentials. The repository config names controller and transfer-broker
-capabilities independently; both currently resolve to `abird-ci`, but workflow
-and deploy routes use only the controller while data movement uses only the
-transfer broker. For moves, the adapter also derives the target's existing
-parent as its provisioning endpoint, endpoint deployments for target setup, and
-the stack's shared proxy role for cutover and rollback. An explicit JSON policy
-is therefore optional and is reserved for standalone or unusual infrastructure
-whose controller, routes, or polling policy cannot be inferred safely. The
-repository inventory uses the following capability shape:
+capabilities independently; both currently resolve to `pvl-x2`, but workflow and
+deploy routes use only the controller while data movement uses only the transfer
+broker. For moves, the adapter also derives the target's existing parent as its
+provisioning endpoint, endpoint deployments for target setup, and the stack's
+shared proxy role for cutover and rollback. An explicit JSON policy is therefore
+optional and is reserved for standalone or unusual infrastructure whose
+controller, routes, or polling policy cannot be inferred safely. The repository
+inventory uses the following capability shape:
 
 ```nix
 config = {

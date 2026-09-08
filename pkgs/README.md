@@ -44,6 +44,8 @@ playbook or README.
   package-local workspace and local wrapper flake
 - `pkgs/examples/hello-web-static/`: static web asset package for host or
   service reuse with a local wrapper flake and dev shell
+- `pkgs/tools/abird-host-manager/`: Rust host, migration, and pre-cutover fleet
+  control plane
 - `pkgs/tools/nixbot/`: deploy package and local wrapper flake
 - `pkgs/cloudflare-apps/`: aggregate package namespace for the
   `tf/cloudflare-apps` phase
