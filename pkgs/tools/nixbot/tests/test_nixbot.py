@@ -77,6 +77,7 @@ class NixbotScriptTest(unittest.TestCase):
               --deploy-jobs 4 \
               --deploy-jobs-per-domain 2 \
               --verify-jobs 5 \
+              --control-plane-first \
               --dry \
               --skip-global-lock \
               --no-rollback \
@@ -96,13 +97,14 @@ class NixbotScriptTest(unittest.TestCase):
               --arg deployJobs "$NIXBOT_PARALLEL_JOBS" \
               --arg deployJobsPerDomain "$NIXBOT_PARALLEL_JOBS_PER_DOMAIN" \
               --arg verifyJobs "$NIXBOT_VERIFY_JOBS" \
+              --arg controlPlaneFirst "$CONTROL_PLANE_FIRST" \
               --arg dry "$DRY_RUN" \
               --arg rollback "$ROLLBACK_ON_FAILURE" \
               --arg verify "$VERIFY_AFTER_DEPLOY" \
               --arg prefix "$FORCE_PREFIX_HOST_LOGS" \
               --arg skipGlobalLock "$SKIP_HOST_LOCAL_ACTION_LOCK" \
               --arg logFormat "$LOG_FORMAT" \
-              '{action:$action,hostAction:$hostAction,groups:$groups,hosts:$hosts,goal:$goal,buildHost:$buildHost,buildMode:$buildMode,buildPlanJobs:$buildPlanJobs,buildJobs:$buildJobs,deployJobs:$deployJobs,deployJobsPerDomain:$deployJobsPerDomain,verifyJobs:$verifyJobs,dry:$dry,rollback:$rollback,verify:$verify,prefix:$prefix,skipGlobalLock:$skipGlobalLock,logFormat:$logFormat}'
+              '{action:$action,hostAction:$hostAction,groups:$groups,hosts:$hosts,goal:$goal,buildHost:$buildHost,buildMode:$buildMode,buildPlanJobs:$buildPlanJobs,buildJobs:$buildJobs,deployJobs:$deployJobs,deployJobsPerDomain:$deployJobsPerDomain,verifyJobs:$verifyJobs,controlPlaneFirst:$controlPlaneFirst,dry:$dry,rollback:$rollback,verify:$verify,prefix:$prefix,skipGlobalLock:$skipGlobalLock,logFormat:$logFormat}'
             """
         )
 
@@ -121,6 +123,7 @@ class NixbotScriptTest(unittest.TestCase):
                 "deployJobs": "4",
                 "deployJobsPerDomain": "2",
                 "verifyJobs": "5",
+                "controlPlaneFirst": "1",
                 "dry": "1",
                 "rollback": "0",
                 "verify": "0",
@@ -142,6 +145,19 @@ class NixbotScriptTest(unittest.TestCase):
         )
 
         self.assertEqual("1|0|1", result.stdout.strip())
+
+    def test_removed_ci_first_option_is_rejected(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            parse_args --ci-first
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Unknown argument: --ci-first", result.stderr)
 
     def test_restart_managed_rejects_non_deploy_actions(self):
         result = self.run_script(
@@ -209,6 +225,10 @@ class NixbotScriptTest(unittest.TestCase):
         result = self.run_script(
             """
             init_vars
+            NIXBOT_HOSTS_JSON='{
+              "abird-gondor-ci": {"resourceId": "abird-ci"},
+              "abird-gondor-data": {"resourceId": "abird-data"}
+            }'
             apply_config_defaults '{
               "hosts": {
                 "abird-gondor-ci": {"resourceId": "abird-ci"},
@@ -225,12 +245,17 @@ class NixbotScriptTest(unittest.TestCase):
               }
             }'
             printf '%s|%s|%s|%s\n' "$CI_TRIGGER_HOST" "$BUILD_HOST" "$BUILD_CACHE_HOST" "$BUILD_CACHE_URL"
+            printf '%s\n' "$NIXBOT_CONTROL_PLANE_HOSTS_JSON"
             """
         )
 
         self.assertEqual(
             "abird-ci|abird-ci|abird-ci|http://cache:5000",
-            result.stdout.strip(),
+            result.stdout.splitlines()[0],
+        )
+        self.assertEqual(
+            ["abird-gondor-ci", "abird-gondor-data"],
+            json.loads(result.stdout.splitlines()[1]),
         )
 
     def test_canonical_capability_uses_exact_inventory_endpoint(self):
@@ -976,7 +1001,7 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertIn("single:app", result.stdout)
         self.assertNotIn("single:all", result.stdout)
 
-    def test_group_selection_dependency_expansion_and_ci_first_ordering(self):
+    def test_group_selection_dependency_expansion_respects_exclusions(self):
         result = self.run_script(
             """
             init_vars
@@ -991,8 +1016,6 @@ class NixbotScriptTest(unittest.TestCase):
             NIXBOT_GROUP_DEPENDENCY_EXCLUSIONS_JSON='{"prod":["db"]}'
             GROUPS_RAW=prod
             HOSTS_RAW=all
-            PRIORITIZE_CI_FIRST=1
-            CI_TRIGGER_HOST=ci
             resolve_selected_hosts_json '["ci","parent","app","db","skipped"]'
             """
         )
@@ -1115,33 +1138,81 @@ class NixbotScriptTest(unittest.TestCase):
             lines[2:],
         )
 
-    def test_selected_host_levels_follow_dependencies_and_ci_first(self):
+    def test_control_plane_unit_is_last_by_default_and_first_when_requested(self):
         result = self.run_script(
             """
             init_vars
             NIXBOT_HOSTS_JSON='{
-              "ci": {},
+              "controller": {},
+              "registry": {},
               "parent": {},
-              "db": {"after":["ci"]},
+              "db": {},
               "app": {"parent":"parent","deps":["db"]},
               "worker": {"after":["app"]}
             }'
-            selected='["ci","parent","db","app","worker"]'
-            selected_host_levels_json "$selected" | jq -c .
-            PRIORITIZE_CI_FIRST=1
-            CI_TRIGGER_HOST=ci
-            selected_host_levels_json "$selected" | jq -c .
+            NIXBOT_CONTROL_PLANE_HOSTS_JSON='["controller","registry"]'
+            selected='["controller","registry","parent","db","app","worker"]'
+            ordered="$(order_selected_hosts_json "$selected" "$selected")"
+            printf '%s\n' "$ordered"
+            selected_host_levels_json "$ordered" | jq -c .
+            CONTROL_PLANE_FIRST=1
+            ordered="$(order_selected_hosts_json "$selected" "$selected")"
+            printf '%s\n' "$ordered"
+            selected_host_levels_json "$ordered" | jq -c .
             """
         )
 
-        normal, ci_first = [json.loads(line) for line in result.stdout.splitlines()]
-        self.assertEqual([["ci", "parent"], ["db"], ["app"], ["worker"]], normal)
-        self.assertEqual([["ci"], ["parent", "db"], ["app"], ["worker"]], ci_first)
+        default_order, default_levels, first_order, first_levels = [
+            json.loads(line) for line in result.stdout.splitlines()
+        ]
+        self.assertEqual(
+            ["parent", "db", "app", "worker", "controller", "registry"],
+            default_order,
+        )
+        self.assertEqual(
+            [["parent", "db"], ["app"], ["worker"], ["controller"], ["registry"]],
+            default_levels,
+        )
+        self.assertEqual(
+            ["controller", "registry", "parent", "db", "app", "worker"],
+            first_order,
+        )
+        self.assertEqual(
+            [["controller"], ["registry"], ["parent", "db"], ["app"], ["worker"]],
+            first_levels,
+        )
 
-    def test_ci_defaults_late_and_explicit_first_for_pvl_topology(self):
+    def test_control_plane_first_preserves_controller_dependencies(self):
         result = self.run_script(
             """
-            unset NIXBOT_CI_FIRST
+            init_vars
+            NIXBOT_HOSTS_JSON='{
+              "controller": {"deps":["proxy"]},
+              "registry": {},
+              "id": {},
+              "proxy": {"after":["id"]},
+              "app": {}
+            }'
+            CONTROL_PLANE_FIRST=1
+            NIXBOT_CONTROL_PLANE_HOSTS_JSON='["controller","registry"]'
+            selected='["controller","registry","id","proxy","app"]'
+            ordered="$(order_selected_hosts_json "$selected" "$selected")"
+            printf '%s\n' "$ordered"
+            selected_host_levels_json "$ordered" | jq -c .
+            """
+        )
+
+        ordered, levels = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertLess(ordered.index("proxy"), ordered.index("controller"))
+        self.assertLess(ordered.index("controller"), ordered.index("registry"))
+        self.assertEqual(
+            [["id", "app"], ["proxy"], ["controller"], ["registry"]],
+            levels,
+        )
+
+    def test_control_plane_ordering_matches_pvl_topology(self):
+        result = self.run_script(
+            """
             init_vars
             NIXBOT_HOSTS_JSON='{
               "pvl-a1": {},
@@ -1152,7 +1223,7 @@ class NixbotScriptTest(unittest.TestCase):
               "pvl-vk": {"parent":"pvl-vlab"},
               "pvl-vk-1": {"parent":"pvl-vlab-1"}
             }'
-            CI_TRIGGER_HOST=pvl-x2
+            NIXBOT_CONTROL_PLANE_HOSTS_JSON='["pvl-x2"]'
             selected='[
               "pvl-a1","pvl-l5","pvl-x2","pvl-vlab",
               "pvl-vlab-1","pvl-vk","pvl-vk-1"
@@ -1161,7 +1232,7 @@ class NixbotScriptTest(unittest.TestCase):
             printf '%s\n' "$ordered"
             selected_host_levels_json "$ordered" | jq -c .
 
-            PRIORITIZE_CI_FIRST=1
+            CONTROL_PLANE_FIRST=1
             ordered="$(order_selected_hosts_json "$selected" "$selected")"
             printf '%s\n' "$ordered"
             selected_host_levels_json "$ordered" | jq -c .
@@ -1191,28 +1262,25 @@ class NixbotScriptTest(unittest.TestCase):
             first_levels,
         )
 
-    def test_ci_first_preserves_controller_dependencies(self):
+    def test_default_control_plane_unit_stays_together_before_its_consumers(self):
         result = self.run_script(
             """
             init_vars
             NIXBOT_HOSTS_JSON='{
-              "ci": {"deps":["proxy"]},
-              "id": {},
-              "proxy": {"after":["id"]},
-              "app": {}
+              "controller": {},
+              "registry": {},
+              "consumer": {"deps":["controller"]}
             }'
-            PRIORITIZE_CI_FIRST=1
-            CI_TRIGGER_HOST=ci
-            selected='["ci","id","proxy","app"]'
-            ordered="$(order_selected_hosts_json "$selected" "$selected")"
-            printf '%s\n' "$ordered"
-            selected_host_levels_json "$ordered" | jq -c .
+            NIXBOT_CONTROL_PLANE_HOSTS_JSON='["controller","registry"]'
+            selected='["controller","registry","consumer"]'
+            order_selected_hosts_json "$selected" "$selected"
             """
         )
 
-        ordered, levels = [json.loads(line) for line in result.stdout.splitlines()]
-        self.assertLess(ordered.index("proxy"), ordered.index("ci"))
-        self.assertEqual([["id", "app"], ["proxy"], ["ci"]], levels)
+        self.assertEqual(
+            ["controller", "registry", "consumer"],
+            json.loads(result.stdout),
+        )
 
     def test_deploy_dependencies_merge_into_inventory_edges(self):
         result = self.run_script(
@@ -1863,6 +1931,7 @@ class NixbotScriptTest(unittest.TestCase):
             ],
             result.stdout.splitlines(),
         )
+
     def test_deploy_request_action_wraps_major_actions_with_host_local_lock(self):
         result = self.run_script(
             """
@@ -1883,6 +1952,28 @@ class NixbotScriptTest(unittest.TestCase):
 
         self.assertEqual(
             ["lock:deploy", 'run:["zeta","alpha"]', "unlock", "rc:7"],
+            result.stdout.splitlines(),
+        )
+
+    def test_exit_cleanup_has_no_remote_build_retention_cleanup(self):
+        result = self.run_script(
+            """
+            init_vars
+            terminate_background_jobs() { printf 'terminate\n'; }
+            release_host_local_lock() { printf 'lock\n'; }
+            restore_initial_tty_state() { :; }
+            log_group_end_all() { :; }
+            cleanup_repo_worktree() { printf 'worktree\n'; }
+            RUNTIME_WORK_DIR=''
+            NIXBOT_DIAG_DIR=''
+            RUNTIME_WORK_ROOT="$PWD/missing-runtime-root"
+            RUNTIME_WORK_FALLBACK_ROOT="$PWD/missing-runtime-fallback"
+            NIXBOT_DIAG_KEEP_ROOT="$PWD/missing-diag-root"
+            cleanup_core 1
+            """
+        )
+        self.assertEqual(
+            ["terminate", "lock", "worktree"],
             result.stdout.splitlines(),
         )
 
@@ -2176,6 +2267,26 @@ EOF_UNITS
         self.assertEqual(["sleep:5", "sleep:5", "rc:0 calls:3"], result.stdout.splitlines())
         self.assertIn("waiting for other nixbot activation unit(s) before deploy", result.stderr)
         self.assertIn("other nixbot activation units settled after 10s", result.stderr)
+
+    def test_dry_run_skips_nixbot_activation_wait_probe(self):
+        result = self.run_script(
+            """
+            init_vars
+            DRY_RUN=1
+            remote_active_nixbot_activation_units() {
+              printf 'unexpected probe\n'
+              return 1
+            }
+            wait_for_in_flight_nixbot_activation \
+              app \
+              nixbot-switch-to-configuration-current.service \
+              deploy
+            printf 'done\n'
+            """
+        )
+
+        self.assertEqual("done", result.stdout.strip())
+        self.assertEqual("", result.stderr)
 
     def test_nixbot_activation_command_promotes_profile_after_successful_switch(self):
         result = self.run_script(
@@ -3719,6 +3830,247 @@ EOF_SCRIPT
             result.stderr,
         )
 
+    def test_remote_build_uses_guarded_no_link_realization(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=builder
+            ACTION=deploy
+            test_root="$(dirname "$NIXBOT_HOST_AGENT")"
+            events="$test_root/events"
+            log_host_stage() { :; }
+            wait_for_build_host_lease() {
+              [ -z "${1:-}" ] || printf -v "$1" 1
+              printf 'lease\n' >>"$events"
+            }
+            resolve_host_build_drv_path() { printf '/nix/store/test.drv\n'; }
+            prepare_build_host_store_context() {
+              local -n store_ref="$2" ssh_opts_ref="$3"
+              store_ref=ssh-ng://builder
+              ssh_opts_ref=''
+            }
+            copy_build_drv_to_remote_store() { printf 'copy\n' >>"$events"; }
+            run_build_host_command_with_retry() {
+              local -n output_ref="$1"
+              printf 'command:%s\n' "$3" >>"$events"
+              output_ref=/nix/store/test-system
+            }
+            is_deploy_style_action() { return 0; }
+            require_remote_build_cache_for_deploy() { printf 'cache\n' >>"$events"; }
+
+            remote_build_host abird-corp
+            cat "$events"
+            """
+        )
+
+        self.assertEqual("/nix/store/test-system", result.stdout.splitlines()[0])
+        events = result.stdout.splitlines()[1:]
+        self.assertEqual("lease", events[0])
+        self.assertEqual("copy", events[1])
+        self.assertIn("/run/current-system/sw/bin/bash -c", events[2])
+        self.assertIn("/run/current-system/sw/bin/flock", events[2])
+        self.assertIn("/nix/var/nix", events[2])
+        self.assertIn(" nix build ", events[2])
+        self.assertNotIn("abird-nix-build-lease", events[2])
+        self.assertIn("--print-out-paths --no-link", events[2])
+        self.assertNotIn(" -o ", events[2])
+        self.assertEqual(["lease", "cache"], events[3:])
+
+    def test_remote_build_recovery_rejects_changed_output_path(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=builder
+            resolve_host_build_drv_path() { printf '/nix/store/test.drv\n'; }
+            prepare_build_host_store_context() {
+              local -n store_ref="$2" ssh_opts_ref="$3"
+              store_ref=ssh-ng://builder
+              ssh_opts_ref=''
+            }
+            copy_build_drv_to_remote_store() { :; }
+            run_build_host_command_with_retry() {
+              local -n output_ref="$1"
+              output_ref=/nix/store/unexpected-system
+            }
+            set +e
+            realize_remote_build_output_guarded out abird-corp /nix/store/expected-system
+            printf 'rc:%s\n' "$?"
+            set -e
+            """,
+        )
+
+        self.assertEqual("rc:1", result.stdout.strip())
+        self.assertIn("expected /nix/store/expected-system", result.stderr)
+
+    def test_lease_epoch_change_revalidates_only_current_output(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=builder
+            epochs=(1 2 2 2)
+            epoch_index=0
+            wait_for_build_host_lease() {
+              printf -v "$1" '%s' "${epochs[$epoch_index]}"
+              epoch_index=$((epoch_index + 1))
+            }
+            realize_remote_build_output_guarded() {
+              local -n output_ref="$1"
+              printf 'realize:%s:%s\n' "$2" "${3:-new}"
+              output_ref="${3:-/nix/store/test-system}"
+            }
+
+            realize_remote_build_output_available out abird-corp
+            printf 'out:%s\n' "$out"
+            """
+        )
+
+        self.assertEqual(
+            [
+                "realize:abird-corp:new",
+                "realize:abird-corp:/nix/store/test-system",
+                "out:/nix/store/test-system",
+            ],
+            result.stdout.splitlines(),
+        )
+        self.assertIn(
+            "Remote build lease changed; revalidating abird-corp",
+            result.stderr,
+        )
+
+    def test_build_lease_heartbeat_is_independent_of_progress_interval(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_BUILD_HEARTBEAT_SECS=60
+            owner_checks=0
+            build_host_lease_owner_is_alive() {
+              owner_checks=$((owner_checks + 1))
+              [ "$owner_checks" -eq 1 ]
+            }
+            sleep() { printf 'sleep:%s\n' "$1" >&2; }
+
+            build_host_lease_heartbeat 1 1
+            """
+        )
+
+        self.assertEqual("PING", result.stdout.strip())
+        self.assertEqual("sleep:15", result.stderr.strip())
+
+    def test_build_lease_uses_dedicated_ssh_and_runtime_state(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=builder
+            BUILD_HOST_LEASE_HEARTBEAT_SECS=1
+            test_root="$(dirname "$NIXBOT_HOST_AGENT")"
+            args_file="$test_root/lease-args"
+            prepare_role_host_ssh_context() {
+              local -n target_ref="$2" opts_ref="$3" nix_opts_ref="$4"
+              target_ref=nixbot@builder
+              opts_ref=(-o ControlMaster=auto -o ControlPath=/tmp/shared)
+              nix_opts_ref=''
+            }
+            ssh() {
+              printf '%s\n' "$*" >"$args_file"
+              exec bash -c '
+                printf "READY\\n"
+                while read -r heartbeat; do
+                  [ "$heartbeat" = PING ] || exit 2
+                done
+              '
+            }
+
+            start_build_host_lease
+            wait_for_build_host_lease epoch && printf 'ready:%s\n' "$epoch"
+            cat "$args_file"
+            stop_build_host_lease
+            [ -z "$BUILD_HOST_LEASE_PID" ] && printf 'stopped\n'
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("ready:1", lines[0])
+        self.assertIn("ControlMaster=no", lines[1])
+        self.assertIn("ControlPath=none", lines[1])
+        self.assertNotIn("ControlMaster=auto", lines[1])
+        self.assertNotIn("ControlPath=/tmp/shared", lines[1])
+        self.assertIn("/run/current-system/sw/bin/bash", lines[1])
+        self.assertIn("/run/current-system/sw/bin/flock", lines[1])
+        self.assertIn("/nix/var/nix", lines[1])
+        self.assertIn("hold", lines[1])
+        self.assertNotIn("abird-nix-build-lease", lines[1])
+        self.assertEqual("stopped", lines[2])
+
+    def test_build_lease_command_is_controller_owned(self):
+        result = self.run_script(
+            """
+            init_vars
+            build_host_lease_remote_command hold
+            """
+        )
+
+        command = result.stdout.strip()
+        self.assertIn("/run/current-system/sw/bin/bash", command)
+        self.assertIn("/run/current-system/sw/bin/flock", command)
+        self.assertIn("/nix/var/nix", command)
+        self.assertIn("hold", command)
+        self.assertNotIn("abird-nix-build-lease", command)
+        self.assertNotIn("bootstrap", command)
+
+    def test_build_lease_reconnects_with_fresh_budget(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=builder
+            BUILD_HOST_LEASE_HEARTBEAT_SECS=1
+            NIXBOT_TRANSPORT_RETRY_ATTEMPTS=2
+            NIXBOT_TRANSPORT_RETRY_DELAY_SECS=0
+            test_root="$(dirname "$NIXBOT_HOST_AGENT")"
+            attempt_file="$test_root/lease-attempt"
+            printf '0\n' >"$attempt_file"
+            prepare_role_host_ssh_context() {
+              local -n target_ref="$2" opts_ref="$3" nix_opts_ref="$4"
+              target_ref=nixbot@builder
+              opts_ref=()
+              nix_opts_ref=''
+            }
+            ssh() {
+              local attempt
+              exec 9>"$attempt_file.lock"
+              flock 9
+              attempt="$(cat "$attempt_file")"
+              attempt=$((attempt + 1))
+              printf '%s\n' "$attempt" >"$attempt_file"
+              flock -u 9
+              printf 'READY\n'
+              while read -r heartbeat; do
+                [ "$heartbeat" = PING ] || return 2
+                if [ "$attempt" -lt 3 ]; then
+                  sleep 0.3
+                  return 255
+                fi
+              done
+            }
+
+            start_build_host_lease
+            for _ in $(seq 1 80); do
+              attempts="$(cat "$attempt_file")"
+              state="$(cat "$BUILD_HOST_LEASE_STATE_FILE")"
+              if [ "$attempts" -ge 3 ] && [[ "$state" == 'ready 3 '* ]]; then
+                break
+              fi
+              sleep 0.1
+            done
+            printf 'attempts=%s state=%s\n' \
+              "$(cat "$attempt_file")" \
+              "$(awk '{ print $1, $2 }' "$BUILD_HOST_LEASE_STATE_FILE")"
+            stop_build_host_lease
+            """
+        )
+
+        line = result.stdout.strip()
+        self.assertEqual("attempts=3 state=ready 3", line)
+
     def test_remote_build_path_preparation_routes_by_store_identity(self):
         result = self.run_script(
             """
@@ -3730,6 +4082,7 @@ EOF_SCRIPT
             build_host_shares_store_with_node() {
               [ "$1" = builder ]
             }
+            ensure_remote_build_output_available() { :; }
             validate_build_host_closure_on_prepared_target() {
               printf 'validate:%s:%s\n' "$1" "$2"
             }
@@ -3771,7 +4124,7 @@ EOF_SCRIPT
             }
             format_ssh_store_uri() { printf 'ssh-ng://%s\n' "$1"; }
             run_remote_store_command_with_retry() {
-              printf 'relay:%s:%s:%s\n' "$2" "${10}" "${12}"
+              printf 'relay:%s:%s:%s\n' "$2" "${13}" "${15}"
             }
             copy_system_path_from_build_cache_via_local_to_prepared_target \
               target /nix/store/system http://cache:5000 cache-key
@@ -4095,8 +4448,9 @@ EOF_SCRIPT
             init_vars
             BUILD_HOST=build-host
             run_prepared_cache_copy_with_retry() {
-              printf 'retry:%s:%s\n' "$1" "$2"
+              printf 'retry:%s:%s:%s\n' "$1" "$2" "$3"
             }
+            ensure_remote_build_output_available() { :; }
             run_prepared_root_command_with_retry() {
               printf 'once:%s:%s\n' "$1" "$2"
             }
@@ -4109,7 +4463,7 @@ EOF_SCRIPT
 
         lines = result.stdout.splitlines()
         self.assertEqual(2, len(lines))
-        self.assertTrue(lines[0].startswith("retry:target:nix "))
+        self.assertTrue(lines[0].startswith("retry:target:/nix/store/system:nix "))
         self.assertIn("copy --from http://cache:5000 /nix/store/system", lines[0])
         self.assertTrue(lines[1].startswith("once:Build-cache copy to target:nix "))
         self.assertIn("copy --from http://cache:5000 /nix/store/system", lines[1])
@@ -4179,6 +4533,10 @@ EOF_SCRIPT
             NIXBOT_TRANSPORT_RETRY_DELAY_SECS=2
             attempts=0
             refreshes=0
+            recoveries=0
+            ensure_remote_build_output_available() {
+              recoveries=$((recoveries + 1))
+            }
             run_prepared_root_command_with_retry() {
               attempts=$((attempts + 1))
               [ "$attempts" -ge 2 ]
@@ -4189,13 +4547,14 @@ EOF_SCRIPT
             refresh_prepared_primary_target() {
               refreshes=$((refreshes + 1))
             }
-            run_prepared_cache_copy_with_retry abird-ci 'nix copy system'
-            printf 'attempts=%s refreshes=%s\n' "$attempts" "$refreshes"
+            run_prepared_cache_copy_with_retry abird-ci /nix/store/system 'nix copy system'
+            printf 'attempts=%s refreshes=%s recoveries=%s\n' "$attempts" "$refreshes" "$recoveries"
             """
         )
 
         self.assertEqual(
-            ["sleep=2", "attempts=2 refreshes=1"], result.stdout.splitlines()
+            ["sleep=2", "attempts=2 refreshes=1 recoveries=2"],
+            result.stdout.splitlines(),
         )
         self.assertIn(
             "Build-cache copy to abird-ci failed; retrying (2/3) in 2s",
@@ -6801,7 +7160,7 @@ EOF_SCRIPT
             selected_host_levels_json() {{ printf '%s\n' '[[\"app\",\"db\"]]'; }}
             prepare_build_plan() {{ return 0; }}
             run_build_phase() {{
-              local -n built_ref="$9"
+              local -n built_ref="$7"
               built_ref=(app db)
               return 0
             }}

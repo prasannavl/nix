@@ -130,7 +130,7 @@ jobs:
 
           nix run .#nixbot -- "${action}" \
             --ci-trigger \
-            --ci-first \
+            --control-plane-first \
             --hosts "${hosts}" \
             "${extra_args[@]}" \
             --sha "${GITHUB_SHA}"

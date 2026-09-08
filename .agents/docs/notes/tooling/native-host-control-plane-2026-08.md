@@ -86,8 +86,8 @@ Projected reconciliation also keeps routing and recovery authority explicit:
 - the flake derives every projection endpoint and effect-executor host,
   validates it against Nixbot inventory, and exports those hosts as controller
   deployment dependencies. Nixbot merges that evaluated edge set before
-  ordering, so `--ci-first` cannot activate a controller ahead of its projection
-  hosts.
+  ordering, so `--control-plane-first` cannot activate a controller ahead of its
+  projection hosts.
 
 ## Post-156 Lifecycle and Admission Follow-up
 

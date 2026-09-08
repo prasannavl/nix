@@ -46,9 +46,9 @@ Usage:
   nixbot
   nixbot <deps|check-deps|version>
   nixbot repo sync
-  nixbot --list-hosts [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
+  nixbot --list-hosts [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--control-plane-first]
   nixbot --list-groups [--config <path>] [--no-override]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--nix-config <name>] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--restart-managed] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--nix-config <name>] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--restart-managed] [--bootstrap] [--control-plane-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot --clean[=auto|all] [--dry] [--ci-trigger] [ci/auth/config options]
   nixbot tofu <tofu-args...>
 
@@ -125,7 +125,9 @@ Clean Action Options (`clean` or `--clean`):
                    With --ci-trigger, runs the same cleanup on the CI host.
 
 Host Workflow Ordering Options (`run`, `deploy`, `build`, `check-bootstrap`):
-  --ci-first  Override the default late CI position and prioritize it first
+  --control-plane-first
+                   Run the controller then registry hosts first. By default,
+                   this control-plane unit runs last.
 
 Workflow Behavior Options:
   --dry            Print commands without applying changes
@@ -201,7 +203,7 @@ Environment (Deploy Actions):
   NIXBOT_PREFIX_HOST_LOGS     Same as --prefix-host-logs (bool)
 
 Environment (Host Workflow Ordering):
-  NIXBOT_CI_FIRST        Same as --ci-first (bool)
+  NIXBOT_CONTROL_PLANE_FIRST Same as --control-plane-first (bool)
   NIXBOT_LOCAL_SELF_TARGET    Self-target transport policy: auto|on|off
                               (default: auto)
 
@@ -524,6 +526,8 @@ init_vars() {
 	BUILD_HOST_DEPLOY_MODE="${NIXBOT_BUILD_HOST_DEPLOY_MODE:-auto}"
 	BUILD_CACHE_URL="${NIXBOT_BUILD_CACHE_URL:-}"
 	BUILD_CACHE_HOST="${NIXBOT_BUILD_CACHE_HOST:-}"
+	BUILD_HOST_LEASE_PID=""
+	BUILD_HOST_LEASE_STATE_FILE=""
 	BUILD_PLAN_JOBS="${NIXBOT_BUILD_PLAN_JOBS:-auto}"
 	BUILD_PLAN_CACHE_ENABLED="${NIXBOT_BUILD_PLAN_CACHE:-1}"
 	NIXBOT_BUILD_PLAN_CACHE_CONTEXT_KEY=""
@@ -533,6 +537,7 @@ init_vars() {
 	BUILD_JOBS="${NIXBOT_BUILD_JOBS:-1}"
 	BUILD_LOGS=0
 	NIXBOT_BUILD_HEARTBEAT_SECS="${NIXBOT_BUILD_HEARTBEAT_SECS:-30}"
+	BUILD_HOST_LEASE_HEARTBEAT_SECS=15
 	NIXBOT_ACTIVATION_HEARTBEAT_SECS="${NIXBOT_ACTIVATION_HEARTBEAT_SECS:-30}"
 	NIXBOT_BUILD_NIX_ARGS=()
 	NIXBOT_BUILD_PLAN_DIR=""
@@ -555,7 +560,10 @@ init_vars() {
 	DIRTY_STAGED_BASE_SHA=""
 	FORCE_BOOTSTRAP_PATH=0
 	SKIP_CONFIG_OVERRIDE=0
-	PRIORITIZE_CI_FIRST=0
+	CONTROL_PLANE_FIRST=0
+	NIXBOT_CONTROLLER_HOST_ROLE=""
+	NIXBOT_REGISTRY_HOST_ROLES_JSON='[]'
+	NIXBOT_CONTROL_PLANE_HOSTS_JSON='[]'
 	DRY_RUN=0
 	ROLLBACK_ON_FAILURE=1
 	VERIFY_AFTER_DEPLOY=1
@@ -661,8 +669,8 @@ init_vars() {
 		OVERLAY_STAGED=1
 		ALLOW_DIRTY_REPO=1
 	fi
-	if parse_bool_env "${NIXBOT_CI_FIRST:-0}"; then
-		PRIORITIZE_CI_FIRST=1
+	if parse_bool_env "${NIXBOT_CONTROL_PLANE_FIRST:-0}"; then
+		CONTROL_PLANE_FIRST=1
 	fi
 	if parse_bool_env "${NIXBOT_BOOTSTRAP:-0}"; then
 		FORCE_BOOTSTRAP_PATH=1
@@ -762,6 +770,8 @@ init_vars() {
 	REMOTE_SYSTEM_PROFILE_PATH="/nix/var/nix/profiles/system"
 	REMOTE_WRAPPER_BIN_DIR="/run/wrappers/bin"
 	REMOTE_SYSTEM_BIN_DIR="/run/current-system/sw/bin"
+	REMOTE_SYSTEM_FLOCK="${REMOTE_SYSTEM_BIN_DIR}/flock"
+	REMOTE_NIX_STORE_LOCK_TARGET="/nix/var/nix"
 	REMOTE_RUNTIME_PATH="${REMOTE_WRAPPER_BIN_DIR}:${REMOTE_SYSTEM_BIN_DIR}"
 	REMOTE_SYSTEM_BASH="${REMOTE_SYSTEM_BIN_DIR}/bash"
 	SSH_NULL_KNOWN_HOSTS_FILE="/dev/null"
@@ -1447,8 +1457,8 @@ parse_args() {
 			FORCE_BOOTSTRAP_PATH=1
 			shift
 			;;
-		--ci-first)
-			PRIORITIZE_CI_FIRST=1
+		--control-plane-first)
+			CONTROL_PLANE_FIRST=1
 			shift
 			;;
 		--dry)
@@ -3233,7 +3243,7 @@ run_ci_trigger() {
 	# expected to use its repo-local defaults and checked-in config for
 	# deploy-shaping settings such as goal, build host, job counts, rollback
 	# policy, and similar local overrides. Operator execution modifiers such as
-	# --dry, --force, --dirty, --no-verify, and --ci-first are explicit parts
+	# --dry, --force, --dirty, --no-verify, and --control-plane-first are explicit parts
 	# of this contract.
 	if is_clean_action; then
 		remote_args=("${ACTION}" --no-override --clean "${NIXBOT_CLEAN_MODE:-auto}")
@@ -3272,9 +3282,9 @@ run_ci_trigger() {
 		remote_args+=(--restart-managed)
 		echo "Managed service restart: true" >&2
 	fi
-	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ]; then
-		remote_args+=(--ci-first)
-		echo "CI-first host ordering: true" >&2
+	if [ "${CONTROL_PLANE_FIRST}" -eq 1 ]; then
+		remote_args+=(--control-plane-first)
+		echo "Control-plane host ordering: first" >&2
 	fi
 	if [ "${VERIFY_AFTER_DEPLOY}" -eq 0 ]; then
 		remote_args+=(--no-verify)
@@ -3913,9 +3923,19 @@ apply_config_defaults() {
 			GROUPS_RAW="${configured_default_group}"
 		fi
 	fi
+	NIXBOT_CONTROLLER_HOST_ROLE="$(jq -r '.controller // .ci.host // empty' <<<"${nixbot_config_json}")"
+	NIXBOT_REGISTRY_HOST_ROLES_JSON="$(jq -c '
+    [
+      ((.registries // {}) | to_entries | sort_by(.key)[] | .value.host),
+      (if has("registries") then empty else (.buildCache.host // empty) end)
+    ]
+    | map(select(type == "string" and length > 0))
+  ' <<<"${nixbot_config_json}")"
+	NIXBOT_CONTROL_PLANE_HOSTS_JSON="$(resolve_control_plane_hosts_json)" ||
+		die "Cannot resolve controller and registry capabilities to inventory hosts"
 
 	if [ -z "${CI_TRIGGER_HOST}" ]; then
-		configured_controller="$(jq -r '.controller // .ci.host // empty' <<<"${nixbot_config_json}")"
+		configured_controller="${NIXBOT_CONTROLLER_HOST_ROLE}"
 		CI_TRIGGER_HOST="${configured_controller}"
 	fi
 
@@ -4458,6 +4478,9 @@ copy_remote_build_closure_to_local_store() {
 		remote_copy_output \
 		"Remote build copy from ${BUILD_HOST}" \
 		"${nix_sshopts}" \
+		"${node}" \
+		"${out_path}" \
+		-- \
 		"${copy_cmd[@]}"; then
 		echo "Failed to copy built closure from ${BUILD_HOST}: ${out_path}" >&2
 		return 1
@@ -4515,17 +4538,23 @@ expand_selected_hosts_json() {
 }
 
 order_selected_hosts_json() {
-	local selected_json="$1" all_hosts_json="$2" node="" dep="" progress="" ci_host="${CI_TRIGGER_HOST}"
-	local prioritize_ci_last=0
-	local -a selected_hosts=() runnable_selected_hosts=() skipped_hosts=() ordered_hosts=()
+	local selected_json="$1" all_hosts_json="$2" node="" dep="" progress=""
+	local pass=0 wanted_control=0 node_is_control=0 class_progress=0 controller_host=""
+	local control_plane_started=0
+	local -a selected_hosts=() runnable_selected_hosts=() skipped_hosts=() ordered_hosts=() control_plane_hosts=()
 	declare -A all_host_set=()
 	declare -A selected_host_set=()
+	declare -A control_plane_host_set=()
 	declare -A emitted_host_set=()
 	declare -A indegree=()
 	declare -A dependents=()
+	declare -A edge_set=()
 
 	json_array_to_bash_array "${selected_json}" selected_hosts
 	json_array_to_bash_set "${all_hosts_json}" all_host_set
+	json_array_to_bash_array "${NIXBOT_CONTROL_PLANE_HOSTS_JSON}" control_plane_hosts
+	json_array_to_bash_set "${NIXBOT_CONTROL_PLANE_HOSTS_JSON}" control_plane_host_set
+	controller_host="${control_plane_hosts[0]:-}"
 
 	for node in "${selected_hosts[@]}"; do
 		[ -n "${node}" ] || continue
@@ -4548,64 +4577,54 @@ order_selected_hosts_json() {
 			if [ -n "${selected_host_set["${dep}"]+x}" ]; then
 				indegree["${node}"]=$((indegree["${node}"] + 1))
 				dependents["${dep}"]+="${node}"$'\n'
+				edge_set["${dep}>${node}"]=1
 			fi
 		done < <(host_predecessors_for "${node}")
 	done
-	if [ "${PRIORITIZE_CI_FIRST}" -eq 0 ] &&
-		[ -n "${ci_host}" ] &&
-		[ -n "${selected_host_set["${ci_host}"]+x}" ]; then
-		prioritize_ci_last=1
-	fi
 
-	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] &&
-		[ -n "${ci_host}" ] &&
-		[ -n "${selected_host_set["${ci_host}"]+x}" ] &&
-		[ "${indegree["${ci_host}"]}" -eq 0 ]; then
-		emitted_host_set["${ci_host}"]=1
-		ordered_hosts+=("${ci_host}")
-		while IFS= read -r dep; do
-			[ -n "${dep}" ] || continue
-			indegree["${dep}"]=$((indegree["${dep}"] - 1))
-		done <<<"${dependents["${ci_host}"]:-}"
+	# Treat the controller and registries as one ordered unit. Registry hosts are
+	# distinct only when the inventory places them outside the controller.
+	if [ -n "${controller_host}" ] && [ -n "${selected_host_set["${controller_host}"]+x}" ]; then
+		for node in "${control_plane_hosts[@]:1}"; do
+			[ -n "${selected_host_set["${node}"]+x}" ] || continue
+			[ -z "${edge_set["${controller_host}>${node}"]+x}" ] || continue
+			indegree["${node}"]=$((indegree["${node}"] + 1))
+			dependents["${controller_host}"]+="${node}"$'\n'
+		done
 	fi
 
 	while [ "${#ordered_hosts[@]}" -lt "${#runnable_selected_hosts[@]}" ]; do
 		progress=0
-		for node in "${runnable_selected_hosts[@]}"; do
-			[ -n "${node}" ] || continue
-			if [ -n "${emitted_host_set["${node}"]+x}" ]; then
-				continue
+		for pass in 0 1; do
+			if [ "${CONTROL_PLANE_FIRST}" -eq 1 ] || [ "${control_plane_started}" -eq 1 ]; then
+				wanted_control=$((1 - pass))
+			else
+				wanted_control="${pass}"
 			fi
-			if [ "${prioritize_ci_last}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
-				continue
-			fi
-			if [ "${indegree["${node}"]}" -ne 0 ]; then
-				continue
-			fi
+			while :; do
+				class_progress=0
+				for node in "${runnable_selected_hosts[@]}"; do
+					[ -n "${node}" ] || continue
+					[ -z "${emitted_host_set["${node}"]+x}" ] || continue
+					[ "${indegree["${node}"]}" -eq 0 ] || continue
+					node_is_control=0
+					[ -z "${control_plane_host_set["${node}"]+x}" ] || node_is_control=1
+					[ "${node_is_control}" -eq "${wanted_control}" ] || continue
 
-			emitted_host_set["${node}"]=1
-			ordered_hosts+=("${node}")
-			progress=1
-
-			while IFS= read -r dep; do
-				[ -n "${dep}" ] || continue
-				indegree["${dep}"]=$((indegree["${dep}"] - 1))
-			done <<<"${dependents["${node}"]:-}"
+					emitted_host_set["${node}"]=1
+					ordered_hosts+=("${node}")
+					[ "${node_is_control}" -eq 0 ] || control_plane_started=1
+					class_progress=1
+					progress=1
+					while IFS= read -r dep; do
+						[ -n "${dep}" ] || continue
+						indegree["${dep}"]=$((indegree["${dep}"] - 1))
+					done <<<"${dependents["${node}"]:-}"
+				done
+				[ "${class_progress}" -eq 1 ] || break
+			done
+			[ "${progress}" -eq 0 ] || break
 		done
-
-		if [ "${progress}" -eq 0 ] &&
-			[ "${prioritize_ci_last}" -eq 1 ] &&
-			[ -z "${emitted_host_set["${ci_host}"]+x}" ] &&
-			[ "${indegree["${ci_host}"]}" -eq 0 ]; then
-			emitted_host_set["${ci_host}"]=1
-			ordered_hosts+=("${ci_host}")
-			progress=1
-
-			while IFS= read -r dep; do
-				[ -n "${dep}" ] || continue
-				indegree["${dep}"]=$((indegree["${dep}"] - 1))
-			done <<<"${dependents["${ci_host}"]:-}"
-		fi
 
 		if [ "${progress}" -eq 0 ]; then
 			local -a cycle_hosts=()
@@ -4626,37 +4645,27 @@ order_selected_hosts_json() {
 
 selected_host_levels_json() {
 	local selected_json="$1" node="" dep="" dep_level="" node_level=""
-	local max_level="" level="" ci_host="${CI_TRIGGER_HOST}" ci_first_ready=0
-	local ci_last_ready=0 ci_last_prior_seen=0
-	local -a selected_hosts=()
+	local max_level=0 level="" class_floor=0 active_class="" node_class="" controller_host=""
+	local -a selected_hosts=() control_plane_hosts=()
 	declare -A selected_host_set=()
+	declare -A control_plane_host_set=()
 	declare -A host_level=()
 
 	json_array_to_bash_array "${selected_json}" selected_hosts
 	json_array_to_bash_set "${selected_json}" selected_host_set
-	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] &&
-		[ -n "${ci_host}" ] &&
-		[ -n "${selected_host_set["${ci_host}"]+x}" ]; then
-		ci_first_ready=1
-		while IFS= read -r dep; do
-			[ -n "${dep}" ] || continue
-			if [ -n "${selected_host_set["${dep}"]+x}" ]; then
-				ci_first_ready=0
-				break
-			fi
-		done < <(host_predecessors_for "${ci_host}")
-	elif [ -n "${ci_host}" ] && [ -n "${selected_host_set["${ci_host}"]+x}" ]; then
-		ci_last_ready=1
-	fi
+	json_array_to_bash_array "${NIXBOT_CONTROL_PLANE_HOSTS_JSON}" control_plane_hosts
+	json_array_to_bash_set "${NIXBOT_CONTROL_PLANE_HOSTS_JSON}" control_plane_host_set
+	controller_host="${control_plane_hosts[0]:-}"
 
-	max_level=0
 	for node in "${selected_hosts[@]}"; do
 		[ -n "${node}" ] || continue
-		if [ "${ci_first_ready}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
-			host_level["${node}"]=0
-			continue
+		node_class=regular
+		[ -z "${control_plane_host_set["${node}"]+x}" ] || node_class=control
+		if [ -n "${active_class}" ] && [ "${node_class}" != "${active_class}" ]; then
+			class_floor=$((max_level + 1))
 		fi
-		node_level=0
+		active_class="${node_class}"
+		node_level="${class_floor}"
 		while IFS= read -r dep; do
 			[ -n "${dep}" ] || continue
 			if [ -n "${selected_host_set["${dep}"]+x}" ]; then
@@ -4667,16 +4676,15 @@ selected_host_levels_json() {
 				fi
 			fi
 		done < <(host_predecessors_for "${node}")
-		if [ "${ci_last_ready}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
-			if [ "${ci_last_prior_seen}" -eq 1 ] && [ "${node_level}" -le "${max_level}" ]; then
-				node_level=$((max_level + 1))
-			fi
-		elif [ "${ci_last_ready}" -eq 1 ]; then
-			ci_last_prior_seen=1
-		fi
 
-		if [ "${ci_first_ready}" -eq 1 ] && [ "${node_level}" -lt 1 ]; then
-			node_level=1
+		if [ "${node_class}" = control ] && [ -n "${controller_host}" ] &&
+			[ "${node}" != "${controller_host}" ] &&
+			[ -n "${selected_host_set["${controller_host}"]+x}" ]; then
+			dep_level="${host_level["${controller_host}"]:-}"
+			[ -n "${dep_level}" ] || die "Controller level missing for registry host ${node}"
+			if [ $((dep_level + 1)) -gt "${node_level}" ]; then
+				node_level=$((dep_level + 1))
+			fi
 		fi
 
 		host_level["${node}"]="${node_level}"
@@ -5030,6 +5038,30 @@ health_check_ignored_failed_system_units_for() {
 	jq -r --arg h "${inventory_host}" \
 		'.[$h].healthCheck.ignore // [] | .[]' \
 		<<<"${NIXBOT_HOSTS_JSON}"
+}
+
+resolve_control_plane_hosts_json() {
+	local role="" host=""
+	local -a roles=() registry_roles=() hosts=()
+	declare -A seen=()
+
+	[ -z "${NIXBOT_CONTROLLER_HOST_ROLE}" ] || roles+=("${NIXBOT_CONTROLLER_HOST_ROLE}")
+	mapfile -t registry_roles < <(jq -r '.[]' <<<"${NIXBOT_REGISTRY_HOST_ROLES_JSON}")
+	roles+=("${registry_roles[@]}")
+	for role in "${roles[@]}"; do
+		[ -n "${role}" ] || continue
+		host="$(inventory_host_for_role "${role}")" || return 1
+		[ -z "${seen["${host}"]+x}" ] || continue
+		seen["${host}"]=1
+		hosts+=("${host}")
+	done
+	bash_args_to_json_array "${hosts[@]}"
+}
+
+host_is_control_plane() {
+	local node="$1"
+
+	jq -e --arg node "${node}" 'index($node) != null' <<<"${NIXBOT_CONTROL_PLANE_HOSTS_JSON}" >/dev/null
 }
 
 resolve_deploy_target() {
@@ -7399,10 +7431,11 @@ run_prepared_root_command_with_retry() {
 }
 
 run_prepared_cache_copy_with_retry() {
-	local node="$1" target_cmd="$2"
+	local node="$1" system_path="$2" target_cmd="$3"
 	local attempt=1 rc=0 retry_sleep_secs=0
 
 	while :; do
+		ensure_remote_build_output_available "${node}" "${system_path}" || return "$?"
 		if run_prepared_root_command_with_retry \
 			"Build-cache copy to ${node}" \
 			"${target_cmd}"; then
@@ -8764,6 +8797,8 @@ wait_for_in_flight_nixbot_activation() {
 	local wait_start_epoch="" elapsed_secs="" max_wait_secs="" poll_secs=5
 	local active_units="" last_log_bucket=-1 bucket=0
 
+	[ "${DRY_RUN}" -eq 0 ] || return 0
+
 	wait_start_epoch="$(date +%s)"
 	max_wait_secs=$((NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS + NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS))
 
@@ -10071,14 +10106,25 @@ run_with_combined_stream_capture() {
 run_remote_store_command_with_retry() {
 	# shellcheck disable=SC2034
 	local -n rrsc_output_out_ref="$1"
-	local retry_label="$2" nix_sshopts="$3"
-	shift 3
+	local retry_label="$2" nix_sshopts="$3" recovery_node="$4" recovery_path="$5"
+	shift 5
 	local attempt=1 rc=0 retry_sleep_secs=0 output_path="" captured="" heartbeat_pid=""
+	[ "${1:-}" = -- ] || return 2
+	shift
 
 	ensure_tmp_dir
 	output_path="$(tmp_runtime_mktemp stderr "remote-store.stderr.XXXXXX")"
 
 	while :; do
+		if [ -n "${recovery_path}" ]; then
+			if ensure_remote_build_output_available "${recovery_node}" "${recovery_path}"; then
+				:
+			else
+				rc="$?"
+				rm -f "${output_path}"
+				return "${rc}"
+			fi
+		fi
 		: >"${output_path}"
 		heartbeat_pid="$(start_remote_build_heartbeat "${retry_label}" || true)"
 		if run_supervised_stdout_capture \
@@ -10105,14 +10151,18 @@ run_remote_store_command_with_retry() {
 		fi
 
 		if [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ] ||
-			! remote_store_failure_is_transport_loss "${output_path}"; then
+			{ [ -z "${recovery_path}" ] && ! remote_store_failure_is_transport_loss "${output_path}"; }; then
 			rm -f "${output_path}"
 			return "${rc}"
 		fi
 
 		attempt=$((attempt + 1))
 		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
-		echo "${retry_label} transport unavailable; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+		if [ -n "${recovery_path}" ]; then
+			echo "${retry_label} unavailable; revalidating ${recovery_node} and retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+		else
+			echo "${retry_label} transport unavailable; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+		fi
 		sleep_for_retry_or_signal "${retry_sleep_secs}" || {
 			rc="$?"
 			rm -f "${output_path}"
@@ -10270,17 +10320,19 @@ copy_system_path_from_build_cache_to_prepared_target() {
 	copy_script="$(shell_quote_argv "${copy_cmd[@]}")"
 	echo "Copying built closure to ${node} from ${BUILD_HOST} cache: ${system_path}" >&2
 	if [ "${retry_policy}" = "retry" ]; then
-		run_prepared_cache_copy_with_retry "${node}" "${copy_script}"
+		run_prepared_cache_copy_with_retry "${node}" "${system_path}" "${copy_script}"
 	else
-		run_prepared_root_command_with_retry \
-			"Build-cache copy to ${node}" \
-			"${copy_script}"
+		ensure_remote_build_output_available "${node}" "${system_path}" &&
+			run_prepared_root_command_with_retry \
+				"Build-cache copy to ${node}" \
+				"${copy_script}"
 	fi
 }
 
 copy_system_path_from_build_cache_via_local_to_prepared_target() {
 	# shellcheck disable=SC2034
 	local node="$1" system_path="$2" cache_url="$3" trusted_public_keys="$4"
+	# shellcheck disable=SC2034
 	local target_store_uri="" copy_nix_sshopts="" remote_copy_output=""
 	local -a copy_cmd=()
 
@@ -10309,6 +10361,9 @@ copy_system_path_from_build_cache_via_local_to_prepared_target() {
 		remote_copy_output \
 		"Build-cache relay to ${node}" \
 		"${copy_nix_sshopts}" \
+		"${node}" \
+		"${system_path}" \
+		-- \
 		"${copy_cmd[@]}"
 }
 
@@ -10337,7 +10392,8 @@ prepare_remote_build_system_path_on_prepared_target() {
 	local node="$1" system_path="$2" cache_rc=0 cache_url="" trusted_public_keys=""
 
 	if build_host_shares_store_with_node "${node}"; then
-		validate_build_host_closure_on_prepared_target "${node}" "${system_path}"
+		ensure_remote_build_output_available "${node}" "${system_path}" &&
+			validate_build_host_closure_on_prepared_target "${node}" "${system_path}"
 		return
 	fi
 
@@ -10410,6 +10466,9 @@ copy_system_path_from_local_to_prepared_target() {
 		copy_output \
 		"Local build copy to ${node}" \
 		"${copy_nix_sshopts}" \
+		"" \
+		"" \
+		-- \
 		"${copy_cmd[@]}" || return "$?"
 	: "${copy_output}"
 }
@@ -11654,6 +11713,234 @@ prewarm_build_host_control_master() {
 	fi
 }
 
+run_build_host_command_once() {
+	local target_cmd="$1" ssh_target="" nix_sshopts="" wrapped_cmd=""
+	local -a ssh_opts=()
+
+	prepare_role_host_ssh_context "${BUILD_HOST}" ssh_target ssh_opts nix_sshopts || return 1
+	printf -v wrapped_cmd 'env PATH=%q %q -lc %q' \
+		"${REMOTE_RUNTIME_PATH}" \
+		"${REMOTE_SYSTEM_BASH}" \
+		"${target_cmd}"
+	# shellcheck disable=SC2029
+	ssh "${ssh_opts[@]}" "${ssh_target}" "${wrapped_cmd}"
+}
+
+run_build_host_command_with_retry() {
+	# shellcheck disable=SC2034
+	local -n rbhc_output_out_ref="$1"
+	local retry_label="$2" target_cmd="$3"
+	local heartbeat_pid="" rc=0
+
+	heartbeat_pid="$(start_remote_build_heartbeat "${retry_label}" || true)"
+	if retry_transport_stdout_capture \
+		rbhc_output_out_ref \
+		"${retry_label}" \
+		"" \
+		run_build_host_command_once \
+		"${target_cmd}"; then
+		rc=0
+	else
+		rc="$?"
+	fi
+	stop_remote_build_heartbeat "${heartbeat_pid}"
+	return "${rc}"
+}
+
+build_host_lease_remote_command() {
+	local mode="$1"
+	shift
+	# shellcheck disable=SC2016
+	local lease_script='set -Eeuo pipefail
+mode="$1"
+flock_program="$2"
+lock_target="$3"
+shift 3
+exec 9<"$lock_target"
+"$flock_program" --shared 9
+case "$mode" in
+hold)
+	[ "$#" -eq 0 ] || exit 2
+	printf "READY\n"
+	while IFS= read -r -t 45 heartbeat; do
+		[ "$heartbeat" = PING ] || exit 2
+		printf "PONG\n"
+	done
+	;;
+run)
+	[ "$#" -gt 0 ] || exit 2
+	exec "$@"
+	;;
+*) exit 2 ;;
+esac'
+	local -a command=(
+		"${REMOTE_SYSTEM_BASH}"
+		-c
+		"${lease_script}"
+		nixbot-build-lease
+		"${mode}"
+		"${REMOTE_SYSTEM_FLOCK}"
+		"${REMOTE_NIX_STORE_LOCK_TARGET}"
+		"$@"
+	)
+
+	shell_quote_argv "${command[@]}"
+}
+
+write_build_host_lease_state() {
+	local state="$1" epoch="${2:-0}" session_pid="${3:-}" state_tmp=""
+
+	[ -n "${BUILD_HOST_LEASE_STATE_FILE}" ] || return 1
+	state_tmp="${BUILD_HOST_LEASE_STATE_FILE}.$$.$RANDOM"
+	printf '%s %s%s\n' "${state}" "${epoch}" "${session_pid:+ ${session_pid}}" >"${state_tmp}"
+	mv -f "${state_tmp}" "${BUILD_HOST_LEASE_STATE_FILE}"
+}
+
+wait_for_build_host_lease() {
+	local epoch_out_name="${1:-}" state="" lease_epoch="" session_pid=""
+
+	[ "${BUILD_HOST}" != "local" ] || return 0
+	[ -n "${BUILD_HOST_LEASE_PID}" ] || {
+		echo "Remote build lease is not running for ${BUILD_HOST}" >&2
+		return 1
+	}
+	while kill -0 "${BUILD_HOST_LEASE_PID}" 2>/dev/null; do
+		read -r state lease_epoch session_pid <"${BUILD_HOST_LEASE_STATE_FILE}" 2>/dev/null || true
+		case "${state}" in
+		ready)
+			[[ "${lease_epoch}" =~ ^[1-9][0-9]*$ ]] || continue
+			[ -z "${epoch_out_name}" ] || printf -v "${epoch_out_name}" '%s' "${lease_epoch}"
+			return 0
+			;;
+		failed) break ;;
+		esac
+		if cancel_requested; then
+			return "${NIXBOT_CANCEL_EXIT_STATUS}"
+		fi
+		sleep 0.1
+	done
+	echo "Unable to hold the remote build lease on ${BUILD_HOST}" >&2
+	return 1
+}
+
+build_host_lease_owner_is_alive() {
+	local owner_pid="$1" owner_start_time="$2" current_start_time=""
+
+	current_start_time="$(awk '{ print $22 }' "/proc/${owner_pid}/stat" 2>/dev/null || true)"
+	[ -n "${current_start_time}" ] && [ "${current_start_time}" = "${owner_start_time}" ]
+}
+
+build_host_lease_heartbeat() {
+	local owner_pid="$1" owner_start_time="$2"
+	local interval="${BUILD_HOST_LEASE_HEARTBEAT_SECS}"
+
+	while build_host_lease_owner_is_alive "${owner_pid}" "${owner_start_time}"; do
+		printf 'PING\n' || return 0
+		sleep "${interval}"
+	done
+}
+
+build_host_lease_supervisor() {
+	local owner_pid="$1" owner_start_time="$2" ssh_target="$3"
+	shift 3
+	local attempt=1 rc=0 retry_sleep_secs=0 response_file="" session_pid=""
+	local epoch=0 lease_cmd="" ready_seen=0
+	local -a ssh_opts=("$@")
+
+	trap '[ -z "${session_pid}" ] || terminate_pid_tree "${session_pid}" TERM; exit 0' TERM INT
+	lease_cmd="$(build_host_lease_remote_command hold)"
+	while build_host_lease_owner_is_alive "${owner_pid}" "${owner_start_time}"; do
+		write_build_host_lease_state starting "${epoch}" || return 1
+		response_file="$(tmp_runtime_mktemp stdout "build-lease.${attempt}.XXXXXX")"
+		: >"${response_file}"
+		(
+			# shellcheck disable=SC2029
+			build_host_lease_heartbeat "${owner_pid}" "${owner_start_time}" |
+				ssh "${ssh_opts[@]}" "${ssh_target}" "${lease_cmd}"
+		) >"${response_file}" &
+		session_pid="$!"
+		write_build_host_lease_state starting "${epoch}" "${session_pid}" || return 1
+		ready_seen=0
+		while :; do
+			if grep -Fxq READY "${response_file}" 2>/dev/null; then
+				ready_seen=1
+				break
+			fi
+			kill -0 "${session_pid}" 2>/dev/null || break
+			sleep 0.1
+		done
+
+		if [ "${ready_seen}" -eq 1 ] && kill -0 "${session_pid}" 2>/dev/null; then
+			epoch=$((epoch + 1))
+			write_build_host_lease_state ready "${epoch}" "${session_pid}" || return 1
+			# A live session earns a fresh retry budget. SSH ServerAlive detects a
+			# dead transport; the inline protocol's heartbeat timeout releases its
+			# lock independently if the client disappears.
+			attempt=1
+		else
+			terminate_pid_tree "${session_pid}" TERM
+		fi
+		if wait "${session_pid}"; then
+			rc=0
+		else
+			rc="$?"
+		fi
+		write_build_host_lease_state lost "${epoch}" || return 1
+		if ! build_host_lease_owner_is_alive "${owner_pid}" "${owner_start_time}"; then
+			return 0
+		fi
+		if is_signal_exit_status "${rc}"; then
+			return "${rc}"
+		fi
+		if [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
+			write_build_host_lease_state failed "${epoch}" || true
+			return 1
+		fi
+		attempt=$((attempt + 1))
+		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
+		echo "Remote build lease on ${BUILD_HOST} disconnected; reacquiring (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+		sleep_for_retry_or_signal "${retry_sleep_secs}" || return "$?"
+	done
+}
+
+start_build_host_lease() {
+	local ssh_target="" nix_sshopts="" owner_start_time=""
+	local -a ssh_opts=() isolated_ssh_opts=()
+
+	[ "${BUILD_HOST}" != "local" ] || return 0
+	ensure_tmp_dir
+	BUILD_HOST_LEASE_STATE_FILE="$(runtime_state_file build-host-lease)"
+	owner_start_time="$(awk '{ print $22 }' "/proc/$$/stat")"
+	prepare_role_host_ssh_context "${BUILD_HOST}" ssh_target ssh_opts nix_sshopts || return 1
+	ssh_opts_without_control_master isolated_ssh_opts "${ssh_opts[@]}"
+	write_build_host_lease_state starting 0 || return 1
+	build_host_lease_supervisor \
+		"$$" \
+		"${owner_start_time}" \
+		"${ssh_target}" \
+		"${isolated_ssh_opts[@]}" &
+	BUILD_HOST_LEASE_PID="$!"
+	if wait_for_build_host_lease; then
+		return 0
+	fi
+	stop_build_host_lease
+	return 1
+}
+
+stop_build_host_lease() {
+	local lease_pid="${BUILD_HOST_LEASE_PID:-}" state="" epoch="" session_pid=""
+
+	[ -n "${lease_pid}" ] || return 0
+	read -r state epoch session_pid <"${BUILD_HOST_LEASE_STATE_FILE}" 2>/dev/null || true
+	if [[ "${session_pid}" =~ ^[1-9][0-9]*$ ]]; then
+		terminate_pid_tree "${session_pid}" TERM
+	fi
+	kill -TERM "${lease_pid}" 2>/dev/null || true
+	wait "${lease_pid}" 2>/dev/null || true
+	BUILD_HOST_LEASE_PID=""
+	BUILD_HOST_LEASE_STATE_FILE=""
+}
+
 host_build_plan_file() {
 	local node="$1"
 
@@ -11954,8 +12241,103 @@ copy_build_drv_to_remote_store() {
 		copy_output \
 		"Build derivation copy to ${BUILD_HOST}" \
 		"${nix_sshopts}" \
+		"" \
+		"" \
+		-- \
 		"${copy_cmd[@]}" || return "$?"
 	: "${copy_output}"
+}
+
+validate_remote_build_output_path() {
+	local node="$1" out_path="$2" expected_path="${3:-}"
+
+	case "${out_path}" in
+	/nix/store/*) ;;
+	*)
+		echo "Remote build produced an invalid output path for ${node}: ${out_path}" >&2
+		return 1
+		;;
+	esac
+	if [[ "${out_path}" == *$'\n'* ]]; then
+		echo "Remote build produced multiple output paths for ${node}" >&2
+		return 1
+	fi
+	if [ -n "${expected_path}" ] && [ "${out_path}" != "${expected_path}" ]; then
+		echo "Remote build output changed for ${node}: expected ${expected_path}, got ${out_path}" >&2
+		return 1
+	fi
+}
+
+realize_remote_build_output_guarded() {
+	# shellcheck disable=SC2034
+	local -n rrbo_out_path_out_ref="$1"
+	local node="$2" expected_path="${3:-}" drv_path="" build_installable=""
+	local store_uri="" nix_sshopts="" target_cmd="" realized_path="" rc=0
+	local -a build_cmd=()
+
+	drv_path="$(resolve_host_build_drv_path "${node}")" || return 1
+	build_installable="$(build_drv_output_installable "${drv_path}")"
+	prepare_build_host_store_context "${BUILD_HOST}" store_uri nix_sshopts || return 1
+	copy_build_drv_to_remote_store "${drv_path}" "${store_uri}" "${nix_sshopts}" || return 1
+
+	build_cmd=(
+		nix
+		build
+		"${NIXBOT_BUILD_NIX_ARGS[@]}"
+		--eval-store
+		auto
+		--print-out-paths
+		--no-link
+	)
+	if [ "${BUILD_LOGS}" -eq 1 ]; then
+		build_cmd+=(-L)
+	fi
+	build_cmd+=("${build_installable}")
+	target_cmd="$(build_host_lease_remote_command run "${build_cmd[@]}")"
+	if run_build_host_command_with_retry \
+		realized_path \
+		"Remote build on ${BUILD_HOST}" \
+		"${target_cmd}"; then
+		rc=0
+	else
+		rc="$?"
+		return "${rc}"
+	fi
+	validate_remote_build_output_path "${node}" "${realized_path}" "${expected_path}" || return 1
+	# shellcheck disable=SC2034
+	rrbo_out_path_out_ref="${realized_path}"
+}
+
+realize_remote_build_output_available() {
+	# shellcheck disable=SC2034
+	local -n rrboa_out_path_out_ref="$1"
+	local node="$2" expected_path="${3:-}" available_path=""
+	local before_epoch="" after_epoch="" attempt=1
+
+	while :; do
+		wait_for_build_host_lease before_epoch || return "$?"
+		realize_remote_build_output_guarded available_path "${node}" "${expected_path}" || return "$?"
+		[ -n "${expected_path}" ] || expected_path="${available_path}"
+		wait_for_build_host_lease after_epoch || return "$?"
+		if [ "${before_epoch}" = "${after_epoch}" ]; then
+			# shellcheck disable=SC2034
+			rrboa_out_path_out_ref="${available_path}"
+			return 0
+		fi
+		if [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
+			echo "Remote build lease changed repeatedly while recovering ${node}" >&2
+			return 1
+		fi
+		attempt=$((attempt + 1))
+		echo "Remote build lease changed; revalidating ${node} before distribution" >&2
+	done
+}
+
+ensure_remote_build_output_available() {
+	local node="$1" expected_path="$2" ignored_path=""
+
+	realize_remote_build_output_available ignored_path "${node}" "${expected_path}" || return "$?"
+	: "${ignored_path}"
 }
 
 run_nix_with_optional_sshopts() {
@@ -12013,28 +12395,17 @@ build_host() {
 }
 
 remote_build_host() {
-	local node="$1" result_link="${2:-}" drv_path="" build_installable="" out_path="" store_uri="" nix_sshopts=""
+	local node="$1" result_link="${2:-}" out_path="" store_uri="" nix_sshopts=""
 	local rc=0
-	local -a build_cmd=()
 
 	log_host_stage "build" "${node}" "remote build"
 	echo "Starting remote build on ${BUILD_HOST}" >&2
-	drv_path="$(resolve_host_build_drv_path "${node}")" || return 1
-	build_installable="$(build_drv_output_installable "${drv_path}")"
-	prepare_build_host_store_context "${BUILD_HOST}" store_uri nix_sshopts || return 1
-	copy_build_drv_to_remote_store "${drv_path}" "${store_uri}" "${nix_sshopts}" || return 1
-
-	build_cmd=(nix build "${NIXBOT_BUILD_NIX_ARGS[@]}" --eval-store auto --store "${store_uri}" --print-out-paths --no-link)
-	if [ "${BUILD_LOGS}" -eq 1 ]; then
-		build_cmd+=(-L)
-	fi
-	build_cmd+=("${build_installable}")
-	if ! run_remote_store_command_with_retry \
-		out_path \
-		"Remote build on ${BUILD_HOST}" \
-		"${nix_sshopts}" \
-		"${build_cmd[@]}"; then
+	if realize_remote_build_output_available out_path "${node}"; then
+		rc=0
+	else
 		rc="$?"
+	fi
+	if [ "${rc}" -ne 0 ]; then
 		echo "Remote build failed for ${node} on ${BUILD_HOST}" >&2
 		if is_signal_exit_status "${rc}"; then
 			return "${rc}"
@@ -12046,11 +12417,11 @@ remote_build_host() {
 		echo "Remote build produced no output path for ${node}" >&2
 		return 1
 	}
-
 	echo "Built out path on ${BUILD_HOST}: ${out_path}" >&2
 	if is_deploy_style_action; then
 		require_remote_build_cache_for_deploy || return 1
 	else
+		prepare_build_host_store_context "${BUILD_HOST}" store_uri nix_sshopts || return 1
 		copy_remote_build_closure_to_local_store "${node}" "${store_uri}" "${nix_sshopts}" "${out_path}" || return 1
 		if [ -n "${result_link}" ]; then
 			ln -sfn "${out_path}" "${result_link}"
@@ -12115,14 +12486,15 @@ resolve_build_out_path() {
 }
 
 run_build_phase() {
-	local build_jobs="$1" build_parallel="$2" prioritize_ci="$3" ci_host="$4"
-	local build_log_dir="$5" build_status_dir="$6" build_out_dir="$7" built_hosts_out_name="$9"
-	local -n rbp_build_hosts_in_ref="$8"
+	local build_jobs="$1" build_parallel="$2"
+	local build_log_dir="$3" build_status_dir="$4" build_out_dir="$5" built_hosts_out_name="$7"
+	local -n rbp_build_hosts_in_ref="$6"
 	# shellcheck disable=SC2178
-	local -n rbp_failed_hosts_out_ref="${10}"
+	local -n rbp_failed_hosts_out_ref="$8"
 
 	local node="" active_jobs=0 status_file="" out_file="" log_file=""
-	local build_sync_leading_ci=0 host_grouping=0 phase_rc=0
+	local host_grouping=0 phase_rc=0
+	declare -A synchronous_build_set=()
 
 	if [ "${build_parallel}" -eq 0 ] && [ "${#rbp_build_hosts_in_ref[@]}" -gt 1 ]; then
 		host_grouping=1
@@ -12134,33 +12506,34 @@ run_build_phase() {
 		prewarm_build_host_control_master
 	fi
 
-	if [ "${build_parallel}" -eq 1 ] && [ "${prioritize_ci}" -eq 1 ] &&
-		[ "${#rbp_build_hosts_in_ref[@]}" -gt 0 ] && [ "${rbp_build_hosts_in_ref[0]}" = "${ci_host}" ]; then
-		build_sync_leading_ci=1
-		node="${ci_host}"
-		status_file="$(phase_dir_item_status_file "${build_status_dir}" "${node}")"
-		out_file="${build_out_dir}/${node}.path"
-		run_build_job "${node}" "${out_file}" "${status_file}"
-		if record_phase_status "${node}" "${status_file}" "${built_hosts_out_name}" "${10}"; then
-			:
-		else
-			phase_rc="$?"
-			if is_signal_exit_status "${phase_rc}"; then
-				log_group_scope_end
-				return "${phase_rc}"
-			fi
-		fi
-	fi
-
 	for node in "${rbp_build_hosts_in_ref[@]}"; do
 		[ -n "${node}" ] || continue
-		if [ "${build_sync_leading_ci}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
-			continue
-		fi
 
 		status_file="$(phase_dir_item_status_file "${build_status_dir}" "${node}")"
 		out_file="${build_out_dir}/${node}.path"
 		log_file=""
+		if [ "${build_parallel}" -eq 1 ] && host_is_control_plane "${node}"; then
+			if drain_job_slots active_jobs; then
+				:
+			else
+				phase_rc="$?"
+				log_group_scope_end
+				return "${phase_rc}"
+			fi
+			run_build_job "${node}" "${out_file}" "${status_file}"
+			synchronous_build_set["${node}"]=1
+			if record_phase_status "${node}" "${status_file}" "${built_hosts_out_name}" "$8"; then
+				:
+			else
+				phase_rc="$?"
+				if is_signal_exit_status "${phase_rc}"; then
+					log_group_scope_end
+					return "${phase_rc}"
+				fi
+				break
+			fi
+			continue
+		fi
 		if [ "${build_parallel}" -eq 1 ]; then
 			log_file="$(phase_dir_item_log_file "${build_log_dir}" "${node}")"
 			run_build_job "${node}" "${out_file}" "${status_file}" "${log_file}" &
@@ -12176,7 +12549,7 @@ run_build_phase() {
 		fi
 
 		run_build_job "${node}" "${out_file}" "${status_file}"
-		if record_phase_status "${node}" "${status_file}" "${built_hosts_out_name}" "${10}"; then
+		if record_phase_status "${node}" "${status_file}" "${built_hosts_out_name}" "$8"; then
 			:
 		else
 			phase_rc="$?"
@@ -12199,10 +12572,8 @@ run_build_phase() {
 		for node in "${rbp_build_hosts_in_ref[@]}"; do
 			[ -n "${node}" ] || continue
 			status_file="$(phase_dir_item_status_file "${build_status_dir}" "${node}")"
-			if [ "${build_sync_leading_ci}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
-				continue
-			fi
-			if record_phase_status "${node}" "${status_file}" "${built_hosts_out_name}" "${10}"; then
+			[ -z "${synchronous_build_set["${node}"]+x}" ] || continue
+			if record_phase_status "${node}" "${status_file}" "${built_hosts_out_name}" "$8"; then
 				:
 			else
 				phase_rc="$?"
@@ -12503,7 +12874,7 @@ capture_current_run_summary_state() {
 }
 
 run_hosts() {
-	local selected_json="$1" runnable_selected_json="" ci_host="${CI_TRIGGER_HOST}"
+	local selected_json="$1" runnable_selected_json=""
 	# shellcheck disable=SC2034
 	local -a selected_hosts=() failed_hosts=() successful_hosts=() built_hosts=()
 	# shellcheck disable=SC2034
@@ -12588,9 +12959,8 @@ run_hosts() {
 		health_status_dir
 	RUN_SUMMARY_BUILD_STATUS_DIR="${build_status_dir}"
 	RUN_SUMMARY_DEPLOY_STATUS_DIR="${deploy_status_dir}"
-
 	build_phase_start_epoch="$(date +%s)"
-	if ! prepare_build_plan "${build_hosts[@]}"; then
+	if [ "${BUILD_HOST}" != "local" ] && ! start_build_host_lease; then
 		final_rc=1
 		for node in "${build_hosts[@]}"; do
 			failed_hosts+=("${node}")
@@ -12609,12 +12979,29 @@ run_hosts() {
 			deploy_failed_hosts
 		return "${final_rc}"
 	fi
-
+	if ! prepare_build_plan "${build_hosts[@]}"; then
+		final_rc=1
+		for node in "${build_hosts[@]}"; do
+			failed_hosts+=("${node}")
+			write_status_file "$(phase_dir_item_status_file "${build_status_dir}" "${node}")" 1
+		done
+		RUN_SUMMARY_BUILD_DURATION_SECS="$(elapsed_seconds "${build_phase_start_epoch}")"
+		echo "Build phase duration: $(format_duration "${RUN_SUMMARY_BUILD_DURATION_SECS}")" >&2
+		stop_build_host_lease || true
+		capture_current_run_summary_state \
+			"${ACTION}" \
+			selected_hosts \
+			built_hosts \
+			failed_hosts \
+			snapshot_failed_hosts \
+			successful_hosts \
+			deploy_skipped_hosts \
+			deploy_failed_hosts
+		return "${final_rc}"
+	fi
 	if run_build_phase \
 		"${BUILD_JOBS}" \
 		"${build_parallel}" \
-		"${PRIORITIZE_CI_FIRST}" \
-		"${ci_host}" \
 		"${build_log_dir}" \
 		"${build_status_dir}" \
 		"${build_out_dir}" \
@@ -12635,6 +13022,7 @@ run_hosts() {
 				successful_hosts \
 				deploy_skipped_hosts \
 				deploy_failed_hosts
+			stop_build_host_lease || true
 			return "${final_rc}"
 		fi
 	fi
@@ -12642,6 +13030,7 @@ run_hosts() {
 	echo "Build phase duration: $(format_duration "${RUN_SUMMARY_BUILD_DURATION_SECS}")" >&2
 
 	if is_host_build_only_action || [ "${final_rc}" -ne 0 ]; then
+		stop_build_host_lease || true
 		capture_current_run_summary_state \
 			"${ACTION}" \
 			selected_hosts \
@@ -12704,10 +13093,12 @@ run_hosts() {
 				successful_hosts \
 				deploy_skipped_hosts \
 				deploy_failed_hosts
+			stop_build_host_lease || true
 			return "${final_rc}"
 		fi
 	fi
 	RUN_SUMMARY_DEPLOY_DURATION_SECS="$(elapsed_seconds "${deploy_phase_start_epoch}")"
+	stop_build_host_lease || true
 
 	# Health check phase: verify user services are healthy after deploy.
 	if [ "${DRY_RUN}" -eq 0 ] && [ "${#successful_hosts[@]}" -gt 0 ]; then
@@ -14966,7 +15357,6 @@ run_deploy_request_action() {
 	else
 		run_hosts "${selected_json}" || action_rc="$?"
 	fi
-
 	if [ "${host_local_lock_acquired}" -eq 1 ]; then
 		release_host_local_lock
 	fi

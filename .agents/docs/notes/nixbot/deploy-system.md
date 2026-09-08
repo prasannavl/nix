@@ -280,11 +280,11 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   budget within a dependency wave. Rollback execution walks dependency levels in
   reverse, so child/dependent hosts roll back before parents while hosts inside
   each rollback level can still fan out up to the deploy job limit.
-- The selected CI host defaults to the latest position allowed by the dependency
-  graph. Nixbot first deploys every host that does not require CI, then CI, then
-  CI's real dependents. `NIXBOT_CI_FIRST=1` or `--ci-first` reverses that
-  preference and gives CI the first deploy wave when its predecessors permit.
-  Neither preference discards graph edges.
+- The control-plane unit consists of the controller followed by each distinct
+  registry host. It defaults to the latest position allowed by the dependency
+  graph for both build ordering and deploy waves. `NIXBOT_CONTROL_PLANE_FIRST=1`
+  or `--control-plane-first` moves that complete unit to the front. Neither
+  preference discards graph or parent edges.
 - Nixbot evaluates the flake key `nixbot.deployDependencies` by default and
   merges its generated edges into inventory `deps`. A repository with a
   different output may override the key with `config.deployDepsKey`.

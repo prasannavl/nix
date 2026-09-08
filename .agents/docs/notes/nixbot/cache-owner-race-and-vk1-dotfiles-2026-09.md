@@ -131,10 +131,11 @@ The repository repair applies both isolation boundaries:
   non-symlink `~/bin` is never replaced. After a successful fetch, a
   non-fast-forward update also remains fatal instead of hiding local divergence.
 
-Nixbot now defers its selected CI host to the latest position allowed by the
-dependency graph unless `NIXBOT_CI_FIRST=1` or `--ci-first` is explicit.
-`pvl-x2` is the CI controller, builder, transfer broker, Nix cache owner, and
-parent of the lab controllers. The resulting default deploy waves are:
+Nixbot now defers its controller-then-registries control-plane unit to the
+latest position allowed by the dependency graph unless
+`NIXBOT_CONTROL_PLANE_FIRST=1` or `--control-plane-first` is explicit. `pvl-x2`
+is the CI controller, builder, transfer broker, Nix cache owner, and parent of
+the lab controllers. The resulting default deploy waves are:
 
 1. `pvl-a1` and `pvl-l5`.
 2. `pvl-x2` alone.
