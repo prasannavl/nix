@@ -147,6 +147,25 @@ impl Nix {
         serde_json::from_str(&result.stdout).context("parse applied Nix installable JSON")
     }
 
+    pub fn eval_installable_json(&self, repository: &Path, installable: &str) -> Result<Value> {
+        let result = cmd!(
+            &self.executable,
+            "eval",
+            "--json",
+            "--no-write-lock-file",
+            installable
+        )
+        .current_dir(repository)
+        .output()?;
+        if !result.success {
+            bail!("Nix installable evaluation failed: {}", result.stderr);
+        }
+        if result.stdout_truncated_bytes != 0 {
+            bail!("Nix installable evaluation exceeded the bounded capture limit");
+        }
+        serde_json::from_str(&result.stdout).context("parse Nix installable JSON evaluation")
+    }
+
     pub fn eval_file_with_overlay_json(
         &self,
         file: &Path,

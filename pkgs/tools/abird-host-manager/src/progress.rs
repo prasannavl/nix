@@ -68,6 +68,11 @@ impl ProgressReporter {
         self.enabled && !json_output()
     }
 
+    pub fn without_color(mut self) -> Self {
+        self.style = TerminalStyle::from_capabilities(false, false);
+        self
+    }
+
     pub fn phase_started(&self, transaction: &str, action: Action, items: usize) {
         if !self.enabled() {
             return;

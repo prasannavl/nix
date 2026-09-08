@@ -37,11 +37,17 @@ pub struct TerminalStyle {
 
 impl TerminalStyle {
     pub fn for_stdout() -> Self {
-        Self::from_capabilities(io::stdout().is_terminal(), color_disabled_by_environment())
+        Self::from_capabilities(
+            io::stdout().is_terminal() || color_forced_by_environment(),
+            color_disabled_by_environment(),
+        )
     }
 
     pub fn for_stderr() -> Self {
-        Self::from_capabilities(io::stderr().is_terminal(), color_disabled_by_environment())
+        Self::from_capabilities(
+            io::stderr().is_terminal() || color_forced_by_environment(),
+            color_disabled_by_environment(),
+        )
     }
 
     pub fn from_capabilities(is_terminal: bool, color_disabled: bool) -> Self {
@@ -114,8 +120,15 @@ impl TerminalStyle {
 
 fn color_disabled_by_environment() -> bool {
     env::var_os("NO_COLOR").is_some()
+        || env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
         || env::var_os("TERM")
             .is_some_and(|term| term.to_string_lossy().eq_ignore_ascii_case("dumb"))
+}
+
+fn color_forced_by_environment() -> bool {
+    env::var("NIXBOT_FORCE_COLOR")
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
 }
 
 fn key_value_separator(line: &str) -> Option<usize> {

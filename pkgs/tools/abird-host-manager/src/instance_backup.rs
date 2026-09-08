@@ -801,8 +801,10 @@ mod tests {
 
     #[test]
     fn context_binds_full_endpoint_authority_and_explicit_executor() {
-        let mut policy = InstanceBackupPolicy::default();
-        policy.executor_controller = Some("backup-controller".to_owned());
+        let policy = InstanceBackupPolicy {
+            executor_controller: Some("backup-controller".to_owned()),
+            ..InstanceBackupPolicy::default()
+        };
         let first = InstanceBackupContext::new(&endpoint("abird"), &policy).unwrap();
         let second = InstanceBackupContext::new(&endpoint("other"), &policy).unwrap();
         assert_eq!(first.executor, "backup-controller");

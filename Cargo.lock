@@ -21,11 +21,13 @@ version = "0.1.0"
 dependencies = [
  "abird-host-agent",
  "anyhow",
+ "base64",
  "clap",
  "humantime",
  "libc",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "uuid",
 ]

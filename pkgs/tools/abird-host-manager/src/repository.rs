@@ -3109,9 +3109,8 @@ mod tests {
         let command = repository_git_command(Path::new("git"), Path::new("/tmp/repository"));
         let removed = command
             .get_envs()
-            .filter_map(|(name, value)| {
-                value.is_none().then(|| name.to_string_lossy().into_owned())
-            })
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
             .collect::<BTreeSet<_>>();
 
         assert_eq!(

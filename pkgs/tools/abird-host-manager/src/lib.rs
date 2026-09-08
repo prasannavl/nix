@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod agent_adapter;
 pub mod backup_runtime;
+pub mod fleet;
 pub mod instance_backup;
 pub mod offline_store;
 pub mod physical;

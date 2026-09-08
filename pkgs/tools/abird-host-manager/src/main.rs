@@ -23,6 +23,9 @@ use abird_host_manager::backup_runtime::{
     ArtifactDeletionStatus, BackupArtifact, BackupPhase, BackupRecord, BackupStore,
     InstanceExportLocation, RestorePhase,
 };
+use abird_host_manager::fleet::cli::Invocation as FleetInvocation;
+use abird_host_manager::fleet::environment::Environment as FleetEnvironment;
+use abird_host_manager::fleet::runtime::{RuntimeConfig as FleetRuntimeConfig, run as run_fleet};
 use abird_host_manager::instance_backup::{self, InstanceBackupContext};
 use abird_host_manager::physical::{
     BootMode, HardwareProjection, PartitionSize, PhysicalLayoutRequest,
@@ -208,6 +211,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Build, deploy, verify, and maintain the managed host fleet.
+    Fleet {
+        /// Fleet action and options. Run `abird-host-manager fleet help` for details.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 1..)]
+        arguments: Vec<String>,
+    },
     /// Run durable infrastructure-instance operations on an Incus controller agent.
     Instance {
         #[command(subcommand)]
@@ -1317,6 +1326,10 @@ struct ResourceLogArgs {
 
 fn command_presentation(command: &Command) -> CommandPresentation {
     match command {
+        Command::Fleet { arguments } => CommandPresentation::inspect(
+            format!("Fleet {}", arguments.join(" ")),
+            PresentationKind::Fleet,
+        ),
         Command::Instance { command } => match command {
             InstanceCommand::Move(args) => workflow_presentation(
                 format!("Move {}", named_subjects("instance", &args.instances)),
@@ -1775,6 +1788,14 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
+            if let Some(interrupted) =
+                error.downcast_ref::<abird_host_manager::fleet::signal::Interrupted>()
+            {
+                return ExitCode::from(interrupted.status() as u8);
+            }
+            if abird_host_manager::fleet::presentation::take_failure_presented() {
+                return ExitCode::FAILURE;
+            }
             if error
                 .downcast_ref::<RenderedControllerJsonFailure>()
                 .is_some()
@@ -1827,6 +1848,21 @@ fn run() -> Result<()> {
         nixos_install: cli.nixos_install_program,
     };
     match cli.command {
+        Command::Fleet { arguments } => {
+            let mut reexec_arguments = vec!["fleet".to_owned()];
+            reexec_arguments.extend(arguments.clone());
+            let invocation = FleetInvocation::parse_canonical_with_environment(
+                std::iter::once("fleet".to_owned()).chain(arguments),
+                &FleetEnvironment::current(),
+            )?;
+            let mut runtime = FleetRuntimeConfig {
+                nix_program: repository_programs.nix,
+                ..FleetRuntimeConfig::from_environment()
+            };
+            runtime.repo_reexec_installable = ".#abird-host-manager".to_owned();
+            runtime.repo_reexec_arguments = reexec_arguments;
+            run_fleet(invocation, runtime)
+        }
         Command::Instance { command } => {
             let config = resolve_config(cli.config.as_deref(), cli.repo_root.as_deref())?;
             instance_command(
