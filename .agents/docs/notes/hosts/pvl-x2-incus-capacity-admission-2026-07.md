@@ -112,6 +112,120 @@ fan-out nor per-guest start fan-out is the cause. Corp therefore returns to four
 start-through-ready lanes: serializing its graph slows recovery without
 containing the accumulated resident set that exhausted the physical host.
 
+### Build-triggered reclaim storm, 2026-08-31
+
+An abandoned remote build remained owned by the Gondor CI Nix daemon after the
+client lost SSH. It concurrently compiled Stalwart with Rust and Node.js/V8 with
+17 C++ compiler workers. About one hour later, the CI cgroup still held 23.8
+GiB: one `rustc` process held about 5.6 GiB RSS and individual `cc1plus`
+processes held 0.35-1.9 GiB each. CI had not crossed its 32 GiB limit or
+recorded an OOM.
+
+The complete nested stack did cross the relevant capacity boundary. The outer
+`gap3-gondor` cgroup was pinned at its exact 50 GiB hard limit, the physical
+host had only 1.4 GiB available, anonymous memory occupied about 54 GiB, the
+file cache had fallen to about 3.2 GiB, and no swap existed. The resulting
+direct reclaim continually evicted pages from every nested guest and made them
+cold-read their executables, databases, and rootless container layers again.
+
+Physical-device samples showed about 1.1 GiB/s reads and essentially no writes
+through `nvme0n1 -> LUKS dm-0 -> Btrfs`, with roughly 200 queued operations,
+8-10 ms read latency, and 33-34% CPU I/O wait. The second NVMe remained idle.
+The nested cgroup accounting simultaneously reported about 2.1 GiB/s logical
+reads: CI led one sample at 298 MiB/s, but Corp, both Rivendell roles, proxy,
+server, data, Zulip, and other guests were also faulting back hundreds of MiB/s.
+At the same time, 393 processes were blocked in uninterruptible I/O: 155 in
+Corp, 108 in `gap3-rivendell`, and 27 in CI. The blocked population included
+Postgres, `fuse-overlayfs`, application runtimes, and the compiler workers.
+
+Both `/build` and `/nix/store` inside nested CI resolve to the same physical
+Btrfs filesystem through two directory-backed Incus layers. This incident is
+therefore memory-induced page-cache thrashing on shared storage, not write
+saturation, raw CPU over-admission, or an NVMe fault. Lowering build CPU count
+alone does not establish a safe envelope: the build working set plus resident
+services must fit below the outer 50 GiB limit with enough room left for useful
+file cache. When a deploy client disconnects, first check for daemon-owned
+builds before retrying because another client is not required for those builds
+to keep consuming the shared memory and disk failure domain.
+
+The operator approved cancellation after the work had run for about one hour. At
+the 50 GiB hard limit, both nested SSH and `incus exec` lacked enough headroom
+to fork the cancellation command. Recovery temporarily raised only the outer
+`gap3-gondor` limit from 50 GiB to 51 GiB, wrote `1` to the nested
+`abird-ci/system.slice/nix-daemon.service/cgroup.kill`, and restored 50 GiB
+immediately through a shell trap. It did not restart the outer production
+container or the CI instance.
+
+The build cgroup emptied immediately. CI memory fell from 23.8 GiB to about 270
+MiB, physical-host available memory rose to about 24 GiB, D-state processes fell
+from 393 to 3, physical reads fell from about 1.1 GiB/s to 3-12 MiB/s, and I/O
+wait returned near zero. Clearing the intentional failed marker left
+`nix-daemon.service` inactive, `nix-daemon.socket` active, no failed CI units,
+and no compiler processes. This is the bounded cancellation path when the memory
+limit itself prevents ordinary nested control-plane access.
+
+The pressure interval also left seven nested guests without their declared
+DHCPv4 addresses. Incus still held every static lease and every veth remained
+forwarding, but guest `systemd-networkd` logs showed netlink operations timing
+out under pressure and later showed the affected links as IPv6-only or failed.
+This removed `10.10.30.20` from the proxy, so the healthy CoreDNS listener was
+unreachable and every `~abird.internal` query, including the CI cache name,
+timed out. Reconfiguring only `eth0` with `networkctl reconfigure eth0` restored
+the declared IPv4 address on proxy, Corp, dev, identity, Tic-Tac-Toe, Zulip, and
+`gap3-rivendell`; no guest restart was required. The real nixbot bootstrap check
+then passed through the parent for Corp, proxy, Zulip, and CI.
+
+Network recovery alone does not make the cancelled deployment safe to retry. The
+CI realization dry-run still listed the same 45 derivations, including the
+Stalwart and Node.js/V8 image builds whose outputs remained absent. Prebuild
+that closure in a failure domain with a safe memory/cache envelope before a
+fresh fleet deployment; otherwise the retry recreates the initiating workload.
+
+### Builder GC coordination and admission, 2026-09-01
+
+The next deployment established why the workload became cold without a source
+regression. The CI host's weekly GC deleted 49,142 unrooted paths (96.4 GiB),
+including the exact Stalwart, OpenDesign, and Node.js outputs needed by Corp.
+Nixbot's remote build used `--no-link`, Harmonia served only the live store, and
+the builder had no durable root for a successfully built target closure. The
+following deployment therefore rebuilt the full heavy graph. The later SSH
+banner failures were consequences of the resulting shared reclaim storm, not its
+cause.
+
+Nixbot does not own builder cache retention or generation rotation. The builder
+role instead serializes supported GC entrypoints against active consumers with
+one fixed advisory lock. A fleet invocation holds a shared kernel lease while
+the builder or its cache can still be needed; scheduled `nix-gc.service` and
+host-agent maintenance GC take the exclusive side. There are no Nix profiles,
+out-links, run directories, retained generations, cleanup RPCs, or reapers in
+this protocol. Closing the lease SSH connection, killing either process, or
+rebooting either machine releases the lock in the kernel, so crashes cannot
+leave persistent retention state behind.
+
+The lease transport is independent of ordinary build, target, and activation SSH
+connections. If it is lost before a builder-dependent operation, the controller
+reacquires it and re-realizes the planned derivation, requiring the same exact
+output path before retrying. If the path survived, this is a cheap verification;
+if GC collected it, Nix rebuilds it. Work already copied and verified on a
+target remains valid, so a later lease loss does not retroactively fail the
+deployment. The controller releases the lease once no later phase can read from
+the builder; GC timing and age policy remain owned by NixOS.
+
+This is a builder-role contract, not a global Nix setting. A new builder gets
+the GC guard and conservative build admission by enabling the role. The
+controller owns the generation-independent inline lease protocol, so no
+generation-provided helper or separate bootstrap is required. Direct
+administrator invocations that bypass both `nix-gc.service` and host-agent
+maintenance are outside the supported coordination surface.
+
+The `pvl-x2` builder role also admits one Nix derivation at a time. It leaves
+`cores = 0`, so the admitted derivation automatically receives the effective CPU
+set. This is an admission lane, not a fabricated RAM formula: Nix derivations do
+not declare reliable peak memory, and the relevant parent failure domain remains
+independently overcommitted. Every additional builder role inherits the same
+conservative lane and GC coordination contract. Global `lib/nix.nix`, ordinary
+hosts, and the fleet GC policy remain unchanged.
+
 ## Limit envelopes
 
 Boot and service admission remove synchronized recovery storms but do not create

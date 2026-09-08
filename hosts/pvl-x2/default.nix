@@ -12,6 +12,7 @@ in {
     ../common/pvl.nix
     ../common/ci.nix
     ../../lib/devices/gmtek-evo-x2.nix
+    ../../lib/services/nix-builder-gc-coordination
     ./cloudflare.nix
     ./sys.nix
     ./packages.nix
@@ -27,6 +28,8 @@ in {
   ];
 
   networking.firewall.allowedTCPPorts = [5000];
+
+  services.nix-builder-gc-coordination.enable = true;
 
   services.tailscale = {
     useRoutingFeatures = "both";
