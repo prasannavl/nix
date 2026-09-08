@@ -493,6 +493,12 @@ in {
       description = "Tar executable used by fallback copy jobs.";
     };
 
+    nixCollectGarbageProgram = lib.mkOption {
+      type = lib.types.str;
+      default = "${pkgs.nix}/bin/nix-collect-garbage";
+      description = "Absolute nix-collect-garbage-compatible executable used by host maintenance.";
+    };
+
     sshHostEd25519PublicKey = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;

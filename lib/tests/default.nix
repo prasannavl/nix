@@ -94,6 +94,7 @@ in
     lib-abird-host-agent = import ./abird-host-agent.nix {inherit pkgs;};
     lib-abird-host-manager = import ./abird-host-manager.nix {inherit pkgs;};
     lib-nixbot = import ./nixbot.nix {inherit pkgs;};
+    lib-nix-builder-gc-coordination = import ./nix-builder-gc-coordination.nix {inherit pkgs;};
     lib-nginx-phase-projection-routes = import ./nginx-phase-projection-routes.nix {inherit pkgs;};
     lib-nginx-runtime-candidate-validator = import ./nginx-runtime-candidate-validator.nix {inherit pkgs;};
     lib-abird-host-agent-transfer = import ./abird-host-agent-transfer.nix {inherit pkgs;};

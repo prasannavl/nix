@@ -181,7 +181,7 @@
         --set ABIRD_HOST_AGENT_JOURNALCTL ${lib.escapeShellArg "${pkgs.systemd}/bin/journalctl"} \
         --set ABIRD_HOST_AGENT_RUNUSER ${lib.escapeShellArg runuserProgram} \
         --set ABIRD_HOST_AGENT_PODMAN ${lib.escapeShellArg "${pkgs.podman}/bin/podman"} \
-        --set ABIRD_HOST_AGENT_NIX_COLLECT_GARBAGE ${lib.escapeShellArg "${pkgs.nix}/bin/nix-collect-garbage"} \
+        --set ABIRD_HOST_AGENT_NIX_COLLECT_GARBAGE ${lib.escapeShellArg cfg.nixCollectGarbageProgram} \
         --set ABIRD_HOST_AGENT_SSH_HOST_ED25519_PUBLIC_KEY ${lib.escapeShellArg sshHostEd25519PublicKey}
     '';
   };
@@ -624,6 +624,10 @@ in {
       {
         assertion = lib.hasPrefix "/" cfg.backupRoot && cfg.backupRoot != "/" && lib.hasPrefix "/" cfg.rsyncProgram && lib.hasPrefix "/" cfg.tarProgram;
         message = "services.abird-host-agent backup and copy paths must be absolute and backupRoot cannot be root.";
+      }
+      {
+        assertion = lib.hasPrefix "/" cfg.nixCollectGarbageProgram;
+        message = "services.abird-host-agent nixCollectGarbageProgram must be absolute.";
       }
       {
         assertion = lib.all (path: lib.hasPrefix "/" path && path != "/") [
