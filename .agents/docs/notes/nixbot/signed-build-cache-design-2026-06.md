@@ -175,13 +175,21 @@ server to the maintained NixOS module and Rust implementation.
 
 ## Phase 4: Builder-Side Signing
 
-After:
+The controller first copies the planned derivation, then realizes it while
+holding the builder's shared GC lease:
 
 ```bash
-nix build --store ssh-ng://pvl-x2 --print-out-paths --no-link ...
+nix copy --to ssh-ng://pvl-x2 <drv>
+ssh pvl-x2 \
+  'exec 9</nix/var/nix; flock --shared 9; exec nix build --no-link <drv>^out'
 ```
 
-the builder's Nix daemon signs locally built paths through
+The SSH command is schematic. The actual controller sends the lease wrapper as
+argv-safe inline Bash with absolute Bash and `flock` paths. It locks the stable
+`/nix/var/nix` inode and does not depend on `abird-nix-build-lease` or any other
+helper from the active builder generation.
+
+The builder's Nix daemon signs locally built paths through
 `nix.settings.secret-key-files`. `nixbot` must not SSH to the builder to run
 `nix store sign`; signing is builder host configuration, not orchestrator
 behavior.
