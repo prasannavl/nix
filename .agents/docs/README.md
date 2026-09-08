@@ -42,7 +42,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   rules.
 - `.agents/docs/notes/apps/bulwarkmail-package-patches-2026-06.md`: Records the
   reusable Bulwarkmail package patches, including the server-side logout route
-  used by edge-auth logout chains.
+  used by edge-auth logout chains, and package-local serialization of only the
+  fixed-output npm dependency fetch.
 - `.agents/docs/notes/apps/tailscale-upstream-package-2026-05.md`: Records the
   upstream Tailscale source-build override, overlay alias, and NixOS module
   consumption contract.
@@ -227,10 +228,17 @@ Use this index as the canonical map for `.agents/docs/**`.
   `incus-preseed.service` participate in `sysinit-reactivation.target` before
   dependent parent Incus helper units run.
 - `.agents/docs/notes/hosts/pvl-x2-incus-capacity-admission-2026-07.md`:
-  Physical-host OOM/watchdog and Btrfs cold-boot storm evidence, the separation
-  between deploy and guest-start admission, bounded priority/readiness Incus
-  waves, create-time and live-reconciled limit envelopes, and the remaining
-  storage enforcement boundary.
+  Physical-host OOM/watchdog, Btrfs cold-boot, and build-triggered page-cache
+  thrashing evidence; the separation between deploy and guest-start admission;
+  bounded priority/readiness Incus waves, builder-local GC coordination and
+  one-lane admission, create-time and live-reconciled limit envelopes, and the
+  remaining storage enforcement boundary.
+- `.agents/docs/notes/hosts/nix-builder-gc-coordination-2026-09.md`:
+  Builder-role shared-lock protocol for crash-released invocation leases,
+  build-command protection, guarded scheduled and host-agent GC, and one-lane
+  derivation admission through a controller-owned, generation-independent
+  protocol with no target helper or bootstrap prerequisite, plus exact-output
+  cold fixed-output recovery guidance.
 - `.agents/docs/notes/hosts/pvl-x2-host-network-qos-2026-07.md`: Records the
   host-owned CAKE/IFB policy that keeps host traffic above forwarded Incus
   traffic while allowing idle bandwidth borrowing.
@@ -278,6 +286,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Nixbot
 
+- `.agents/docs/notes/nixbot/rust-host-manager-replacement-2026-09.md`: Native
+  Rust fleet architecture, Pvl inventory adaptations, move-style output, parity
+  evidence, and the staged landing boundary that retains the active Bash Nixbot
+  until explicit cutover.
 - `.agents/docs/notes/nixbot/deploy-system.md`: Canonical `nixbot` deploy,
   bootstrap, SSH, worktree, Terraform, CI, and distinct group-scope, exact-host,
   and host-filter selection behavior.
@@ -526,6 +538,14 @@ Use this index as the canonical map for `.agents/docs/**`.
   August 31 union audit after `c3b35904` across diverged Abird local and remote
   branches, the shared dependency and Incus units, split parent/guest topology
   adaptations, complete per-commit dispositions, and final byte parity.
+- `.agents/docs/notes/tooling/abird-post-c3b-linear-port-2026-09.md`: Records
+  the September 8 audit of all 20 commits in the rewritten linear history after
+  `c3b35904`, builder GC coordination, hardened Bash and native Rust fleet
+  ports, Pvl adaptations, complete per-commit dispositions, final parity, and
+  the follow-up proof that the recent five-commit builder-adoption branch is
+  tree-identical to the audited master tip, including the final native
+  health-policy visibility correction and September 9 Bulwarkmail npm-fetch
+  serialization port through source tip `1fd66b4f`.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
