@@ -9,9 +9,80 @@
   };
   incusSecrets = ../../data/secrets/globals/incus;
   fpp = incusLib.fabricPolicyProfiles;
+  abirdProjection = {
+    addressBases = {
+      ipv4 = "10.10";
+      ipv6 = "fd42:ab1d:ab1d";
+    };
+    fabrics = {
+      abird-platform = 0;
+      abird-gondor = 30;
+      abird = 100;
+      abird-dev = 220;
+    };
+    endpoints = {
+      nest = 10;
+      proxy = 20;
+      ci = 80;
+    };
+    access = {
+      abird-to-platform-ci = {
+        from.fabrics = ["abird" "abird-gondor"];
+        to = {
+          fabric = "abird-platform";
+          endpoint = "ci";
+        };
+        tcp = [22 5000];
+      };
+      abird-dev-to-platform-ci = {
+        from.fabrics = ["abird-dev"];
+        to = {
+          fabric = "abird-platform";
+          endpoint = "ci";
+        };
+        tcp = [22 5000];
+      };
+      platform-to-gondor-proxy-dns = {
+        from.fabrics = ["abird-platform"];
+        to = {
+          fabric = "abird-gondor";
+          endpoint = "proxy";
+        };
+        tcp = [53];
+        udp = [53];
+      };
+      platform-to-gondor-ci-cache = {
+        from.fabrics = ["abird-platform"];
+        to = {
+          fabric = "abird-gondor";
+          endpoint = "ci";
+        };
+        tcp = [5000];
+      };
+      gondor-proxy-to-platform-nest-oauth-bridge = {
+        from = {
+          fabrics = ["abird-gondor"];
+          endpoint = "proxy";
+        };
+        to = {
+          fabric = "abird-platform";
+          endpoint = "nest";
+        };
+        tcp = [18444];
+      };
+      platform-nest-to-abird-dev-ssh = {
+        from = {
+          fabrics = ["abird-platform"];
+          endpoint = "nest";
+        };
+        to.fabric = "abird-dev";
+        tcp = [22];
+      };
+    };
+  };
   abirdFabric = import ../../lib/flake/fabric-projection.nix {
     inherit lib;
-    projection = import ./abird-fabric.nix;
+    projection = abirdProjection;
   };
   defaultPrefixes = {
     ipv4 = "10.10.20.0/24";
@@ -29,6 +100,16 @@
   };
   abirdFabricNames = builtins.attrNames abirdBridgeNames;
   physicalAbirdFabricNames = builtins.attrNames (abirdBridgeNames // {abird-gondor = null;});
+  oauthBridgeSources = map (rule: rule.source) (
+    builtins.filter (
+      rule:
+        rule.from
+        == "abird-gondor"
+        && rule.to == "abird-platform"
+        && (rule.tcpPorts or []) == [18444]
+    )
+    abirdFabric.forwardRules
+  );
   projectNames = ["pvl"] ++ abirdFabricNames;
   bridgeAddressFor = fabric: family: "${abirdFabric.addressForId fabric family 1}/${toString abirdFabric.prefixLength.${family}}";
   bridgeRangeFor = fabric: family: "${abirdFabric.addressForId fabric family 100}-${abirdFabric.addressForId fabric family 199}";
@@ -249,6 +330,37 @@ in {
       {
         assertion = abirdFabric.fabricNames == physicalAbirdFabricNames;
         message = "Pvl requires the local Abird projection to match its physical fabrics";
+      }
+      {
+        assertion =
+          gondorPrefixes
+          == {
+            ipv4 = "10.10.30.0/24";
+            ipv6 = "fd42:ab1d:ab1d:30::/64";
+          };
+        message = "Pvl requires stable Gondor fabric prefixes";
+      }
+      {
+        assertion =
+          abirdFabric.addressesFor "abird-platform" "nest"
+          == {
+            ipv4 = "10.10.0.10";
+            ipv6 = "fd42:ab1d:ab1d:0::10";
+          };
+        message = "Pvl requires the stable Abird Nest endpoint";
+      }
+      {
+        assertion = builtins.length abirdFabric.forwardRules == 14;
+        message = "Pvl requires all dual-family Abird access rules";
+      }
+      {
+        assertion =
+          oauthBridgeSources
+          == [
+            "10.10.30.20"
+            "fd42:ab1d:ab1d:30::20"
+          ];
+        message = "Pvl requires the routed proxy identity for the OAuth bridge";
       }
     ];
 

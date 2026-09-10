@@ -1,5 +1,26 @@
 {pkgs}: let
-  projection = import ../../../hosts/pvl-x2/abird-fabric.nix;
+  projection = {
+    addressBases = {
+      ipv4 = "10.20";
+      ipv6 = "fd42:20:20";
+    };
+    fabrics = {
+      source = 1;
+      destination = 2;
+    };
+    endpoints.app = 20;
+    access.app = {
+      from = {
+        fabrics = ["source"];
+        endpoint = "app";
+      };
+      to = {
+        fabric = "destination";
+        endpoint = "app";
+      };
+      tcp = [443];
+    };
+  };
   mkFabric = projection:
     import ../fabric-projection.nix {
       lib = pkgs.lib;
@@ -11,7 +32,7 @@
   duplicateSubnet = mkFabric (
     projection
     // {
-      fabrics = projection.fabrics // {abird-dev = projection.fabrics.abird;};
+      fabrics = projection.fabrics // {duplicate = projection.fabrics.source;};
     }
   );
   unknownAccessEndpoint = mkFabric (
@@ -21,9 +42,9 @@
         projection.access
         // {
           invalid = {
-            from.fabrics = ["abird"];
+            from.fabrics = ["source"];
             to = {
-              fabric = "abird-platform";
+              fabric = "destination";
               endpoint = "missing";
             };
             tcp = [443];
@@ -31,35 +52,26 @@
         };
     }
   );
-  oauthRules =
-    builtins.filter (
-      rule:
-        rule.from
-        == "abird-gondor"
-        && rule.to == "abird-platform"
-        && (rule.tcpPorts or []) == [18444]
-    )
-    fabric.forwardRules;
 in
   assert assertionsPass fabric;
   assert !assertionsPass duplicateSubnet;
   assert !assertionsPass unknownAccessEndpoint;
   assert fabric.enabledFamilies == ["ipv4" "ipv6"];
-  assert fabric.prefixes.abird-gondor
+  assert fabric.prefixes.destination
   == {
-    ipv4 = "10.10.30.0/24";
-    ipv6 = "fd42:ab1d:ab1d:30::/64";
+    ipv4 = "10.20.2.0/24";
+    ipv6 = "fd42:20:20:2::/64";
   };
-  assert fabric.addressesFor "abird-platform" "nest"
+  assert fabric.addressesFor "source" "app"
   == {
-    ipv4 = "10.10.0.10";
-    ipv6 = "fd42:ab1d:ab1d:0::10";
+    ipv4 = "10.20.1.20";
+    ipv6 = "fd42:20:20:1::20";
   };
-  assert builtins.length fabric.forwardRules == 14;
-  assert map (rule: rule.source) oauthRules
+  assert builtins.length fabric.forwardRules == 2;
+  assert map (rule: rule.source) fabric.forwardRules
   == [
-    "10.10.30.20"
-    "fd42:ab1d:ab1d:30::20"
+    "10.20.1.20"
+    "fd42:20:20:1::20"
   ];
     pkgs.runCommand "lib-flake-fabric-projection-test" {} ''
       touch "$out"
