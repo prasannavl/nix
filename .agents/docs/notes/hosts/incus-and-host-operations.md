@@ -188,12 +188,17 @@ recent host incidents.
 - Podman services, nested Incus, and GPU passthrough can coexist, but the
   source-of-truth files should remain split between the parent host, the nested
   host, and the nested guest.
-- When sibling parent fabrics need to reach a subnet behind a nested Incus
-  router, declare the route on the parent host that owns both fabrics. In the
-  current `pvl-x2` plus `gap3-gondor` shape, traffic from the `abird` project to
-  `10.10.30.0/24` needs a parent-host route via `10.10.20.20`; the nested bridge
-  NAT handles guest egress, but reverse-initiated traffic does not work until
-  the parent knows that `10.10.30.0/24` lives behind the outer nested host.
+- When sibling parent fabrics need to reach prefixes behind a nested Incus
+  router, declare both routes as inherited-NIC properties on that router guest.
+  In the current `pvl-x2` plus `gap3-gondor` shape, the outer NIC owns
+  `10.10.30.0/24` and `fd42:ab1d:ab1d:30::/64`; the Incus manager reconciles
+  those routes live without a parallel host-route service.
+- Treat a routed nested subnet as a logical managed fabric on the physical
+  parent. The nested host routes without NAT; the physical parent classifies the
+  parent interface plus routed prefix, enforces the same cross-fabric policy in
+  both families, and masquerades only beyond the internal destination boundary.
+  This preserves guest source identity between internal fabrics without making
+  downstream services trust the outer nested-host address.
 
 ## Source of truth files
 

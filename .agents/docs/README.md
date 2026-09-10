@@ -217,11 +217,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   old project contents, destructive rollout gates, and the validated Nest/CI
   bootstrap state.
 - `.agents/docs/notes/hosts/pvl-x2-incus-project-routes-2026-06.md`: Records the
-  project-owned Incus route API, helper-based route reconciler, `pvl-x2` route
-  to the still-live `10.10.30.0/24` subnet through `gap3-gondor`, and parent
-  fabric `forwardRules` for narrow DNS, cache, and SSH exceptions, restart
-  coupling for routes on Incus-managed bridges, and project-qualified readiness
-  selectors for delegated projects.
+  minimal pvl-x2-local Abird enforcement projection, dual-stack routed-source
+  preservation, inherited NIC live reconciliation, source filtering, stable
+  bridge prefixes, destination-boundary perimeter NAT, and rollout contract.
 - `.agents/docs/notes/hosts/pvl-x2-incus-preseed-reactivation-2026-07.md`:
   Records the `pvl-x2` deploy failure where `abird-stage` was missing from live
   Incus while declared preseed already contained it, plus the fix that makes

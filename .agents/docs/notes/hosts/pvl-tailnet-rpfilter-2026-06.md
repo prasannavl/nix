@@ -68,9 +68,11 @@ visible during new remote-delegation workflows.
 The `eth0` references in the Incus configuration are guest/profile device names,
 not the pvl-x2 underlay NIC. For example, each Incus default profile declares a
 device named `eth0` with a `network` property such as `incusbr0`, `ipvlbr0`, or
-`iabirdbr0`. The project route reconciler reads that profile `network` property
-and emits host routes against the bridge name. The generated pvl-x2 route JSON
-for the legacy subnet is:
+`iabirdbr0`.
+
+At the time of this incident, the project route reconciler read that profile
+`network` property and emitted host routes against the bridge name. Its
+generated pvl-x2 route JSON for the legacy subnet was:
 
 ```json
 [
@@ -84,8 +86,11 @@ for the legacy subnet is:
 ]
 ```
 
-The route helper applies that as `ip -4 route replace ... dev incusbr0`, not
-`dev eth0`.
+The historical route helper applied that as
+`ip -4 route replace ... dev incusbr0`, not `dev eth0`. The current design has
+removed that helper and JSON state: `gap3-gondor`'s inherited outer NIC declares
+both routed prefixes directly, so Incus owns their route lifecycle and the
+shared manager reconciles the NIC properties live.
 
 ## Correct Fix
 

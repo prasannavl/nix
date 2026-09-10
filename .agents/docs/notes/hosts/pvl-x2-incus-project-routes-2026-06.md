@@ -1,142 +1,122 @@
-# pvl-x2 Incus Project Routes
+# pvl-x2 Incus Fabric Routing
 
-> The route API and general `forwardRules` guidance remain current. The Abird
-> stage-era exception list below is historical; the fresh platform boundary is
-> recorded in `pvl-x2-abird-platform-project-2026-07.md`.
+## Ownership boundary
 
-## Context
+Abird owns the pure, versioned fabric contract in `lib/stacks/abird-fabric.nix`:
+stable IPv4 and IPv6 prefixes, fabric-local role addresses, placements,
+lifecycle state, and logical allow edges. Pvl does not import or evaluate the
+Abird repository. It owns a deliberately small accepted projection at
+`hosts/pvl-x2/abird-fabric.nix` containing only the two address bases, four
+subnet IDs, three referenced endpoint IDs, and six access edges required for
+physical enforcement.
 
-`pvl-x2` still uses the live `gap3-gondor` path for migrated Abird services that
-remain on `10.10.30.0/24`. During the staged Incus project and remote delegation
-migration, the parent host needed to route traffic from the local Incus project
-fabrics to that subnet through `gap3-gondor` at `10.10.20.20`.
+`lib/flake/fabric-projection.nix` validates that projection and generically
+derives its families, `/24` and `/64` prefixes, endpoint addresses, and
+family-specific forwarding rules. Keep provenance, schema versions, placement,
+lifecycle state, complete role membership, and expanded values out of the Pvl
+projection. Pvl remains independently evaluable and owns the physical
+realization on `pvl-x2`: bridge names, the default and Pvl-only prefixes, routed
+next hops, nftables rendering, source filtering, and perimeter NAT.
 
-The failed shape declared the route through
-`networking.interfaces.incusbr0.ipv4.routes`. That route belonged to a bridge
-created by Incus preseed, not to a NixOS-created interface, so
-`network-addresses-incusbr0.service` could be inactive while the bridge existed.
-The result was an apparently healthy Incus bridge with no host route to
-`10.10.30.0/24`.
+Changes to a shared subnet ID, endpoint ID, or access edge must update the Abird
+contract and Pvl projection in one coordinated change. The duplication is an
+intentional repository boundary, not a second complete topology model.
 
-## Design Decision
+## Physical topology
 
-Routes owned by Incus fabrics belong under the project that owns the fabric:
-`services.incus-manager.<project>.routes`.
+The direct `abird-platform`, `abird`, and `abird-dev` fabrics are managed
+bridges. Direct production remains standby and has no declared instances.
+`abird-gondor` is a routed child of the default bridge through the `gap3-gondor`
+guest.
 
-Do not make callers repeat the host bridge interface in normal project route
-declarations. The module derives the host-side bridge from the project default
-profile by requiring a unique NIC device with a `network` property. This keeps
-the API tied to the Incus fabric model instead of to incidental device names
-such as `eth0`.
+The outer router NIC declares both Gondor prefixes with `ipv4.routes` and
+`ipv6.routes`. Incus installs those host routes and includes the routed sources
+in the NIC's source-filter allowance. Every managed outer and inner NIC has both
+`security.ipv4_filtering` and `security.ipv6_filtering` enabled with fixed
+addresses.
 
-The imperative apply/delete behavior belongs in `lib/incus/helper.sh`, not as
-inline shell inside `lib/incus/default.nix`. Nix serializes desired route state
-to JSON and wires systemd ordering; the helper reconciles kernel routes.
+The old project-route option, helper command, state file, and systemd unit are
+removed. Routes that belong to an inherited NIC are normal live-reconciled NIC
+properties, not a parallel host-route subsystem.
 
-## Managed Fabric Forward Exceptions
+## Dual-stack policy
 
-Project-to-project forwarding policy is also owned by the Incus parent fabric.
-Use `incusLib.mkManagedFabricPolicy.forwardRules` for narrow exceptions that
-must not become broad `forwardTo` trust between whole projects.
+Every managed fabric declares both families. The default and Pvl bridge ULAs
+remain pinned to their existing prefixes; Abird uses its stable
+`fd42:ab1d:ab1d::/48` allocation. All bridges have Incus IPv4 and IPv6 NAT
+disabled. Stateful DHCPv6 makes fixed `ipv6.address` allocations deterministic.
 
-`forwardRules` entries name the source fabric, target fabric, optional source
-address, optional destination address or CIDR, and allowed TCP/UDP ports. The
-helper renders these as explicit nft `accept` rules before the generated
-project-to-project deny matrix. Return traffic is still handled by connection
-tracking, so an exception grants only new flows in the declared direction.
+The nftables policy classifies routed children by interface plus source or
+destination prefix. Parent selectors explicitly exclude routed-child prefixes,
+so routed traffic cannot fall through to the parent's policy in either family.
+The outer default fabric retains its existing open management policy for
+`pvl-vlab*`; Gondor is contained by the routed-child policy and therefore does
+not inherit that openness. Essential ICMPv6 neighbor discovery, router
+discovery, multicast-listener control, and path errors are admitted before
+host-service policy; TCP, UDP, and echo traffic remain subject to the normal
+boundary rules.
 
-For the current delegated Abird fabrics on `pvl-x2`, `abird-platform` may reach
-the preserved Gondor DNS proxy at `10.10.30.20` on TCP/UDP 53 and the Gondor
-Harmonia cache at `10.10.30.80` on TCP 5000 through the `default` fabric. It may
-also reach TCP 22 across `10.10.220.0/24` in `abird-dev`, which lets Nest's
-bounded-start settlement verify SSH readiness without granting broad fabric
-trust. The clean empty `abird` fabric has no cross-project exceptions.
+The application control plane remains IPv4-preferred: service discovery,
+readiness, and nginx upstream selection do not switch families. IPv6 is still a
+fully routed and filtered data-plane capability, including access to IPv6-only
+Internet destinations.
 
-## Project-Qualified Readiness Selectors
+## Perimeter NAT
 
-When one Incus controller owns multiple projects with the same guest names,
-readiness and reconcile selectors must resolve through the declared machine ID
-or the `project/name` reference before calling `incus list`.
+Address translation is based on the internal destination boundary, not the
+current output interface. Each private or ULA source prefix is masqueraded only
+when the destination is outside the exact managed internal prefixes derived from
+Pvl's physical configuration and minimal Abird projection.
 
-The delegated Abird project rollout exposed a shell gotcha in
-`lib/incus/helper.sh`: parameter defaults such as `${VAR-{}}` append an extra
-literal `}` when `VAR` is set. That corrupts JSON object maps like
-`INCUS_MACHINES_INSTANCE_NAMES`, so `jq --argjson` fails and the helper falls
-back to the raw selector.
+Consequences:
 
-Keep JSON-object defaults behind an explicit helper rather than inline parameter
-expansion. The generated reconciler and settlement commands should also export
-`INCUS_MACHINES_DECLARED_INSTANCE_REFS`, and selector resolution should accept
-`project/name` refs so ambiguous bare names remain unresolved while explicit
-project refs select the intended machine ID.
+- traffic among default, Pvl, platform, direct production, direct development,
+  and Gondor preserves the individual guest source in both families;
+- Gondor never collapses to the outer router address internally;
+- Internet-bound IPv4 and ULA IPv6 traffic is translated once on `pvl-x2`;
+- adding or renaming a managed bridge cannot silently change the NAT boundary.
 
-## Reconciler Semantics
+`gap3-gondor` is a pure router and keeps both inner Incus NAT flags disabled. Do
+not compensate at destinations by trusting `10.10.20.20` or its IPv6 peer as the
+origin of all inner guests.
 
-`incus-machines-routes.service` is a local-only oneshot that runs after
-`incus-preseed.service`, so Incus has created the bridge before `ip route`
-touches it. Machines and image import wait for the route service only when
-routes are declared.
+## Live reconciliation
 
-The service must still exist on local Incus-managed hosts when the desired route
-list is empty. That lets the helper compare the empty desired state against
-`/var/lib/incus-machines/routes.json` and remove routes that this module
-previously owned. Otherwise removing the final route from Nix would leave stale
-kernel routes until reboot or manual cleanup.
+`services.incus-manager.<project>.instances.<name>.network` owns an inherited
+NIC's static addresses, routes, and source-filter properties. The manager uses
+`incus config device override` and tracks only its property keys in
+`user.nixos-meta.network.deviceProperties`. Removed owned properties are cleaned
+while unrelated NIC properties are preserved.
 
-The helper owns only routes recorded in its state file. It removes obsolete
-owned routes and applies current routes with `ip -4 route replace` using
-`proto static`, avoiding unrelated host route mutation.
+Network-property changes are excluded from recreate hashes and lifecycle restart
+triggers. They converge through the existing `incus-machines-limits`
+live-property unit, whose public name remains stable for compatibility. Network
+and limit reconcilers are forbidden from owning the same device property.
 
-### Incus restart coupling
+Remote project declarations use family-keyed `allowedSubnets`; evaluation checks
+fixed IPv4 and IPv6 addresses independently. This keeps the delegated source
+boundary symmetric instead of validating only the IPv4 half of a guest NIC.
 
-The route unit must be `PartOf=incus.service` as well as ordered
-`After=incus.service`. Incus can restart during a NixOS switch after
-`sysinit-reactivation.target` has already run the route reconciler. Recreating
-an Incus-managed bridge deletes host routes attached to that bridge; without
-restart propagation, the oneshot remains active-exited and does not restore
-them.
+## Rollout order
 
-This occurred on `pvl-x2` on 2026-08-30: the route reconciler installed
-`10.10.30.0/24` at 08:00:25, then Incus restarted at 08:00:27 and rebuilt
-`incusbr0`. The missing route broke private DNS for `abird-nest`, so Nixbot
-could neither fetch `ci.abird.internal` from the target nor use its local relay
-fallback. Coupling the route unit to Incus makes the restart transaction stop
-the reconciler before Incus and run it again after Incus is ready.
+1. Land the Abird contract and matching Pvl enforcement projection coherently;
+   each repository remains independently evaluable.
+2. Deploy `pvl-x2` so return routes, dual-family filtering, perimeter NAT, and
+   stable bridge prefixes exist together.
+3. Deploy `gap3-gondor`, then `abird-nest` and `pvl-vlab-1`, to converge inner
+   and remotely managed NICs.
+4. Verify allowed and denied cross-fabric flows in both families plus IPv4-only
+   and IPv6-only Internet egress.
 
-Restoring the route exposed a separate policy omission: DNS succeeded, but the
-existing narrow forward exception did not permit the resolved cache endpoint.
-Keep the `10.10.30.80:5000` exception alongside DNS; changing Nixbot to a
-Tailscale hostname would bypass the declared fabric ownership instead of fixing
-it.
+This implementation has been built but not deployed. Do not describe live
+systems as converged until those probes pass after rollout.
 
-## Validation Expectations
-
-For `pvl-x2`, generated route JSON should resolve the default project route to:
-
-```json
-[
-  {
-    "address": "10.10.30.0",
-    "interface": "incusbr0",
-    "prefixLength": 24,
-    "project": "default",
-    "via": "10.10.20.20"
-  }
-]
-```
-
-For a local Incus-managed host with no routes, generated route JSON should be
-`[]` and `incus-machines-routes.service` should still exist. This proves
-final-route cleanup can run.
-
-Use focused validation plus the repo lint gate:
+## Validation
 
 ```bash
-alejandra lib/incus/default.nix hosts/pvl-x2/incus.nix
-bash -n lib/incus/helper.sh
-shellcheck lib/incus/helper.sh
-nix build --no-link .#nixosConfigurations.pvl-x2.config.system.build.toplevel
-nix build --no-link .#nixosConfigurations.pvl-a1.config.system.build.toplevel
 nix build --no-link .#checks.x86_64-linux.lib-incus-module
-nix run .#lint -- --diff --base HEAD --system x86_64-linux
+nix build --no-link .#checks.x86_64-linux.lib-incus-helper
+nix build --no-link .#checks.x86_64-linux.lib-flake-fabric-projection
+nix build --no-link .#nixosConfigurations.pvl-x2.config.system.build.toplevel
+nix build --no-link .#nixosConfigurations.pvl-vlab-1.config.system.build.toplevel
 ```
