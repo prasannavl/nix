@@ -36,9 +36,6 @@ init_vars() {
 	certificates="${INCUS_MACHINES_CERTIFICATES-[]}"
 	certificates_file="${INCUS_MACHINES_CERTIFICATES_FILE-}"
 	certificates_state_file="${INCUS_MACHINES_CERTIFICATES_STATE_FILE-/var/lib/incus-machines/certificates.json}"
-	routes_file="${INCUS_MACHINES_ROUTES_FILE-}"
-	routes_state_file="${INCUS_MACHINES_ROUTES_STATE_FILE-/var/lib/incus-machines/routes.json}"
-	routes="[]"
 	certificate_delegation_name="${INCUS_MACHINES_CERTIFICATE_DELEGATION_NAME-}"
 	certificate_delegation_project="${INCUS_MACHINES_CERTIFICATE_DELEGATION_PROJECT-}"
 	certificate_delegation_source_file="${INCUS_MACHINES_CERTIFICATE_DELEGATION_SOURCE_FILE-}"
@@ -64,9 +61,6 @@ init_vars() {
 	incus_remote_config_dir=""
 	if [ -n "$certificates_file" ]; then
 		certificates="$(cat "$certificates_file")"
-	fi
-	if [ -n "$routes_file" ]; then
-		routes="$(cat "$routes_file")"
 	fi
 	if [ -n "$certificate_delegations_file" ]; then
 		certificate_delegations="$(cat "$certificate_delegations_file")"
@@ -158,74 +152,6 @@ server_ref() {
 	if is_remote_target; then
 		printf '%s:\n' "$incus_remote_name"
 	fi
-}
-
-route_prefix() {
-	local route_json
-	route_json="$1"
-
-	jq -r '"\(.address)/\(.prefixLength)"' <<<"$route_json"
-}
-
-remove_route() {
-	local route_json prefix iface via project
-	route_json="$1"
-	prefix="$(route_prefix "$route_json")"
-	iface="$(jq -r '.interface' <<<"$route_json")"
-	via="$(jq -r '.via' <<<"$route_json")"
-	project="$(jq -r '.project // "unknown"' <<<"$route_json")"
-
-	echo "Removing Incus route $project $prefix via $via dev $iface"
-	ip -4 route del "$prefix" via "$via" dev "$iface" proto static 2>/dev/null || true
-}
-
-apply_route() {
-	local route_json prefix iface via project
-	route_json="$1"
-	prefix="$(route_prefix "$route_json")"
-	iface="$(jq -r '.interface' <<<"$route_json")"
-	via="$(jq -r '.via' <<<"$route_json")"
-	project="$(jq -r '.project // "unknown"' <<<"$route_json")"
-
-	echo "Applying Incus route $project $prefix via $via dev $iface"
-	ip -4 route replace "$prefix" via "$via" dev "$iface" proto static
-}
-
-routes_main() {
-	local state_dir tmp_file route_json
-
-	jq -e '
-		type == "array"
-		and all(.[]; type == "object")
-		and all(.[]; (.project | type) == "string")
-		and all(.[]; (.interface | type) == "string")
-		and all(.[]; (.address | type) == "string")
-		and all(.[]; (.prefixLength | type) == "number")
-		and all(.[]; (.via | type) == "string")
-	' <<<"$routes" >/dev/null || {
-		echo "Invalid INCUS_MACHINES_ROUTES JSON" >&2
-		exit 1
-	}
-
-	state_dir="$(dirname "$routes_state_file")"
-	install -d -m 0755 "$state_dir"
-
-	if [ -f "$routes_state_file" ]; then
-		while IFS= read -r route_json; do
-			if ! jq -e --argjson route "$route_json" 'index($route)' <<<"$routes" >/dev/null; then
-				remove_route "$route_json"
-			fi
-		done < <(jq -c '.[]' "$routes_state_file")
-	fi
-
-	while IFS= read -r route_json; do
-		apply_route "$route_json"
-	done < <(jq -c '.[]' <<<"$routes")
-
-	tmp_file="$(mktemp "${routes_state_file}.tmp.XXXXXX")"
-	printf '%s\n' "$routes" >"$tmp_file"
-	chmod 0644 "$tmp_file"
-	mv "$tmp_file" "$routes_state_file"
 }
 
 incus_project() {
@@ -1545,11 +1471,82 @@ override_device_from_properties() {
 	fi
 }
 
+reconcile_managed_device_properties() {
+	local instance_name current_devices current_device_keys desired_devices property_kind
+	local desired_device_keys managed_device_names managed_device_keys
+	local device key current_props desired_props override_output
+	instance_name="$1"
+	current_devices="$2"
+	current_device_keys="$3"
+	desired_devices="$4"
+	property_kind="$5"
+
+	desired_device_keys="$(printf '%s' "$desired_devices" | jq -c 'with_entries(.value |= keys)')"
+	managed_device_names="$(
+		jq -cn \
+			--argjson current "$current_device_keys" \
+			--argjson desired "$desired_device_keys" \
+			'($desired | keys) + (($current | keys) - ($desired | keys))'
+	)"
+
+	while IFS= read -r device; do
+		[ -n "$device" ] || continue
+		current_props="$(printf '%s' "$current_devices" | jq -c --arg device "$device" '.[$device] // null')"
+		desired_props="$(printf '%s' "$desired_devices" | jq -c --arg device "$device" '.[$device] // {}')"
+		managed_device_keys="$(
+			jq -cn \
+				--argjson current "$current_device_keys" \
+				--argjson desired "$desired_device_keys" \
+				--arg device "$device" \
+				'(($current[$device] // []) + ($desired[$device] // [])) | unique'
+		)"
+
+		if [ "$current_props" = "null" ]; then
+			if [ "$(printf '%s' "$desired_props" | jq 'length')" -gt 0 ]; then
+				if ! override_output="$(override_device_from_properties "$instance_name" "$device" "$desired_props" 2>&1)"; then
+					if grep -Fq "The profile device doesn't exist" <<<"$override_output"; then
+						echo "Skipping $property_kind for unavailable device $current_project/$instance_name/$device until lifecycle reconciliation"
+					else
+						printf '%s\n' "$override_output" >&2
+						return 1
+					fi
+				elif [ -n "$override_output" ]; then
+					printf '%s\n' "$override_output"
+				fi
+			fi
+			continue
+		fi
+
+		while IFS= read -r key; do
+			[ -n "$key" ] || continue
+			if ! printf '%s' "$desired_props" | jq -e --arg key "$key" 'has($key)' >/dev/null &&
+				printf '%s' "$current_props" | jq -e --arg key "$key" 'has($key)' >/dev/null; then
+				incus_project_retry_etag config device unset "$(instance_ref "$instance_name")" "$device" "$key"
+			fi
+		done < <(printf '%s' "$managed_device_keys" | jq -r '.[]')
+		set_device_config_json_if_changed "$instance_name" "$device" "$current_props" "$desired_props"
+	done < <(printf '%s' "$managed_device_names" | jq -r '.[]')
+}
+
+reconcile_instance_network() {
+	local instance_name current_devices current_meta desired_devices current_device_keys
+	instance_name="$1"
+	current_devices="$2"
+	current_meta="$3"
+	desired_devices="$4"
+	current_device_keys="$(printf '%s' "$current_meta" | jq -c '.network.deviceProperties // {}')"
+
+	reconcile_managed_device_properties \
+		"$instance_name" \
+		"$current_devices" \
+		"$current_device_keys" \
+		"$desired_devices" \
+		"network properties"
+}
+
 reconcile_instance_limits() {
 	local instance_name current_config current_devices current_meta desired_config desired_devices
-	local current_limit_keys desired_limit_keys managed_limit_keys
-	local current_device_keys desired_device_keys managed_device_names managed_device_keys
-	local device key current_props desired_props
+	local current_limit_keys desired_limit_keys managed_limit_keys current_device_keys key
 	instance_name="$1"
 	current_config="$2"
 	current_devices="$3"
@@ -1575,56 +1572,18 @@ reconcile_instance_limits() {
 	set_instance_config_json_if_changed "$instance_name" "$current_config" "$desired_config"
 
 	current_device_keys="$(printf '%s' "$current_meta" | jq -c '.limits.deviceProperties // {}')"
-	desired_device_keys="$(printf '%s' "$desired_devices" | jq -c 'with_entries(.value |= keys)')"
-	managed_device_names="$(
-		jq -cn \
-			--argjson current "$current_device_keys" \
-			--argjson desired "$desired_device_keys" \
-			'[$current, $desired] | add | keys'
-	)"
-
-	while IFS= read -r device; do
-		[ -n "$device" ] || continue
-		current_props="$(printf '%s' "$current_devices" | jq -c --arg device "$device" '.[$device] // null')"
-		desired_props="$(printf '%s' "$desired_devices" | jq -c --arg device "$device" '.[$device] // {}')"
-		managed_device_keys="$(
-			jq -cn \
-				--argjson current "$current_device_keys" \
-				--argjson desired "$desired_device_keys" \
-				--arg device "$device" \
-				'(($current[$device] // []) + ($desired[$device] // [])) | unique'
-		)"
-
-		if [ "$current_props" = "null" ]; then
-			if [ "$(printf '%s' "$desired_props" | jq 'length')" -gt 0 ]; then
-				local override_output
-				if ! override_output="$(override_device_from_properties "$instance_name" "$device" "$desired_props" 2>&1)"; then
-					if grep -Fq "The profile device doesn't exist" <<<"$override_output"; then
-						echo "Skipping limits for unavailable device $current_project/$instance_name/$device until lifecycle reconciliation"
-					else
-						printf '%s\n' "$override_output" >&2
-						return 1
-					fi
-				elif [ -n "$override_output" ]; then
-					printf '%s\n' "$override_output"
-				fi
-			fi
-			continue
-		fi
-
-		while IFS= read -r key; do
-			[ -n "$key" ] || continue
-			if ! printf '%s' "$desired_props" | jq -e --arg key "$key" 'has($key)' >/dev/null; then
-				incus_project_retry_etag config device unset "$(instance_ref "$instance_name")" "$device" "$key"
-			fi
-		done < <(printf '%s' "$managed_device_keys" | jq -r '.[]')
-		set_device_config_json_if_changed "$instance_name" "$device" "$current_props" "$desired_props"
-	done < <(printf '%s' "$managed_device_names" | jq -r '.[]')
+	reconcile_managed_device_properties \
+		"$instance_name" \
+		"$current_devices" \
+		"$current_device_keys" \
+		"$desired_devices" \
+		"limits"
 }
 
 limits_main() {
 	local id name state_file state_json reconcile_policy current_instance current_config current_devices
-	local current_meta current_controller current_managed_by desired_config desired_devices desired_limits updated_meta cpu_capacity
+	local current_meta current_controller current_managed_by desired_config desired_devices desired_limits
+	local desired_network_devices desired_network updated_meta cpu_capacity
 
 	parse_machine_selection_args "$@"
 	incus_server_info >/dev/null
@@ -1639,7 +1598,7 @@ limits_main() {
 
 		reconcile_policy="$(instance_reconcile_policy_for_id "$id")"
 		if [ "$reconcile_policy" = "ignore" ]; then
-			echo "Skipping ignored Incus instance limits: $id"
+			echo "Skipping ignored Incus instance live properties: $id"
 			continue
 		fi
 
@@ -1647,11 +1606,11 @@ limits_main() {
 		name="$(instance_name_for_id "$id")"
 		state_file="${instance_state_dir}/${id}.json"
 		[ -f "$state_file" ] || {
-			echo "Missing declared Incus limit state: $state_file" >&2
+			echo "Missing declared Incus live-property state: $state_file" >&2
 			exit 1
 		}
 		if ! incus_project info "$(instance_ref "$name")" >/dev/null 2>&1; then
-			echo "Skipping limits for missing Incus instance $current_project/$name"
+			echo "Skipping live properties for missing Incus instance $current_project/$name"
 			continue
 		fi
 
@@ -1663,12 +1622,12 @@ limits_main() {
 		current_meta="$(nixos_meta_from_config_json "$current_config")"
 		current_managed_by="$(printf '%s' "$current_meta" | jq -r '.kind // empty')"
 		if [ "$current_managed_by" != "incus-machine" ]; then
-			echo "Skipping limits for unowned Incus instance $current_project/$name until lifecycle adoption"
+			echo "Skipping live properties for unowned Incus instance $current_project/$name until lifecycle adoption"
 			continue
 		fi
 		current_controller="$(printf '%s' "$current_meta" | jq -r '.controller // empty')"
 		if [ -n "$controller_id" ] && [ -n "$current_controller" ] && [ "$current_controller" != "$controller_id" ]; then
-			echo "Refusing to reconcile limits for Incus instance $current_project/$name owned by controller $current_controller" >&2
+			echo "Refusing to reconcile live properties for Incus instance $current_project/$name owned by controller $current_controller" >&2
 			exit 1
 		fi
 
@@ -1678,16 +1637,24 @@ limits_main() {
 				"$(printf '%s' "$state_json" | jq -c '.limitConfig // {}')" \
 				"$cpu_capacity"
 		)"
+		desired_network_devices="$(printf '%s' "$state_json" | jq -c '.networkDevices // {}')"
+		reconcile_instance_network "$name" "$current_devices" "$current_meta" "$desired_network_devices"
+
+		current_instance="$(incus query "$(query_ref "$(instance_query_path "$name")")" --raw)"
+		current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}')"
 		desired_devices="$(printf '%s' "$state_json" | jq -c '.limitDevices // {}')"
 		reconcile_instance_limits "$name" "$current_config" "$current_devices" "$current_meta" "$desired_config" "$desired_devices"
 
 		desired_limits="$(printf '%s' "$state_json" | jq -c '.userMeta["user.nixos-meta"] | fromjson | .limits // null')"
+		desired_network="$(printf '%s' "$state_json" | jq -c '.userMeta["user.nixos-meta"] | fromjson | .network // null')"
 		updated_meta="$(
 			jq -cn \
 				--argjson current "$current_meta" \
-				--argjson desired "$desired_limits" '
+				--argjson limits "$desired_limits" \
+				--argjson network "$desired_network" '
 					$current
-					| if $desired == null then del(.limits) else .limits = $desired end
+					| if $limits == null then del(.limits) else .limits = $limits end
+					| if $network == null then del(.network) else .network = $network end
 				'
 		)"
 		set_nixos_meta_if_changed "$name" "$current_config" "$updated_meta"
@@ -2773,9 +2740,9 @@ machine_main() {
 	local desired_state reconcile_policy force_policy
 	local needs_create needs_recreate needs_restart needs_recreate_from_drift needs_recreate_from_tag pending_recreate_drift adopting_existing current_config_hash current_recreate_tag current_boot_tag
 	local current_instance current_devices current_config current_status desired_disks desired_disk_gc_metadata
-	local current_ipv4 current_managed_by current_project desired_props desired_device_props current_props dev dev_exists dev_source dev_pool dev_volume_size key props query_name image_tag
+	local current_managed_by current_project desired_props desired_device_props current_props dev dev_exists dev_source dev_pool dev_volume_size key props query_name image_tag
 	local current_controller current_meta desired_meta_json desired_user_meta_json
-	local instance_image image_alias create_only_devices user_meta_json nixos_meta_json config_json limit_config limit_devices desired_ipv4 desired_adopt cpu_capacity
+	local instance_image image_alias create_only_devices user_meta_json nixos_meta_json config_json limit_config limit_devices network_devices desired_adopt cpu_capacity
 	local desired_kind desired_incus_type current_incus_type recovery_attempted start_output
 	local -a create_args create_limit_config create_only_device_names current_disk_names desired_disk_names current_prop_keys volume_create_args
 
@@ -2817,7 +2784,7 @@ machine_main() {
 	cpu_capacity="$(printf '%s' "$state_json" | jq -r '.cpuCapacity // empty')"
 	limit_config="$(printf '%s' "$state_json" | jq -c '.limitConfig // {}')"
 	limit_devices="$(printf '%s' "$state_json" | jq -c '.limitDevices // {}')"
-	desired_ipv4="$(printf '%s' "$state_json" | jq -r '.ipv4Address')"
+	network_devices="$(printf '%s' "$state_json" | jq -c '.networkDevices // {}')"
 	desired_adopt="$(printf '%s' "$state_json" | jq -r '.adopt // false')"
 	query_name="$(jq -nr --arg value "$name" '$value | @uri')"
 	recovery_attempted=0
@@ -2944,8 +2911,6 @@ machine_main() {
 				apply_instance_config_json "$instance_name" "$user_meta_json"
 			fi
 
-			incus_project_retry_etag config device override "$(instance_ref "$instance_name")" eth0 "ipv4.address=$desired_ipv4"
-
 			echo "Adding create-only devices for $name..."
 			mapfile -t create_only_device_names < <(json_keys "$create_only_devices")
 			if [ "${#create_only_device_names[@]}" -gt 0 ]; then
@@ -2978,6 +2943,7 @@ machine_main() {
 		current_instance="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null || echo '{}')"
 		current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}' 2>/dev/null || echo '{}')"
 		current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}' 2>/dev/null || echo '{}')"
+		current_meta="$(nixos_meta_from_config_json "$current_config")"
 
 		prepare_certificate_delegation_permissions "$current_config" "$desired_disk_gc_metadata"
 
@@ -3052,11 +3018,7 @@ machine_main() {
 			done
 		fi
 
-		current_ipv4="$(printf '%s' "$current_devices" | jq -r '.eth0["ipv4.address"] // ""')"
-		if [ "$current_ipv4" != "$desired_ipv4" ]; then
-			incus_project_retry_etag config device set "$(instance_ref "$instance_name")" eth0 "ipv4.address=$desired_ipv4" 2>/dev/null ||
-				incus_project_retry_etag config device override "$(instance_ref "$instance_name")" eth0 "ipv4.address=$desired_ipv4" 2>/dev/null || true
-		fi
+		reconcile_instance_network "$instance_name" "$current_devices" "$current_meta" "$network_devices"
 
 		current_instance="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null || echo '{}')"
 		current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}' 2>/dev/null || echo '{}')"
@@ -3729,7 +3691,7 @@ main() {
 	init_vars
 	command="${1-}"
 	[ -n "$command" ] || {
-		echo "usage: incus-machines-helper <client|preseed-migrations|certificates|routes|certificate-delegation|certificate-delegations-gc|remote-project-delegations|limits|reconciler|settlement|machine|start-instance|stop-instance|images|gc|host-suspend> [args...]" >&2
+		echo "usage: incus-machines-helper <client|preseed-migrations|certificates|certificate-delegation|certificate-delegations-gc|remote-project-delegations|limits|reconciler|settlement|machine|start-instance|stop-instance|images|gc|host-suspend> [args...]" >&2
 		exit 1
 	}
 	shift
@@ -3751,9 +3713,6 @@ main() {
 		;;
 	certificates)
 		certificates_main "$@"
-		;;
-	routes)
-		routes_main "$@"
 		;;
 	certificate-delegation)
 		certificate_delegation_main "$@"

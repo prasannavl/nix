@@ -1,5 +1,118 @@
 {pkgs}: let
   lib = pkgs.lib;
+  incusLib = import ../lib.nix {inherit lib;};
+  managedFabricPolicy = incusLib.mkManagedFabricPolicy {
+    defaultFabric = {
+      subnets = {
+        ipv4 = "10.10.20.0/24";
+        ipv6 = "fd42:20::/64";
+      };
+      masqueradeToUplink = {
+        ipv4 = true;
+        ipv6 = true;
+      };
+    };
+    defaultPolicy = incusLib.fabricPolicyProfiles.containedPublic;
+    projects = {
+      app.network = {
+        name = "appbr0";
+        policy = incusLib.fabricPolicyProfiles.containedPublic;
+        subnets = {
+          ipv4 = "10.10.40.0/24";
+          ipv6 = "fd42:40::/64";
+        };
+        masqueradeToUplink = {
+          ipv4 = true;
+          ipv6 = true;
+        };
+      };
+      platform.network = {
+        name = "platformbr0";
+        policy = incusLib.fabricPolicyProfiles.containedPublic;
+        subnets = {
+          ipv4 = "10.10.0.0/24";
+          ipv6 = "fd42:0::/64";
+        };
+        masqueradeToUplink = {
+          ipv4 = true;
+          ipv6 = true;
+        };
+      };
+    };
+    routedFabrics.prod = {
+      parent = "default";
+      subnets = {
+        ipv4 = "10.10.30.0/24";
+        ipv6 = "fd42:30::/64";
+      };
+      policy = incusLib.fabricPolicyProfiles.containedPublic;
+      masqueradeToUplink = {
+        ipv4 = true;
+        ipv6 = true;
+      };
+    };
+    forwardRules = [
+      {
+        from = "prod";
+        to = "platform";
+        source = "10.10.30.20";
+        destination = "10.10.0.10";
+        tcpPorts = [18444];
+      }
+    ];
+    sourcePreservingPrefixes = {
+      ipv4 = ["10.10.0.0/16"];
+      ipv6 = ["fd42::/48"];
+    };
+  };
+  managedFabricRules = managedFabricPolicy.nftablesTable.incusManagedFabricPolicy.content;
+  managedFabricNatRules = managedFabricPolicy.nftablesTable.incusManagedFabricPolicyNat.content;
+  invalidRoutedFabricPolicy = incusLib.mkManagedFabricPolicy {
+    projects = {};
+    routedFabrics.invalid = {
+      parent = "missing";
+      subnets.ipv4 = "10.10.40.0/24";
+      policy = incusLib.fabricPolicyProfiles.containedPublic;
+    };
+  };
+  invalidRoutedFabricShape = incusLib.mkManagedFabricPolicy {
+    projects = {};
+    routedFabrics.invalid = "not-an-attribute-set";
+  };
+  invalidRoutedFamilyPolicy = incusLib.mkManagedFabricPolicy {
+    projects = {};
+    routedFabrics.invalid = {
+      parent = "default";
+      subnets.ipv4 = "fd42:40::/64";
+      masqueradeToUplink.ipv6 = true;
+    };
+  };
+  invalidForwardFamilyPolicy = incusLib.mkManagedFabricPolicy {
+    projects = {
+      app.network = {
+        name = "appbr0";
+        policy = incusLib.fabricPolicyProfiles.containedPublic;
+      };
+    };
+    forwardRules = [
+      {
+        from = "default";
+        to = "app";
+        source = "10.10.20.20";
+        destination = "fd42:40::20";
+        tcpPorts = [443];
+      }
+    ];
+  };
+  overlappingFabricPolicy = incusLib.mkManagedFabricPolicy {
+    defaultFabric.subnets.ipv4 = "10.10.20.0/24";
+    enabledFamilies = ["ipv4"];
+    projects.app.network = {
+      name = "appbr0";
+      policy = incusLib.fabricPolicyProfiles.containedPublic;
+      subnets.ipv4 = "10.10.20.128/25";
+    };
+  };
   fakeInputs.self.nixosImages = {
     incus-lxc-base = "images:debian/12";
     incus-vm-base = "images:ubuntu/24.04";
@@ -67,6 +180,18 @@
           default.instances = {
             web = {
               ipv4Address = "10.10.30.20";
+              network = {
+                ipv4 = {
+                  address = "10.10.30.20";
+                  routes = ["10.10.31.0/24"];
+                  filtering = true;
+                };
+                ipv6 = {
+                  address = "fd42:30::20";
+                  routes = ["fd42:31::/64"];
+                  filtering = true;
+                };
+              };
               startPriority = -10;
               config."security.nesting" = "true";
               limits = {
@@ -154,6 +279,66 @@
         }
       ];
     }).config;
+  changedNetworkConfig =
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.incus-manager.default.instances.web.network = {
+            ipv4.routes = lib.mkForce ["10.10.32.0/24"];
+            ipv6.filtering = lib.mkForce false;
+          };
+        }
+      ];
+    }).config;
+  invalidNetworkConfig =
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.incus-manager.default.instances.web.network = {
+            ipv4.routes = lib.mkForce ["fd42:31::/64"];
+            ipv6.address = lib.mkForce "fd42:30::20/64";
+          };
+        }
+      ];
+    }).config;
+  remoteEval = evalConfig.extendModules {
+    modules = [
+      {
+        services.incus-manager.global = {
+          hostSuspend.enable = lib.mkForce false;
+          certificates = lib.mkForce [];
+          certificateDelegations = lib.mkForce {};
+          remote = {
+            enable = true;
+            name = "test-remote";
+            address = "https://127.0.0.1:8443";
+            clientCertificateFile = "/dev/null";
+            clientKeyFile = "/dev/null";
+            acceptCertificate = true;
+            projects = {
+              default.allowedSubnets = {
+                ipv4 = "10.10.30.0/24";
+                ipv6 = "fd42:30::/64";
+              };
+              lab.allowedSubnets.ipv4 = "10.10.40.0/24";
+            };
+          };
+        };
+        services.incus-manager.default.instances.web.devices.delegated.certDelegation =
+          lib.mkForce null;
+      }
+    ];
+  };
+  remoteConfig = remoteEval.config;
+  invalidRemoteIpv6Config =
+    (remoteEval.extendModules {
+      modules = [
+        {
+          services.incus-manager.global.remote.projects.default.allowedSubnets.ipv6 =
+            lib.mkForce "fd42:31::/64";
+        }
+      ];
+    }).config;
   relativeCpuConfig =
     (evalConfig.extendModules {
       modules = [
@@ -208,6 +393,10 @@
   failedAssertions = builtins.filter (assertion: ! assertion.assertion) config.assertions;
   invalidSwapAssertions = builtins.filter (assertion: ! assertion.assertion) invalidSwapConfig.assertions;
   invalidVmSwapAssertions = builtins.filter (assertion: ! assertion.assertion) invalidVmSwapConfig.assertions;
+  invalidNetworkAssertions = builtins.filter (assertion: ! assertion.assertion) invalidNetworkConfig.assertions;
+  remoteAssertions = builtins.filter (assertion: ! assertion.assertion) remoteConfig.assertions;
+  invalidRemoteIpv6Assertions =
+    builtins.filter (assertion: ! assertion.assertion) invalidRemoteIpv6Config.assertions;
   unsupportedDiskLimitAssertions =
     builtins.filter (assertion: ! assertion.assertion) unsupportedDiskLimitConfig.assertions;
 
@@ -218,18 +407,19 @@
   ignoredState = builtins.fromJSON config.environment.etc."incus-machines/ignored.json".text;
   vmState = builtins.fromJSON config.environment.etc."incus-machines/lab.vm.json".text;
   changedLimitWebState = builtins.fromJSON changedLimitConfig.environment.etc."incus-machines/web.json".text;
+  changedNetworkWebState = builtins.fromJSON changedNetworkConfig.environment.etc."incus-machines/web.json".text;
   relativeCpuWebState = builtins.fromJSON relativeCpuConfig.environment.etc."incus-machines/web.json".text;
   webMeta = builtins.fromJSON webState.userMeta."user.nixos-meta";
   ignoredMeta = builtins.fromJSON ignoredState.userMeta."user.nixos-meta";
   vmMeta = builtins.fromJSON vmState.userMeta."user.nixos-meta";
   webUnit = config.systemd.services.incus-web;
+  changedNetworkWebUnit = changedNetworkConfig.systemd.services.incus-web;
   ignoredUnit = config.systemd.services.incus-ignored;
   unlimitedWebUnit = unlimitedConfig.systemd.services.incus-web;
   vmUnit = config.systemd.services."incus-lab.vm";
   reconcilerUnit = config.systemd.services.incus-machines-reconciler;
   imagesUnit = config.systemd.services.incus-images;
   preseedUnit = config.systemd.services.incus-preseed;
-  routesUnit = config.systemd.services.incus-machines-routes;
   certificatesUnit = config.systemd.services.incus-machines-certificates;
   limitsUnit = config.systemd.services.incus-machines-limits;
   autoStartTarget = config.systemd.targets.incus-machines-autostart;
@@ -239,8 +429,44 @@
   autoStartSettle1 = config.systemd.services.incus-machines-autostart-settle-1;
   delegationUnit = config.systemd.services.incus-cert-delegation-tenant;
 in
+  assert lib.all (assertion: assertion.assertion) managedFabricPolicy.assertions;
+  assert lib.hasInfix ''iifname "incusbr0" ip saddr 10.10.30.0/24 oifname "platformbr0" ip saddr 10.10.30.20 ip daddr 10.10.0.10 tcp dport 18444 accept'' managedFabricRules;
+  assert lib.hasInfix ''iifname "incusbr0" ip saddr 10.10.30.0/24 oifname "appbr0" drop comment "deny prod -> app"'' managedFabricRules;
+  assert lib.hasInfix ''iifname "incusbr0" ip6 saddr fd42:30::/64 oifname "appbr0" drop comment "deny prod -> app"'' managedFabricRules;
+  assert lib.hasInfix ''iifname "incusbr0" meta nfproto ipv4 ip saddr != 10.10.30.0/24'' managedFabricRules;
+  assert lib.hasInfix ''iifname "incusbr0" meta nfproto ipv6 ip6 saddr != fd42:30::/64'' managedFabricRules;
+  assert !lib.hasInfix ''meta nfproto ipv6 ip6 saddr != fd42:30::/64 meta nfproto ipv4 udp sport 68'' managedFabricRules;
+  assert !lib.hasInfix ''meta nfproto ipv4 ip saddr != 10.10.30.0/24 meta nfproto ipv6 udp sport 546'' managedFabricRules;
+  assert lib.hasInfix ''ip saddr 10.10.30.0/24 ip daddr != {'' managedFabricNatRules;
+  assert lib.hasInfix ''ip6 saddr fd42:30::/64 ip6 daddr != {'' managedFabricNatRules;
+  assert !lib.hasInfix ''oifname !='' managedFabricNatRules;
+  assert lib.hasInfix ''masquerade comment "masquerade prod ipv4 across perimeter"'' managedFabricNatRules;
+  assert lib.hasInfix ''masquerade comment "masquerade prod ipv6 across perimeter"'' managedFabricNatRules;
+  assert lib.hasInfix ''iifname "appbr0" meta nfproto ipv6 meta l4proto ipv6-icmp icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, mld-listener-report, mld-listener-done, nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert, mld2-listener-report } accept comment "allow IPv6 router control from appbr0"'' managedFabricRules;
+  assert lib.hasInfix ''oifname "appbr0" meta nfproto ipv6 meta l4proto ipv6-icmp icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, mld-listener-query, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept comment "allow IPv6 router control to appbr0"'' managedFabricRules;
+  assert lib.any (assertion: !assertion.assertion && lib.hasInfix "parent fabric" assertion.message) invalidRoutedFabricPolicy.assertions;
+  assert lib.any (assertion: !assertion.assertion && lib.hasInfix "family-keyed subnets" assertion.message) invalidRoutedFabricShape.assertions;
+  assert (builtins.tryEval (builtins.deepSeq invalidRoutedFabricShape.assertions true)).success;
+  assert lib.any (assertion: !assertion.assertion && lib.hasInfix "family-keyed subnets" assertion.message) invalidRoutedFamilyPolicy.assertions;
+  assert lib.any (assertion: !assertion.assertion && lib.hasInfix "forwardRules" assertion.message) invalidForwardFamilyPolicy.assertions;
+  assert lib.any (assertion: !assertion.assertion && lib.hasInfix "must not overlap" assertion.message) overlappingFabricPolicy.assertions;
   assert failedAssertions == [];
+  assert lib.any (
+    assertion:
+      assertion.assertion
+      && lib.hasInfix "network and limit reconcilers" assertion.message
+  )
+  config.assertions;
   assert invalidCombinedDiskLimit.success == false;
+  assert lib.any (assertion: lib.hasInfix "family-correct" assertion.message) invalidNetworkAssertions;
+  assert remoteAssertions == [];
+  assert lib.any (
+    assertion:
+      !assertion.assertion
+      && lib.hasInfix "allowedSubnets" assertion.message
+      && lib.hasInfix "ipv6" assertion.message
+  )
+  invalidRemoteIpv6Assertions;
   assert invalidRelativeCpuConfig.success == false;
   assert builtins.length unsupportedDiskLimitAssertions == 1;
   assert lib.hasInfix "disk limits are unsupported" (builtins.head unsupportedDiskLimitAssertions).message;
@@ -259,6 +485,25 @@ in
   assert webState.bootTag == "boot-global:boot-local";
   assert webState.recreateTag == "recreate-global:recreate-local";
   assert webState.config."security.nesting" == "true";
+  assert webState.networkDevices.eth0
+  == {
+    "ipv4.address" = "10.10.30.20";
+    "ipv4.routes" = "10.10.31.0/24";
+    "ipv6.address" = "fd42:30::20";
+    "ipv6.routes" = "fd42:31::/64";
+    "security.ipv4_filtering" = "true";
+    "security.ipv6_filtering" = "true";
+  };
+  assert webMeta.network.deviceProperties.eth0
+  == [
+    "ipv4.address"
+    "ipv4.routes"
+    "ipv6.address"
+    "ipv6.routes"
+    "security.ipv4_filtering"
+    "security.ipv6_filtering"
+  ];
+  assert ignoredState.networkDevices.eth0 == {"ipv4.address" = "10.10.30.21";};
   assert webState.limitConfig
   == {
     "limits.cpu" = "2";
@@ -273,6 +518,9 @@ in
   assert webState.limitDevices.data."limits.max" == "1000iops";
   assert webState.limitDevices.eth0."limits.max" == "250Mbit";
   assert changedLimitWebState.configHash == webState.configHash;
+  assert changedNetworkWebState.configHash == webState.configHash;
+  assert changedNetworkWebState.networkDevices.eth0."ipv4.routes" == "10.10.32.0/24";
+  assert changedNetworkWebState.networkDevices.eth0."security.ipv6_filtering" == "false";
   assert changedLimitWebState.limitConfig."limits.memory" == "3GiB";
   assert relativeCpuWebState.limitConfig."limits.cpu" == "80%";
   assert relativeCpuWebState.cpuCapacity == null;
@@ -320,6 +568,7 @@ in
   assert lib.hasInfix " stop-instance web default" webUnit.serviceConfig.ExecStop;
   assert webUnit.restartIfChanged == true;
   assert builtins.length webUnit.restartTriggers == 2;
+  assert changedNetworkWebUnit.restartTriggers == webUnit.restartTriggers;
   assert lib.any (trigger: lib.hasSuffix "/bin/incus-machines-helper" (toString trigger)) webUnit.restartTriggers;
   assert webUnit.stopIfChanged == true;
   assert ignoredUnit.wantedBy == [];
@@ -337,10 +586,7 @@ in
   assert builtins.elem "sysinit-reactivation.target" preseedUnit.wantedBy;
   assert preseedUnit.restartTriggers != [];
   assert preseedUnit.restartIfChanged == true;
-  assert routesUnit.partOf == ["incus.service"];
-  assert builtins.elem "incus.service" routesUnit.after;
-  assert builtins.elem "incus.service" routesUnit.wants;
-  assert routesUnit.serviceConfig.RemainAfterExit == true;
+  assert !(builtins.hasAttr "incus-machines-routes" config.systemd.services);
   assert certificatesUnit.wantedBy == ["sysinit-reactivation.target"];
   assert limitsUnit.wantedBy == ["sysinit-reactivation.target"];
   assert limitsUnit.restartTriggers != [];

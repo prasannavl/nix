@@ -57,7 +57,7 @@
   hasActionableInstances = actionableInstances != {};
   hasCertificates = globalCfg.certificates != [];
   hasCertificateDelegations = globalCfg.certificateDelegations != {};
-  hasLocalHooks = hasInstances || hasCertificates || hasCertificateDelegations || hasProjectRoutes || globalCfg.hostSuspend.enable;
+  hasLocalHooks = hasInstances || hasCertificates || hasCertificateDelegations || globalCfg.hostSuspend.enable;
   hasRemoteHooks =
     globalCfg.remote.enable
     && (
@@ -65,7 +65,6 @@
       || globalCfg.remote.projects != {}
     );
   hasHostHooks = hasLocalHooks || hasRemoteHooks;
-  hasRouteReconciler = !globalCfg.remote.enable && hasLocalHooks;
   mkEnvAssignment = name: value: "${name}=${lib.escapeShellArg (toString value)}";
   remoteValue = value:
     if value == null
@@ -122,7 +121,6 @@
         pkgs.git
         pkgs.gnutar
         pkgs.gnugrep
-        pkgs.iproute2
         pkgs.jq
         pkgs.nix
         pkgs.openssl
@@ -223,42 +221,6 @@
     if incusPreseed == null
     then []
     else map (profile: "${profile.project or "default"}/${profile.name}") (incusPreseed.profiles or []);
-  preseedDefaultProfileForProject = projectName:
-    if incusPreseed == null
-    then null
-    else
-      lib.findFirst
-      (profile: (profile.project or "default") == projectName && profile.name == "default")
-      null
-      (incusPreseed.profiles or []);
-  preseedDefaultProfileNetworkForProject = projectName: let
-    nicNetworks = preseedDefaultProfileNicNetworksForProject projectName;
-  in
-    if builtins.length nicNetworks == 1
-    then (builtins.head nicNetworks).network
-    else null;
-  preseedDefaultProfileNicNetworksForProject = projectName: let
-    profile = preseedDefaultProfileForProject projectName;
-  in
-    if profile == null
-    then []
-    else
-      lib.concatLists (
-        lib.mapAttrsToList (
-          deviceName: device:
-            lib.optional
-            (
-              (device.type or null)
-              == "nic"
-              && builtins.hasAttr "network" device
-            )
-            {
-              inherit deviceName;
-              network = device.network;
-            }
-        )
-        (profile.devices or {})
-      );
   preseedProfileDeviceRefs =
     if incusPreseed == null
     then []
@@ -308,46 +270,6 @@
   preseedMigrationsFile = pkgs.writeText "incus-machines-preseed-migrations.json" (builtins.toJSON resolvedPreseedMigrations);
   certificatesJson = builtins.toJSON globalCfg.certificates;
   certificatesFile = pkgs.writeText "incus-machines-certificates.json" certificatesJson;
-  projectRouteEntries = lib.concatLists (
-    lib.mapAttrsToList (
-      projectName: projectCfg:
-        map (route:
-          route
-          // {
-            project = projectName;
-            interface = preseedDefaultProfileNetworkForProject projectName;
-          })
-        projectCfg.routes
-    )
-    projectConfigs
-  );
-  hasProjectRoutes = projectRouteEntries != [];
-  routeProjectNames = lib.mapAttrsToList (projectName: _projectCfg: projectName) (
-    lib.filterAttrs (_projectName: projectCfg: projectCfg.routes != []) projectConfigs
-  );
-  routeProjectsMissingPreseedNetwork =
-    lib.filter (
-      projectName:
-        preseedDefaultProfileNicNetworksForProject projectName == []
-    )
-    routeProjectNames;
-  routeProjectsAmbiguousPreseedNetworks =
-    map (
-      projectName: let
-        nicNetworks = preseedDefaultProfileNicNetworksForProject projectName;
-        candidates = map (entry: "${entry.deviceName}=${entry.network}") nicNetworks;
-      in
-        "${projectName}: " + lib.concatStringsSep ", " candidates
-    ) (
-      lib.filter (
-        projectName:
-          builtins.length (preseedDefaultProfileNicNetworksForProject projectName) > 1
-      )
-      routeProjectNames
-    );
-  routesJson = builtins.toJSON projectRouteEntries;
-  routesFile = pkgs.writeText "incus-machines-routes.json" routesJson;
-  routesStateFile = "${incusManagerStateDir}/routes.json";
   invalidRestrictedCertificates = map (cert: cert.name) (
     lib.filter (cert: cert.restricted && cert.projects == []) globalCfg.certificates
   );
@@ -537,6 +459,51 @@
     };
   });
 
+  networkFamilyType = family:
+    lib.types.submodule (_: {
+      options = {
+        address = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Optional static ${family} address for the inherited NIC.";
+        };
+
+        routes = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [];
+          description = "${family} prefixes routed through the inherited NIC.";
+        };
+
+        filtering = lib.mkOption {
+          type = lib.types.nullOr lib.types.bool;
+          default = null;
+          description = "Optional Incus ${family} source filtering policy for the inherited NIC.";
+        };
+      };
+    });
+
+  networkType = lib.types.submodule (_: {
+    options = {
+      device = lib.mkOption {
+        type = lib.types.str;
+        default = "eth0";
+        description = "Profile-inherited NIC device whose live properties are managed.";
+      };
+
+      ipv4 = lib.mkOption {
+        type = networkFamilyType "IPv4";
+        default = {};
+        description = "Live IPv4 address, routed prefixes, and source filtering.";
+      };
+
+      ipv6 = lib.mkOption {
+        type = networkFamilyType "IPv6";
+        default = {};
+        description = "Live IPv6 address, routed prefixes, and source filtering.";
+      };
+    };
+  });
+
   relativeCpuCountType = lib.types.strMatching "([1-9]|[1-9][0-9]|100)%";
 
   limitType = lib.types.submodule (_: {
@@ -700,25 +667,6 @@
     };
   });
 
-  routeType = lib.types.submodule (_: {
-    options = {
-      address = lib.mkOption {
-        type = lib.types.str;
-        description = "Destination IPv4 network address.";
-      };
-
-      prefixLength = lib.mkOption {
-        type = lib.types.ints.between 0 32;
-        description = "Destination IPv4 network prefix length.";
-      };
-
-      via = lib.mkOption {
-        type = lib.types.str;
-        description = "Next-hop IPv4 address reachable on this project's Incus bridge.";
-      };
-    };
-  });
-
   remoteProjectCertFileType = lib.types.either lib.types.path lib.types.str;
 
   remoteProjectCertType = projectName:
@@ -747,18 +695,32 @@
       };
     }));
 
+  subnetAllowlistType = lib.types.coercedTo lib.types.str (value: [value]) (lib.types.listOf lib.types.str);
+
   remoteProjectType = lib.types.submodule (args @ {name, ...}: let
     projectConfig = args.config;
   in {
     options = {
       allowedSubnets = lib.mkOption {
-        type = lib.types.coercedTo lib.types.str (value: [value]) (lib.types.listOf lib.types.str);
-        default = [];
-        example = ["10.10.100.0/24"];
+        type = lib.types.submodule {
+          options = {
+            ipv4 = lib.mkOption {
+              type = subnetAllowlistType;
+              default = [];
+              example = ["10.10.100.0/24"];
+            };
+            ipv6 = lib.mkOption {
+              type = subnetAllowlistType;
+              default = [];
+              example = ["fd42:ab1d:ab1d:100::/64"];
+            };
+          };
+        };
+        default = {};
         description = ''
-          Optional IPv4 CIDR allowlist for instances declared in this remote
-          project. When non-empty, each instance assigned to this project must
-          use an address inside one of these subnets.
+          Optional family-keyed CIDR allowlists for instances declared in this
+          remote project. When a family allowlist is non-empty, every declared
+          instance address in that family must be inside one of its subnets.
         '';
       };
 
@@ -1306,8 +1268,20 @@
         '';
       };
       ipv4Address = lib.mkOption {
-        type = lib.types.str;
-        description = "Static IPv4 address (outside the bridge DHCP range).";
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Compatibility alias for `network.ipv4.address`. New declarations
+          should use the typed network option.
+        '';
+      };
+      network = lib.mkOption {
+        type = networkType;
+        default = {};
+        description = ''
+          Static addresses, routed prefixes, and source filtering reconciled
+          live on a profile-inherited NIC without recreating the instance.
+        '';
       };
       sshPort = lib.mkOption {
         type = lib.types.port;
@@ -1485,17 +1459,6 @@
         default = {};
         description = "Declarative Incus instances in this Incus project.";
       };
-
-      routes = lib.mkOption {
-        type = lib.types.listOf routeType;
-        default = [];
-        description = ''
-          Host routes owned by this Incus project fabric. The module attaches
-          these routes to the bridge used by the project's default profile, so
-          they are reconciled after Incus preseed creates the bridge instead of
-          through generic NixOS interface setup.
-        '';
-      };
     };
   });
 
@@ -1587,6 +1550,36 @@
     )
     machine.limits.network.devices;
 
+  effectiveIpv4Address = machine:
+    if machine.network.ipv4.address != null
+    then machine.network.ipv4.address
+    else if machine.ipv4Address != null
+    then machine.ipv4Address
+    else throw "Incus instance ${machine.project}/${machine.name} must define network.ipv4.address or ipv4Address";
+
+  networkFamilyProperties = family: legacyAddress: config:
+    lib.optionalAttrs (config.address != null || legacyAddress != null) {
+      "${family}.address" =
+        if config.address != null
+        then config.address
+        else legacyAddress;
+    }
+    // lib.optionalAttrs (config.routes != []) {
+      "${family}.routes" = lib.concatStringsSep "," config.routes;
+    }
+    // lib.optionalAttrs (config.filtering != null) {
+      "security.${family}_filtering" = lib.boolToString config.filtering;
+    };
+
+  liveNetworkDeviceProperties = machine: let
+    properties =
+      networkFamilyProperties "ipv4" machine.ipv4Address machine.network.ipv4
+      // networkFamilyProperties "ipv6" null machine.network.ipv6;
+  in
+    lib.optionalAttrs (properties != {}) {
+      ${machine.network.device} = properties;
+    };
+
   limitDeviceProperties = machine:
     lib.filterAttrs (_name: properties: properties != {}) (
       diskLimitProperties machine // networkLimitProperties machine
@@ -1599,6 +1592,15 @@
     lib.optionalAttrs (configKeys != [] || deviceProperties != {}) {
       limits = {
         inherit configKeys deviceProperties;
+      };
+    };
+
+  liveNetworkMetadata = machine: let
+    deviceProperties = lib.mapAttrs (_name: builtins.attrNames) (liveNetworkDeviceProperties machine);
+  in
+    lib.optionalAttrs (deviceProperties != {}) {
+      network = {
+        inherit deviceProperties;
       };
     };
 
@@ -1682,6 +1684,7 @@
     configJson = builtins.toJSON machine.config;
     limitsConfigJson = limitConfigJson machine;
     limitDevicesJson = limitDeviceSpecJson machine;
+    networkDevicesJson = builtins.toJSON (liveNetworkDeviceProperties machine);
   in
     builtins.toJSON {
       name = instanceName;
@@ -1690,7 +1693,7 @@
       imageAlias = instanceImage.alias;
       kind = machine.kind;
       project = resolveMachineProject machine;
-      ipv4Address = machine.ipv4Address;
+      ipv4Address = effectiveIpv4Address machine;
       state = machine.state;
       autoStart = machine.autoStart;
       reconcilePolicy = machine.reconcilePolicy;
@@ -1706,6 +1709,7 @@
       config = builtins.fromJSON configJson;
       limitConfig = builtins.fromJSON limitsConfigJson;
       limitDevices = builtins.fromJSON limitDevicesJson;
+      networkDevices = builtins.fromJSON networkDevicesJson;
       cpuCapacity = globalCfg.cpuCapacity;
     };
 
@@ -1720,7 +1724,6 @@
       configHash = hash;
       kind = machine.kind;
       project = resolveMachineProject machine;
-      ipv4Address = machine.ipv4Address;
       state = machine.state;
       autoStart = machine.autoStart;
       reconcilePolicy = machine.reconcilePolicy;
@@ -1748,7 +1751,8 @@
       hostSuspendPolicy = machine.hostSuspendPolicy;
       devices = builtins.fromJSON (diskGcMetadataJson machine);
     }
-    // limitMetadata machine;
+    // limitMetadata machine
+    // liveNetworkMetadata machine;
 
   mkUserMetadata = name: machine: {
     "user.nixos-meta" = builtins.toJSON (mkNixosMeta name machine);
@@ -1878,7 +1882,7 @@
   ipv4ToMachineNames =
     lib.foldl'
     (acc: name: let
-      ipv4Address = allInstances.${name}.ipv4Address;
+      ipv4Address = effectiveIpv4Address allInstances.${name};
     in
       acc
       // {
@@ -1895,6 +1899,83 @@
     map
     (ipv4Address: "${ipv4Address} -> ${lib.concatStringsSep ", " ipv4ToMachineNames.${ipv4Address}}")
     duplicateIpv4Addresses;
+
+  conflictingIpv4Aliases =
+    lib.mapAttrsToList (
+      name: machine: "${name}: ipv4Address=${machine.ipv4Address}, network.ipv4.address=${machine.network.ipv4.address}"
+    ) (lib.filterAttrs (
+        _name: machine:
+          machine.ipv4Address
+          != null
+          && machine.network.ipv4.address != null
+          && machine.ipv4Address != machine.network.ipv4.address
+      )
+      allInstances);
+
+  validIpv4NetworkAddress = value:
+    builtins.isString value
+    && !lib.hasInfix "/" value
+    && (builtins.tryEval (builtins.deepSeq (parseIpv4 value) true)).success;
+  validIpv4NetworkRoute = value:
+    builtins.isString value
+    && (builtins.tryEval (builtins.deepSeq (parseIpv4Cidr value) true)).success;
+  validIpv6NetworkAddress = value:
+    builtins.isString value
+    && !lib.hasInfix "/" value
+    && (builtins.tryEval (builtins.deepSeq (lib.network.ipv6.fromString value) true)).success;
+  validIpv6NetworkRoute = value:
+    builtins.isString value
+    && builtins.length (lib.splitString "/" value) == 2
+    && (builtins.tryEval (builtins.deepSeq (lib.network.ipv6.fromString value) true)).success;
+  invalidNetworkValues = lib.concatLists (
+    lib.mapAttrsToList (
+      name: machine:
+        lib.optional
+        (
+          machine.network.ipv4.address
+          != null
+          && !validIpv4NetworkAddress machine.network.ipv4.address
+        )
+        "${name}.network.ipv4.address=${toString machine.network.ipv4.address}"
+        ++ lib.optional
+        (
+          machine.network.ipv6.address
+          != null
+          && !validIpv6NetworkAddress machine.network.ipv6.address
+        )
+        "${name}.network.ipv6.address=${toString machine.network.ipv6.address}"
+        ++ map
+        (route: "${name}.network.ipv4.routes=${route}")
+        (lib.filter (route: !validIpv4NetworkRoute route) machine.network.ipv4.routes)
+        ++ map
+        (route: "${name}.network.ipv6.routes=${route}")
+        (lib.filter (route: !validIpv6NetworkRoute route) machine.network.ipv6.routes)
+    )
+    allInstances
+  );
+
+  canonicalIpv6Address = value: let
+    parsed = builtins.tryEval (lib.network.ipv6.fromString value);
+  in
+    if parsed.success
+    then parsed.value.address
+    else value;
+  ipv6ToMachineNames = lib.foldl' (
+    acc: name: let
+      ipv6Address = allInstances.${name}.network.ipv6.address;
+      canonicalAddress =
+        if ipv6Address == null
+        then null
+        else canonicalIpv6Address ipv6Address;
+    in
+      if ipv6Address == null
+      then acc
+      else acc // {${canonicalAddress} = (acc.${canonicalAddress} or []) ++ [name];}
+  ) {} (builtins.attrNames allInstances);
+
+  ipv6AddressConflicts = map (
+    ipv6Address: "${ipv6Address} -> ${lib.concatStringsSep ", " ipv6ToMachineNames.${ipv6Address}}"
+  ) (lib.attrNames (lib.filterAttrs (_ipv6Address: names: builtins.length names > 1) ipv6ToMachineNames));
 
   pow2 = exponent:
     if exponent == 0
@@ -1922,18 +2003,18 @@
     + (builtins.elemAt octets 2) * 256
     + (builtins.elemAt octets 3);
 
-  parseCidr = subnet: let
+  parseIpv4Cidr = subnet: let
     parts = lib.splitString "/" subnet;
   in
     if builtins.length parts != 2
-    then throw "Invalid IPv4 CIDR for services.incus-manager.global.remote project allowedSubnets: ${subnet}"
+    then throw "Invalid IPv4 CIDR in services.incus-manager.global.remote project allowedSubnets: ${subnet}"
     else let
       prefixLength = lib.toInt (builtins.elemAt parts 1);
       size = pow2 (32 - prefixLength);
       base = ipv4ToInt (builtins.elemAt parts 0);
     in
       if prefixLength < 0 || prefixLength > 32
-      then throw "Invalid IPv4 CIDR for services.incus-manager.global.remote project allowedSubnets: ${subnet}"
+      then throw "Invalid IPv4 CIDR in services.incus-manager.global.remote project allowedSubnets: ${subnet}"
       else {
         start = (builtins.div base size) * size;
         end = ((builtins.div base size) + 1) * size - 1;
@@ -1941,13 +2022,36 @@
 
   ipv4InCidr = value: subnet: let
     address = ipv4ToInt value;
-    cidr = parseCidr subnet;
+    cidr = parseIpv4Cidr subnet;
   in
     address >= cidr.start && address <= cidr.end;
 
-  remoteProjectSubnets = project:
+  ipv6InCidr = value: subnet: let
+    address = lib.network.ipv6.fromString value;
+    network = lib.network.ipv6.fromString subnet;
+    addressParts = map lib.fromHexString (lib.splitString ":" address.address);
+    networkParts = map lib.fromHexString (lib.splitString ":" network.address);
+    fullParts = builtins.div network.prefixLength 16;
+    partialBits = network.prefixLength - (fullParts * 16);
+    fullPartsEqual = lib.all (parts: parts.fst == parts.snd) (
+      lib.zipLists (lib.take fullParts addressParts) (lib.take fullParts networkParts)
+    );
+    partialPartsEqual =
+      partialBits
+      == 0
+      || builtins.div (builtins.elemAt addressParts fullParts) (pow2 (16 - partialBits))
+      == builtins.div (builtins.elemAt networkParts fullParts) (pow2 (16 - partialBits));
+  in
+    fullPartsEqual && partialPartsEqual;
+
+  addressInCidr = family:
+    if family == "ipv4"
+    then ipv4InCidr
+    else ipv6InCidr;
+
+  remoteProjectSubnets = project: family:
     if builtins.hasAttr project effectiveRemoteProjects
-    then effectiveRemoteProjects.${project}.allowedSubnets
+    then effectiveRemoteProjects.${project}.allowedSubnets.${family}
     else [];
 
   instancesWithoutRemoteProjectConfig =
@@ -1958,62 +2062,31 @@
     )
     (builtins.attrNames allInstances);
 
-  instancesOutsideAllowedSubnets =
-    lib.filter (
-      name: let
+  instancesOutsideAllowedSubnets = lib.concatMap (
+    name:
+      lib.concatMap (family: let
         project = resolveMachineProject allInstances.${name};
-        subnets = remoteProjectSubnets project;
+        address =
+          if family == "ipv4"
+          then effectiveIpv4Address allInstances.${name}
+          else allInstances.${name}.network.ipv6.address;
+        subnets = remoteProjectSubnets project family;
       in
-        subnets
-        != []
-        && !lib.any
-        (subnet: ipv4InCidr allInstances.${name}.ipv4Address subnet)
-        subnets
-    )
-    (builtins.attrNames allInstances);
+        lib.optional (
+          address
+          != null
+          && subnets != []
+          && !lib.any (subnet: addressInCidr family address subnet) subnets
+        ) {
+          inherit address family name project;
+        }) ["ipv4" "ipv6"]
+  ) (builtins.attrNames allInstances);
 
   allowedSubnetViolations =
     map (
-      name: let
-        project = resolveMachineProject allInstances.${name};
-      in "${name} (${project}, ${allInstances.${name}.ipv4Address})"
+      violation: "${violation.name} (${violation.project}, ${violation.family}, ${violation.address})"
     )
     instancesOutsideAllowedSubnets;
-
-  isIpv4 = value:
-    (builtins.tryEval (builtins.deepSeq (parseIpv4 value) true)).success;
-  routeEntriesWithRefs = lib.concatLists (
-    lib.mapAttrsToList (
-      projectName: projectCfg:
-        map (route: {
-          inherit projectName route;
-        })
-        projectCfg.routes
-    )
-    projectConfigs
-  );
-  routeDestinationAligned = route: let
-    size = pow2 (32 - route.prefixLength);
-    address = ipv4ToInt route.address;
-  in
-    address == (builtins.div address size) * size;
-  invalidRouteIpv4Values = lib.concatLists (
-    map (
-      entry:
-        lib.optional (!isIpv4 entry.route.address) "${entry.projectName}.routes.address=${entry.route.address}"
-        ++ lib.optional (!isIpv4 entry.route.via) "${entry.projectName}.routes.via=${entry.route.via}"
-    )
-    routeEntriesWithRefs
-  );
-  invalidRouteNetworkAddresses =
-    lib.concatMap
-    (
-      entry:
-        lib.optional
-        (isIpv4 entry.route.address && !routeDestinationAligned entry.route)
-        "${entry.projectName}.routes.address=${entry.route.address}/${toString entry.route.prefixLength}"
-    )
-    routeEntriesWithRefs;
 
   invalidCertificateDelegationNames =
     lib.filter
@@ -2187,6 +2260,26 @@
         (lib.intersectLists
           (builtins.attrNames machine.limits.disk.devices)
           (builtins.attrNames machine.limits.network.devices))
+    )
+    allInstances
+  );
+
+  overlappingLiveDevicePropertyOwners = lib.concatLists (
+    lib.mapAttrsToList (
+      machineName: machine: let
+        networkDevices = liveNetworkDeviceProperties machine;
+        limitDevices = limitDeviceProperties machine;
+        sharedDevices = lib.intersectLists (builtins.attrNames networkDevices) (builtins.attrNames limitDevices);
+      in
+        lib.concatMap (
+          deviceName:
+            map
+            (property: "${machineName}.${deviceName}.${property}")
+            (lib.intersectLists
+              (builtins.attrNames networkDevices.${deviceName})
+              (builtins.attrNames limitDevices.${deviceName}))
+        )
+        sharedDevices
     )
     allInstances
   );
@@ -2539,7 +2632,7 @@
       (builtins.attrNames allInstances)
     )
   );
-  instanceIpv4AddressesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.ipv4Address) allInstances);
+  instanceIpv4AddressesJson = builtins.toJSON (lib.mapAttrs (_name: effectiveIpv4Address) allInstances);
   instanceSshPortsJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.sshPort) allInstances);
   instanceWaitForSshJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.waitForSsh) allInstances);
   instanceStatesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.state) allInstances);
@@ -2551,6 +2644,7 @@
         project = resolveMachineProject machine;
         config = limitConfig machine;
         devices = limitDeviceProperties machine;
+        networkDevices = liveNetworkDeviceProperties machine;
         cpuCapacity = globalCfg.cpuCapacity;
       }
     )
@@ -2615,9 +2709,7 @@
     projects = gcProjects;
     remote = globalCfg.remote.enable;
   });
-  localIncusDeps =
-    lib.optional (!globalCfg.remote.enable) "incus-preseed.service"
-    ++ lib.optional (!globalCfg.remote.enable && hasProjectRoutes) "incus-machines-routes.service";
+  localIncusDeps = lib.optional (!globalCfg.remote.enable) "incus-preseed.service";
   incusLifecycleDeps =
     localIncusDeps
     ++ remoteProjectDelegationDeps
@@ -3092,6 +3184,30 @@ in {
           + lib.concatStringsSep "; " ipv4AddressConflicts;
       }
       {
+        assertion = conflictingIpv4Aliases == [];
+        message =
+          "services.incus-manager ipv4Address and network.ipv4.address must agree when both are set: "
+          + lib.concatStringsSep "; " conflictingIpv4Aliases;
+      }
+      {
+        assertion = invalidNetworkValues == [];
+        message =
+          "services.incus-manager network addresses must be plain family-correct addresses and routes must be family-correct CIDRs: "
+          + lib.concatStringsSep ", " invalidNetworkValues;
+      }
+      {
+        assertion = ipv6AddressConflicts == [];
+        message =
+          "services.incus-manager has duplicate network.ipv6.address assignments: "
+          + lib.concatStringsSep "; " ipv6AddressConflicts;
+      }
+      {
+        assertion = overlappingLiveDevicePropertyOwners == [];
+        message =
+          "services.incus-manager network and limit reconcilers cannot own the same live device property: "
+          + lib.concatStringsSep ", " overlappingLiveDevicePropertyOwners;
+      }
+      {
         assertion = invalidInstanceNames == [];
         message =
           "services.incus-manager instance keys must match [a-z]([a-z0-9-]{0,61}[a-z0-9])?: "
@@ -3242,34 +3358,6 @@ in {
         message = "services.incus-manager.global.certificateDelegations is only supported for local Incus management.";
       }
       {
-        assertion = !globalCfg.remote.enable || !hasProjectRoutes;
-        message = "services.incus-manager.<project>.routes is only supported for local Incus management.";
-      }
-      {
-        assertion = routeProjectsMissingPreseedNetwork == [];
-        message =
-          "services.incus-manager.<project>.routes requires each project default Incus profile to declare a NIC with network: "
-          + lib.concatStringsSep ", " routeProjectsMissingPreseedNetwork;
-      }
-      {
-        assertion = routeProjectsAmbiguousPreseedNetworks == [];
-        message =
-          "services.incus-manager.<project>.routes requires a unique default-profile NIC network per project: "
-          + lib.concatStringsSep "; " routeProjectsAmbiguousPreseedNetworks;
-      }
-      {
-        assertion = invalidRouteIpv4Values == [];
-        message =
-          "services.incus-manager.<project>.routes must use valid IPv4 address and via values: "
-          + lib.concatStringsSep ", " invalidRouteIpv4Values;
-      }
-      {
-        assertion = invalidRouteNetworkAddresses == [];
-        message =
-          "services.incus-manager.<project>.routes address must be aligned to prefixLength: "
-          + lib.concatStringsSep ", " invalidRouteNetworkAddresses;
-      }
-      {
         assertion = !globalCfg.remote.cli.enable || globalCfg.remote.enable;
         message = "services.incus-manager.global.remote.cli.enable requires services.incus-manager.global.remote.enable.";
       }
@@ -3401,29 +3489,6 @@ in {
               ExecStart = "${helperScript} certificate-delegations-gc";
             };
           };
-          incus-machines-routes = lib.mkIf hasRouteReconciler {
-            description = "Reconcile Incus project host routes";
-            wantedBy = ["multi-user.target" "sysinit-reactivation.target"];
-            partOf = ["incus.service"];
-            after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
-            wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
-            before =
-              ["incus-images.service" "incus-machines-reconciler.service"]
-              ++ map (name: "incus-${name}.service") (builtins.attrNames allInstances);
-            restartTriggers = [
-              routesFile
-            ];
-            restartIfChanged = true;
-            serviceConfig = {
-              Type = "oneshot";
-              RemainAfterExit = true;
-              Environment = [
-                (mkEnvAssignment "INCUS_MACHINES_ROUTES_FILE" routesFile)
-                (mkEnvAssignment "INCUS_MACHINES_ROUTES_STATE_FILE" routesStateFile)
-              ];
-              ExecStart = "${helperScript} routes";
-            };
-          };
         }
         // lib.mapAttrs' mkCertificateDelegationService globalCfg.certificateDelegations
         // (let
@@ -3469,7 +3534,7 @@ in {
           }
           // lib.optionalAttrs hasInstances {
             incus-machines-limits = {
-              description = "Reconcile live Incus instance limits";
+              description = "Reconcile live Incus instance limits and network properties";
               wantedBy = ["sysinit-reactivation.target"];
               before = map (name: "incus-${name}.service") (builtins.attrNames allInstances);
               after = localIncusDeps ++ remoteProjectDelegationDeps ++ ["network-online.target"];

@@ -25,15 +25,10 @@ class IncusHelperTest(unittest.TestCase):
         self.fake_bin.mkdir()
         self.state_dir.mkdir()
         self.incus_log = self.work_dir / "incus.log"
-        self.ip_log = self.work_dir / "ip.log"
         self.remote_config_dir = self.work_dir / "remote-config"
         self._write_executable(
             self.fake_bin / "incus",
             f"#!/bin/sh\nexec python3 {self.fake_incus} \"$@\"\n",
-        )
-        self._write_executable(
-            self.fake_bin / "ip",
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$TEST_IP_LOG\"\n",
         )
         self._write_executable(
             self.fake_bin / "mktemp",
@@ -68,11 +63,9 @@ class IncusHelperTest(unittest.TestCase):
             {
                 "PATH": f"{self.fake_bin}:{env['PATH']}",
                 "TEST_INCUS_LOG": str(self.incus_log),
-                "TEST_IP_LOG": str(self.ip_log),
                 "TEST_REMOTE_CONFIG_DIR": str(self.remote_config_dir),
                 "INCUS_MACHINES_HOST_SUSPEND_STATE_DIR": str(self.state_dir / "host-suspend"),
                 "INCUS_MACHINES_MANAGED_GC_DIR_ROOT": str(self.state_dir / "managed-dirs"),
-                "INCUS_MACHINES_ROUTES_STATE_FILE": str(self.state_dir / "routes.json"),
                 "INCUS_MACHINES_ETAG_RETRY_DELAY_SEC": "0",
                 "TEST_INCUS_FAIL_ONCE_STATE_FILE": str(self.state_dir / "fail-once"),
             }
@@ -121,6 +114,7 @@ class IncusHelperTest(unittest.TestCase):
             "configHash": config_hash,
             "bootTag": boot_tag,
             "recreateTag": recreate_tag,
+            "network": {"deviceProperties": {"eth0": ["ipv4.address"]}},
         }
 
     def machine_state(
@@ -158,6 +152,7 @@ class IncusHelperTest(unittest.TestCase):
             "config": {},
             "limitConfig": {},
             "limitDevices": {},
+            "networkDevices": {"eth0": {"ipv4.address": "10.10.30.20"}},
             "cpuCapacity": None,
             "ipv4Address": "10.10.30.20",
             "adopt": False,
@@ -328,36 +323,6 @@ class IncusHelperTest(unittest.TestCase):
             ["abird-nest"], [cert["name"] for cert in payload["certificates"]]
         )
         self.assertEqual([], self.read_incus_log())
-
-    def test_routes_reconcile_removes_old_routes_applies_current_routes_and_persists_state(self):
-        routes_file = self.work_dir / "routes.json"
-        current_routes = [
-            {
-                "project": "default",
-                "interface": "incusbr0",
-                "address": "10.10.30.0",
-                "prefixLength": 24,
-                "via": "10.10.30.1",
-            }
-        ]
-        old_routes = [
-            {
-                "project": "old",
-                "interface": "incusbr0",
-                "address": "10.10.20.0",
-                "prefixLength": 24,
-                "via": "10.10.20.1",
-            }
-        ]
-        routes_file.write_text(json.dumps(current_routes), encoding="utf-8")
-        (self.state_dir / "routes.json").write_text(json.dumps(old_routes), encoding="utf-8")
-
-        self.run_helper("routes_main", INCUS_MACHINES_ROUTES_FILE=str(routes_file))
-
-        ip_commands = self.ip_log.read_text(encoding="utf-8").splitlines()
-        self.assertIn("-4 route del 10.10.20.0/24 via 10.10.20.1 dev incusbr0 proto static", ip_commands)
-        self.assertIn("-4 route replace 10.10.30.0/24 via 10.10.30.1 dev incusbr0 proto static", ip_commands)
-        self.assertEqual(current_routes, json.loads((self.state_dir / "routes.json").read_text(encoding="utf-8")))
 
     def test_cleanup_guards_and_recoverable_error_parsing_are_conservative(self):
         managed_root = self.state_dir / "managed-dirs"
@@ -729,6 +694,123 @@ class IncusHelperTest(unittest.TestCase):
         self.assertIn(
             "Skipping limits for unavailable device default/web/state until lifecycle reconciliation",
             result.stdout,
+        )
+
+    def test_live_network_reconciliation_unsets_only_manager_owned_properties(self):
+        current_meta = {
+            "network": {
+                "deviceProperties": {
+                    "eth0": [
+                        "ipv4.address",
+                        "ipv4.routes",
+                        "ipv6.address",
+                        "security.ipv4_filtering",
+                        "security.ipv6_filtering",
+                    ]
+                }
+            }
+        }
+        current_devices = {
+            "eth0": {
+                "type": "nic",
+                "network": "incusbr0",
+                "ipv4.address": "10.10.30.20",
+                "ipv4.routes": "10.10.31.0/24",
+                "ipv6.address": "fd42:30::20",
+                "security.ipv4_filtering": "true",
+                "security.ipv6_filtering": "true",
+                "limits.max": "250Mbit",
+            }
+        }
+        desired_devices = {
+            "eth0": {
+                "ipv4.address": "10.10.30.20",
+                "ipv4.routes": "10.10.32.0/24",
+                "security.ipv4_filtering": "true",
+            }
+        }
+
+        self.run_helper(
+            f"""
+            reconcile_instance_network \
+              web \
+              '{json.dumps(current_devices, separators=(",", ":"))}' \
+              '{json.dumps(current_meta, separators=(",", ":"))}' \
+              '{json.dumps(desired_devices, separators=(",", ":"))}'
+            """
+        )
+
+        mutations = [command for _, command in self.mutation_commands()]
+        self.assertIn(
+            ["config", "device", "unset", "web", "eth0", "ipv6.address"],
+            mutations,
+        )
+        self.assertIn(
+            [
+                "config",
+                "device",
+                "unset",
+                "web",
+                "eth0",
+                "security.ipv6_filtering",
+            ],
+            mutations,
+        )
+        self.assertIn(
+            [
+                "config",
+                "device",
+                "set",
+                "web",
+                "eth0",
+                "ipv4.routes=10.10.32.0/24",
+            ],
+            mutations,
+        )
+        flattened = "\n".join(" ".join(command) for command in mutations)
+        self.assertNotIn("network incusbr0", flattened)
+        self.assertNotIn("limits.max", flattened)
+        self.assertNotIn("stop web", flattened)
+        self.assertNotIn("delete web", flattened)
+
+    def test_live_network_reconciliation_overrides_inherited_device(self):
+        desired_devices = {
+            "eth0": {
+                "ipv4.address": "10.10.30.20",
+                "ipv4.routes": "10.10.31.0/24",
+                "ipv6.address": "fd42:30::20",
+                "ipv6.routes": "fd42:31::/64",
+                "security.ipv4_filtering": "true",
+                "security.ipv6_filtering": "true",
+            }
+        }
+
+        self.run_helper(
+            f"""
+            reconcile_instance_network \
+              web \
+              '{{}}' \
+              '{{}}' \
+              '{json.dumps(desired_devices, separators=(",", ":"))}'
+            """
+        )
+
+        mutations = [command for _, command in self.mutation_commands()]
+        self.assertIn(
+            [
+                "config",
+                "device",
+                "override",
+                "web",
+                "eth0",
+                "ipv4.address=10.10.30.20",
+                "ipv4.routes=10.10.31.0/24",
+                "ipv6.address=fd42:30::20",
+                "ipv6.routes=fd42:31::/64",
+                "security.ipv4_filtering=true",
+                "security.ipv6_filtering=true",
+            ],
+            mutations,
         )
 
     def test_limits_main_resolves_relative_cpu_count_against_effective_parent_cpus(self):
