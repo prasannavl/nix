@@ -4301,7 +4301,7 @@ EOF_SCRIPT
             result.stdout.splitlines(),
         )
         self.assertIn(
-            "Target-side build-cache copy to target-unreachable failed in auto mode",
+            "warning: Target-side build-cache copy to target-unreachable did not complete in auto mode",
             result.stderr,
         )
 
@@ -7819,6 +7819,7 @@ EOF_SCRIPT
             NIXBOT_FORCE_COLOR=1
             printf '%s\n' \
               '[health-check] FAILED service failures detected after deploy' \
+              'warning: Target-side build-cache copy to app did not complete in auto mode; relaying through local client' \
               'starting graphiti_neo4j_1 Up 44 seconds (starting)' |
               format_host_console_logs app health
             """
@@ -7827,6 +7828,8 @@ EOF_SCRIPT
         lines = result.stdout.splitlines()
         self.assertIn("\x1b[31m", lines[0])
         self.assertIn("\x1b[38;5;178m", lines[1])
+        self.assertNotIn("\x1b[31m", lines[1])
+        self.assertIn("\x1b[38;5;178m", lines[2])
 
     def test_format_host_console_logs_colors_systemd_failure_shapes(self):
         result = self.run_script(

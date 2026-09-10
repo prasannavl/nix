@@ -429,7 +429,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   reachability in either network context. Explicit `cache` remains strict and
   outer-retried; explicit `local-copy` always uses the relay route for a remote
   target. A local self-target imports directly because the relay and target
-  contexts are the same Nix client.
+  contexts are the same Nix client. The auto-mode fallback transition is a
+  yellow warning because relay recovery remains in progress; only failure of the
+  recovery path is terminal red.
 - Direct store-path activation intentionally uses promote-after-success ordering
   for `switch` and `boot`: first run the target's `bin/switch-to-configuration`,
   then set `/nix/var/nix/profiles/system` to the target system with

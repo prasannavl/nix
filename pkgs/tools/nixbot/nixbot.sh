@@ -10418,7 +10418,7 @@ prepare_remote_build_system_path_on_prepared_target() {
 		if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
 			return "${cache_rc}"
 		fi
-		echo "==> Target-side build-cache copy to ${node} failed in auto mode; relaying through local client" >&2
+		echo "warning: Target-side build-cache copy to ${node} did not complete in auto mode; relaying through local client" >&2
 		copy_system_path_from_build_cache_via_local_to_prepared_target \
 			"${node}" \
 			"${system_path}" \
