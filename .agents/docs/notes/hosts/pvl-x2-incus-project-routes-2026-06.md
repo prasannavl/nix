@@ -2,11 +2,12 @@
 
 ## Ownership boundary
 
-Abird owns the pure, versioned fabric contract in `lib/stacks/abird-fabric.nix`:
-stable IPv4 and IPv6 prefixes, fabric-local role addresses, placements,
-lifecycle state, and logical allow edges. Pvl does not import or evaluate the
-Abird repository. It owns a deliberately small accepted projection at
-`hosts/pvl-x2/abird-fabric.nix` containing only the two address bases, four
+Abird assembles its authoritative fabric contract from the concrete stack
+profiles under `lib/stacks`: stable IPv4 and IPv6 prefixes, fabric-local role
+addresses, placements, lifecycle state, and logical allow edges. Pvl does not
+import or evaluate the Abird repository. It owns a deliberately small accepted
+projection directly in `hosts/pvl-x2/incus.nix`, beside the physical realization
+that consumes it. The projection contains only the two address bases, four
 subnet IDs, three referenced endpoint IDs, and six access edges required for
 physical enforcement.
 
@@ -21,6 +22,11 @@ next hops, nftables rendering, source filtering, and perimeter NAT.
 Changes to a shared subnet ID, endpoint ID, or access edge must update the Abird
 contract and Pvl projection in one coordinated change. The duplication is an
 intentional repository boundary, not a second complete topology model.
+
+The generic projection test uses a small synthetic topology rather than
+importing host data. Assertions in `hosts/pvl-x2/incus.nix` validate the real
+embedded fabric set, Gondor prefixes, Nest endpoint, dual-family rule count, and
+routed OAuth source identities during every host evaluation.
 
 ## Physical topology
 

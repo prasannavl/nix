@@ -217,7 +217,7 @@ Use this index as the canonical map for `.agents/docs/**`.
   old project contents, destructive rollout gates, and the validated Nest/CI
   bootstrap state.
 - `.agents/docs/notes/hosts/pvl-x2-incus-project-routes-2026-06.md`: Records the
-  minimal pvl-x2-local Abird enforcement projection, dual-stack routed-source
+  embedded pvl-x2-local Abird enforcement projection, dual-stack routed-source
   preservation, inherited NIC live reconciliation, source filtering, stable
   bridge prefixes, destination-boundary perimeter NAT, and rollout contract.
 - `.agents/docs/notes/hosts/pvl-x2-incus-preseed-reactivation-2026-07.md`:
