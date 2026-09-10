@@ -9,65 +9,65 @@
   };
   incusSecrets = ../../data/secrets/globals/incus;
   fpp = incusLib.fabricPolicyProfiles;
-  abirdTopology = {
-    abird-platform = {
-      network = {
-        subnetOctet = 0;
-        allow = [
-          {
-            to = {
-              project = "default";
-              address = "10.10.30.20";
-            };
-            tcp = [53];
-            udp = [53];
-          }
-          {
-            to = {
-              project = "default";
-              address = "10.10.30.80";
-            };
-            tcp = [5000];
-          }
-          {
-            to = {
-              project = "abird-dev";
-              address = "10.10.220.0/24";
-            };
-            tcp = [22];
-          }
-        ];
-      };
-      instances = {
-        nest.octet = 10;
-        ci.octet = 80;
-      };
+  abirdFabric = import ../../lib/flake/fabric-projection.nix {
+    inherit lib;
+    projection = import ./abird-fabric.nix;
+  };
+  defaultPrefixes = {
+    ipv4 = "10.10.20.0/24";
+    ipv6 = "fd42:36e5:81cf:b409::/64";
+  };
+  pvlPrefixes = {
+    ipv4 = "10.10.50.0/24";
+    ipv6 = "fd42:8f14:377a:bdd3::/64";
+  };
+  gondorPrefixes = abirdFabric.prefixes.abird-gondor;
+  abirdBridgeNames = {
+    abird-platform = "iabirdplatbr0";
+    abird = "iabirdbr0";
+    abird-dev = "iabirdbr2";
+  };
+  abirdFabricNames = builtins.attrNames abirdBridgeNames;
+  physicalAbirdFabricNames = builtins.attrNames (abirdBridgeNames // {abird-gondor = null;});
+  projectNames = ["pvl"] ++ abirdFabricNames;
+  bridgeAddressFor = fabric: family: "${abirdFabric.addressForId fabric family 1}/${toString abirdFabric.prefixLength.${family}}";
+  bridgeRangeFor = fabric: family: "${abirdFabric.addressForId fabric family 100}-${abirdFabric.addressForId fabric family 199}";
+  staticNetwork = addresses: routes: {
+    device = "eth0";
+    ipv4 = {
+      address = addresses.ipv4;
+      routes = routes.ipv4 or [];
+      filtering = true;
     };
-    abird.network = {
-      subnetOctet = 100;
-      allow = [];
-    };
-    abird-dev.network = {
-      subnetOctet = 220;
-      allow = [];
+    ipv6 = {
+      address = addresses.ipv6;
+      routes = routes.ipv6 or [];
+      filtering = true;
     };
   };
-  addressFor = stack: role: "10.10.${toString abirdTopology.${stack}.network.subnetOctet}.${toString abirdTopology.${stack}.instances.${role}.octet}";
-  abirdNestAddress = addressFor "abird-platform" "nest";
-  abirdCiAddress = addressFor "abird-platform" "ci";
-  resolveAccess = from: rule:
-    {
-      from = from;
-      to = rule.to.project;
-      destination = rule.to.address;
-    }
-    // lib.optionalAttrs (rule ? tcp) {tcpPorts = rule.tcp;}
-    // lib.optionalAttrs (rule ? udp) {udpPorts = rule.udp;};
-  abirdForwardRules = builtins.concatLists (
-    lib.mapAttrsToList (
-      from: stack: map (resolveAccess from) stack.network.allow
-    )
-    abirdTopology
+  defaultAddress = addressId: {
+    ipv4 = "10.10.20.${toString addressId}";
+    ipv6 = "fd42:36e5:81cf:b409::${toString addressId}";
+  };
+  mkAbirdProject = fabric: {
+    pool = fabric;
+    network = {
+      policy = fpp.containedPublic;
+      name = abirdBridgeNames.${fabric};
+      subnets = abirdFabric.prefixes.${fabric};
+      masqueradeToUplink = {
+        ipv4 = true;
+        ipv6 = true;
+      };
+      ipv4Address = bridgeAddressFor fabric "ipv4";
+      ipv4DhcpRanges = bridgeRangeFor fabric "ipv4";
+      ipv6Address = bridgeAddressFor fabric "ipv6";
+      ipv6DhcpRanges = bridgeRangeFor fabric "ipv6";
+    };
+    config = {};
+  };
+  abirdProjects = builtins.listToAttrs (
+    map (fabric: lib.nameValuePair fabric (mkAbirdProject fabric)) abirdFabricNames
   );
   isolatedProjectConfig = {
     "features.images" = "true";
@@ -76,75 +76,85 @@
     "features.storage.buckets" = "true";
     "features.storage.volumes" = "true";
   };
-  projectNames = ["pvl" "abird-platform" "abird" "abird-dev"];
-  projects = {
-    pvl = {
-      pool = "pvl";
-      network = {
-        policy = fpp.open;
-        name = "ipvlbr0";
-        ipv4Address = "10.10.50.1/24";
-        dhcpRanges = "10.10.50.100-10.10.50.199";
+  projects =
+    abirdProjects
+    // {
+      pvl = {
+        pool = "pvl";
+        network = {
+          policy = fpp.open;
+          name = "ipvlbr0";
+          subnets = pvlPrefixes;
+          masqueradeToUplink = {
+            ipv4 = true;
+            ipv6 = true;
+          };
+          ipv4Address = "10.10.50.1/24";
+          ipv4DhcpRanges = "10.10.50.100-10.10.50.199";
+          ipv6Address = "fd42:8f14:377a:bdd3::1/64";
+          ipv6DhcpRanges = "fd42:8f14:377a:bdd3::100-fd42:8f14:377a:bdd3::199";
+        };
+        config = {
+          "restricted.containers.nesting" = "allow";
+          "restricted.devices.proxy" = "allow";
+        };
       };
-      config = {
-        "restricted.containers.nesting" = "allow";
-        "restricted.devices.proxy" = "allow";
-      };
+      abird-platform =
+        abirdProjects.abird-platform
+        // {
+          config = {
+            "restricted.devices.disk" = "allow";
+            "restricted.devices.disk.paths" = "/var/lib/incus-delegations/abird-platform,/var/lib/incus-delegations/abird,/var/lib/incus-delegations/abird-dev";
+            "restricted.devices.proxy" = "allow";
+          };
+        };
+      abird-dev =
+        abirdProjects.abird-dev
+        // {
+          rootVolumeSize = "32GiB";
+          storageVolumeSize = "32GiB";
+          config = {
+            "limits.containers" = "7";
+            "limits.cpu" = "8";
+            "limits.disk" = "512GiB";
+            "limits.instances" = "7";
+            "limits.memory" = "8GiB";
+          };
+        };
     };
-    abird-platform = {
-      pool = "abird-platform";
-      network = {
-        policy = fpp.containedPublic;
-        name = "iabirdplatbr0";
-        ipv4Address = "10.10.0.1/24";
-        dhcpRanges = "10.10.0.100-10.10.0.199";
-      };
-      config = {
-        "restricted.devices.disk" = "allow";
-        "restricted.devices.disk.paths" = "/var/lib/incus-delegations/abird-platform,/var/lib/incus-delegations/abird,/var/lib/incus-delegations/abird-dev";
-        "restricted.devices.proxy" = "allow";
-      };
-    };
-    abird = {
-      pool = "abird";
-      network = {
-        policy = fpp.containedPublic;
-        name = "iabirdbr0";
-        ipv4Address = "10.10.100.1/24";
-        dhcpRanges = "10.10.100.100-10.10.100.199";
-      };
-      config = {};
-    };
-    abird-dev = {
-      pool = "abird-dev";
-      rootVolumeSize = "32GiB";
-      storageVolumeSize = "32GiB";
-      network = {
-        policy = fpp.containedPublic;
-        name = "iabirdbr2";
-        ipv4Address = "10.10.220.1/24";
-        dhcpRanges = "10.10.220.100-10.10.220.199";
-      };
-      config = {
-        "limits.containers" = "7";
-        "limits.cpu" = "8";
-        "limits.disk" = "512GiB";
-        "limits.instances" = "7";
-        "limits.memory" = "8GiB";
-      };
-    };
-  };
   fabricIsolation = incusLib.mkManagedFabricPolicy {
+    defaultFabric = {
+      subnets = defaultPrefixes;
+      masqueradeToUplink = {
+        ipv4 = true;
+        ipv6 = true;
+      };
+    };
+    # Preserve existing default-project management reachability. Gondor is
+    # classified first as its own contained routed child in both families.
     defaultPolicy = fpp.open;
-    forwardRules = abirdForwardRules;
+    enabledFamilies = abirdFabric.enabledFamilies;
+    forwardRules = abirdFabric.forwardRules;
     projects = projects;
+    routedFabrics.abird-gondor = {
+      parent = "default";
+      subnets = gondorPrefixes;
+      policy = projects.abird.network.policy;
+      masqueradeToUplink = {
+        ipv4 = true;
+        ipv6 = true;
+      };
+    };
   };
   mkBridgeNetwork = network: {
     config = {
       "ipv4.address" = network.ipv4Address;
-      "ipv4.dhcp.ranges" = network.dhcpRanges;
-      "ipv4.nat" = "true";
-      "ipv6.address" = "auto";
+      "ipv4.dhcp.ranges" = network.ipv4DhcpRanges;
+      "ipv4.nat" = "false";
+      "ipv6.address" = network.ipv6Address;
+      "ipv6.dhcp.ranges" = network.ipv6DhcpRanges;
+      "ipv6.dhcp.stateful" = "true";
+      "ipv6.nat" = "false";
     };
     description = "";
     name = network.name;
@@ -228,7 +238,19 @@
     kfd = true;
   };
 in {
-  assertions = fabricIsolation.assertions;
+  assertions =
+    fabricIsolation.assertions
+    ++ abirdFabric.assertions
+    ++ [
+      {
+        assertion = abirdFabric.enabledFamilies == ["ipv4" "ipv6"];
+        message = "Pvl requires the local Abird projection to remain dual-stack";
+      }
+      {
+        assertion = abirdFabric.fabricNames == physicalAbirdFabricNames;
+        message = "Pvl requires the local Abird projection to match its physical fabrics";
+      }
+    ];
 
   services = {
     incus-manager = {
@@ -262,18 +284,10 @@ in {
       };
 
       default = {
-        routes = [
-          {
-            address = "10.10.30.0";
-            prefixLength = 24;
-            via = "10.10.20.20";
-          }
-        ];
-
         instances = {
           pvl-vlab = mkLxc {
             name = "pvl-vlab";
-            ipv4Address = "10.10.20.10";
+            network = staticNetwork (defaultAddress 10) {};
             startPriority = 20;
             removalPolicy = "delete-all";
             privileged = true;
@@ -283,7 +297,7 @@ in {
 
           pvl-vlab-1 = mkLxc {
             name = "pvl-vlab-1";
-            ipv4Address = "10.10.20.30";
+            network = staticNetwork (defaultAddress 30) {};
             startPriority = 20;
             removalPolicy = "delete-all";
             privileged = true;
@@ -302,7 +316,10 @@ in {
             name = "gap3-gondor";
             recreateTag = "1";
             image = inputs.self.nixosImages.incus-lxc-base;
-            ipv4Address = "10.10.20.20";
+            network = staticNetwork (defaultAddress 20) {
+              ipv4 = [gondorPrefixes.ipv4];
+              ipv6 = [gondorPrefixes.ipv6];
+            };
             startPriority = 10;
             removalPolicy = "delete-all";
             privileged = true;
@@ -339,7 +356,7 @@ in {
       abird-platform.instances = {
         abird-nest = mkLxc {
           name = "abird-nest";
-          ipv4Address = abirdNestAddress;
+          network = staticNetwork (abirdFabric.addressesFor "abird-platform" "nest") {};
           startPriority = 10;
           removalPolicy = "delete-all";
           nestedContainers = true;
@@ -370,8 +387,11 @@ in {
           config = {
             "ipv4.address" = "10.10.20.1/24";
             "ipv4.dhcp.ranges" = "10.10.20.100-10.10.20.199";
-            "ipv4.nat" = "true";
-            "ipv6.address" = "auto";
+            "ipv4.nat" = "false";
+            "ipv6.address" = "fd42:36e5:81cf:b409::1/64";
+            "ipv6.dhcp.ranges" = "fd42:36e5:81cf:b409::100-fd42:36e5:81cf:b409::199";
+            "ipv6.dhcp.stateful" = "true";
+            "ipv6.nat" = "false";
           };
           description = "";
           name = "incusbr0";
@@ -426,6 +446,7 @@ in {
 
   boot.kernel.sysctl = {
     "net.ipv4.ip_forward" = 1;
+    "net.ipv6.conf.all.forwarding" = 1;
   };
   networking = {
     nftables.tables = fabricIsolation.nftablesTable;
