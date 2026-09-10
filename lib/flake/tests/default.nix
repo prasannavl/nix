@@ -201,6 +201,7 @@
     ${system} = outputs;
   };
 in {
+  lib-flake-fabric-projection = import ./fabric-projection.nix {inherit pkgs;};
   lib-flake-phase-projection = import ./phase-projection.nix {inherit pkgs;};
   lib-flake-service-placements = import ./service-placements.nix {inherit pkgs;};
   lib-flake-service-moves = import ./service-moves.nix {inherit pkgs;};
