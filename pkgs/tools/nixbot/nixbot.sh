@@ -4458,21 +4458,11 @@ effective_build_host_deploy_mode() {
 }
 
 copy_remote_build_closure_to_local_store() {
-	local node="$1" store_uri="$2" nix_sshopts="$3" out_path="$4" cache_url="" remote_copy_output="" trusted_public_keys=""
+	local node="$1" store_uri="$2" nix_sshopts="$3" out_path="$4" remote_copy_output=""
 	local -a copy_cmd=()
 
-	cache_url="$(build_host_cache_url_for "${BUILD_HOST}")"
-	copy_cmd=(nix)
-	if [ -n "${cache_url}" ]; then
-		trusted_public_keys="$(target_trusted_public_keys_for_copy "${node}")" || return 1
-		append_extra_trusted_public_keys_option "${trusted_public_keys}" copy_cmd
-		copy_cmd+=(copy --from "${cache_url}" "${out_path}")
-		nix_sshopts=""
-		echo "Copying built closure from ${BUILD_HOST} cache to local store: ${out_path}" >&2
-	else
-		copy_cmd+=(copy --from "${store_uri}" "${out_path}")
-		echo "Copying built closure from ${BUILD_HOST} to local store: ${out_path}" >&2
-	fi
+	copy_cmd=(nix copy --from "${store_uri}" "${out_path}")
+	echo "Copying built closure from ${BUILD_HOST} to local store: ${out_path}" >&2
 
 	if ! run_remote_store_command_with_retry \
 		remote_copy_output \

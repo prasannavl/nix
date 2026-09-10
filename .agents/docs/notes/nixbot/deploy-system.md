@@ -137,9 +137,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   resolve to the same canonical inventory resource, every mode skips HTTP and
   instead runs an offline, recursive, metadata-only closure verification in that
   store before activation. Deploy local-copy mode intentionally avoids raw
-  `ssh-ng://` copy-back into the operator store. Build-only copy-back uses the
-  signed build-host cache when it is configured, and falls back to raw
-  `ssh-ng://` only when there is no cache.
+  `ssh-ng://` copy-back into the operator store. Build-only copy-back instead
+  uses the authenticated `ssh-ng://` builder store directly and therefore does
+  not depend on operator-side cache reachability.
 - Build-cache config validation is fail-fast and specific: missing URL, missing
   host, and selected-build-host/cache-owner mismatches should each produce a
   distinct pre-activation error.

@@ -326,9 +326,9 @@ Implemented in the pvl repo:
   verification of the exact closure in that store. This avoids self-cache
   negative-narinfo races without weakening signed-cache enforcement for distinct
   targets. Deploy local-copy mode intentionally avoids raw `ssh-ng://` copy-back
-  into the operator store. Build-only copy-back uses the signed build-host cache
-  when it is configured, and falls back to raw `ssh-ng://` only when there is no
-  cache.
+  into the operator store. Build-only copy-back instead uses the authenticated
+  `ssh-ng://` builder store directly and therefore does not depend on
+  operator-side cache reachability.
 - Remote deploy build-cache validation fails before activation when
   `globals.buildCache.url` or `globals.buildCache.host` is missing, or when the
   selected `--build-host` does not match the configured cache owner. The
@@ -344,8 +344,8 @@ Implemented in the pvl repo:
   substitution; a heartbeat that inherits stdout can keep the capture pipe open
   after Nix exits, producing a false long-running build with no remote load.
 - Build-only remote builds still copy the closure back for local result
-  handling. They use the signed build-host cache when it is configured, and fall
-  back to raw `ssh-ng://` only when there is no cache.
+  handling. They use the authenticated `ssh-ng://` builder store directly; the
+  signed cache remains the distribution and admission boundary for deployments.
 - The superseded pvl note
   `.agents/docs/notes/hosts/nixbot-deploy-host-command-2026-06.md` was deleted;
   `docs/deployment.md` and `.agents/docs/notes/nixbot/deploy-system.md` were

@@ -322,6 +322,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/nixbot/pvl-vlab-1-cache-dns-relay-2026-08.md`: Records the
   `pvl-vlab-1` target-side cache DNS failure, the invalid global reachability
   assumption in `auto`, and per-target proxy-aware relay and fallback behavior.
+- `.agents/docs/notes/nixbot/build-only-ssh-copyback-2026-09.md`: Records why
+  remote build-only results return through the authenticated builder store while
+  signed-cache enforcement remains the deployment boundary.
 - `.agents/docs/notes/nixbot/abird-shared-port-parity-2026-06.md`: Records the
   June 2026 shared Abird port, byte-parity files, local adaptations, and skipped
   topology-owned units.

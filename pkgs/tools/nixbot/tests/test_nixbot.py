@@ -3771,6 +3771,57 @@ EOF_SCRIPT
             result.stdout.splitlines(),
         )
 
+    def test_remote_build_only_copyback_uses_authenticated_builder_store(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=builder
+            BUILD_CACHE_HOST=builder
+            BUILD_CACHE_URL=http://cache:5000
+            target_trusted_public_keys_for_copy() {
+              printf 'unexpected cache trust lookup\n'
+              return 1
+            }
+            run_remote_store_command_with_retry() {
+              printf 'sshopts=%s\n' "$3"
+              printf 'recovery=%s:%s\n' "$4" "$5"
+              printf 'command:'
+              printf '<%s>' "${@:7}"
+              printf '\n'
+            }
+            nix() {
+              printf 'verify:'
+              printf '<%s>' "$@"
+              printf '\n'
+            }
+            copy_remote_build_closure_to_local_store \
+              target \
+              ssh-ng://nixbot@builder \
+              '-o ProxyJump=gateway' \
+              /nix/store/system
+            """
+        )
+
+        self.assertEqual(
+            [
+                "sshopts=-o ProxyJump=gateway",
+                "recovery=target:/nix/store/system",
+                "command:<nix><copy><--from><ssh-ng://nixbot@builder><"
+                "/nix/store/system>",
+            ],
+            result.stdout.splitlines(),
+        )
+        self.assertNotIn("cache", result.stdout)
+        self.assertIn(
+            "Copying built closure from builder to local store: /nix/store/system",
+            result.stderr,
+        )
+        self.assertIn(
+            "verify:<path-info><--closure-size><--human-readable>"
+            "</nix/store/system>",
+            result.stderr,
+        )
+
     def test_build_host_store_identity_uses_canonical_resource(self):
         result = self.run_script(
             """
