@@ -3,7 +3,7 @@
   commandLineArgs ? "",
   ...
 }: let
-  version = "1.136.1";
+  version = "1.137.0";
   inherit (pkgs.stdenv.hostPlatform) system;
   throwSystem = throw "Unsupported system for vscode-upstream: ${system}";
   plat =
@@ -17,8 +17,8 @@
     } or throwSystem;
   srcName =
     {
-      x86_64-linux = "code-stable-x64-1788413682.tar.gz";
-      aarch64-linux = "code-stable-arm64-1788413840.tar.gz";
+      x86_64-linux = "code-stable-x64-1788901890.tar.gz";
+      aarch64-linux = "code-stable-arm64-1788901921.tar.gz";
       aarch64-darwin = "VSCode-darwin-arm64.zip";
     }
     .${
@@ -26,9 +26,9 @@
     } or throwSystem;
   srcHash =
     {
-      x86_64-linux = "sha256-m0pU8NSb6qQT7aE30AxlQaY5MA1HnvysVmrRNBlAkhg=";
-      aarch64-linux = "sha256-KqwVTsRSgX6Ix7RSsRDyzbqtAK97zwXvc0OJE2ThDEQ=";
-      aarch64-darwin = "sha256-vRWhsmzRC6hJAPe9MPIdUe7yaIKOHhWorB+X+ZYgu+U=";
+      x86_64-linux = "sha256-iHHWNyklaONMLSfapTIKOzyAX0H5QBTfzq++YTQYf84=";
+      aarch64-linux = "sha256-5q4qiAePrceAEcS92nDFlmC1/iQrSqs0EoVWB3nFIxM=";
+      aarch64-darwin = "sha256-Fu5c3bHqGSNOHyUW2gfVfgfXyrarRaVRXasHdlbLxl4=";
     }
     .${
       system
@@ -44,11 +44,11 @@
     aarch64-darwin = "vscode-server-darwin-arm64.zip";
   };
   serverHash = {
-    x86_64-linux = "sha256-MYihsWaHogWVchb/NTndLrGeARcpVVOoi+8FOxIYhHU=";
-    aarch64-linux = "sha256-h9R5Ul2eAsITmvgkrDOacRIqmyzqee8Dq7dPD8V01jE=";
-    aarch64-darwin = "sha256-sQ5bnLaJ1kYURjQqa7CqNdZ6jMDiYeq73GJ8g0hUep8=";
+    x86_64-linux = "sha256-bf5KW7f0tQnALS6KbyWMzZE7kQaLVT0DmtaPKazmITY=";
+    aarch64-linux = "sha256-/ArmjIc9DlKs6Tnl96yxzYKBvhyWD3i49ez97vMeZ/w=";
+    aarch64-darwin = "sha256-CKvY9cJ6CCAMXwR+Q1yNT8vk6LZXMQaoDtIfbeh0lH4=";
   };
-  rev = "a44adf7f53e00964ab890f9f8758a334f1fc15bc";
+  rev = "645f29cc3176500b4b5762ba887cf2a7f0ffdf2c";
   # VS Code now vendors ripgrep under @vscode/ripgrep-universal; keep the
   # package patch aligned so search keeps working after upstream updates.
   ripgrepPath =
