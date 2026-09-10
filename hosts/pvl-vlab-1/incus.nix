@@ -12,7 +12,10 @@ in {
       enable = true;
       name = "pvl-x2";
       address = "https://127.0.0.1:8443";
-      projects.pvl.allowedSubnets = "10.10.50.0/24";
+      projects.pvl.allowedSubnets = {
+        ipv4 = "10.10.50.0/24";
+        ipv6 = "fd42:8f14:377a:bdd3::/64";
+      };
       clientCertificateFile = incusSecrets + "/pvl-vlab-1.crt";
       clientKeyFile = clientKeyPath;
       acceptCertificate = true;
@@ -21,7 +24,16 @@ in {
 
   services.incus-manager.pvl.instances = {
     pvl-vk-1 = {
-      ipv4Address = "10.10.50.31";
+      network = {
+        ipv4 = {
+          address = "10.10.50.31";
+          filtering = true;
+        };
+        ipv6 = {
+          address = "fd42:8f14:377a:bdd3::31";
+          filtering = true;
+        };
+      };
       config = {
         "security.privileged" = "false";
         "security.nesting" = "true";
