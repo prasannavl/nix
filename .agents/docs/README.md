@@ -194,6 +194,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   the non-fatal remote-recovery behavior.
 - `.agents/docs/notes/hosts/pvl-x2-services-layout.md`: Canonical `pvl-x2`
   service module split and aggregation layout.
+- `.agents/docs/notes/hosts/pvl-x2-ollama-model-refresh-2026-09.md`: Records why
+  a successful dirty-staged deployment installed changed Ollama model triggers
+  without running the inactive `pvl-x2` puller, the retained-active repair,
+  Ollama version compatibility gate, explicit retirement, and converged live
+  reconciliation.
 - `.agents/docs/notes/hosts/pvl-x2-media-services-2026-08.md`: Records the
   `pvl-x2` video, music, book, PDF, and document service boundaries; native
   desktop clients; shared read-only libraries; public ingress; secret-backed
@@ -404,6 +409,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   the `pvl-a1` decision to set `OLLAMA_CONTEXT_LENGTH=131072` on both Ollama
   service instances so Open WebUI prompts do not get truncated at the prior 4k
   effective context limit.
+- `.agents/docs/notes/services/ollama-model-reconciler-2026-09.md`: Records the
+  shared retained-dispatcher and asynchronous-worker design, active versus
+  stopped backend topology, dual-API routing, and the `pvl-x2`, `pvl-a1`, and
+  `pvl-l5` migration.
 - `.agents/docs/notes/services/ollama-shared-models-dir-pvl-a1-2026-04.md`:
   Records the `pvl-a1` decision to share one staged Ollama models directory
   across the ROCm and NVIDIA instances while keeping separate per-instance
