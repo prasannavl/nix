@@ -69,7 +69,6 @@
           appicon-padding = 8;
           dot-style-focused = "DASHES";
           dot-style-unfocused = "DASHES";
-          extension-version = 72;
           global-border-radius = 0;
           hide-overview-on-startup = true;
           hot-keys = true;
