@@ -58,6 +58,9 @@ scripts.
 - External package discovery is convention-based: `sources.nix` enables
   reporting, while an adjacent executable `update.sh` additionally enables
   updates. `scripts/update.sh` scans both `lib/ext` and `pkgs/ext`.
+- Podman Compose image maintenance uses one provenance-aware tool for read-only
+  reports and atomic declarative updates. `--only-images` updates fixed image
+  tags; combine it with `--report` for the read-only view.
 
 ## Source of truth files
 
@@ -68,6 +71,7 @@ scripts.
 - `scripts/git-install-hooks.sh`
 - `scripts/update.sh`
 - `scripts/support/report-ext-sources.py`
+- `scripts/support/podman-image-updater.py`
 - `lib/flake/lint.nix`
 - `lib/flake/pkg-helper.nix`
 - `README.md`

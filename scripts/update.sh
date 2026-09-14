@@ -8,6 +8,7 @@ Usage: update.sh [options]
 Runs all repo maintenance update scripts:
   flake lock updates
   external sources under lib/ext/* and pkgs/ext/*
+  Podman Compose image pin updates
 
 Options:
   --skip-flake          Do not update flake locks.
@@ -18,12 +19,12 @@ Options:
   --only-ext-NAME       Only process lib/ext/NAME. May be repeated.
   --skip-pkgs-ext       Do not process pkgs/ext source units.
   --only-pkgs-ext       Only process pkgs/ext source units.
-  --skip-images         Do not include Podman image reports.
-  --only-images         Only include Podman image reports.
-  --jobs N              Parallel report jobs. Default: 16.
+  --skip-images         Do not process Podman Compose image pins.
+  --only-images         Only process Podman Compose image pins.
+  --jobs N              Parallel lookup jobs. Default: 16.
   --ansi                Always use ANSI styling for report updates.
-  --color[=WHEN]        Report styling: auto, always, never. Default: auto.
-  --report              Print package version status without updating.
+  --color[=WHEN]        Status styling: auto, always, never. Default: auto.
+  --report              Print version status without updating.
 EOF
 }
 
@@ -434,7 +435,8 @@ run_report() {
 	if ((RUN_IMAGES)); then
 		((printed_section)) && echo
 		print_section_title "podman-compose images:"
-		"${REPO_ROOT}/scripts/support/report-podman-images.py" --jobs "$REPORT_JOBS" "--color=${COLOR_MODE}" || status=$?
+		"${REPO_ROOT}/scripts/support/podman-image-updater.py" \
+			--report --jobs "$REPORT_JOBS" "--color=${COLOR_MODE}" || status=$?
 	fi
 
 	((status == 0)) || return "$status"
@@ -451,6 +453,11 @@ run_updates() {
 	fi
 	if ((RUN_EXT || RUN_PKGS_EXT)); then
 		run_external_updates
+	fi
+	if ((RUN_IMAGES)); then
+		echo "Updating podman-compose images:"
+		"${REPO_ROOT}/scripts/support/podman-image-updater.py" \
+			--jobs "$REPORT_JOBS" "--color=${COLOR_MODE}"
 	fi
 }
 

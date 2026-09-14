@@ -73,6 +73,36 @@ addressing. Do not substitute one for the other.
 
 ## Lifecycle Policy
 
+### Repository image updates
+
+`scripts/support/podman-image-updater.py` owns both Podman Compose image
+reporting and source updates. `scripts/update.sh --report` invokes its read-only
+mode, while ordinary updates invoke its write mode unless `--skip-images` is
+selected. Use `scripts/update.sh --only-images` for image-only updates and add
+`--report` for an image-only report. The direct updater also accepts `--dry-run`
+to validate and display the complete plan without writing.
+
+The updater evaluates the effective host inventory and module definition
+locations together. It updates only repository-local sources owned by the
+instance that produced an image reference. Resolve writable pins in this order:
+
+1. an exact image reference on an `image:` or `image =` declaration
+2. a unique quoted full image reference in the owning source
+3. a unique quoted tag shared by evaluated image references in the owning source
+
+Deduplicate shared version-variable edits. Reject ambiguous ownership, missing
+source pins, conflicting replacements, lookup failures, and concurrent source
+changes before writing. Stage every changed file beside its target, preserve its
+mode, and roll back already replaced files if publication fails.
+
+Only comparable fixed version tags participate in updates. Keep generated
+`localhost/nix-local` images out of inventory, and leave digest pins,
+runtime-variable tags, and floating tags unchanged. Major and pre-1.0 minor
+updates remain attention-colored but are still applied in update mode; review
+the resulting declarative diff before deployment. Registry-specific release
+feeds may be used where anonymous registry tag listing is unavailable, but the
+resulting tag must retain the registry's tag shape.
+
 ### Rootless ID-map convergence
 
 Treat the per-user rootless ID-map unit as an active start gate, not as a reason

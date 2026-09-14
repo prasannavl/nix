@@ -4,9 +4,9 @@
     package = "pi-models-discovery";
     owner = "maplezzk";
     repo = "pi-extensions";
-    version = "1.2.0";
-    rev = "00bcad50f3e29865efcc8ae13be19bedd16206e0";
-    srcHash = "sha256-rq4GpokUe6WTe9N89P7cWZT4AyHeHXSfPZGXWerrxr0=";
+    version = "1.3.0";
+    rev = "527d7324b0c713f0f141b22cc0e640ed9e4dcca2";
+    srcHash = "sha256-9ll9dV3UKQ3ZqzOffV8N/P1lt6oQO54nvsfNZMPt4MI=";
   };
 
   pi-session-manager = {

@@ -49,13 +49,13 @@
       touch "$out"
     '';
   ollamaTests = import ../services/ollama/tests {pkgs = pkgs;};
-  podmanImageReportTest =
-    pkgs.runCommand "podman-image-report-test" {
+  podmanImageUpdaterTest =
+    pkgs.runCommand "podman-image-updater-test" {
       nativeBuildInputs = [pkgs.python3];
     } ''
       cp -R ${../../scripts/support} scripts-support
       chmod -R u+w scripts-support
-      python scripts-support/tests/test_report_podman_images.py
+      python scripts-support/tests/test_podman_image_updater.py
       touch "$out"
     '';
   serviceModuleFactory = import ../flake/service-module.nix;
@@ -86,7 +86,7 @@ in
     lib-openssh = import ./openssh.nix {inherit pkgs;};
     lib-ollama-helper = ollamaTests.helper;
     lib-ollama-module = ollamaTests.module;
-    lib-podman-image-report = podmanImageReportTest;
+    lib-podman-image-updater = podmanImageUpdaterTest;
     lib-service-module = serviceModuleTest;
     lib-swap-auto = import ./swap-auto.nix {inherit pkgs;};
     lib-podman-compose-helper = podmanComposeTests.helper;

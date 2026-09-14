@@ -103,6 +103,23 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("is not executable", result.stderr)
 
+    def test_podman_images_report_and_update_use_same_tool(self):
+        trace = Path(self.temp_dir.name) / "trace"
+        updater = self.repo / "scripts/support/podman-image-updater.py"
+        updater.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" >"$TRACE"\n')
+        updater.chmod(0o755)
+
+        result = self.run_update("--report", "--only-images", trace=trace)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--report", trace.read_text().splitlines())
+
+        trace.unlink()
+        result = self.run_update("--only-images", trace=trace)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--report", trace.read_text().splitlines())
+
 
 if __name__ == "__main__":
     unittest.main()
