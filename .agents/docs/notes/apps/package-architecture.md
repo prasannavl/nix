@@ -91,6 +91,11 @@ stack wiring.
   flat and explicit in the manifest.
 - Non-package helper derivations consumed directly by overlays or scripts belong
   outside `pkgs/`; see `lib/ext/` for that pattern.
+- External packages and overrides keep canonical version, revision, digest, and
+  hash data in an adjacent `sources.nix`. Presence of that file participates in
+  repository update reporting; an adjacent executable `update.sh` additionally
+  enables updates. See `.agents/docs/design-patterns/external-source-units.md`
+  for the shared convention.
 - For external package pins or upstream-version overrides, first check whether
   nixpkgs stable or `inputs.unstable` already has a suitable package. Reuse the
   nixpkgs package with `override`, `overrideAttrs`, or a narrow source/version

@@ -25,8 +25,9 @@ Keep `lib/ext/vscode/default.nix` as a narrow source/version override of
 - `pkgs.pipewire`
 - `pkgs.libei`
 
-Mirror the same list in `lib/ext/vscode/update.sh` so future VS Code version
-updates retain the package fix.
+Keep the list in `lib/ext/vscode/default.nix`. The updater mutates only
+`lib/ext/vscode/sources.nix`, so future version updates retain the package fix
+without duplicating build logic in the updater.
 
 ## Validation
 

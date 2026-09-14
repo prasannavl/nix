@@ -55,6 +55,9 @@ scripts.
 - VS Code packaging and update automation should stay explicit about upstream
   source, pinned hashes, and toolchain dependencies needed by the configured
   extensions.
+- External package discovery is convention-based: `sources.nix` enables
+  reporting, while an adjacent executable `update.sh` additionally enables
+  updates. `scripts/update.sh` scans both `lib/ext` and `pkgs/ext`.
 
 ## Source of truth files
 
@@ -64,6 +67,7 @@ scripts.
 - `scripts/fmt.sh`
 - `scripts/git-install-hooks.sh`
 - `scripts/update.sh`
+- `scripts/support/report-ext-sources.py`
 - `lib/flake/lint.nix`
 - `lib/flake/pkg-helper.nix`
 - `README.md`

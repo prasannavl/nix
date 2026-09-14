@@ -24,7 +24,7 @@ promote the Pi derivations into `pkgs/` and register them in
 
 ## Updates
 
-`lib/ext/pi/sources.json` is the single machine-maintained source of versions,
+`lib/ext/pi/sources.nix` is the single machine-maintained source of versions,
 upstream revisions, source hashes, release hashes, and npm dependency hashes for
 all five packages. The executable `lib/ext/pi/update.sh` participates in the
 standard maintenance interface as the `pi` extension updater:
@@ -38,7 +38,7 @@ lib/ext/pi/update.sh --package pi-web
 The updater reads current npm metadata, resolves npm-published Git commits or
 release archives as appropriate, recomputes fixed-output hashes, and rebuilds
 each changed package in a repository-local staging directory. It replaces
-`sources.json` only after every requested package validates, so a failed update
+`sources.nix` only after every requested package validates, so a failed update
 does not leave partially updated pins. Use repeated `--package` flags for a
 subset, `--version` with one package for an explicit version, or `--force` to
 recompute the current version.

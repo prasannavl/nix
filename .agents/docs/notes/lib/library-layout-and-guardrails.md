@@ -9,6 +9,9 @@ Canonical placement rules and review guardrails for shared helpers under `lib/`.
 - Keep flake-oriented helper code under `lib/flake/`.
 - Keep standalone overlay or maintenance helper derivations under `lib/ext/`,
   not `pkgs/`.
+- Keep external pin data in the owning unit's `sources.nix`; use the convention
+  and ownership rules in `.agents/docs/design-patterns/external-source-units.md`
+  across both external roots.
 - Keep service-specific shared modules under `lib/services/`.
 - Keep shared pure flake helpers in one reusable library location instead of
   duplicating them across modules.

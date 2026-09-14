@@ -7,17 +7,17 @@ Usage: update.sh [options]
 
 Runs all repo maintenance update scripts:
   flake lock updates
-  lib/ext/*/update.sh
+  external sources under lib/ext/* and pkgs/ext/*
 
 Options:
   --skip-flake          Do not update flake locks.
   --only-flake          Only update flake locks.
-  --skip-ext            Do not run extension update scripts.
-  --only-ext            Only run extension update scripts.
-  --skip-ext-NAME       Skip lib/ext/NAME/update.sh.
-  --only-ext-NAME       Only run lib/ext/NAME/update.sh. May be repeated.
-  --skip-pkgs-ext       Do not include patched pkgs/ext reports.
-  --only-pkgs-ext       Only include patched pkgs/ext reports.
+  --skip-ext            Do not process lib/ext source units.
+  --only-ext            Only process lib/ext source units.
+  --skip-ext-NAME       Skip lib/ext/NAME. May be repeated.
+  --only-ext-NAME       Only process lib/ext/NAME. May be repeated.
+  --skip-pkgs-ext       Do not process pkgs/ext source units.
+  --only-pkgs-ext       Only process pkgs/ext source units.
   --skip-images         Do not include Podman image reports.
   --only-images         Only include Podman image reports.
   --jobs N              Parallel report jobs. Default: 16.
@@ -34,7 +34,8 @@ die() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
-	EXT_DIR="${REPO_ROOT}/lib/ext"
+	LIB_EXT_DIR="${REPO_ROOT}/lib/ext"
+	PKGS_EXT_DIR="${REPO_ROOT}/pkgs/ext"
 	SKIP_FLAKE=0
 	ONLY_FLAKE=0
 	SKIP_EXT=0
@@ -262,15 +263,15 @@ print_section_title() {
 	fi
 }
 
-ext_name_for_script() {
-	local script="$1"
-	basename "$(dirname "$script")"
+source_unit_name() {
+	local sources_file="$1"
+	basename "$(dirname "$sources_file")"
 }
 
-should_run_ext_script() {
-	local script="$1"
+should_run_lib_source() {
+	local sources_file="$1"
 	local name
-	name="$(ext_name_for_script "$script")"
+	name="$(source_unit_name "$sources_file")"
 
 	if ((${#ONLY_EXT_NAMES[@]} > 0)) && ! contains_name "$name" "${ONLY_EXT_NAMES[@]}"; then
 		return 1
@@ -281,75 +282,124 @@ should_run_ext_script() {
 	return 0
 }
 
-find_selected_ext_scripts() {
-	local script
+find_source_files() {
+	local root="$1"
 
-	while IFS= read -r -d '' script; do
-		should_run_ext_script "$script" && printf '%s\0' "$script"
-	done < <(find "$EXT_DIR" -mindepth 2 -maxdepth 2 -type f -name update.sh -executable -print0 | sort -z)
+	find "$root" -mindepth 2 -maxdepth 2 -type f -name sources.nix -print0 | sort -z
+}
+
+find_selected_source_files() {
+	local root="$1"
+	local sources_file
+
+	while IFS= read -r -d '' sources_file; do
+		if [[ "$root" != "$LIB_EXT_DIR" ]] || should_run_lib_source "$sources_file"; then
+			printf '%s\0' "$sources_file"
+		fi
+	done < <(find_source_files "$root")
+}
+
+validate_source_units() {
+	local root="$1"
+	local path sibling
+
+	while IFS= read -r -d '' path; do
+		sibling="$(dirname "$path")/sources.nix"
+		[[ -f "$sibling" ]] || die "External updater has no sibling sources.nix: ${path#"$REPO_ROOT"/}"
+	done < <(find "$root" -mindepth 2 -maxdepth 2 -type f -name update.sh -print0 | sort -z)
+
+	while IFS= read -r -d '' path; do
+		sibling="$(dirname "$path")/update.sh"
+		if [[ -f "$sibling" && ! -x "$sibling" ]]; then
+			die "External updater is not executable: ${sibling#"$REPO_ROOT"/}"
+		fi
+	done < <(find_source_files "$root")
 }
 
 validate_ext_filters() {
-	local script name requested
+	local sources_file name requested
 	local -a ext_names=()
 
-	while IFS= read -r -d '' script; do
-		ext_names+=("$(ext_name_for_script "$script")")
-	done < <(find "$EXT_DIR" -mindepth 2 -maxdepth 2 -type f -name update.sh -executable -print0 | sort -z)
+	while IFS= read -r -d '' sources_file; do
+		ext_names+=("$(source_unit_name "$sources_file")")
+	done < <(find_source_files "$LIB_EXT_DIR")
 
 	for requested in "${ONLY_EXT_NAMES[@]}" "${SKIP_EXT_NAMES[@]}"; do
 		contains_name "$requested" "${ext_names[@]}" ||
-			die "No extension update script found for: ${requested}"
+			die "No lib/ext source unit found for: ${requested}"
 	done
 }
 
-run_ext_updates() {
-	local script
+run_external_updates() {
+	local root sources_file update_script
 	local -a update_scripts=()
 
+	((RUN_EXT)) && validate_source_units "$LIB_EXT_DIR"
+	((RUN_PKGS_EXT)) && validate_source_units "$PKGS_EXT_DIR"
 	validate_ext_filters
-	while IFS= read -r -d '' script; do
-		update_scripts+=("$script")
-	done < <(find_selected_ext_scripts)
+	for root in "$LIB_EXT_DIR" "$PKGS_EXT_DIR"; do
+		if [[ "$root" == "$LIB_EXT_DIR" ]] && ((!RUN_EXT)); then
+			continue
+		fi
+		if [[ "$root" == "$PKGS_EXT_DIR" ]] && ((!RUN_PKGS_EXT)); then
+			continue
+		fi
+		while IFS= read -r -d '' sources_file; do
+			update_script="$(dirname "$sources_file")/update.sh"
+			[[ -x "$update_script" ]] && update_scripts+=("$update_script")
+		done < <(find_selected_source_files "$root")
+	done
 
 	if ((${#update_scripts[@]} == 0)); then
-		echo "No extension update scripts selected."
+		echo "No external update scripts selected."
 		return
 	fi
 
-	for script in "${update_scripts[@]}"; do
-		echo "Running ${script#"$REPO_ROOT"/}"
-		"$script"
+	for update_script in "${update_scripts[@]}"; do
+		echo "Running ${update_script#"$REPO_ROOT"/}"
+		"$update_script"
 	done
 }
 
-run_ext_report() {
-	local script
-	local -a update_scripts=()
+run_source_report() {
+	local max_jobs="$1"
+	local root="$2"
+	local sources_file update_script pid
+	local -a report_sources=()
+	local -a report_commands=()
 	local -a pids=()
 	local -a report_args=(--report "--color=${COLOR_MODE}")
-	local max_jobs="$1"
-	local pid
 	local status=0
 
+	validate_source_units "$root"
 	validate_ext_filters
-	while IFS= read -r -d '' script; do
-		update_scripts+=("$script")
-	done < <(find_selected_ext_scripts)
+	while IFS= read -r -d '' sources_file; do
+		update_script="$(dirname "$sources_file")/update.sh"
+		if [[ -x "$update_script" ]]; then
+			report_commands+=("$update_script")
+		else
+			report_sources+=("$sources_file")
+		fi
+	done < <(find_selected_source_files "$root")
 
-	if ((${#update_scripts[@]} == 0)); then
-		echo "No package update scripts selected."
+	if ((${#report_commands[@]} == 0 && ${#report_sources[@]} == 0)); then
+		echo "No external source units selected."
 		return
 	fi
 
-	for script in "${update_scripts[@]}"; do
-		"$script" "${report_args[@]}" &
+	for update_script in "${report_commands[@]}"; do
+		"$update_script" "${report_args[@]}" &
 		pids+=("$!")
 		while ((${#pids[@]} >= max_jobs)); do
 			wait "${pids[0]}" || status=$?
 			pids=("${pids[@]:1}")
 		done
 	done
+	if ((${#report_sources[@]} > 0)); then
+		"${REPO_ROOT}/scripts/support/report-ext-sources.py" \
+			--jobs "$max_jobs" "--color=${COLOR_MODE}" "${report_sources[@]}" &
+		pids+=("$!")
+	fi
 
 	for pid in "${pids[@]}"; do
 		wait "$pid" || status=$?
@@ -370,14 +420,14 @@ run_report() {
 	if ((RUN_EXT)); then
 		((printed_section)) && echo
 		print_section_title "lib/ext:"
-		run_ext_report "$REPORT_JOBS" || status=$?
+		run_source_report "$REPORT_JOBS" "$LIB_EXT_DIR" || status=$?
 		printed_section=1
 	fi
 
 	if ((RUN_PKGS_EXT)); then
 		((printed_section)) && echo
 		print_section_title "pkgs/ext:"
-		"${REPO_ROOT}/scripts/support/report-pkgs-ext.py" --jobs "$REPORT_JOBS" "--color=${COLOR_MODE}" || status=$?
+		run_source_report "$REPORT_JOBS" "$PKGS_EXT_DIR" || status=$?
 		printed_section=1
 	fi
 
@@ -399,8 +449,8 @@ run_updates() {
 	if ((RUN_FLAKES)); then
 		update_flakes
 	fi
-	if ((RUN_EXT)); then
-		run_ext_updates
+	if ((RUN_EXT || RUN_PKGS_EXT)); then
+		run_external_updates
 	fi
 }
 

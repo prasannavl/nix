@@ -15,6 +15,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ## Design Patterns
 
+- `.agents/docs/design-patterns/external-source-units.md`: Canonical external
+  package ownership, `sources.nix` discovery, report-only and update-capable
+  unit conventions, and package-local updater rules across `lib/ext` and
+  `pkgs/ext`.
 - `.agents/docs/design-patterns/dns.md`: Durable DNS change-management rules for
   the repo Cloudflare stack.
 - `.agents/docs/design-patterns/nix-native-service-moves.md`: Canonical
