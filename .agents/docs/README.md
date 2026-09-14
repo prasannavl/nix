@@ -213,6 +213,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   bootstrap values; rootless GPU access; and the initial bind-path ordering and
   bcrypt bootstrap-password deployment repairs, plus the per-route browser CSP
   and high-burst frontend rate-limit compatibility boundaries.
+- `.agents/docs/notes/hosts/pvl-x2-docmost-postgres-major-2026-09.md`: Records
+  the Docmost outage caused by an automated PostgreSQL 16-to-18 image change,
+  the preserved database-major boundary, and the declarative recovery path.
 - `.agents/docs/notes/hosts/pvl-x2-inline-compose-2026-04.md`: Records the
   migration of `pvl-x2` service-local `docker.compose.yaml` files into inline
   Nix compose sources, with Immich helper YAML retained and Zulip kept as a

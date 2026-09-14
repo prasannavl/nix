@@ -41,7 +41,7 @@ in {
               - ./data:/app/data/storage
 
           db:
-            image: docker.io/postgres:18-alpine
+            image: docker.io/postgres:16-alpine
             user: 0:0
             environment:
               POSTGRES_DB: docmost
