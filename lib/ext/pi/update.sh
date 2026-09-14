@@ -24,7 +24,7 @@ die() {
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
 	PI_DIR="${REPO_ROOT}/lib/ext/pi"
-	SOURCES_FILE="${PI_DIR}/sources.json"
+	SOURCES_FILE="${PI_DIR}/sources.nix"
 	REQUESTED_VERSION=""
 	FORCE=0
 	REPORT=0
@@ -34,6 +34,7 @@ init_vars() {
 	NPM_CACHE=""
 	STAGING_DIR=""
 	WORKING_SOURCES=""
+	SOURCES_JSON=""
 	ALL_PACKAGES=(
 		pi-models-discovery
 		pi-session-manager
@@ -116,32 +117,19 @@ validate_options() {
 	fi
 }
 
-npm_name() {
-	case "$1" in
-	pi-web) echo "@agegr/pi-web" ;;
-	*) echo "$1" ;;
-	esac
-}
-
 github_repo() {
-	case "$1" in
-	pi-models-discovery) echo "maplezzk pi-extensions" ;;
-	pi-subagents) echo "nicobailon pi-subagents" ;;
-	pi-tps) echo "summertime-wu pi-tps" ;;
-	pi-web) echo "agegr pi-web" ;;
-	*) die "No GitHub repository configured for $1" ;;
-	esac
+	jq -er --arg package "$1" '.[$package] | "\(.owner) \(.repo)"' <<<"$SOURCES_JSON"
 }
 
 current_version() {
-	jq -er --arg package "$1" '.[$package].version' "$SOURCES_FILE"
+	jq -er --arg package "$1" '.[$package].version' <<<"$SOURCES_JSON"
 }
 
 resolve_metadata() {
 	local package="$1"
 	local registry_name selector
 
-	registry_name="$(npm_name "$package")"
+	registry_name="$(jq -er --arg package "$package" '.[$package].package' <<<"$SOURCES_JSON")"
 	selector="${REQUESTED_VERSION:-latest}"
 	npm --cache "$NPM_CACHE" --loglevel=silent view "${registry_name}@${selector}" --json
 }
@@ -211,6 +199,7 @@ set_source_record() {
     ' \
 		"$WORKING_SOURCES" >"$next_file"
 	mv "$next_file" "$WORKING_SOURCES"
+	write_staged_sources
 }
 
 set_npm_deps_hash() {
@@ -225,6 +214,33 @@ set_npm_deps_hash() {
 		'.[$package].npmDepsHash = $npmDepsHash' \
 		"$WORKING_SOURCES" >"$next_file"
 	mv "$next_file" "$WORKING_SOURCES"
+	write_staged_sources
+}
+
+render_sources() {
+	local package field value
+	local -a fields=(kind package owner repo version rev srcHash releaseHash npmDepsHash)
+
+	echo "{"
+	for package in "${ALL_PACKAGES[@]}"; do
+		echo "  ${package} = {"
+		for field in "${fields[@]}"; do
+			value="$(jq -c --arg package "$package" --arg field "$field" '.[$package][$field] // empty' "$WORKING_SOURCES")"
+			[[ -n "$value" ]] && printf '    %s = %s;\n' "$field" "$value"
+		done
+		echo "  };"
+		[[ "$package" != "${ALL_PACKAGES[-1]}" ]] && echo
+	done
+	echo "}"
+}
+
+write_staged_sources() {
+	local next_file="${STAGING_DIR}/sources.next.nix"
+
+	render_sources >"$next_file"
+	alejandra "$next_file" >/dev/null
+	chmod 0644 "$next_file"
+	mv "$next_file" "${STAGING_DIR}/sources.nix"
 }
 
 build_package() {
@@ -297,7 +313,8 @@ init_staging() {
 	STAGING_DIR="${RUNTIME_DIR}/suite"
 	mkdir -p "$STAGING_DIR"
 	cp -R "${PI_DIR}/." "$STAGING_DIR"
-	WORKING_SOURCES="${STAGING_DIR}/sources.json"
+	WORKING_SOURCES="${STAGING_DIR}/sources.eval"
+	printf '%s\n' "$SOURCES_JSON" >"$WORKING_SOURCES"
 }
 
 init_runtime() {
@@ -313,12 +330,7 @@ cleanup() {
 }
 
 install_sources() {
-	local formatted_file
-
-	formatted_file="${STAGING_DIR}/sources.formatted.json"
-	jq --sort-keys . "$WORKING_SOURCES" >"$formatted_file"
-	mv "$formatted_file" "$WORKING_SOURCES"
-	mv "$WORKING_SOURCES" "$SOURCES_FILE"
+	mv "${STAGING_DIR}/sources.nix" "$SOURCES_FILE"
 }
 
 ensure_runtime_shell() {
@@ -326,6 +338,7 @@ ensure_runtime_shell() {
 	local script_path flake_path
 	local -a runtime_packages=(
 		nixpkgs#bash
+		nixpkgs#alejandra
 		nixpkgs#coreutils
 		nixpkgs#gawk
 		nixpkgs#jq
@@ -351,6 +364,7 @@ main() {
 	init_vars
 	parse_args "$@"
 	validate_options
+	SOURCES_JSON="$(nix eval --json --file "$SOURCES_FILE")"
 	init_runtime
 	trap cleanup EXIT
 

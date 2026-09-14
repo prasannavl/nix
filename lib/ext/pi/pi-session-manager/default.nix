@@ -1,6 +1,6 @@
 {pkgs ? import <nixpkgs> {}}: let
   pname = "pi-session-manager";
-  source = (builtins.fromJSON (builtins.readFile ../sources.json)).${pname};
+  source = (import ../sources.nix).${pname};
 in
   pkgs.stdenvNoCC.mkDerivation {
     inherit pname;

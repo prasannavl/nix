@@ -8,7 +8,7 @@ Examples:
   lib/ext/nvidia/update.sh
   lib/ext/nvidia/update.sh --version 580.126.09
   lib/ext/nvidia/update.sh --force
-  lib/ext/nvidia/update.sh --file lib/ext/nvidia/default.nix
+  lib/ext/nvidia/update.sh --file lib/ext/nvidia/sources.nix
 EOF
 }
 
@@ -21,7 +21,7 @@ init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
 	BASE_INDEX_URL="https://download.nvidia.com/XFree86/Linux-x86_64/"
 	UNIX_DRIVER_ARCHIVE_URL="https://www.nvidia.com/en-us/drivers/unix/"
-	TARGET_FILE="${REPO_ROOT}/lib/ext/nvidia/default.nix"
+	TARGET_FILE="${REPO_ROOT}/lib/ext/nvidia/sources.nix"
 	REQUESTED_VERSION=""
 	FORCE=0
 	REPORT=0
@@ -244,14 +244,21 @@ compute_hashes() {
 
 update_file() {
 	local version="$1"
+	local tmp_file
 
+	mkdir -p "${REPO_ROOT}/tmp"
+	tmp_file="$(mktemp "${REPO_ROOT}/tmp/update-nvidia.XXXXXX.nix")"
+	cp "$TARGET_FILE" "$tmp_file"
 	sed -E -i \
 		-e "s#(^[[:space:]]*version = \").*(\";)#\\1${version}\\2#" \
 		-e "s#(^[[:space:]]*sha256_64bit = \").*(\";)#\\1${SHA256_64BIT}\\2#" \
 		-e "s#(^[[:space:]]*openSha256 = \").*(\";)#\\1${OPEN_SHA256}\\2#" \
 		-e "s#(^[[:space:]]*settingsSha256 = \").*(\";)#\\1${SETTINGS_SHA256}\\2#" \
 		-e "s|(^[[:space:]]*persistencedSha256 = )[^;]+(;[[:space:]]*(\\#.*)?)|\\1\"${PERSISTENCED_SHA256}\"\\2|" \
-		"$TARGET_FILE"
+		"$tmp_file"
+	alejandra "$tmp_file" >/dev/null
+	chmod 0644 "$tmp_file"
+	mv "$tmp_file" "$TARGET_FILE"
 }
 
 print_summary() {
@@ -273,6 +280,7 @@ ensure_runtime_shell() {
 	local script_path
 	local flake_path
 	local -a runtime_packages=(
+		nixpkgs#alejandra
 		nixpkgs#curl
 		nixpkgs#gawk
 		nixpkgs#gnused

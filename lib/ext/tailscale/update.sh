@@ -8,7 +8,7 @@ Examples:
   lib/ext/tailscale/update.sh
   lib/ext/tailscale/update.sh --version 1.96.4
   lib/ext/tailscale/update.sh --force
-  lib/ext/tailscale/update.sh --file lib/ext/tailscale/default.nix
+  lib/ext/tailscale/update.sh --file lib/ext/tailscale/sources.nix
 EOF
 }
 
@@ -19,7 +19,7 @@ die() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
-	TARGET_FILE="${REPO_ROOT}/lib/ext/tailscale/default.nix"
+	TARGET_FILE="${REPO_ROOT}/lib/ext/tailscale/sources.nix"
 	REQUESTED_VERSION=""
 	FORCE=0
 	REPORT=0
@@ -139,7 +139,7 @@ get_current_version() {
 }
 
 has_current_hashes() {
-	grep -Eq '^[[:space:]]*hash = "sha256-[^"]+";' "$RESOLVED_TARGET_FILE" &&
+	grep -Eq '^[[:space:]]*srcHash = "sha256-[^"]+";' "$RESOLVED_TARGET_FILE" &&
 		grep -Eq '^[[:space:]]*vendorHash = "sha256-[^"]+";' "$RESOLVED_TARGET_FILE"
 }
 
@@ -252,36 +252,16 @@ compute_vendor_hash() {
 render_file() {
 	cat <<EOF
 {
-  pkgs,
-  tailscale,
-  ...
-}: let
-  version = "${RESOLVED_VERSION}";
-in
-  tailscale.overrideAttrs (finalAttrs: old: {
-    version = version;
-
-    src = pkgs.fetchFromGitHub {
-      owner = "tailscale";
-      repo = "tailscale";
-      tag = "v\${version}";
-      hash = "${SRC_HASH}";
-    };
-
+  tailscale = {
+    kind = "github-release";
+    owner = "tailscale";
+    repo = "tailscale";
+    tagPrefix = "v";
+    version = "${RESOLVED_VERSION}";
+    srcHash = "${SRC_HASH}";
     vendorHash = "${VENDOR_HASH}";
-
-    ldflags =
-      builtins.map
-      (flag:
-        if pkgs.lib.hasPrefix "-X tailscale.com/version." flag
-        then
-          pkgs.lib.replaceStrings
-          [old.version]
-          [finalAttrs.version]
-          flag
-        else flag)
-      old.ldflags;
-  })
+  };
+}
 EOF
 }
 
@@ -289,8 +269,10 @@ update_file() {
 	local tmp_file
 
 	mkdir -p "${REPO_ROOT}/tmp"
-	tmp_file="$(mktemp "${REPO_ROOT}/tmp/update-tailscale.XXXXXX")"
+	tmp_file="$(mktemp --suffix=.nix "${REPO_ROOT}/tmp/update-tailscale.XXXXXX")"
 	render_file >"$tmp_file"
+	alejandra "$tmp_file" >/dev/null
+	chmod 0644 "$tmp_file"
 	mv "$tmp_file" "$RESOLVED_TARGET_FILE"
 }
 
@@ -308,6 +290,7 @@ ensure_runtime_shell() {
 	local runtime_shell_flag="${UPDATE_TAILSCALE_IN_NIX_SHELL:-0}"
 	local script_path flake_path
 	local -a runtime_packages=(
+		nixpkgs#alejandra
 		nixpkgs#coreutils
 		nixpkgs#curl
 		nixpkgs#gawk

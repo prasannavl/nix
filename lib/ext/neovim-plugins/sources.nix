@@ -1,5 +1,6 @@
 {
   gitlogdiff-nvim = {
+    kind = "github-branch";
     pname = "gitlogdiff.nvim";
     owner = "Salanoid";
     repo = "gitlogdiff.nvim";
@@ -10,6 +11,7 @@
   };
 
   worktrees-nvim = {
+    kind = "github-branch";
     pname = "worktrees.nvim";
     owner = "afonsofrancof";
     repo = "worktrees.nvim";

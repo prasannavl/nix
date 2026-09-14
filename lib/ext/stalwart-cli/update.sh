@@ -8,7 +8,7 @@ Examples:
   lib/ext/stalwart-cli/update.sh
   lib/ext/stalwart-cli/update.sh --version 1.0.6
   lib/ext/stalwart-cli/update.sh --force
-  lib/ext/stalwart-cli/update.sh --file lib/ext/stalwart-cli/default.nix
+  lib/ext/stalwart-cli/update.sh --file lib/ext/stalwart-cli/sources.nix
 EOF
 }
 
@@ -19,7 +19,7 @@ die() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
-	TARGET_FILE="${REPO_ROOT}/lib/ext/stalwart-cli/default.nix"
+	TARGET_FILE="${REPO_ROOT}/lib/ext/stalwart-cli/sources.nix"
 	REQUESTED_VERSION=""
 	FORCE=0
 	REPORT=0
@@ -206,15 +206,13 @@ compute_hashes() {
 render_file() {
 	cat <<EOF
 {
-  fetchurl,
-  lib,
-  stdenvNoCC,
-}: let
-  pname = "stalwart-cli";
-  version = "${RESOLVED_VERSION}";
-  platform = stdenvNoCC.hostPlatform.system;
-  release =
-    {
+  stalwart-cli = {
+    kind = "github-release";
+    owner = "stalwartlabs";
+    repo = "cli";
+    tagPrefix = "v";
+    version = "${RESOLVED_VERSION}";
+    releases = {
       x86_64-linux = {
         target = "x86_64-unknown-linux-musl";
         hash = "${X64_LINUX_HASH}";
@@ -231,39 +229,9 @@ render_file() {
         target = "aarch64-apple-darwin";
         hash = "${AARCH64_DARWIN_HASH}";
       };
-    }.\${
-      platform
     };
-in
-  stdenvNoCC.mkDerivation {
-    inherit pname version;
-
-    src = fetchurl {
-      url = "https://github.com/stalwartlabs/cli/releases/download/v\${version}/stalwart-cli-\${release.target}.tar.xz";
-      hash = release.hash;
-    };
-
-    sourceRoot = "stalwart-cli-\${release.target}";
-
-    installPhase = ''
-      runHook preInstall
-      install -Dm755 stalwart-cli \$out/bin/stalwart-cli
-      runHook postInstall
-    '';
-
-    meta = {
-      description = "Command-line administration tool for Stalwart";
-      homepage = "https://github.com/stalwartlabs/cli";
-      license = [lib.licenses.agpl3Only];
-      mainProgram = "stalwart-cli";
-      platforms = [
-        "x86_64-linux"
-        "aarch64-linux"
-        "x86_64-darwin"
-        "aarch64-darwin"
-      ];
-    };
-  }
+  };
+}
 EOF
 }
 
@@ -271,8 +239,10 @@ update_file() {
 	local tmp_file
 
 	mkdir -p "${REPO_ROOT}/tmp"
-	tmp_file="$(mktemp "${REPO_ROOT}/tmp/update-stalwart-cli.XXXXXX")"
+	tmp_file="$(mktemp --suffix=.nix "${REPO_ROOT}/tmp/update-stalwart-cli.XXXXXX")"
 	render_file >"$tmp_file"
+	alejandra "$tmp_file" >/dev/null
+	chmod 0644 "$tmp_file"
 	mv "$tmp_file" "$RESOLVED_TARGET_FILE"
 }
 
@@ -293,6 +263,7 @@ ensure_runtime_shell() {
 	local script_path
 	local flake_path
 	local -a runtime_packages=(
+		nixpkgs#alejandra
 		nixpkgs#coreutils
 		nixpkgs#curl
 		nixpkgs#jq

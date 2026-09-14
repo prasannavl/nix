@@ -196,6 +196,7 @@ render_sources() {
 	for plugin in "${PLUGIN_NAMES[@]}"; do
 		cat <<EOF
   ${plugin} = {
+    kind = "github-branch";
     pname = "${PNAMES[$plugin]}";
     owner = "${OWNERS[$plugin]}";
     repo = "${REPOS[$plugin]}";
@@ -218,6 +219,7 @@ write_sources() {
 	trap 'rm -f "${tmp_file:-}"' RETURN
 	render_sources >"$tmp_file"
 	alejandra "$tmp_file" >/dev/null
+	chmod 0644 "$tmp_file"
 	mv "$tmp_file" "$SOURCES_FILE"
 	trap - RETURN
 }

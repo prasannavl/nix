@@ -7,9 +7,9 @@
   perl,
   stdenvNoCC,
 }: let
+  source = (import ./sources.nix).mirofish;
   pname = "mirofish";
-  version = "0-unstable-2026-05-24";
-  rev = "96096ea0ff42b1a30cbc41a1560b8c91090f9968";
+  inherit (source) version rev;
   shortRev = builtins.substring 0 12 rev;
   imageBuild = "src-${builtins.substring 0 12 (builtins.hashString "sha256" (builtins.readFile ./helper.sh))}";
 
@@ -18,18 +18,17 @@
   imageRef = "${imageName}:${imageTag}";
 
   src = fetchFromGitHub {
-    owner = "666ghj";
-    repo = "MiroFish";
+    inherit (source) owner repo;
     inherit rev;
-    hash = "sha256-13Jpf3bKP8edAZgOBWSxrDp2W8nOLbyfRcKKrQWWE18=";
+    hash = source.srcHash;
   };
 
   upstreamRuntimeImage = dockerTools.pullImage {
-    imageName = "ghcr.io/666ghj/mirofish";
-    imageDigest = "sha256:4a9de5042a3f244081c26347cbb2a42bdccfdca53c02e7f492bacdaae4d20277";
-    finalImageName = "ghcr.io/666ghj/mirofish";
-    finalImageTag = "pinned-2026-03-07";
-    sha256 = "sha256-3UDIAMK62BEaazp5IevQTHKHavcnj3dQh+uxlwBuHjY=";
+    imageName = source.runtimeImage.name;
+    imageDigest = source.runtimeImage.digest;
+    finalImageName = source.runtimeImage.name;
+    finalImageTag = source.runtimeImage.tag;
+    sha256 = source.runtimeImage.hash;
   };
 
   patchedSource = stdenvNoCC.mkDerivation {
@@ -56,7 +55,7 @@
     pname = "mirofish-root-node-modules";
     inherit version;
     src = patchedSource;
-    npmDepsHash = "sha256-KHwt+/4sP1RFnm2Ft/GbTVgsy/Fsykd9jpb8CloBNPw=";
+    npmDepsHash = source.rootNpmDepsHash;
     dontNpmBuild = true;
     dontFixup = true;
 
@@ -72,7 +71,7 @@
     pname = "mirofish-frontend-node-modules";
     inherit version;
     src = "${patchedSource}/frontend";
-    npmDepsHash = "sha256-AEWweHkYBHbXFGjW1uqhEvb6BnhZYYyYJVxccYwk2zw=";
+    npmDepsHash = source.frontendNpmDepsHash;
     dontNpmBuild = true;
     dontFixup = true;
 
@@ -165,7 +164,7 @@ in
         shortRev
         src
         ;
-      upstreamRuntimeDigest = "sha256:4a9de5042a3f244081c26347cbb2a42bdccfdca53c02e7f492bacdaae4d20277";
+      upstreamRuntimeDigest = source.runtimeImage.digest;
     };
 
     meta = {

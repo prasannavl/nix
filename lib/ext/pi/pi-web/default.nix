@@ -1,6 +1,6 @@
 {pkgs ? import <nixpkgs> {}}: let
   pname = "pi-web";
-  source = (builtins.fromJSON (builtins.readFile ../sources.json)).${pname};
+  source = (import ../sources.nix).${pname};
   releaseSource = pkgs.fetchFromGitHub {
     owner = "agegr";
     repo = "pi-web";

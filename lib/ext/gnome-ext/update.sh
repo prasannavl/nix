@@ -3,13 +3,10 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: lib/ext/gnome-ext/update.sh [--file PATH] [--version VERSION] [--force] [--report] [--ansi|--color=WHEN]
-By default, updates all known extensions. Optionally specify a single file to update.
-Examples:
-  lib/ext/gnome-ext/update.sh
-  lib/ext/gnome-ext/update.sh --file lib/ext/gnome-ext/p7-borders.nix
-  lib/ext/gnome-ext/update.sh --file lib/ext/gnome-ext/p7-cmds.nix --version 30
-  lib/ext/gnome-ext/update.sh --force
+Usage: lib/ext/gnome-ext/update.sh [--package NAME] [--version VERSION] [--force] [--report] [--ansi|--color=WHEN]
+
+Updates every extension in sources.nix by default. --version requires one
+selected package.
 EOF
 }
 
@@ -20,29 +17,26 @@ die() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
-	DEFAULT_FILES=(
-		"${REPO_ROOT}/lib/ext/gnome-ext/p7-borders.nix"
-		"${REPO_ROOT}/lib/ext/gnome-ext/p7-cmds.nix"
-	)
-	TARGET_FILE=""
+	UNIT_DIR="${REPO_ROOT}/lib/ext/gnome-ext"
+	SOURCES_FILE="${UNIT_DIR}/sources.nix"
+	REQUESTED_PACKAGE=""
 	REQUESTED_VERSION=""
 	FORCE=0
 	REPORT=0
 	COLOR_MODE="auto"
-	RESOLVED_TARGET_FILE=""
-	UUID=""
-	SELECTED_VERSION=""
-	EXTENSION_DATA_UUID=""
-	ARCHIVE_URL=""
-	SHA256=""
+	CHANGED=0
+	RUNTIME_DIR=""
+	STAGING_DIR=""
+	PACKAGES=()
+	declare -gA UUIDS VERSIONS HASHES
 }
 
 parse_args() {
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
-		--file | -f)
+		--package | -p)
 			[[ $# -ge 2 ]] || die "Missing value for $1"
-			TARGET_FILE="$2"
+			REQUESTED_PACKAGE="$2"
 			shift 2
 			;;
 		--version | -v)
@@ -58,11 +52,7 @@ parse_args() {
 			REPORT=1
 			shift
 			;;
-		--ansi)
-			COLOR_MODE="always"
-			shift
-			;;
-		--color)
+		--ansi | --color)
 			COLOR_MODE="always"
 			shift
 			;;
@@ -81,47 +71,36 @@ parse_args() {
 	done
 }
 
-resolve_target_file() {
-	if [[ "$TARGET_FILE" = /* ]]; then
-		RESOLVED_TARGET_FILE="$TARGET_FILE"
-	else
-		RESOLVED_TARGET_FILE="${REPO_ROOT}/$TARGET_FILE"
+load_sources() {
+	local sources_json package
+
+	sources_json="$(nix eval --json --file "$SOURCES_FILE")"
+	mapfile -t PACKAGES < <(jq -er 'keys[]' <<<"$sources_json")
+	for package in "${PACKAGES[@]}"; do
+		UUIDS[$package]="$(jq -er --arg package "$package" '.[$package].uuid' <<<"$sources_json")"
+		VERSIONS[$package]="$(jq -er --arg package "$package" '.[$package].version' <<<"$sources_json")"
+		HASHES[$package]="$(jq -er --arg package "$package" '.[$package].hash' <<<"$sources_json")"
+	done
+}
+
+validate_options() {
+	case "$COLOR_MODE" in
+	auto | always | never) ;;
+	*) die "--color must be one of: auto, always, never" ;;
+	esac
+	if [[ -n "$REQUESTED_PACKAGE" ]] && [[ -z "${VERSIONS[$REQUESTED_PACKAGE]:-}" ]]; then
+		die "Unknown GNOME extension package: $REQUESTED_PACKAGE"
 	fi
-	[[ -f "$RESOLVED_TARGET_FILE" ]] || die "Target file not found: $RESOLVED_TARGET_FILE"
-}
-
-extract_uuid() {
-	UUID="$(sed -nE 's/^[[:space:]]*uuid = "([^"]+)";/\1/p' "$RESOLVED_TARGET_FILE" | head -n1)"
-	[[ -n "$UUID" ]] || die "Could not find uuid in $RESOLVED_TARGET_FILE"
-}
-
-get_current_version() {
-	sed -nE 's/^[[:space:]]*version = "([^"]+)";.*/\1/p' "$RESOLVED_TARGET_FILE" | head -n1
-}
-
-has_current_hash() {
-	grep -Eq '^[[:space:]]*sha256 = "sha256-[^"]+";' "$RESOLVED_TARGET_FILE"
-}
-
-resolve_version() {
-	local info
-
-	if [[ -n "$REQUESTED_VERSION" ]]; then
-		SELECTED_VERSION="$REQUESTED_VERSION"
-		return
+	if [[ -n "$REQUESTED_VERSION" && -z "$REQUESTED_PACKAGE" ]]; then
+		die "--version requires exactly one --package"
 	fi
-
-	info="$(curl -fsSL "https://extensions.gnome.org/extension-info/?uuid=$UUID")"
-	SELECTED_VERSION="$(jq -er '.shell_version_map | to_entries | map(.value.version) | max' <<<"$info")"
-	[[ -n "$SELECTED_VERSION" ]] || die "Could not determine latest version for $UUID"
 }
 
 use_color() {
 	case "$COLOR_MODE" in
-	auto) [[ -t 1 ]] ;;
 	always) return 0 ;;
 	never) return 1 ;;
-	*) die "--color must be one of: auto, always, never" ;;
+	auto) [[ -t 1 ]] ;;
 	esac
 }
 
@@ -134,131 +113,153 @@ print_update_line() {
 	fi
 }
 
-print_report() {
-	local current_version="$1"
-	local name
+latest_version() {
+	local package="$1"
+	local info
 
-	name="$(basename "$RESOLVED_TARGET_FILE" .nix)"
-	if [[ "$current_version" == "$SELECTED_VERSION" ]]; then
-		echo "- ${name}: ${current_version} [latest]"
-	else
-		print_update_line "${name}: ${current_version} -> ${SELECTED_VERSION}"
-	fi
-}
-
-print_no_update() {
-	local current_version="$1"
-	local name
-
-	name="$(basename "$RESOLVED_TARGET_FILE" .nix)"
-	echo "GNOME extension ${name} already at ${current_version}; skipping prefetch."
-	echo "Use --force to recompute hashes for the pinned version."
-}
-
-build_url() {
-	EXTENSION_DATA_UUID="${UUID//@/}"
-	ARCHIVE_URL="https://extensions.gnome.org/extension-data/${EXTENSION_DATA_UUID}.v${SELECTED_VERSION}.shell-extension.zip"
-}
-
-validate_url() {
-	curl -fsI "$ARCHIVE_URL" >/dev/null || die "Extension archive not found: $ARCHIVE_URL"
-}
-
-compute_hash() {
-	SHA256="$(nix store prefetch-file --json --hash-type sha256 --unpack "$ARCHIVE_URL" | jq -r .hash)"
-}
-
-update_file() {
-	sed -E -i \
-		-e "s#(^[[:space:]]*version = \")([0-9]+)(\";)#\\1${SELECTED_VERSION}\\3#" \
-		-e "s#(^[[:space:]]*sha256 = \").*(\";)#\\1${SHA256}\\2#" \
-		"$RESOLVED_TARGET_FILE"
-}
-
-print_summary() {
-	echo "Updated $(basename "$RESOLVED_TARGET_FILE")"
-	echo "  uuid=$UUID"
-	echo "  version=$SELECTED_VERSION"
-	echo "  sha256=$SHA256"
-}
-
-update_extension() {
-	local current_version
-
-	resolve_target_file
-	extract_uuid
-	current_version="$(get_current_version)"
-	resolve_version
-	if ((!FORCE)) && [[ "$current_version" == "$SELECTED_VERSION" ]] && has_current_hash; then
-		print_no_update "$current_version"
+	if [[ -n "$REQUESTED_VERSION" ]]; then
+		echo "$REQUESTED_VERSION"
 		return
 	fi
-	build_url
-	validate_url
-	compute_hash
-	update_file
-	print_summary
+	info="$(curl -fsSL "https://extensions.gnome.org/extension-info/?uuid=${UUIDS[$package]}")"
+	jq -er '.shell_version_map | to_entries | map(.value.version) | max' <<<"$info"
 }
 
-report_extension() {
-	local current_version
+archive_url() {
+	local package="$1"
+	local version="$2"
+	local extension_data_uuid="${UUIDS[$package]//@/}"
 
-	resolve_target_file
-	extract_uuid
-	current_version="$(get_current_version)"
-	[[ -n "$current_version" ]] || die "Could not find version in $RESOLVED_TARGET_FILE"
-	resolve_version
-	print_report "$current_version"
+	echo "https://extensions.gnome.org/extension-data/${extension_data_uuid}.v${version}.shell-extension.zip"
+}
+
+update_package() {
+	local package="$1"
+	local current latest url hash
+
+	current="${VERSIONS[$package]}"
+	latest="$(latest_version "$package")"
+	if ((REPORT)); then
+		if [[ "$current" == "$latest" ]]; then
+			echo "- ${package}: ${current} [latest]"
+		else
+			print_update_line "${package}: ${current} -> ${latest}"
+		fi
+		return
+	fi
+	if [[ "$current" == "$latest" ]] && ((!FORCE)); then
+		echo "${package} already at ${current}; skipping prefetch."
+		return
+	fi
+
+	url="$(archive_url "$package" "$latest")"
+	curl -fsI "$url" >/dev/null || die "Extension archive not found: $url"
+	hash="$(nix store prefetch-file --json --hash-type sha256 --unpack "$url" | jq -er .hash)"
+	VERSIONS[$package]="$latest"
+	HASHES[$package]="$hash"
+	CHANGED=1
+	print_update_line "${package}: ${current} -> ${latest}"
+}
+
+render_sources() {
+	local package
+
+	echo "{"
+	for package in "${PACKAGES[@]}"; do
+		cat <<EOF
+  ${package} = {
+    kind = "gnome-extension";
+    uuid = "${UUIDS[$package]}";
+    version = "${VERSIONS[$package]}";
+    hash = "${HASHES[$package]}";
+  };
+
+EOF
+	done
+	echo "}"
+}
+
+write_staged_sources() {
+	local next_file="${STAGING_DIR}/sources.next.nix"
+
+	render_sources >"$next_file"
+	alejandra "$next_file" >/dev/null
+	chmod 0644 "$next_file"
+	mv "$next_file" "${STAGING_DIR}/sources.nix"
+}
+
+validate_staged_packages() {
+	local package
+
+	for package in "${PACKAGES[@]}"; do
+		[[ -n "$REQUESTED_PACKAGE" && "$package" != "$REQUESTED_PACKAGE" ]] && continue
+		nix build --impure --no-link --expr "
+      let
+        flake = builtins.getFlake \"${REPO_ROOT}\";
+        pkgs = import flake.inputs.nixpkgs { system = builtins.currentSystem; };
+      in
+        pkgs.callPackage ${STAGING_DIR}/${package}.nix {}
+    " >/dev/null
+	done
+}
+
+init_staging() {
+	mkdir -p "${REPO_ROOT}/tmp"
+	RUNTIME_DIR="$(mktemp -d "${REPO_ROOT}/tmp/update-gnome-ext.XXXXXX")"
+	STAGING_DIR="${RUNTIME_DIR}/gnome-ext"
+	cp -R "$UNIT_DIR" "$STAGING_DIR"
+}
+
+cleanup() {
+	if [[ -n "${RUNTIME_DIR:-}" && -d "$RUNTIME_DIR" ]]; then
+		find "$RUNTIME_DIR" -depth -delete
+	fi
 }
 
 ensure_runtime_shell() {
 	local runtime_shell_flag="${UPDATE_GNOME_EXT_IN_NIX_SHELL:-0}"
-	local script_path
-	local flake_path
+	local script_path flake_path
 	local -a runtime_packages=(
+		nixpkgs#alejandra
 		nixpkgs#coreutils
 		nixpkgs#curl
-		nixpkgs#gnused
 		nixpkgs#jq
 	)
 
-	if [ "$runtime_shell_flag" = "1" ]; then
+	if [[ "$runtime_shell_flag" == "1" ]]; then
 		return
 	fi
-
-	if ! command -v nix >/dev/null 2>&1; then
-		die "Required command not found: nix"
-	fi
-
+	command -v nix >/dev/null 2>&1 || die "Required command not found: nix"
 	script_path="${BASH_SOURCE[0]:-$0}"
-	flake_path="$(cd "$(dirname "${script_path}")/../../.." && pwd -P)"
-	exec nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env UPDATE_GNOME_EXT_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+	flake_path="$(cd "$(dirname "$script_path")/../../.." && pwd -P)"
+	exec nix --quiet --no-warn-dirty shell --inputs-from "$flake_path" \
+		"${runtime_packages[@]}" -c env UPDATE_GNOME_EXT_IN_NIX_SHELL=1 bash "$script_path" "$@"
 }
 
 main() {
-	local file
+	local package
 
 	ensure_runtime_shell "$@"
 	init_vars
 	parse_args "$@"
-
-	if [[ -n "$TARGET_FILE" ]]; then
-		if ((REPORT)); then
-			report_extension
-			return
-		fi
-		update_extension
-		return
+	load_sources
+	validate_options
+	if ((!REPORT)); then
+		init_staging
+		trap cleanup EXIT
 	fi
 
-	for file in "${DEFAULT_FILES[@]}"; do
-		TARGET_FILE="$file"
-		if ((REPORT)); then
-			report_extension
-		else
-			update_extension
-		fi
+	for package in "${PACKAGES[@]}"; do
+		[[ -n "$REQUESTED_PACKAGE" && "$package" != "$REQUESTED_PACKAGE" ]] && continue
+		update_package "$package"
 	done
+	if ((CHANGED)); then
+		write_staged_sources
+		validate_staged_packages
+		mv "${STAGING_DIR}/sources.nix" "$SOURCES_FILE"
+	elif ((!REPORT)); then
+		echo "No GNOME extension updates."
+	fi
 }
 
 main "$@"

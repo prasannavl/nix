@@ -8,7 +8,7 @@ Examples:
   lib/ext/vscode/update.sh
   lib/ext/vscode/update.sh --version 1.112.0
   lib/ext/vscode/update.sh --force
-  lib/ext/vscode/update.sh --file lib/ext/vscode/default.nix
+  lib/ext/vscode/update.sh --file lib/ext/vscode/sources.nix
 EOF
 }
 
@@ -19,7 +19,7 @@ die() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
-	TARGET_FILE="${REPO_ROOT}/lib/ext/vscode/default.nix"
+	TARGET_FILE="${REPO_ROOT}/lib/ext/vscode/sources.nix"
 	REQUESTED_VERSION=""
 	FORCE=0
 	REPORT=0
@@ -248,125 +248,38 @@ compute_hashes() {
 render_file() {
 	cat <<EOF
 {
-  pkgs,
-  commandLineArgs ? "",
-  ...
-}: let
-  version = "${RESOLVED_VERSION}";
-  inherit (pkgs.stdenv.hostPlatform) system;
-  throwSystem = throw "Unsupported system for vscode-upstream: \${system}";
-  plat =
-    {
-      x86_64-linux = "linux-x64";
-      aarch64-linux = "linux-arm64";
-      aarch64-darwin = "darwin-arm64";
-    }
-    .\${
-      system
-    } or throwSystem;
-  srcName =
-    {
+  vscode = {
+    kind = "vscode-stable";
+    version = "${RESOLVED_VERSION}";
+    rev = "${RESOLVED_REV}";
+    srcNames = {
       x86_64-linux = "${X64_SRC_NAME}";
       aarch64-linux = "${ARM64_SRC_NAME}";
       aarch64-darwin = "${DARWIN_ARM64_SRC_NAME}";
-    }
-    .\${
-      system
-    } or throwSystem;
-  srcHash =
-    {
+    };
+    srcHashes = {
       x86_64-linux = "${X64_SRC_HASH}";
       aarch64-linux = "${ARM64_SRC_HASH}";
       aarch64-darwin = "${DARWIN_ARM64_SRC_HASH}";
-    }
-    .\${
-      system
-    } or throwSystem;
-  serverPlat = {
-    x86_64-linux = "server-linux-x64";
-    aarch64-linux = "server-linux-arm64";
-    aarch64-darwin = "server-darwin-arm64";
-  };
-  serverName = {
-    x86_64-linux = "${X64_SERVER_NAME}";
-    aarch64-linux = "${ARM64_SERVER_NAME}";
-    aarch64-darwin = "${DARWIN_ARM64_SERVER_NAME}";
-  };
-  serverHash = {
-    x86_64-linux = "${X64_SERVER_HASH}";
-    aarch64-linux = "${ARM64_SERVER_HASH}";
-    aarch64-darwin = "${DARWIN_ARM64_SERVER_HASH}";
-  };
-  rev = "${RESOLVED_REV}";
-  # VS Code now vendors ripgrep under @vscode/ripgrep-universal; keep the
-  # package patch aligned so search keeps working after upstream updates.
-  ripgrepPath =
-    {
-      x86_64-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-x64/rg";
-      aarch64-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-arm64/rg";
-      aarch64-darwin = "Contents/Resources/app/node_modules/@vscode/ripgrep-universal/bin/darwin-arm64/rg";
-    }
-    .\${
-      system
-    } or throwSystem;
-in
-  (pkgs.unstable.vscode.override {
-    inherit commandLineArgs;
-  })
-  .overrideAttrs (old: let
-    vscodeServers =
-      pkgs.lib.mapAttrs
-      (serverSystem: serverArchiveName:
-        pkgs.srcOnly {
-          name = "\${serverArchiveName}-\${rev}";
-          src = pkgs.fetchurl {
-            name = serverArchiveName;
-            url = "https://update.code.visualstudio.com/commit:\${rev}/\${serverPlat.\${serverSystem}}/stable";
-            hash = serverHash.\${serverSystem};
-          };
-          stdenv = pkgs.stdenvNoCC;
-        })
-      serverName;
-  in {
-    inherit rev version;
-    passthru =
-      old.passthru
-      // {
-        vscodeVersion = version;
-        inherit vscodeServers;
-      };
-    src = pkgs.fetchurl {
-      name = srcName;
-      url = "https://update.code.visualstudio.com/commit:\${rev}/\${plat}/stable";
-      hash = srcHash;
     };
-    buildInputs =
-      (old.buildInputs or [])
-      ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
-        pkgs.libei
-        pkgs.libjpeg8.out
-        pkgs.libxtst
-        pkgs.pipewire
-      ];
-    autoPatchelfIgnoreMissingDeps =
-      (old.autoPatchelfIgnoreMissingDeps or [])
-      ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
-        "libc.musl-x86_64.so.1"
-        "libc.musl-aarch64.so.1"
-        "libc.musl-armv7.so.1"
-      ];
-    postPatch = builtins.replaceStrings ["resources/app/node_modules/@vscode/ripgrep/bin/rg"] [ripgrepPath] (old.postPatch or "");
-    vscodeServer = vscodeServers.x86_64-linux;
-  })
+    serverHashes = {
+      x86_64-linux = "${X64_SERVER_HASH}";
+      aarch64-linux = "${ARM64_SERVER_HASH}";
+      aarch64-darwin = "${DARWIN_ARM64_SERVER_HASH}";
+    };
+  };
+}
 EOF
 }
 
 update_file() {
 	mkdir -p "${REPO_ROOT}/tmp"
 	local tmp_file
-	tmp_file="$(mktemp "${REPO_ROOT}/tmp/update-vscode.XXXXXX")"
+	tmp_file="$(mktemp --suffix=.nix "${REPO_ROOT}/tmp/update-vscode.XXXXXX")"
 
 	render_file >"$tmp_file"
+	alejandra "$tmp_file" >/dev/null
+	chmod 0644 "$tmp_file"
 	mv "$tmp_file" "$RESOLVED_TARGET_FILE"
 }
 
@@ -404,6 +317,7 @@ ensure_runtime_shell() {
 	local script_path
 	local flake_path
 	local -a runtime_packages=(
+		nixpkgs#alejandra
 		nixpkgs#coreutils
 		nixpkgs#curl
 		nixpkgs#gawk

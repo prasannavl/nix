@@ -8,9 +8,9 @@
   lib,
   nodejs_24,
 }: let
+  source = (import ./sources.nix).bulwarkmail;
   pname = "bulwarkmail";
-  version = "1.7.5";
-  rev = "de56229ef29cf87f620ad49de397941bf405834f";
+  inherit (source) version rev;
   shortRev = builtins.substring 0 12 rev;
   patchHash = builtins.substring 0 12 (builtins.hashString "sha256" ''
     ${builtins.readFile ./calendar-organizer-attendee-shape.patch}
@@ -27,7 +27,7 @@
     owner = "bulwarkmail";
     repo = "webmail";
     inherit rev;
-    hash = "sha256-2N9Y4AMMXjXzXU+VWN6cQq0BGpIERfPGJmI0L9WbTtg=";
+    hash = source.srcHash;
   };
 
   patches = [
@@ -48,7 +48,7 @@
   npmDeps = fetchNpmDeps {
     name = "${pname}-${version}-npm-deps";
     inherit src patches postPatch;
-    hash = "sha256-ffXwwvyodHRLpQ0B4M8tJHnes8KtAfX9fLsyZL68+KQ=";
+    hash = source.npmDepsHash;
 
     # prefetch-npm-deps otherwise fans out to every builder core. Large parallel
     # HTTP/2 batches intermittently fail against registry.npmjs.org with curl

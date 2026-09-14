@@ -3,19 +3,19 @@
   tailscale,
   ...
 }: let
-  version = "1.102.4";
+  source = (import ./sources.nix).tailscale;
 in
   tailscale.overrideAttrs (finalAttrs: old: {
-    version = version;
+    version = source.version;
 
     src = pkgs.fetchFromGitHub {
       owner = "tailscale";
       repo = "tailscale";
-      tag = "v${version}";
-      hash = "sha256-PCCkzNvV9AK1AM5UhM97roSctctvFfwUw5QhKB64n00=";
+      tag = "${source.tagPrefix}${source.version}";
+      hash = source.srcHash;
     };
 
-    vendorHash = "sha256-amKkUPszyhG4N5ZtrB01swBACYq76raSS+SQRneLmwc=";
+    vendorHash = source.vendorHash;
 
     ldflags =
       builtins.map

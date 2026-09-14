@@ -10,9 +10,8 @@
   rustPlatform,
   stdenvNoCC,
 }: let
-  version = "0.16.11";
-  rev = "v${version}";
-  upstreamCommit = "0b520b6334379ac64d2d95a37f53e209c89e9577";
+  source = (import ./sources.nix).stalwart-server;
+  inherit (source) version rev upstreamCommit;
   patchHash = builtins.substring 0 12 (builtins.hashString "sha256" ''
     ${builtins.readFile ./bind-auth-dn-template.patch}
     ${builtins.readFile ./imap-starttls-auth.patch}
@@ -34,10 +33,9 @@
   imageRef = "${imageName}:${imageTag}";
 
   src = fetchFromGitHub {
-    owner = "stalwartlabs";
-    repo = "stalwart";
+    inherit (source) owner repo;
     inherit rev;
-    hash = "sha256-0A8IjetGV4h4qdpm44eZb0sNQ4abulb2+VUAeYWItT0=";
+    hash = source.srcHash;
   };
 
   patches = [
@@ -61,7 +59,7 @@
   commonRustAttrs = {
     pname = "stalwart-server";
     inherit version src;
-    cargoHash = "sha256-OpoQzNNm5JUrnk1tRZL9JUpDQnGH73Lj6SW52gSthl0=";
+    cargoHash = source.cargoHash;
     nativeBuildInputs = [
       cmake
       llvmPackages.libclang
@@ -97,10 +95,10 @@
 
   upstreamImage = dockerTools.pullImage {
     imageName = "stalwartlabs/stalwart";
-    imageDigest = "sha256:5ed90ea664cca8eb0058927b8c528abcb9c2c9990e73ccfd3218606555618082";
+    imageDigest = source.imageDigest;
     finalImageName = "stalwartlabs/stalwart";
     finalImageTag = "v${version}";
-    hash = "sha256-gWBtmPLkrgJTS49Sp5eSzfZYegDFgLLL4KT1s7J7IqY=";
+    hash = source.imageHash;
   };
 
   serverLayer = stdenvNoCC.mkDerivation {
@@ -169,7 +167,7 @@ in
         upstreamCommit
         version
         ;
-      upstreamImageDigest = "sha256:5ed90ea664cca8eb0058927b8c528abcb9c2c9990e73ccfd3218606555618082";
+      upstreamImageDigest = source.imageDigest;
     };
 
     meta = {
