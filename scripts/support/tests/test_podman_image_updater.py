@@ -112,6 +112,20 @@ class PodmanImageUpdaterTest(unittest.TestCase):
 
         self.assertEqual(latest, "2.14.3")
 
+    def test_nginx_updates_within_even_minor_stable_releases(self):
+        with mock.patch.object(
+            podman_image_updater,
+            "registry_tags",
+            return_value=["1.30.3", "1.30.4", "1.31.5", "1.30.4-alpine"],
+        ):
+            latest = podman_image_updater.latest_known_tag(
+                "registry-1.docker.io",
+                "library/nginx",
+                "1.30.3",
+            )
+
+        self.assertEqual(latest, "1.30.4")
+
     def test_timescale_pg_tag_compares_within_pg_major(self):
         latest = podman_image_updater.latest_comparable_tag(
             "pg18.4-ts2.28.1",

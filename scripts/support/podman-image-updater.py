@@ -28,6 +28,10 @@ RELEASE_TAG_REPOSITORIES = {
         "v",
     ),
 }
+EVEN_MINOR_STABLE_REPOSITORIES = {
+    ("registry-1.docker.io", "library/nginx"),
+    ("docker.io", "library/nginx"),
+}
 IMAGE_DECLARATION_RE = re.compile(
     r'^\s*(?:(?:[A-Za-z0-9_.-]+\.)?image|["\']image["\'])\s*[:=]'
 )
@@ -524,6 +528,21 @@ def latest_comparable_tag(current, tags):
     return latest_tag
 
 
+def repository_tags_for_policy(registry, repository, tags):
+    if (registry, repository) not in EVEN_MINOR_STABLE_REPOSITORIES:
+        return tags
+
+    stable_tags = []
+    for tag in tags:
+        match = VERSION_RE.match(tag)
+        if not match or match.group(2):
+            continue
+        parts = version_parts(match.group(1))
+        if len(parts) >= 2 and parts[1] % 2 == 0:
+            stable_tags.append(tag)
+    return stable_tags
+
+
 def is_variable_tag(tag):
     return "$" in tag
 
@@ -564,7 +583,12 @@ def latest_known_tag(registry, repository, tag):
     release_tag = latest_release_tag(registry, repository)
     if release_tag is not None:
         return latest_comparable_tag(tag, [release_tag])
-    return latest_comparable_tag(tag, registry_tags(registry, repository))
+    tags = repository_tags_for_policy(
+        registry,
+        repository,
+        registry_tags(registry, repository),
+    )
+    return latest_comparable_tag(tag, tags)
 
 
 def inspect_image(ref):

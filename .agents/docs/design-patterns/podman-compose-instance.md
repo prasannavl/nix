@@ -103,6 +103,10 @@ the resulting declarative diff before deployment. Registry-specific release
 feeds may be used where anonymous registry tag listing is unavailable, but the
 resulting tag must retain the registry's tag shape.
 
+Repository-specific channel policies must also preserve an explicitly selected
+release track. The shared NGINX image follows upstream's even-minor stable
+releases and must not advance to an odd-minor mainline release.
+
 ### Rootless ID-map convergence
 
 Treat the per-user rootless ID-map unit as an active start gate, not as a reason
