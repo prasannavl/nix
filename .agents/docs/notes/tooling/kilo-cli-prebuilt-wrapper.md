@@ -9,7 +9,7 @@ Date: 2026-09-13
 kilo-console, kilo-gateway, ...) and failed on every remote host during pvl-a1's
 Nix build:
 
-```
+```console
 > building Kilo Console
 > $ vite build
 > .../kilo-console/node_modules/.bin/vite: /usr/bin/env: bad interpreter
@@ -39,7 +39,7 @@ The repo already installs the `kilocode.kilo-code` VS Code extension
 (`users/pvl/vscode/default.nix`). That extension package ships a prebuilt,
 self-contained Bun AOT `kilo` binary at:
 
-```
+```text
 <ext>/share/vscode/extensions/kilocode.kilo-code/bin/kilo
 ```
 
