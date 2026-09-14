@@ -15,6 +15,7 @@ in rec {
     ./bash
     ./inputrc
     ./dotfiles
+    ./pi
   ];
   core = mkModule coreModules;
 
@@ -41,6 +42,7 @@ in rec {
     ./git
     ./ranger
     ./vscode
+    ./pi
     ./direnv
     ./xdg-user-dirs
     ./env/cargo.nix
@@ -53,6 +55,7 @@ in rec {
     ./inputrc
     ./dotfiles
     ./neovim
+    ./pi
   ];
   lxc = mkModule lxcModules;
 }
