@@ -1,15 +1,16 @@
 {pkgs ? import <nixpkgs> {}}: let
   pname = "pi-tps";
-  version = "1.0.1";
+  source = (builtins.fromJSON (builtins.readFile ../sources.json)).${pname};
 in
   pkgs.stdenvNoCC.mkDerivation {
-    inherit pname version;
+    inherit pname;
+    inherit (source) version;
 
     src = pkgs.fetchFromGitHub {
       owner = "summertime-wu";
       repo = "pi-tps";
-      rev = "a769402bb27232a3875b9d9ec2df08a0c85d227c";
-      hash = "sha256-3NqPujlpb2KRWehdK17k4YCP4G+eLCnP9EWZYM5IAEY=";
+      inherit (source) rev;
+      hash = source.srcHash;
     };
 
     postPatch = ''

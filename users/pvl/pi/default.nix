@@ -2,11 +2,11 @@
   nixos = {...}: {};
 
   home = {pkgs, ...}: let
-    piModelsDiscovery = pkgs.callPackage ./packages/pi-models-discovery {};
-    piSessionManager = pkgs.callPackage ./packages/pi-session-manager {};
-    piSubagents = pkgs.callPackage ./packages/pi-subagents {};
-    piTps = pkgs.callPackage ./packages/pi-tps {};
-    piWeb = pkgs.callPackage ./packages/pi-web {};
+    piModelsDiscovery = pkgs.callPackage ../../../lib/ext/pi/pi-models-discovery {};
+    piSessionManager = pkgs.callPackage ../../../lib/ext/pi/pi-session-manager {};
+    piSubagents = pkgs.callPackage ../../../lib/ext/pi/pi-subagents {};
+    piTps = pkgs.callPackage ../../../lib/ext/pi/pi-tps {};
+    piWeb = pkgs.callPackage ../../../lib/ext/pi/pi-web {};
     piModelsDiscoveryRoot = "${piModelsDiscovery}/share/pi/packages/pi-models-discovery";
     piSessionManagerRoot = "${piSessionManager}/share/pi/packages/pi-session-manager";
     piSubagentsRoot = "${piSubagents}/lib/node_modules/pi-subagents";

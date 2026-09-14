@@ -7,18 +7,41 @@ of Pi's writable `~/.pi/agent/settings.json`.
 
 ## Package layout
 
-The Pi executable selection and all extension dependencies are private
-implementation details of the Pvl Pi module. The local extension and web
-derivations therefore live under `users/pvl/pi/packages/` and are called
-directly by `users/pvl/pi/default.nix`. They are not exported from the root
-package manifest or injected into the global package set.
+The Pi executable selection and resource installation are private implementation
+details of the Pvl Pi module. External extension and web package pins live under
+`lib/ext/pi/`, where the repository maintenance entrypoint can discover their
+shared updater. `users/pvl/pi/default.nix` calls those derivations directly;
+they are not exported from the root package manifest or injected into the global
+package set.
 
 The module installs `pkgs.unstable.pi-coding-agent` directly, keeping the Pi
 version choice local instead of replacing `pkgs.pi-coding-agent` through the
-shared unstable overlay. `lib/ext/` remains the home of derivations consumed by
-repo overlays, while `pkgs/ext/` is appropriate for independently exported root
-packages. If another consumer needs these Pi packages later, promote them into
-`pkgs/` and register them in `pkgs/manifest.nix`.
+shared unstable overlay. `lib/ext/` owns externally maintained overlay and
+maintenance derivations, while `pkgs/ext/` remains appropriate for independently
+exported root packages. If another consumer needs root package exports later,
+promote the Pi derivations into `pkgs/` and register them in
+`pkgs/manifest.nix`.
+
+## Updates
+
+`lib/ext/pi/sources.json` is the single machine-maintained source of versions,
+upstream revisions, source hashes, release hashes, and npm dependency hashes for
+all five packages. The executable `lib/ext/pi/update.sh` participates in the
+standard maintenance interface as the `pi` extension updater:
+
+```console
+scripts/update.sh --report --only-ext-pi
+scripts/update.sh --only-ext-pi
+lib/ext/pi/update.sh --package pi-web
+```
+
+The updater reads current npm metadata, resolves npm-published Git commits or
+release archives as appropriate, recomputes fixed-output hashes, and rebuilds
+each changed package in a repository-local staging directory. It replaces
+`sources.json` only after every requested package validates, so a failed update
+does not leave partially updated pins. Use repeated `--package` flags for a
+subset, `--version` with one package for an explicit version, or `--force` to
+recompute the current version.
 
 ## Ownership
 
@@ -84,14 +107,14 @@ control upgrades.
 
 ## Validation
 
-Build all module-local packages and evaluate the affected Home Manager profiles:
+Build all external Pi packages and evaluate the affected Home Manager profiles:
 
 ```console
-nix-build users/pvl/pi/packages/pi-models-discovery --no-out-link
-nix-build users/pvl/pi/packages/pi-session-manager --no-out-link
-nix-build users/pvl/pi/packages/pi-subagents --no-out-link
-nix-build users/pvl/pi/packages/pi-tps --no-out-link
-nix-build users/pvl/pi/packages/pi-web --no-out-link
+nix-build lib/ext/pi/pi-models-discovery --no-out-link
+nix-build lib/ext/pi/pi-session-manager --no-out-link
+nix-build lib/ext/pi/pi-subagents --no-out-link
+nix-build lib/ext/pi/pi-tps --no-out-link
+nix-build lib/ext/pi/pi-web --no-out-link
 nix eval .#nixosConfigurations.pvl-a1.config.system.build.toplevel.drvPath --raw
 nix eval .#nixosConfigurations.pvl-l5.config.system.build.toplevel.drvPath --raw
 nix eval .#nixosConfigurations.pvl-x2.config.system.build.toplevel.drvPath --raw

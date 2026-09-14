@@ -1,13 +1,14 @@
 {pkgs ? import <nixpkgs> {}}: let
   pname = "pi-session-manager";
-  version = "0.1.0";
+  source = (builtins.fromJSON (builtins.readFile ../sources.json)).${pname};
 in
   pkgs.stdenvNoCC.mkDerivation {
-    inherit pname version;
+    inherit pname;
+    inherit (source) version;
 
     src = pkgs.fetchzip {
-      url = "https://registry.npmjs.org/${pname}/-/${pname}-${version}.tgz";
-      hash = "sha256-fOYQP9MgRiWQPkVqrgpiV4fhUoraqGc14wcINJo6GJU=";
+      url = "https://registry.npmjs.org/${pname}/-/${pname}-${source.version}.tgz";
+      hash = source.srcHash;
     };
 
     postPatch = ''

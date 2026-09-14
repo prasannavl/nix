@@ -1,15 +1,16 @@
 {pkgs ? import <nixpkgs> {}}: let
   pname = "pi-models-discovery";
-  version = "1.2.0";
+  source = (builtins.fromJSON (builtins.readFile ../sources.json)).${pname};
 in
   pkgs.stdenvNoCC.mkDerivation {
-    inherit pname version;
+    inherit pname;
+    inherit (source) version;
 
     src = pkgs.fetchFromGitHub {
       owner = "maplezzk";
       repo = "pi-extensions";
-      rev = "00bcad50f3e29865efcc8ae13be19bedd16206e0";
-      hash = "sha256-rq4GpokUe6WTe9N89P7cWZT4AyHeHXSfPZGXWerrxr0=";
+      inherit (source) rev;
+      hash = source.srcHash;
     };
 
     dontBuild = true;

@@ -1,19 +1,20 @@
 {pkgs ? import <nixpkgs> {}}: let
   pname = "pi-web";
-  version = "0.9.1";
+  source = (builtins.fromJSON (builtins.readFile ../sources.json)).${pname};
   releaseSource = pkgs.fetchFromGitHub {
     owner = "agegr";
     repo = "pi-web";
-    rev = "v${version}";
-    hash = "sha256-fuuFKezb58lO2P1t3yHIkHPnBe8D8es6TTsqOy7UL7w=";
+    rev = "v${source.version}";
+    hash = source.releaseHash;
   };
 in
   pkgs.buildNpmPackage {
-    inherit pname version;
+    inherit pname;
+    inherit (source) version;
 
     src = pkgs.fetchzip {
-      url = "https://registry.npmjs.org/@agegr/${pname}/-/${pname}-${version}.tgz";
-      hash = "sha256-JRINZkuuU3u453EH+aL+UOK/9dzk46yKadxYAy6d6JM=";
+      url = "https://registry.npmjs.org/@agegr/${pname}/-/${pname}-${source.version}.tgz";
+      hash = source.srcHash;
     };
 
     postPatch = ''
@@ -21,7 +22,7 @@ in
     '';
 
     npmDepsFetcherVersion = 2;
-    npmDepsHash = "sha256-309IHTP/YC0OU8Z4SNUBksRbVFCUAhKsQjl3ef3d034=";
+    inherit (source) npmDepsHash;
 
     dontNpmBuild = true;
 

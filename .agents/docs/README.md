@@ -57,9 +57,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   Linux auto-patchelf library inputs needed by VS Code 1.125.1's bundled Copilot
   native `computer.node` module.
 - `.agents/docs/notes/apps/pi-coding-agent-extensions-2026-09.md`: Records the
-  module-local Pi package layout, declarative extension resources, mutable-state
-  ownership boundaries, Pi Web CLI installation, and Pi 0.85.1 compatibility
-  requirement.
+  Pi installation and `lib/ext/pi` update ownership, declarative extension
+  resources, mutable-state boundaries, Pi Web CLI installation, and Pi 0.85.1
+  compatibility requirement.
 
 ### Hosts
 
