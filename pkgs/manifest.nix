@@ -13,6 +13,7 @@
       path = ./tools/codex-wrapper/default.nix;
       apps.cr = [];
     };
+    kilo-cli = ./tools/kilo-cli/default.nix;
     nats-wrecking-ball = ./tools/nats-wrecking-ball/default.nix;
     nats-http-bridge = ./support/nats-http-bridge/default.nix;
     nats-streams = ./support/nats-streams/default.nix;

@@ -141,8 +141,9 @@ in {
     # AI
     jan
     claude-code
-    llm-agents-pkgs.claude-desktop
+    kilo-cli
     llm-agents-pkgs.chatgpt
+    llm-agents-pkgs.claude-desktop
 
     # Custom packages
     (python3.withPackages (ps: with ps; [pip setuptools virtualenv numpy]))

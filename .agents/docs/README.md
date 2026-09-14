@@ -583,6 +583,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/codex-wrapper-auth-2026-06.md`: Records the local
   `cr`/`cra` Codex wrapper shortcuts for unrestricted mode and numbered
   auth-slot switching.
+- `.agents/docs/notes/tooling/kilo-cli-prebuilt-wrapper.md`: Records why the
+  repo avoids the broken nixpkgs-`unstable` `kilo` (7.3.40) source build (vite
+  `bad interpreter` in the sandbox) and instead ships the prebuilt `kilo` binary
+  from the kilo-code VS Code extension via `pkgs.kilo-cli`.
 - `.agents/docs/notes/tooling/dotfiles-sync-timer-2026-06.md`: Records why the
   dotfiles sync user timer stopped scheduling after a failed first clone, and
   the calendar-timer replacement.
