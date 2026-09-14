@@ -32,6 +32,10 @@ EVEN_MINOR_STABLE_REPOSITORIES = {
     ("registry-1.docker.io", "library/nginx"),
     ("docker.io", "library/nginx"),
 }
+SAME_MAJOR_REPOSITORIES = {
+    ("registry-1.docker.io", "library/postgres"),
+    ("docker.io", "library/postgres"),
+}
 IMAGE_DECLARATION_RE = re.compile(
     r'^\s*(?:(?:[A-Za-z0-9_.-]+\.)?image|["\']image["\'])\s*[:=]'
 )
@@ -528,19 +532,32 @@ def latest_comparable_tag(current, tags):
     return latest_tag
 
 
-def repository_tags_for_policy(registry, repository, tags):
-    if (registry, repository) not in EVEN_MINOR_STABLE_REPOSITORIES:
-        return tags
+def repository_tags_for_policy(registry, repository, current, tags):
+    repository_key = (registry, repository)
+    filtered_tags = tags
 
-    stable_tags = []
-    for tag in tags:
-        match = VERSION_RE.match(tag)
-        if not match or match.group(2):
-            continue
-        parts = version_parts(match.group(1))
-        if len(parts) >= 2 and parts[1] % 2 == 0:
-            stable_tags.append(tag)
-    return stable_tags
+    if repository_key in EVEN_MINOR_STABLE_REPOSITORIES:
+        filtered_tags = []
+        for tag in tags:
+            match = VERSION_RE.match(tag)
+            if not match or match.group(2):
+                continue
+            parts = version_parts(match.group(1))
+            if len(parts) >= 2 and parts[1] % 2 == 0:
+                filtered_tags.append(tag)
+
+    if repository_key in SAME_MAJOR_REPOSITORIES:
+        current_match = VERSION_RE.match(current)
+        if current_match:
+            current_major = version_parts(current_match.group(1))[0]
+            filtered_tags = [
+                tag
+                for tag in filtered_tags
+                if (match := VERSION_RE.match(tag))
+                and version_parts(match.group(1))[0] == current_major
+            ]
+
+    return filtered_tags
 
 
 def is_variable_tag(tag):
@@ -586,6 +603,7 @@ def latest_known_tag(registry, repository, tag):
     tags = repository_tags_for_policy(
         registry,
         repository,
+        tag,
         registry_tags(registry, repository),
     )
     return latest_comparable_tag(tag, tags)

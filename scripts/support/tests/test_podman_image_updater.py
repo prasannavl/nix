@@ -126,6 +126,20 @@ class PodmanImageUpdaterTest(unittest.TestCase):
 
         self.assertEqual(latest, "1.30.4")
 
+    def test_postgres_preserves_selected_major_release_track(self):
+        with mock.patch.object(
+            podman_image_updater,
+            "registry_tags",
+            return_value=["16-alpine", "17-alpine", "18-alpine"],
+        ):
+            latest = podman_image_updater.latest_known_tag(
+                "docker.io",
+                "library/postgres",
+                "16-alpine",
+            )
+
+        self.assertEqual(latest, "16-alpine")
+
     def test_timescale_pg_tag_compares_within_pg_major(self):
         latest = podman_image_updater.latest_comparable_tag(
             "pg18.4-ts2.28.1",

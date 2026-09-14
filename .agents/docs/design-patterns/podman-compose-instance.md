@@ -105,7 +105,9 @@ resulting tag must retain the registry's tag shape.
 
 Repository-specific channel policies must also preserve an explicitly selected
 release track. The shared NGINX image follows upstream's even-minor stable
-releases and must not advance to an odd-minor mainline release.
+releases and must not advance to an odd-minor mainline release. The official
+PostgreSQL image stays within its declared major release because crossing a
+major requires an explicit data migration.
 
 ### Rootless ID-map convergence
 
