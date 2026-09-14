@@ -3,7 +3,7 @@
   tailscale,
   ...
 }: let
-  version = "1.102.3";
+  version = "1.102.4";
 in
   tailscale.overrideAttrs (finalAttrs: old: {
     version = version;
@@ -12,7 +12,7 @@ in
       owner = "tailscale";
       repo = "tailscale";
       tag = "v${version}";
-      hash = "sha256-NzWuMhLCqewkH/vwyfRND8yEubRmUSXe/TYA2ldhFl8=";
+      hash = "sha256-PCCkzNvV9AK1AM5UhM97roSctctvFfwUw5QhKB64n00=";
     };
 
     vendorHash = "sha256-amKkUPszyhG4N5ZtrB01swBACYq76raSS+SQRneLmwc=";
