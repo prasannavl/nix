@@ -97,6 +97,12 @@
     codex-wrapper
     github-copilot-cli
     opencode
+    qwen-code
+    unstable.llama-cpp
+    unstable.llama-cpp-rocm
+    unstable.llama-cpp-cuda
+    unstable.llama-cpp-vulkan
+    python314Packages.huggingface-hub
   ];
 
   programs = {
