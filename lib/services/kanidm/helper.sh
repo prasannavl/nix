@@ -429,21 +429,6 @@ auto_apply_stamp_matches() {
 	[ "$current_stamp" = "$desired_stamp" ]
 }
 
-auto_apply_legacy_stamp_exists() {
-	local command stamp_file
-	command="$1"
-	stamp_file="$2"
-
-	case "$command" in
-	apply-system | apply-idm)
-		;;
-	*)
-		return 1
-		;;
-	esac
-	[ -s "$stamp_file" ]
-}
-
 record_auto_apply_stamp() {
 	local stamp_file desired_stamp tmp_file
 	stamp_file="$1"
@@ -1081,6 +1066,14 @@ apply_oauth_app() {
 		run system oauth2 warning-insecure-client-disable-pkce "$name"
 	fi
 
+	if [ "$type" = public ]; then
+		if [ "$(jq -r '.allowLocalhostRedirects // false' <<<"$client")" = true ]; then
+			run system oauth2 enable-localhost-redirects "$name"
+		else
+			run system oauth2 disable-localhost-redirects "$name"
+		fi
+	fi
+
 	while IFS=$'\t' read -r group scopes_json; do
 		[ -n "$group" ] || continue
 		mapfile -d '' -t scopes < <(jq -r '.[]' <<<"$scopes_json" | while IFS= read -r scope; do printf '%s\0' "$scope"; done)
@@ -1274,6 +1267,12 @@ verify_oauth_app() {
 	if ! jq -e 'type == "object" and (.attrs | type == "object")' <<<"$live" >/dev/null; then
 		verify_fail "oauth app $name missing"
 		return 0
+	fi
+
+	if ! jq -e --argjson expected "$(jq '.allowLocalhostRedirects // false' <<<"$client")" \
+		'((.attrs.oauth2_allow_localhost_redirect // ["false"]) == [($expected | tostring)])' \
+		<<<"$live" >/dev/null; then
+		verify_fail "oauth app $name localhost redirect setting differs"
 	fi
 
 	if [ -n "$icon_path" ] && ! jq -e '(.attrs.image // []) | length > 0' <<<"$live" >/dev/null; then
@@ -1528,12 +1527,6 @@ auto_apply_idm() {
 		printf 'Kanidm %s declarative stamp is current; skipping auto-apply.\n' "$command"
 		return 0
 	fi
-	if auto_apply_legacy_stamp_exists "$command" "$stamp_file"; then
-		printf 'Kanidm %s legacy declarative stamp exists; recording canonical stamp.\n' "$command"
-		record_auto_apply_stamp "$stamp_file" "$desired_stamp"
-		return 0
-	fi
-
 	kanidm_auto_apply_token_dir="$(mktemp -d)"
 	trap 'rm -rf "$kanidm_auto_apply_token_dir"' EXIT
 	export KANIDM_TOKEN_CACHE_PATH="$kanidm_auto_apply_token_dir/tokens.json"

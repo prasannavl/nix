@@ -73,21 +73,26 @@
       else throw "kanidm oauth app '${name}' icon path does not exist: ${iconPath}";
   in "${iconStorePath}/${iconFileName}";
 
-  normalizeOauthApp = name: client: {
-    name = name;
-    displayName = client.displayName or name;
-    type = client.type or "confidential";
-    origin = client.origin;
-    landingUrl = client.landingUrl or client.origin;
-    iconPath =
-      if client ? icon
-      then materializeOauthIcon name client.icon
-      else null;
-    ui = client.ui or {};
-    redirectUrls = client.redirectUrls or [];
-    scopeMaps = client.scopeMaps or {};
-    pkce = client.pkce or true;
-  };
+  normalizeOauthApp = name: client:
+    assert lib.assertMsg
+    (!(client.allowLocalhostRedirects or false)
+      || ((client.type or "confidential") == "public" && (client.pkce or true)))
+    "Kanidm localhost redirects require a public client with PKCE"; {
+      name = name;
+      displayName = client.displayName or name;
+      type = client.type or "confidential";
+      origin = client.origin;
+      landingUrl = client.landingUrl or client.origin;
+      iconPath =
+        if client ? icon
+        then materializeOauthIcon name client.icon
+        else null;
+      ui = client.ui or {};
+      redirectUrls = client.redirectUrls or [];
+      scopeMaps = client.scopeMaps or {};
+      pkce = client.pkce or true;
+      allowLocalhostRedirects = client.allowLocalhostRedirects or false;
+    };
   normalizeOauthAppEntry = entry:
     if entry ? name && entry ? value
     then normalizeOauthApp entry.name entry.value

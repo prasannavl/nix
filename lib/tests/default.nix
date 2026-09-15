@@ -8,6 +8,7 @@
   forgejoTests = import ../services/forgejo/tests {pkgs = pkgs;};
   gcpVmsFirewallTest = import ../../pkgs/ext/gcp-vms/tests {pkgs = pkgs;};
   hostNetworkQosTests = import ../services/host-network-qos/tests {pkgs = pkgs;};
+  kanidmTests = import ../services/kanidm/tests {pkgs = pkgs;};
   lintManifestTempCleanupTest =
     pkgs.runCommand "lint-manifest-temp-cleanup-test" {
       nativeBuildInputs = [pkgs.bash pkgs.gnused];
@@ -81,6 +82,8 @@ in
     lib-gcp-vms-firewall = gcpVmsFirewallTest;
     lib-host-network-qos-helper = hostNetworkQosTests.helper;
     lib-host-network-qos-module = hostNetworkQosTests.module;
+    lib-kanidm-helper = kanidmTests.helper;
+    lib-kanidm-normalization = kanidmTests.normalization;
     lib-lint-manifest-temp-cleanup = lintManifestTempCleanupTest;
     lib-lint-no-ifd = lintNoIfdTest;
     lib-openssh = import ./openssh.nix {inherit pkgs;};
