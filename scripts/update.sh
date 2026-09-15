@@ -54,6 +54,7 @@ init_vars() {
 	COLOR_MODE="auto"
 	ONLY_EXT_NAMES=()
 	SKIP_EXT_NAMES=()
+	REPORT_FAILURES=()
 }
 
 parse_args() {
@@ -362,13 +363,25 @@ run_external_updates() {
 	done
 }
 
+wait_report_job() {
+	local pid="$1" label="$2" status
+	if wait "$pid"; then
+		return 0
+	else
+		status=$?
+		REPORT_FAILURES+=("$label (exit $status)")
+		return "$status"
+	fi
+}
+
 run_source_report() {
 	local max_jobs="$1"
 	local root="$2"
-	local sources_file update_script pid
+	local sources_file update_script index
 	local -a report_sources=()
 	local -a report_commands=()
 	local -a pids=()
+	local -a labels=()
 	local -a report_args=(--report "--color=${COLOR_MODE}")
 	local status=0
 
@@ -391,19 +404,22 @@ run_source_report() {
 	for update_script in "${report_commands[@]}"; do
 		"$update_script" "${report_args[@]}" &
 		pids+=("$!")
+		labels+=("${update_script#"$REPO_ROOT"/}")
 		while ((${#pids[@]} >= max_jobs)); do
-			wait "${pids[0]}" || status=$?
+			wait_report_job "${pids[0]}" "${labels[0]}" || status=$?
 			pids=("${pids[@]:1}")
+			labels=("${labels[@]:1}")
 		done
 	done
 	if ((${#report_sources[@]} > 0)); then
 		"${REPO_ROOT}/scripts/support/report-ext-sources.py" \
 			--jobs "$max_jobs" "--color=${COLOR_MODE}" "${report_sources[@]}" &
 		pids+=("$!")
+		labels+=("${root#"$REPO_ROOT"/} source report (scripts/support/report-ext-sources.py)")
 	fi
 
-	for pid in "${pids[@]}"; do
-		wait "$pid" || status=$?
+	for index in "${!pids[@]}"; do
+		wait_report_job "${pids[index]}" "${labels[index]}" || status=$?
 	done
 	((status == 0)) || return "$status"
 }
@@ -414,7 +430,10 @@ run_report() {
 
 	if ((RUN_FLAKES)); then
 		print_section_title "flake:"
-		report_flakes
+		report_flakes || {
+			status=$?
+			REPORT_FAILURES+=("flake metadata (exit $status)")
+		}
 		printed_section=1
 	fi
 
@@ -436,10 +455,17 @@ run_report() {
 		((printed_section)) && echo
 		print_section_title "podman-compose images:"
 		"${REPO_ROOT}/scripts/support/podman-image-updater.py" \
-			--report --jobs "$REPORT_JOBS" "--color=${COLOR_MODE}" || status=$?
+			--report --jobs "$REPORT_JOBS" "--color=${COLOR_MODE}" || {
+			status=$?
+			REPORT_FAILURES+=("scripts/support/podman-image-updater.py (exit $status)")
+		}
 	fi
 
-	((status == 0)) || return "$status"
+	if ((status != 0)); then
+		printf '\nReport failures:\n' >&2
+		printf -- '- %s\n' "${REPORT_FAILURES[@]}" >&2
+		return "$status"
+	fi
 }
 
 run_updates() {

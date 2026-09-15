@@ -76,6 +76,39 @@ Updaters read and replace only their sibling `sources.nix`, skip expensive
 prefetch work for current versions, format generated Nix, and use a
 repository-local temporary path before atomic replacement.
 
+## Registry lookups and report failures
+
+Standard Registry V2 image tag discovery uses an anonymous, challenge-driven
+client. Request tags without credentials first; on HTTP 401 select the Bearer
+challenge, validate its absolute HTTPS realm, preserve realm query parameters,
+pass the advertised service and scopes, and retry tags once with the returned
+`token` or `access_token`. Authentication schemes and parameter names are case
+insensitive; quoted commas and repeated headers must remain intact. Docker Hub
+uses its canonical endpoint alias. Quay and GitHub release discovery retain
+their explicit adapters.
+
+The shared client does not read credential stores. Unsupported authentication,
+invalid realms, missing tokens, token-service failures, and failed authenticated
+retries remain failed checks. Keep HTTP failures attributable to the endpoint
+and operation, distinguish opening a request from reading its body, and state
+the configured socket timeout. Rendered request URLs omit credentials, queries,
+and fragments.
+
+Image reporting deduplicates checks by full image reference. Its final failure
+summary lists every failed reference, error, and affected stack/host/Compose/
+instance context deterministically. An incomplete image report exits nonzero;
+image updates stop before planning or writing pins if any check fails. This gate
+covers image pins: earlier phases of the outer update command may already have
+written their own dependency updates. Successful lookups and displayed update
+arrows do not authorize application upgrades or database migrations.
+
+The outer report command retains failures from serial and parallel package
+updaters, generic source reporters, flake metadata, and image reporting. Its
+final stderr footer names each failed job and exit status; a later successful
+section cannot clear an earlier failure. Preserve source ownership, existing
+upgrade tracks, and atomic replacement independently of registry authentication
+and diagnostics.
+
 ## Validation
 
 - Evaluate every `sources.nix` directly with `nix eval --json --file`.

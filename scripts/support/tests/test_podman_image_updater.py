@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 import importlib.util
+import io
 import pathlib
 import tempfile
 import unittest
+import urllib.error
+import urllib.parse
+from email.message import Message
 from unittest import mock
 
 
@@ -13,6 +17,359 @@ SPEC.loader.exec_module(podman_image_updater)
 
 
 class PodmanImageUpdaterTest(unittest.TestCase):
+    def test_registry_handshake_builds_correct_http_requests(self):
+        registry_url = "https://registry.example/v2/team/image/tags/list"
+        headers = Message()
+        headers.add_header("WWW-Authenticate", 'Basic realm="private"')
+        headers.add_header(
+            "WWW-Authenticate",
+            'bEaReR realm = "https://auth.example/token?audience=images",'
+            'service = "registry.example",scope = "repository:team/image:pull,push",'
+            'Basic realm="other"',
+        )
+        requests = []
+
+        def respond(request, timeout):
+            requests.append(request)
+            self.assertEqual(timeout, 20)
+            self.assertEqual(request.get_header("Accept"), "application/json")
+            if len(requests) == 1:
+                self.assertEqual(request.full_url, registry_url)
+                self.assertIsNone(request.get_header("Authorization"))
+                raise urllib.error.HTTPError(
+                    registry_url, 401, "Unauthorized", headers, None
+                )
+            if len(requests) == 2:
+                parsed = urllib.parse.urlsplit(request.full_url)
+                self.assertEqual(parsed.netloc, "auth.example")
+                self.assertIsNone(request.get_header("Authorization"))
+                self.assertEqual(
+                    urllib.parse.parse_qs(parsed.query),
+                    {
+                        "audience": ["images"],
+                        "service": ["registry.example"],
+                        "scope": ["repository:team/image:pull,push"],
+                    },
+                )
+                return io.BytesIO(b'{"access_token": "opaque-token"}')
+            self.assertEqual(request.full_url, registry_url)
+            self.assertEqual(request.get_header("Authorization"), "Bearer opaque-token")
+            return io.BytesIO(b'{"tags": ["1.0", "1.1"]}')
+
+        with mock.patch.object(podman_image_updater.urllib.request, "urlopen", respond):
+            tags = podman_image_updater.registry_tags("registry.example", "team/image")
+        self.assertEqual(tags, ["1.0", "1.1"])
+        self.assertEqual(len(requests), 3)
+
+    def test_malformed_bearer_parameters_remain_explicit_failures(self):
+        for challenge in ['Bearer realm=', 'Bearer realm="https://auth.example",broken']:
+            with self.subTest(challenge=challenge):
+                with self.assertRaisesRegex(RuntimeError, "Malformed registry Bearer"):
+                    podman_image_updater.bearer_parameters(challenge)
+
+    def test_public_registry_needs_no_token_request(self):
+        with mock.patch.object(
+            podman_image_updater, "request_json", return_value={"tags": ["1.0"]}
+        ) as request:
+            tags = podman_image_updater.registry_tags("registry-1.docker.io", "team/image")
+        self.assertEqual(tags, ["1.0"])
+        request.assert_called_once_with("https://registry-1.docker.io/v2/team/image/tags/list")
+
+    def test_nonstandard_tag_api_keeps_its_adapter(self):
+        with (
+            mock.patch.object(podman_image_updater, "quay_tags", return_value=["1.0"]) as quay,
+            mock.patch.object(podman_image_updater, "request_registry_json") as standard,
+        ):
+            tags = podman_image_updater.registry_tags("quay.io", "team/image")
+        self.assertEqual(tags, ["1.0"])
+        quay.assert_called_once_with("team/image")
+        standard.assert_not_called()
+
+    def test_invalid_token_realms_fail_before_token_fetch(self):
+        for parameters in [
+            {},
+            {"realm": "http://auth.example/token"},
+            {"realm": "file:///token.json"},
+            {"realm": "/token"},
+            {"realm": "https://username:password@auth.example/token"},
+        ]:
+            with self.subTest(parameters=parameters):
+                with self.assertRaisesRegex(RuntimeError, "realm"):
+                    podman_image_updater.registry_token_url(parameters)
+
+    def test_token_service_denial_remains_a_failed_check(self):
+        error = urllib.error.HTTPError(
+            "https://registry.example", 401, "Unauthorized",
+            {"WWW-Authenticate": 'Bearer realm="https://auth.example/token"'}, None,
+        )
+        denial = urllib.error.HTTPError(
+            "https://auth.example/token", 403, "Forbidden", {}, None
+        )
+        with mock.patch.object(
+            podman_image_updater, "request_json", side_effect=[error, denial]
+        ) as request:
+            check = podman_image_updater.inspect_image("registry.example/team/image:1.0")
+        self.assertEqual(check.state, "failed")
+        self.assertIn("Registry token request failed", check.error)
+        self.assertIn("403", check.error)
+        self.assertEqual(request.call_count, 2)
+
+    def test_registry_tags_answer_anonymous_bearer_challenges(self):
+        cases = [
+            (
+                "docker.io",
+                "library/postgres",
+                'Bearer realm="https://auth.docker.io/token",'
+                'service="registry.docker.io",scope="repository:library/postgres:pull"',
+                "https://auth.docker.io/token",
+                {"service": ["registry.docker.io"], "scope": ["repository:library/postgres:pull"]},
+                {"token": "anonymous-token"},
+            ),
+            (
+                "ghcr.io",
+                "zulip/zulip-server",
+                'Bearer realm="https://ghcr.io/token",'
+                'service="ghcr.io",scope="repository:zulip/zulip-server:pull"',
+                "https://ghcr.io/token",
+                {"service": ["ghcr.io"], "scope": ["repository:zulip/zulip-server:pull"]},
+                {"token": "anonymous-token"},
+            ),
+            (
+                "codeberg.org",
+                "forgejo/forgejo",
+                'Bearer realm="https://codeberg.org/v2/token",'
+                'service="container_registry",scope="*"',
+                "https://codeberg.org/v2/token",
+                {"service": ["container_registry"], "scope": ["*"]},
+                {"token": "anonymous-token"},
+            ),
+            (
+                "docker.n8n.io",
+                "n8nio/n8n",
+                'Bearer realm="https://auth.docker.io/token",'
+                'service="registry.docker.io",scope="repository:n8nio/n8n:pull"',
+                "https://auth.docker.io/token",
+                {"service": ["registry.docker.io"], "scope": ["repository:n8nio/n8n:pull"]},
+                {"access_token": "anonymous-token"},
+            ),
+        ]
+        for registry, repository, challenge, realm, query, token_data in cases:
+            with self.subTest(registry=registry):
+                endpoint = "registry-1.docker.io" if registry == "docker.io" else registry
+                url = f"https://{endpoint}/v2/{repository}/tags/list"
+                error = urllib.error.HTTPError(
+                    url, 401, "Unauthorized", {"WWW-Authenticate": challenge}, None
+                )
+                with mock.patch.object(
+                    podman_image_updater,
+                    "request_json",
+                    side_effect=[error, token_data, {"tags": ["12-rootless", "16-rootless"]}],
+                ) as request:
+                    tags = podman_image_updater.registry_tags(registry, repository)
+
+                self.assertEqual(tags, ["12-rootless", "16-rootless"])
+                self.assertEqual(request.call_args_list[0], mock.call(url))
+                token_url = request.call_args_list[1].args[0]
+                parsed = urllib.parse.urlsplit(token_url)
+                self.assertEqual(f"{parsed.scheme}://{parsed.netloc}{parsed.path}", realm)
+                self.assertEqual(urllib.parse.parse_qs(parsed.query), query)
+                self.assertEqual(request.call_args_list[2], mock.call(url, "anonymous-token"))
+
+    def test_registry_challenge_preserves_realm_query_and_scope_entries(self):
+        url = "https://registry.example/v2/team/image/tags/list"
+        challenge = (
+            'bearer Realm="https://auth.example/token?audience=images",'
+            'Service="registry.example",'
+            'Scope="repository:team/image:pull repository:team/base:pull"'
+        )
+        error = urllib.error.HTTPError(
+            url, 401, "Unauthorized", {"WWW-Authenticate": challenge}, None
+        )
+        with mock.patch.object(
+            podman_image_updater,
+            "request_json",
+            side_effect=[error, {"token": "anonymous-token"}, {"tags": []}],
+        ) as request:
+            podman_image_updater.request_registry_json(url)
+
+        query = urllib.parse.urlsplit(request.call_args_list[1].args[0]).query
+        self.assertEqual(
+            urllib.parse.parse_qs(query),
+            {
+                "audience": ["images"],
+                "service": ["registry.example"],
+                "scope": ["repository:team/image:pull", "repository:team/base:pull"],
+            },
+        )
+
+    def test_registry_non_bearer_and_non_401_errors_remain_failures(self):
+        for code, challenge in [(401, 'Basic realm="private"'), (401, ""), (403, "Bearer")]:
+            with self.subTest(code=code, challenge=challenge):
+                error = urllib.error.HTTPError(
+                    "https://registry.example",
+                    code,
+                    "Denied",
+                    {"WWW-Authenticate": challenge},
+                    None,
+                )
+                with mock.patch.object(
+                    podman_image_updater, "request_json", side_effect=error
+                ) as request:
+                    with self.assertRaises(RuntimeError) as raised:
+                        podman_image_updater.registry_tags("registry.example", "private/image")
+                self.assertIn(f"HTTP Error {code}", str(raised.exception))
+                self.assertIn(
+                    "https://registry.example/v2/private/image/tags/list", str(raised.exception)
+                )
+                self.assertIn("Registry tag lookup failed", str(raised.exception))
+                self.assertEqual(request.call_count, 1)
+
+    def test_registry_retries_authenticated_request_only_once(self):
+        url = "https://registry.example/v2/private/image/tags/list"
+        error = urllib.error.HTTPError(
+            url,
+            401,
+            "Unauthorized",
+            {"WWW-Authenticate": 'Bearer realm="https://auth.example/token"'},
+            None,
+        )
+        with mock.patch.object(
+            podman_image_updater,
+            "request_json",
+            side_effect=[error, {"token": "anonymous-token"}, error],
+        ) as request:
+            with self.assertRaisesRegex(RuntimeError, "Authenticated registry tag lookup failed"):
+                podman_image_updater.request_registry_json(url)
+        self.assertEqual(request.call_count, 3)
+
+    def test_registry_missing_token_remains_a_failed_check(self):
+        url = "https://registry.example/v2/private/image/tags/list"
+        error = urllib.error.HTTPError(
+            url,
+            401,
+            "Unauthorized",
+            {"WWW-Authenticate": 'Bearer realm="https://auth.example/token"'},
+            None,
+        )
+        with mock.patch.object(
+            podman_image_updater, "request_json", side_effect=[error, {}]
+        ) as request:
+            check = podman_image_updater.inspect_image("registry.example/private/image:1.0")
+        self.assertEqual(check.state, "failed")
+        self.assertIn("returned no Bearer token", check.error)
+        self.assertEqual(request.call_count, 2)
+
+    def test_failed_checks_stop_updates_and_report_an_explicit_summary(self):
+        ref = "registry.example/private/image:1.0"
+        check = podman_image_updater.ImageCheck(
+            ref, "registry.example/private/image", "1.0", None, "failed", "Denied"
+        )
+        for argv, consequence in [
+            ([], "no image pins were written"),
+            (["--report"], "report is incomplete"),
+        ]:
+            with self.subTest(argv=argv):
+                args = podman_image_updater.parse_args(argv)
+                with (
+                    mock.patch.object(podman_image_updater, "parse_args", return_value=args),
+                    mock.patch.object(podman_image_updater, "run_nix_eval", return_value={}),
+                    mock.patch.object(
+                        podman_image_updater, "inspect_images", return_value={ref: check}
+                    ),
+                    mock.patch.object(podman_image_updater, "plan_updates") as plan,
+                    mock.patch("builtins.print") as output,
+                ):
+                    status = podman_image_updater.main()
+                self.assertEqual(status, 1)
+                plan.assert_not_called()
+                summary = output.call_args.args[0]
+                self.assertIn("1 unique image(s)", summary)
+                self.assertIn(consequence, summary)
+                self.assertIn(ref, summary)
+                self.assertIn("Error: Denied", summary)
+
+    def test_read_timeout_reports_request_stage_endpoint_and_limit(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.side_effect = TimeoutError("The read operation timed out")
+        with mock.patch.object(
+            podman_image_updater.urllib.request, "urlopen", return_value=response
+        ):
+            check = podman_image_updater.inspect_image("docker.io/redis:7.2-alpine")
+        self.assertEqual(check.state, "failed")
+        self.assertIn("Registry tag lookup failed", check.error)
+        self.assertIn("GET https://registry-1.docker.io/v2/library/redis/tags/list", check.error)
+        self.assertIn("timed out while reading the response body", check.error)
+        self.assertIn("socket timeout: 20s", check.error)
+        self.assertEqual(check.error.count("GET "), 1)
+
+    def test_open_timeout_and_invalid_json_have_distinct_causes(self):
+        url = "https://registry.example/v2/team/image/tags/list"
+        with mock.patch.object(
+            podman_image_updater.urllib.request, "urlopen",
+            side_effect=urllib.error.URLError(TimeoutError("timed out")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "timed out while opening the request"):
+                podman_image_updater.request_json(url)
+        with mock.patch.object(
+            podman_image_updater.urllib.request, "urlopen", return_value=io.BytesIO(b"not JSON")
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "invalid JSON while reading the response body"
+            ):
+                podman_image_updater.request_json(url)
+
+    def test_authenticated_read_timeout_preserves_stage_without_repeating_url(self):
+        headers = Message()
+        headers.add_header("WWW-Authenticate", 'Bearer realm="https://auth.example/token"')
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.side_effect = TimeoutError("read timed out")
+        with mock.patch.object(
+            podman_image_updater.urllib.request, "urlopen",
+            side_effect=[
+                urllib.error.HTTPError(
+                    "https://registry.example", 401, "Unauthorized", headers, None
+                ),
+                io.BytesIO(b'{"token": "opaque-token"}'),
+                response,
+            ],
+        ):
+            check = podman_image_updater.inspect_image("registry.example/team/image:1.0")
+        self.assertIn("Authenticated registry tag lookup failed", check.error)
+        self.assertIn("timed out while reading the response body", check.error)
+        self.assertEqual(check.error.count("GET "), 1)
+
+    def test_failure_summary_lists_each_unique_image_and_all_affected_contexts(self):
+        ref = "docker.io/redis:7.2-alpine"
+        contexts = {
+            ("abird", "abird-corp", "abird"): {"outline": [ref, ref]},
+            ("abird-dev", "abird-corp", "abird"): {"outline": [ref]},
+            ("gap3", "gap3-rivendell", "gap3"): {"outline": [ref]},
+            ("", "other-host", "other-compose"): {"other-instance": [ref]},
+        }
+        check = podman_image_updater.ImageCheck(
+            ref, "docker.io/redis", "7.2-alpine", None, "failed", "read timed out"
+        )
+        with mock.patch("builtins.print") as output:
+            podman_image_updater.print_failed_image_checks(contexts, [check], True)
+        summary = output.call_args.args[0]
+        self.assertEqual(summary.count(f"- {ref}\n"), 1)
+        self.assertEqual(summary.count("Used by:"), 4)
+        for use in [
+            "abird | abird-corp | abird | outline",
+            "abird-dev | abird-corp | abird | outline",
+            "gap3 | gap3-rivendell | gap3 | outline",
+            "other-host | other-compose | other-instance",
+        ]:
+            self.assertIn(use, summary)
+
+    def test_http_diagnostics_omit_credentials_and_query_values(self):
+        error = podman_image_updater.HttpRequestFailure(
+            "https://username:password@auth.example/token?token=opaque-token#fragment", "Denied"
+        )
+        self.assertEqual(str(error), "GET https://auth.example/token: Denied")
+
     def test_parse_image_ref_ignores_parameter_expansion_colon(self):
         parsed = podman_image_updater.parse_image_ref(
             "ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}"

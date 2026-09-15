@@ -20,6 +20,7 @@ TIMESCALE_PG_TAG_RE = re.compile(
     r"^pg([0-9]+(?:[._-][0-9]+)*)-ts([0-9]+(?:[._-][0-9]+)*)(.*)$"
 )
 STABLE_BUILD_TAG_RE = re.compile(r"^stable-([0-9]+)(?:-([0-9]+))?$")
+HTTP_TIMEOUT_SECONDS = 20
 RELEASE_TAG_REPOSITORIES = {
     ("ghcr.io", "immich-app/immich-machine-learning"): ("immich-app/immich", ""),
     ("ghcr.io", "immich-app/immich-server"): ("immich-app/immich", ""),
@@ -352,33 +353,127 @@ def find_tag_separator(image):
     return separator
 
 
+class HttpRequestFailure(RuntimeError):
+    def __init__(self, url, detail):
+        self.detail = detail
+        endpoint = urllib.parse.urlsplit(url)
+        endpoint = endpoint._replace(
+            netloc=endpoint.netloc.rsplit("@", 1)[-1], query="", fragment=""
+        )
+        super().__init__(f"GET {urllib.parse.urlunsplit(endpoint)}: {detail}")
+
+
 def request_json(url, token=None):
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=20) as response:
-        return json.load(response)
-
-
-def dockerhub_token(repository):
-    url = "https://auth.docker.io/token?" + urllib.parse.urlencode(
-        {
-            "service": "registry.docker.io",
-            "scope": f"repository:{repository}:pull",
-        }
-    )
-    return request_json(url).get("token")
-
-
-def ghcr_token(repository):
-    url = "https://ghcr.io/token?" + urllib.parse.urlencode(
-        {"scope": f"repository:{repository}:pull"}
-    )
+    phase = "opening the request"
     try:
-        return request_json(url).get("token")
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+            phase = "reading the response body"
+            return json.load(response)
     except urllib.error.HTTPError:
+        raise
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as error:
+        reason = error.reason if isinstance(error, urllib.error.URLError) else error
+        if isinstance(reason, TimeoutError):
+            detail = (
+                f"timed out while {phase} "
+                f"(socket timeout: {HTTP_TIMEOUT_SECONDS}s)"
+            )
+        elif isinstance(reason, json.JSONDecodeError):
+            detail = f"invalid JSON while {phase}: {reason.msg}"
+        else:
+            detail = f"failed while {phase}: {reason}"
+        raise HttpRequestFailure(url, detail) from error
+
+
+def request_failure(stage, url, error):
+    detail = error.detail if isinstance(error, HttpRequestFailure) else str(error)
+    return HttpRequestFailure(url, f"{stage}: {detail}")
+
+
+def bearer_parameters(challenge):
+    parameters = []
+    found = False
+    for item in urllib.request.parse_http_list(challenge):
+        scheme = re.match(r"^([A-Za-z][A-Za-z0-9_-]*)\s+(?!\s*=)(.*)$", item)
+        if scheme:
+            if found:
+                break
+            if scheme[1].lower() == "bearer":
+                found = True
+                parameters.append(scheme[2])
+        elif found:
+            parameters.append(item)
+    if not found:
         return None
+    normalized = []
+    for parameter in parameters:
+        key, separator, value = parameter.partition("=")
+        if not separator or not key.strip() or not value.strip():
+            raise RuntimeError("Malformed registry Bearer challenge parameter")
+        normalized.append(f"{key.strip()}={value.strip()}")
+    parameters = urllib.request.parse_keqv_list(normalized)
+    return {key.lower(): value for key, value in parameters.items()}
+
+
+def registry_token_url(parameters):
+    realm = parameters.get("realm")
+    if not realm:
+        raise RuntimeError("Registry Bearer challenge has no token realm")
+    endpoint = urllib.parse.urlsplit(realm)
+    if endpoint.scheme != "https" or not endpoint.netloc or endpoint.username is not None:
+        raise RuntimeError("Registry Bearer token realm must be an absolute HTTPS URL")
+    query = urllib.parse.parse_qsl(endpoint.query, keep_blank_values=True)
+    if "service" in parameters:
+        query.append(("service", parameters["service"]))
+    for scope in parameters.get("scope", "").split():
+        query.append(("scope", scope))
+    return urllib.parse.urlunsplit(
+        endpoint._replace(query=urllib.parse.urlencode(query))
+    )
+
+
+def request_registry_json(url):
+    try:
+        return request_json(url)
+    except urllib.error.HTTPError as error:
+        if error.code != 401:
+            raise request_failure("Registry tag lookup failed", url, error) from error
+        if hasattr(error.headers, "get_all"):
+            challenges = error.headers.get_all("WWW-Authenticate", [])
+        else:
+            challenges = [error.headers.get("WWW-Authenticate", "")]
+        parameters = None
+        for challenge in challenges:
+            parameters = bearer_parameters(challenge)
+            if parameters is not None:
+                break
+        if parameters is None:
+            raise request_failure(
+                "Registry tag lookup failed", url,
+                f"{error}; no supported Bearer authentication challenge",
+            ) from error
+    except (urllib.error.URLError, RuntimeError) as error:
+        raise request_failure("Registry tag lookup failed", url, error) from error
+
+    token_url = registry_token_url(parameters)
+    try:
+        data = request_json(token_url)
+    except (urllib.error.URLError, RuntimeError) as error:
+        raise request_failure("Registry token request failed", token_url, error) from error
+    token = data.get("token") or data.get("access_token")
+    if not isinstance(token, str) or not token:
+        raise request_failure(
+            "Registry token request failed", token_url,
+            "Registry token endpoint returned no Bearer token",
+        )
+    try:
+        return request_json(url, token)
+    except (urllib.error.URLError, RuntimeError) as error:
+        raise request_failure("Authenticated registry tag lookup failed", url, error) from error
 
 
 def quay_tags(repository):
@@ -409,20 +504,11 @@ def latest_release_tag(registry, repository):
 def registry_tags(registry, repository):
     if registry == "localhost":
         return []
-    if registry in {"docker.io", "registry-1.docker.io"}:
-        token = dockerhub_token(repository)
-        data = request_json(
-            f"https://registry-1.docker.io/v2/{repository}/tags/list", token
-        )
-        return data.get("tags") or []
-    if registry == "ghcr.io":
-        token = ghcr_token(repository)
-        data = request_json(f"https://ghcr.io/v2/{repository}/tags/list", token)
-        return data.get("tags") or []
     if registry == "quay.io":
         return quay_tags(repository)
-
-    data = request_json(f"https://{registry}/v2/{repository}/tags/list")
+    if registry == "docker.io":
+        registry = "registry-1.docker.io"
+    data = request_registry_json(f"https://{registry}/v2/{repository}/tags/list")
     return data.get("tags") or []
 
 
@@ -714,6 +800,25 @@ def print_inventory(contexts, checks, color):
                 )
 
 
+def print_failed_image_checks(contexts, failed, report):
+    consequence = "report is incomplete" if report else "no image pins were written"
+    lines = [
+        f"\nPodman image checks failed for {len(failed)} unique image(s); {consequence}."
+    ]
+    for check in sorted(failed, key=lambda check: check.ref):
+        lines.append(f"- {check.ref}")
+        lines.append(f"  Error: {check.error}")
+        uses = {
+            (*context, instance)
+            for context, instances in contexts.items()
+            for instance, images in instances.items()
+            if check.ref in images
+        }
+        for use in sorted(uses):
+            lines.append(f"  Used by: {' | '.join(part for part in use if part)}")
+    print("\n".join(lines), file=sys.stderr)
+
+
 def image_reference_spans(content, ref):
     spans = []
     offset = 0
@@ -933,6 +1038,7 @@ def main():
 
     failed = [check for check in checks.values() if check.state == "failed"]
     if failed:
+        print_failed_image_checks(contexts, failed, args.report)
         return 1
     if args.report:
         return 0

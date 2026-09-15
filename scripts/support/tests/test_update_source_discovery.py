@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).parents[3]
@@ -119,6 +120,62 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("--report", trace.read_text().splitlines())
+
+    def test_report_footer_names_failed_updaters_with_serial_and_parallel_jobs(self):
+        for name, status in [("bad-a", 7), ("bad-b", 9), ("good", 0)]:
+            unit = self.add_unit("lib/ext", name, sources=True, updater=True)
+            (unit / "update.sh").write_text(f"#!/usr/bin/env bash\nexit {status}\n")
+        for jobs in [1, 4]:
+            with self.subTest(jobs=jobs):
+                result = self.run_update("--only-ext", "--report", "--jobs", str(jobs))
+                self.assertEqual(result.returncode, 9, result.stderr)
+                self.assertIn("Report failures:", result.stderr)
+                self.assertIn("lib/ext/bad-a/update.sh (exit 7)", result.stderr)
+                self.assertIn("lib/ext/bad-b/update.sh (exit 9)", result.stderr)
+                self.assertNotIn("lib/ext/good/update.sh", result.stderr)
+
+    def test_report_footer_names_failed_source_reporter(self):
+        self.add_unit("pkgs/ext", "example", sources=True)
+        reporter = self.repo / "scripts/support/report-ext-sources.py"
+        reporter.write_text("#!/usr/bin/env bash\nexit 5\n")
+        reporter.chmod(0o755)
+        result = self.run_update("--only-pkgs-ext", "--report")
+        self.assertEqual(result.returncode, 5, result.stderr)
+        self.assertIn("pkgs/ext source report", result.stderr)
+        self.assertIn("scripts/support/report-ext-sources.py", result.stderr)
+        self.assertIn("exit 5", result.stderr)
+
+    def test_report_footer_names_failed_image_reporter(self):
+        reporter = self.repo / "scripts/support/podman-image-updater.py"
+        reporter.write_text("#!/usr/bin/env bash\nexit 6\n")
+        reporter.chmod(0o755)
+        result = self.run_update("--only-images", "--report")
+        self.assertEqual(result.returncode, 6, result.stderr)
+        self.assertIn("Report failures:", result.stderr)
+        self.assertIn("scripts/support/podman-image-updater.py (exit 6)", result.stderr)
+
+    def test_earlier_failure_is_reported_after_successful_image_report(self):
+        unit = self.add_unit("lib/ext", "nvidia", sources=True, updater=True)
+        (unit / "update.sh").write_text("#!/usr/bin/env bash\nexit 1\n")
+        reporter = self.repo / "scripts/support/podman-image-updater.py"
+        reporter.write_text("#!/usr/bin/env bash\nprintf 'image report completed\\n'\n")
+        reporter.chmod(0o755)
+        result = self.run_update("--report", "--skip-flake", "--skip-pkgs-ext")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("image report completed", result.stdout)
+        self.assertIn("lib/ext/nvidia/update.sh (exit 1)", result.stderr)
+        self.assertNotIn("podman-image-updater.py", result.stderr)
+
+    def test_report_footer_names_failed_flake_metadata(self):
+        binary_dir = self.repo / "bin"
+        binary_dir.mkdir()
+        nix = binary_dir / "nix"
+        nix.write_text("#!/usr/bin/env bash\nprintf '{}\\n'\nexit 3\n")
+        nix.chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": f"{binary_dir}:{os.environ['PATH']}"}):
+            result = self.run_update("--only-flake", "--report")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("flake metadata (exit 3)", result.stderr)
 
 
 if __name__ == "__main__":
