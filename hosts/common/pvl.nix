@@ -98,6 +98,7 @@
     github-copilot-cli
     opencode
     qwen-code
+    kilo-cli
     unstable.llama-cpp
     unstable.llama-cpp-rocm
     unstable.llama-cpp-cuda

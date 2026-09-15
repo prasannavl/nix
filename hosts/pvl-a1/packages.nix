@@ -141,7 +141,6 @@ in {
     # AI
     jan
     claude-code
-    kilo-cli
     llm-agents-pkgs.chatgpt
     llm-agents-pkgs.claude-desktop
 
