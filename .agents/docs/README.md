@@ -21,8 +21,8 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 - `.agents/docs/design-patterns/external-source-units.md`: Canonical external
   package ownership, `sources.nix` discovery, report-only and update-capable
-  unit conventions, and package-local updater rules across `lib/ext` and
-  `pkgs/ext`.
+  unit conventions, package-local updater rules across `lib/ext` and `pkgs/ext`,
+  registry authentication, and update/report failure handling.
 - `.agents/docs/design-patterns/dns.md`: Durable DNS change-management rules for
   the repo Cloudflare stack.
 - `.agents/docs/design-patterns/nix-native-service-moves.md`: Canonical
@@ -445,6 +445,12 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/abird-post-829-port-2026-09.md`: Complete
+  15-commit repeat audit across published and configured Abird branches,
+  registry/updater port in main, already adopted units, exclusions, and checks.
+- `.agents/docs/notes/tooling/abird-post-829-parity-2026-09.md`: Repeat
+  byte/blob/mode parity inventory, all 24 common-path divergences, exact updater
+  files, and source-only/Pvl-only ownership boundaries.
 - `.agents/docs/notes/tooling/abird-post-1fd-port-2026-09.md`: Complete
   42-commit Abird audit through `829d81ed`, logical fabric/Kanidm/Nixbot ports,
   Pvl adaptations, source ownership exclusions, review, and validation.
