@@ -1685,10 +1685,17 @@ class NixbotScriptTest(unittest.TestCase):
             ROLLBACK_RC=42
             rollback_host_to_snapshot app /nix/store/snapshot
             printf 'nontransport-rc:%s\\n' "$?"
+            ROLLBACK_OUTPUT='[generation-admission] rejected-before-switch'
+            ROLLBACK_RC=255
+            rollback_host_to_snapshot app /nix/store/snapshot
+            printf 'admission-rc:%s\\n' "$?"
             """
         )
 
-        self.assertEqual(["signal-rc:143", "nontransport-rc:42"], result.stdout.splitlines())
+        self.assertEqual(
+            ["signal-rc:143", "nontransport-rc:42", "admission-rc:255"],
+            result.stdout.splitlines(),
+        )
         self.assertNotIn("unexpected-verify", result.stdout)
 
     def test_health_rollback_skips_same_generation_activation(self):
@@ -2328,49 +2335,106 @@ EOF_UNITS
         result = self.run_script(
             """
             init_vars
-            nixbot_activation_command '/nix/store/rollback snapshot' switch 1 '' 0 1
+            nixbot_activation_command '/nix/store/rollback snapshot' switch 1 '' 0 rollback
             """
         )
 
         command = result.stdout
         admission_index = command.index(
-            '"${current_projection_preflight}" "${system_path}" "${goal}" rollback'
+            '"${admission_program}" "${system_path}" "${goal}" "${admission_mode}"'
         )
         switch_index = command.index(
             'NIXOS_INSTALL_BOOTLOADER=0 "${system_path}/bin/switch-to-configuration" "${goal}"'
         )
         self.assertLess(admission_index, switch_index)
-        self.assertIn("rollback_projection_admission=1", command)
+        self.assertIn("admission_mode=rollback", command)
         self.assertIn(
             "current_projection_preflight=/run/current-system/sw/bin/abird-host-agent-projection-preflight",
             command,
         )
         self.assertIn("refusing automatic rollback because projection safety cannot be proven", command)
-        self.assertLess(command.index("exit 1"), switch_index)
+        self.assertLess(command.index("reject_generation_admission"), switch_index)
 
-    def test_rollback_activation_without_current_projection_admission_does_not_switch(self):
-        fake_system = self.work_dir / "rollback-system"
-        true_path = shutil.which("true")
-        self.assertIsNotNone(true_path)
-        result = self.run_script(
-            f"""
+    def missing_preflight_rollback_fixture(self, mode="rollback", name=""):
+        root = self.work_dir / name
+        root.mkdir(exist_ok=True)
+        fake_system = root / "rollback-system"
+        current_system = root / "current-system"
+        switch_marker = root / "switched"
+        switch = fake_system / "bin/switch-to-configuration"
+        switch.parent.mkdir(parents=True)
+        current_system.mkdir()
+        switch.write_text(
+            f'#!/bin/sh\nprintf "%s\\n" "${{ABIRD_HOST_AGENT_GENERATION_ADMISSION_MODE-unset}}" > {switch_marker}\n'
+        )
+        switch.chmod(0o700)
+        command = f"""
             init_vars
-            REMOTE_CURRENT_SYSTEM_PATH={self.work_dir / "legacy-current"}
-            mkdir -p {fake_system}/bin
-            ln -s {true_path} {fake_system}/bin/switch-to-configuration
-            activation_script="$(nixbot_activation_command {fake_system} switch 0 '' 0 1)"
+            REMOTE_CURRENT_SYSTEM_PATH={current_system}
+            REMOTE_HOST_AGENT_CONFIG_DIR={root / "live-config"}
+            REMOTE_HOST_AGENT_STATE_DIR={root / "live-state"}
+            REMOTE_HOST_AGENT_RUNTIME_DIR={root / "live-runtime"}
+            activation_script="$(nixbot_activation_command {fake_system} switch 0 '' 0 {mode})"
             set +e
             bash -c "$activation_script"
             printf 'rc:%s\n' "$?"
             set -e
             """
-        )
+        return command, current_system, fake_system, switch_marker
+
+    def test_rollback_activation_without_host_agent_switches(self):
+        command, _, _, switch_marker = self.missing_preflight_rollback_fixture()
+        result = self.run_script(command)
+
+        self.assertEqual(["rc:0"], result.stdout.splitlines())
+        self.assertTrue(switch_marker.exists())
+        self.assertIn("no host-agent authority or state", result.stderr)
+
+    def test_rollback_activation_without_current_generation_does_not_switch(self):
+        command, current_system, _, switch_marker = self.missing_preflight_rollback_fixture()
+        current_system.rmdir()
+        result = self.run_script(command)
 
         self.assertEqual(["rc:1"], result.stdout.splitlines())
-        self.assertIn(
-            "refusing automatic rollback because projection safety cannot be proven",
-            result.stderr,
-        )
+        self.assertFalse(switch_marker.exists())
+        self.assertIn("current generation is unavailable", result.stderr)
+
+    def test_rollback_activation_without_current_projection_admission_does_not_switch(self):
+        command, current_system, fake_system, switch_marker = self.missing_preflight_rollback_fixture()
+        evidence_paths = [
+            current_system / "etc/abird-host-agent",
+            current_system / "sw/bin/abird-host-agent",
+            current_system / "sw/bin/abird-host-agent-projection-preflight",
+            current_system / "sw/bin/abird-host-agent-service-placement-preflight",
+            current_system / "sw/bin/abird-host-agent-generation-preflight",
+            fake_system / "etc/abird-host-agent",
+            fake_system / "sw/bin/abird-host-agent",
+            fake_system / "sw/bin/abird-host-agent-projection-preflight",
+            fake_system / "sw/bin/abird-host-agent-service-placement-preflight",
+            fake_system / "sw/bin/abird-host-agent-generation-preflight",
+            self.work_dir / "live-config",
+            self.work_dir / "live-state",
+            self.work_dir / "live-runtime",
+        ]
+        for evidence in evidence_paths:
+            for kind in ("file", "directory", "dangling-symlink"):
+                with self.subTest(evidence=evidence.relative_to(self.work_dir), kind=kind):
+                    evidence.parent.mkdir(parents=True, exist_ok=True)
+                    if kind == "directory":
+                        evidence.mkdir()
+                    elif kind == "dangling-symlink":
+                        evidence.symlink_to(self.work_dir / "missing")
+                    else:
+                        evidence.touch()
+                    try:
+                        result = self.run_script(command)
+                        self.assertRegex(result.stdout.splitlines()[-1], r"^rc:[1-9][0-9]*$")
+                        self.assertFalse(switch_marker.exists())
+                    finally:
+                        if kind == "directory":
+                            evidence.rmdir()
+                        else:
+                            evidence.unlink()
 
     def test_rollback_activation_rejected_authority_does_not_switch(self):
         fake_system = self.work_dir / "rollback-system"
@@ -2391,7 +2455,10 @@ EOF_UNITS
             f"""
             init_vars
             REMOTE_CURRENT_SYSTEM_PATH={current_system}
-            activation_script="$(nixbot_activation_command {fake_system} switch 0 '' 0 1)"
+            REMOTE_HOST_AGENT_CONFIG_DIR={self.work_dir / "live-config"}
+            REMOTE_HOST_AGENT_STATE_DIR={self.work_dir / "live-state"}
+            REMOTE_HOST_AGENT_RUNTIME_DIR={self.work_dir / "live-runtime"}
+            activation_script="$(nixbot_activation_command {fake_system} switch 0 '' 0 rollback)"
             set +e
             bash -c "$activation_script"
             printf 'rc:%s\n' "$?"
@@ -2404,6 +2471,178 @@ EOF_UNITS
         self.assertEqual(
             f"{fake_system} switch rollback\n", admission_args.read_text()
         )
+
+
+    def test_generation_admission_runs_before_switch_and_preserves_rejection(self):
+        for mode in ("normal", "rollback"):
+            for status in (0, 23, 255):
+                with self.subTest(mode=mode, status=status):
+                    name = f"{mode}-{status}"
+                    command, current, target, marker = self.missing_preflight_rollback_fixture(mode, name)
+                    args = self.work_dir / name / "admission-args"
+                    preflight = current / "sw/bin/abird-host-agent-generation-preflight"
+                    preflight.parent.mkdir(parents=True)
+                    preflight.write_text(
+                        f'#!/bin/sh\nset -eu\nprintf "%s\\n" "$*" > {args}\n'
+                        f'test ! -e {marker}\nexit {status}\n'
+                    )
+                    preflight.chmod(0o700)
+                    legacy = preflight.with_name("abird-host-agent-projection-preflight")
+                    legacy.write_text("#!/bin/sh\necho unexpected-legacy >&2\nexit 0\n")
+                    legacy.chmod(0o700)
+                    result = self.run_script(command)
+                    self.assertEqual([f"rc:{status}"], result.stdout.splitlines())
+                    self.assertEqual(f"{target} switch {mode}\n", args.read_text())
+                    self.assertNotIn("unexpected-legacy", result.stderr)
+                    if status == 0:
+                        self.assertEqual(f"{mode}\n", marker.read_text())
+                    else:
+                        self.assertFalse(marker.exists())
+                        self.assertIn("[generation-admission] rejected-before-switch", result.stderr)
+
+    def test_legacy_rollback_cannot_replace_missing_generation_interface(self):
+        for mode in ("normal", "rollback"):
+            for location in ("current", "target"):
+                # A new target is a supported first normal deployment.
+                if mode == "normal" and location == "target":
+                    continue
+                for interface in ("helper", "registry"):
+                    for kind in ("file", "directory", "dangling-symlink"):
+                        name = f"{mode}-{location}-{interface}-{kind}"
+                        with self.subTest(name=name):
+                            command, current, target, marker = self.missing_preflight_rollback_fixture(mode, name)
+                            legacy = current / "sw/bin/abird-host-agent-projection-preflight"
+                            legacy.parent.mkdir(parents=True)
+                            legacy.write_text("#!/bin/sh\necho unexpected-legacy >&2\nexit 0\n")
+                            legacy.chmod(0o700)
+                            generation = current if location == "current" else target
+                            evidence = generation / (
+                                "sw/bin/abird-host-agent-generation-preflight" if interface == "helper"
+                                else "etc/abird-host-agent/generation-admission-registry.json"
+                            )
+                            evidence.parent.mkdir(parents=True, exist_ok=True)
+                            if kind == "directory":
+                                evidence.mkdir(mode=0o600)
+                            elif kind == "dangling-symlink":
+                                evidence.symlink_to(self.work_dir / "missing")
+                            else:
+                                evidence.touch(mode=0o600)
+                            result = self.run_script(command)
+                            self.assertEqual(["rc:1"], result.stdout.splitlines())
+                            self.assertFalse(marker.exists())
+                            self.assertNotIn("unexpected-legacy", result.stderr)
+                            self.assertIn("[generation-admission] rejected-before-switch", result.stderr)
+
+    def test_legacy_rollback_preserves_current_placement_admission(self):
+        for status in (0, 24):
+            with self.subTest(status=status):
+                name = f"placement-{status}"
+                command, current, target, marker = self.missing_preflight_rollback_fixture(name=name)
+                calls = self.work_dir / name / "admission-calls"
+                placement = current / "sw/bin/abird-host-agent-service-placement-preflight"
+                placement.parent.mkdir(parents=True)
+                placement.write_text(
+                    f'#!/bin/sh\nset -eu\nprintf "placement:%s\\n" "$*" >> {calls}\nexit {status}\n'
+                )
+                placement.chmod(0o700)
+                projection = placement.with_name("abird-host-agent-projection-preflight")
+                projection.write_text(
+                    f'#!/bin/sh\nprintf "projection:%s\\n" "$*" >> {calls}\n'
+                )
+                projection.chmod(0o700)
+                result = self.run_script(command)
+                self.assertEqual([f"rc:{status}"], result.stdout.splitlines())
+                expected = [f"placement:{target} switch rollback"]
+                if status == 0:
+                    expected.append(f"projection:{target} switch rollback")
+                    self.assertTrue(marker.exists())
+                else:
+                    self.assertFalse(marker.exists())
+                self.assertEqual(expected, calls.read_text().splitlines())
+
+    def test_legacy_rollback_refuses_missing_placement_validator(self):
+        for location in ("current", "target", "live"):
+            for kind in ("file", "directory", "dangling-symlink"):
+                name = f"placement-{location}-{kind}"
+                with self.subTest(name=name):
+                    command, current, target, marker = self.missing_preflight_rollback_fixture(name=name)
+                    projection = current / "sw/bin/abird-host-agent-projection-preflight"
+                    projection.parent.mkdir(parents=True)
+                    projection.write_text("#!/bin/sh\necho unexpected-projection >&2\n")
+                    projection.chmod(0o700)
+                    root = self.work_dir / name
+                    config = root / "live-config" if location == "live" else (
+                        current if location == "current" else target
+                    ) / "etc/abird-host-agent"
+                    config.mkdir(parents=True)
+                    contract = config / "service-placement-contract.json"
+                    if kind == "directory":
+                        contract.mkdir()
+                    elif kind == "dangling-symlink":
+                        contract.symlink_to(root / "missing")
+                    else:
+                        contract.touch()
+                    result = self.run_script(command)
+                    self.assertEqual(["rc:1"], result.stdout.splitlines())
+                    self.assertFalse(marker.exists())
+                    self.assertNotIn("unexpected-projection", result.stderr)
+
+    def test_legacy_rollback_validates_with_current_helper(self):
+        command, current, target, marker = self.missing_preflight_rollback_fixture()
+        legacy = current / "sw/bin/abird-host-agent-projection-preflight"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(f'#!/bin/sh\nset -eu\ntest "$*" = "{target} switch rollback"\n')
+        legacy.chmod(0o700)
+        target_legacy = target / "sw/bin/abird-host-agent-projection-preflight"
+        target_legacy.parent.mkdir(parents=True)
+        target_legacy.write_text("#!/bin/sh\necho unexpected-target-helper >&2\nexit 0\n")
+        target_legacy.chmod(0o700)
+        result = self.run_script(command)
+        self.assertEqual(["rc:0"], result.stdout.splitlines())
+        self.assertEqual("rollback\n", marker.read_text())
+        self.assertNotIn("unexpected-target-helper", result.stderr)
+
+    def test_normal_activation_can_introduce_generation_interface(self):
+        command, _, target, marker = self.missing_preflight_rollback_fixture("normal")
+        registry = target / "etc/abird-host-agent/generation-admission-registry.json"
+        registry.parent.mkdir(parents=True)
+        registry.write_text('{"schema_version":1,"domains":[]}\n')
+        result = self.run_script(command)
+        self.assertEqual(["rc:0"], result.stdout.splitlines())
+        self.assertEqual("normal\n", marker.read_text())
+
+    def test_rollback_does_not_use_target_generation_dispatcher(self):
+        command, _, target, marker = self.missing_preflight_rollback_fixture()
+        preflight = target / "sw/bin/abird-host-agent-generation-preflight"
+        preflight.parent.mkdir(parents=True)
+        preflight.write_text("#!/bin/sh\necho unexpected-target-helper >&2\nexit 0\n")
+        preflight.chmod(0o700)
+        result = self.run_script(command)
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertFalse(marker.exists())
+        self.assertNotIn("unexpected-target-helper", result.stderr)
+
+    def test_normal_same_generation_cannot_bypass_broken_dispatcher(self):
+        command, current, target, marker = self.missing_preflight_rollback_fixture("normal")
+        switch = current / "bin/switch-to-configuration"
+        switch.parent.mkdir(parents=True)
+        shutil.copy2(target / "bin/switch-to-configuration", switch)
+        registry = current / "etc/abird-host-agent/generation-admission-registry.json"
+        registry.parent.mkdir(parents=True)
+        registry.touch()
+        command = command.replace(str(target), str(current))
+        result = self.run_script(command)
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertFalse(marker.exists())
+
+    def test_activation_admission_mode_rejects_unknown_value(self):
+        result = self.run_script(
+            "init_vars\nnixbot_activation_command /nix/store/system switch 0 '' 0 unsafe",
+            check=False,
+        )
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("unsupported activation admission mode", result.stderr)
 
     def test_nixbot_activation_runner_decodes_script_without_login_shell(self):
         fake_system = self.work_dir / "fake system"
@@ -3195,6 +3434,15 @@ EOF_SCRIPT
         self.assertNotIn("unexpected-sleep", result.stdout)
 
     def test_activate_prepared_system_path_records_pre_switch_rejection(self):
+        for output, status in (
+            ("Pre-switch checks failed", 1),
+            ("[generation-admission] rejected-before-switch", 23),
+            ("[generation-admission] rejected-before-switch", 255),
+        ):
+            with self.subTest(output=output, status=status):
+                self.assert_pre_switch_rejection(output, status)
+
+    def assert_pre_switch_rejection(self, output, status):
         result = self.run_script(
             f"""
             init_vars
@@ -3210,8 +3458,8 @@ EOF_SCRIPT
             verify_deploy_target_state_after_transport_loss() {{ printf 'unexpected-transport-verify\n'; }}
             run_activation_with_progress() {{
               local -n out_ref="$1"
-              out_ref=$'error: projection conflict\nPre-switch check `projection` failed\nPre-switch checks failed'
-              return 1
+              out_ref='{output}'
+              return {status}
             }}
             set +e
             activate_prepared_system_path app /nix/store/system
@@ -3221,7 +3469,7 @@ EOF_SCRIPT
             """
         )
 
-        self.assertEqual(["rc:1", "marker:app"], result.stdout.splitlines())
+        self.assertEqual([f"rc:{status}", "marker:app"], result.stdout.splitlines())
         self.assertNotIn("unexpected", result.stdout)
         self.assertIn(
             "Deploy activation for app was rejected before switching; current generation unchanged",

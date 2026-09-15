@@ -80,6 +80,11 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - SSH control-master reuse is acceptable for direct primary and bootstrap
   contexts, but stale control sockets must be cleared when readiness or
   bootstrap state changes.
+- `prepare_deploy_context` currently reads target fields line by line. A
+  multiline `knownHosts` value shifts later fields, including `bootstrapKey`,
+  and can reject before activation. Supply one authenticated ED25519 host-key
+  line per selected host while preserving strict verification. This is the
+  documented upstream operational limitation, not a parser repair.
 - `nixbot` SSH invocations must ignore ambient operator SSH config by passing
   `-F /dev/null`. Repo deploy targets must not depend on local aliases.
 
@@ -110,6 +115,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Runtime contains the detached repo worktree, decrypted secrets, SSH control
   sockets, Terraform plans, self-target temp files, build result symlinks, build
   output path files, rollback snapshots, and phase artifacts.
+- Keep an explicit `NIXBOT_RUNTIME_WORK_DIR` short enough for OpenSSH control
+  sockets. A deeply nested path plus the generated control-socket suffix can
+  exceed the Unix socket limit before rollback snapshots. The separate
+  `NIXBOT_RUNTIME_DIAG_DIR` may use a longer path.
 - Diagnostics contains logs, status files, and stderr captures. It must stay
   safe to retain directly without a cleanup or sanitization pass.
 - Interactive host log output may normalize high-volume activation, closure
@@ -143,6 +152,12 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Build-cache config validation is fail-fast and specific: missing URL, missing
   host, and selected-build-host/cache-owner mismatches should each produce a
   distinct pre-activation error.
+- Local-build transfer uses `copy_system_path_from_local_to_prepared_target`,
+  which imports unsigned local outputs with `--no-check-sigs` over the
+  authenticated deployment route as a trusted Nix user. Keep this separate from
+  signed-cache fetching; SSH or sudo access alone does not grant Nix import
+  authority. Do not expand target trusted users or disable global signature
+  checks for an ad hoc copy.
 - Only the `nixbot` account is added as a trusted Nix user. Direct runs from an
   untrusted operator account can still warn that the client-specified `store`
   setting is restricted; avoid broad trust expansion and run through `nixbot`
@@ -455,6 +470,20 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   Rollback snapshot files are data inputs: before rollback activation they must
   resolve to exactly one NixOS system store path, even if surrounding warning
   text was captured from a previous command.
+- Activation admission uses the named `normal` and `rollback` modes. A usable
+  current-generation `abird-host-agent-generation-preflight` dispatcher owns
+  admission when present; rejection is final. A broken registered interface must
+  not fall back to legacy admission. A first normal deployment may introduce an
+  incoming interface whose own pre-switch checks provide admission.
+- Legacy rollback uses only the current generation's placement and projection
+  validators. Missing validators with retained contract or agent evidence fail
+  closed. Ordinary-host rollback is allowed only when current, incoming, and
+  live config/state/runtime paths contain no host-agent authority evidence,
+  including broken symlinks. Incoming validators cannot grant rollback
+  authority.
+- `[generation-admission] rejected-before-switch` means activation was rejected
+  before changing the current generation. Preserve that classification through
+  normal deployment and rollback instead of treating it as SSH recovery.
 - Dry deploys may still evaluate and build systems, but prepared target commands
   must be printed instead of executed. This includes parent readiness
   reconcile/settle commands; do not let `--dry` run parent-side Incus

@@ -767,6 +767,9 @@ init_vars() {
 	REMOTE_NIXBOT_AUTHORIZED_KEYS="/etc/ssh/authorized_keys.d/nixbot"
 	REMOTE_NIXBOT_AGE_IDENTITY="${REMOTE_NIXBOT_AGE_DIR}/identity"
 	REMOTE_CURRENT_SYSTEM_PATH="/run/current-system"
+	REMOTE_HOST_AGENT_CONFIG_DIR="/etc/abird-host-agent"
+	REMOTE_HOST_AGENT_STATE_DIR="/var/lib/abird-host-agent"
+	REMOTE_HOST_AGENT_RUNTIME_DIR="/run/abird-host-agent"
 	REMOTE_SYSTEM_PROFILE_PATH="/nix/var/nix/profiles/system"
 	REMOTE_WRAPPER_BIN_DIR="/run/wrappers/bin"
 	REMOTE_SYSTEM_BIN_DIR="/run/current-system/sw/bin"
@@ -1868,7 +1871,15 @@ rollback_activation_unit_name() {
 }
 
 nixbot_activation_command() {
-	local system_path="$1" goal="$2" persist_profile="$3" post_promote_bootloader_goal="$4" restart_managed="${5:-0}" rollback_projection_admission="${6:-0}"
+	local system_path="$1" goal="$2" persist_profile="$3" post_promote_bootloader_goal="$4" restart_managed="${5:-0}" admission_mode="${6:-normal}"
+
+	case "${admission_mode}" in
+	normal | rollback) ;;
+	*)
+		echo "unsupported activation admission mode: ${admission_mode}" >&2
+		return 2
+		;;
+	esac
 
 	printf 'set -Eeuo pipefail\n'
 	printf 'system_path=%q\n' "${system_path}"
@@ -1876,8 +1887,14 @@ nixbot_activation_command() {
 	printf 'persist_profile=%q\n' "${persist_profile}"
 	printf 'post_promote_bootloader_goal=%q\n' "${post_promote_bootloader_goal}"
 	printf 'restart_managed=%q\n' "${restart_managed}"
-	printf 'rollback_projection_admission=%q\n' "${rollback_projection_admission}"
+	printf 'admission_mode=%q\n' "${admission_mode}"
+	printf 'current_system=%q\n' "${REMOTE_CURRENT_SYSTEM_PATH}"
+	printf 'current_generation_preflight=%q\n' "${REMOTE_CURRENT_SYSTEM_PATH}/sw/bin/abird-host-agent-generation-preflight"
+	printf 'current_placement_preflight=%q\n' "${REMOTE_CURRENT_SYSTEM_PATH}/sw/bin/abird-host-agent-service-placement-preflight"
 	printf 'current_projection_preflight=%q\n' "${REMOTE_CURRENT_SYSTEM_PATH}/sw/bin/abird-host-agent-projection-preflight"
+	printf 'host_agent_config_dir=%q\n' "${REMOTE_HOST_AGENT_CONFIG_DIR}"
+	printf 'host_agent_state_dir=%q\n' "${REMOTE_HOST_AGENT_STATE_DIR}"
+	printf 'host_agent_runtime_dir=%q\n' "${REMOTE_HOST_AGENT_RUNTIME_DIR}"
 	cat <<'EOF_ACTIVATION'
 nix_env_path="${system_path}/sw/bin/nix-env"
 
@@ -1886,16 +1903,87 @@ if [ ! -x "${system_path}/bin/switch-to-configuration" ]; then
 	exit 1
 fi
 
-if [ "${rollback_projection_admission}" -eq 1 ]; then
-	if [ -x "${current_projection_preflight}" ]; then
-		echo "[rollback-admission] validating ${system_path} against durable host-agent state"
-		"${current_projection_preflight}" "${system_path}" "${goal}" rollback
-	else
-		echo "[rollback-admission] current generation has no projection preflight;" \
-			"refusing automatic rollback because projection safety cannot be proven" >&2
-		exit 1
+reject_generation_admission() {
+	printf '[generation-admission] %s\n' "$1" >&2
+	echo '[generation-admission] rejected-before-switch' >&2
+	exit "${2:-1}"
+}
+
+admission_programs=()
+if [ -f "${current_generation_preflight}" ] && [ -x "${current_generation_preflight}" ]; then
+	admission_programs=("${current_generation_preflight}")
+else
+	# A broken registered interface must never downgrade to legacy admission.
+	# Incoming-only registration is permitted on a first normal deployment;
+	# its pre-switch checks own admission until that generation is current.
+	admission_generations=("${current_system}")
+	if [ "${admission_mode}" = rollback ]; then
+		admission_generations+=("${system_path}")
+	fi
+	for generation in "${admission_generations[@]}"; do
+		for evidence in \
+			"${generation}/sw/bin/abird-host-agent-generation-preflight" \
+			"${generation}/etc/abird-host-agent/generation-admission-registry.json"; do
+			if [ -e "${evidence}" ] || [ -L "${evidence}" ]; then
+				reject_generation_admission "generation interface exists at ${evidence} but current dispatcher is unavailable"
+			fi
+		done
+	done
+
+	if [ "${admission_mode}" = rollback ]; then
+		if [ ! -d "${current_system}" ]; then
+			reject_generation_admission "current generation is unavailable; refusing automatic rollback"
+		fi
+		if [ -f "${current_projection_preflight}" ] && [ -x "${current_projection_preflight}" ]; then
+			# Compatibility with generations deployed before the dispatcher.
+			# Only the current generation may supply rollback admission.
+			if [ -f "${current_placement_preflight}" ] && [ -x "${current_placement_preflight}" ]; then
+				admission_programs+=("${current_placement_preflight}")
+			else
+				for evidence in \
+					"${current_placement_preflight}" \
+					"${system_path}/sw/bin/abird-host-agent-service-placement-preflight" \
+					"${current_system}/etc/abird-host-agent/service-placement-contract.json" \
+					"${system_path}/etc/abird-host-agent/service-placement-contract.json" \
+					"${host_agent_config_dir}/service-placement-contract.json"; do
+					if [ -e "${evidence}" ] || [ -L "${evidence}" ]; then
+						reject_generation_admission "placement evidence exists at ${evidence} but current placement validator is unavailable"
+					fi
+				done
+			fi
+			admission_programs+=("${current_projection_preflight}")
+		else
+			# Hosts which never enabled the agent have no authority to validate.
+			# Retained evidence, including broken links, requires admission.
+			for evidence in \
+				"${current_system}/etc/abird-host-agent" \
+				"${current_system}/sw/bin/abird-host-agent" \
+				"${current_projection_preflight}" \
+				"${current_system}/sw/bin/abird-host-agent-service-placement-preflight" \
+				"${system_path}/etc/abird-host-agent" \
+				"${system_path}/sw/bin/abird-host-agent" \
+				"${system_path}/sw/bin/abird-host-agent-projection-preflight" \
+				"${system_path}/sw/bin/abird-host-agent-service-placement-preflight" \
+				"${host_agent_config_dir}" "${host_agent_state_dir}" "${host_agent_runtime_dir}"; do
+				if [ -e "${evidence}" ] || [ -L "${evidence}" ]; then
+					reject_generation_admission "host-agent evidence exists at ${evidence}; refusing automatic rollback because projection safety cannot be proven"
+				fi
+			done
+			echo "[rollback-admission] no host-agent authority or state; proceeding with unmanaged-host rollback" >&2
+		fi
 	fi
 fi
+
+for admission_program in "${admission_programs[@]}"; do
+	echo "[generation-admission] mode=${admission_mode} validating ${system_path} against durable host-agent state" >&2
+	if "${admission_program}" "${system_path}" "${goal}" "${admission_mode}"; then
+		:
+	else
+		admission_rc="$?"
+		reject_generation_admission "validator rejected ${system_path}" "${admission_rc}"
+	fi
+done
+export ABIRD_HOST_AGENT_GENERATION_ADMISSION_MODE="${admission_mode}"
 
 NIXOS_INSTALL_BOOTLOADER=0 "${system_path}/bin/switch-to-configuration" "${goal}"
 
@@ -8848,7 +8936,7 @@ rollback_host_to_snapshot() {
 		fi
 	fi
 	post_promote_bootloader_goal="$(activation_post_promote_bootloader_goal "${node}" switch)" || return "$?"
-	rollback_script="$(nixbot_activation_command "${snapshot_path}" switch 1 "${post_promote_bootloader_goal}" 0 1)"
+	rollback_script="$(nixbot_activation_command "${snapshot_path}" switch 1 "${post_promote_bootloader_goal}" 0 rollback)"
 	rollback_runner="$(nixbot_activation_runner_command "${rollback_script}" "${rollback_unit}")"
 	rollback_runner="$(host_local_activation_lock_command "${rollback_runner}")"
 	rollback_observer="$(nixbot_activation_observer_command "${rollback_unit}")"
@@ -8875,6 +8963,10 @@ rollback_host_to_snapshot() {
 
 	report_activation_lock_contention_if_present "${node}" "${rollback_unit}" "${rollback_start_epoch}" "${rollback_output}" || true
 	if is_signal_exit_status "${rollback_rc}"; then
+		return "${rollback_rc}"
+	fi
+	if command_output_is_pre_switch_rejection "${rollback_output}"; then
+		echo "==> Rollback activation for ${node} was rejected before switching; current generation unchanged" >&2
 		return "${rollback_rc}"
 	fi
 	if ! command_output_is_transport_loss "${rollback_output}" &&
@@ -9561,7 +9653,7 @@ command_output_is_pre_switch_rejection() {
 	local output="$1"
 
 	[ -n "${output}" ] || return 1
-	grep -Fq 'Pre-switch checks failed' <<<"${output}"
+	grep -Eq '(^|[[:space:]])\[generation-admission\] rejected-before-switch($|[[:space:]])|Pre-switch checks failed' <<<"${output}"
 }
 
 command_failure_is_transport_loss() {
