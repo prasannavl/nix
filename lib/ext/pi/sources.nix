@@ -21,10 +21,10 @@
     package = "pi-subagents";
     owner = "nicobailon";
     repo = "pi-subagents";
-    version = "0.67.0";
-    rev = "aa75b3353836f7868898e3bd58234d21eaff1463";
-    srcHash = "sha256-XXqK6RnalPPxoOkW+RY81xRzOnB2VYfoFP47pGcHzEI=";
-    npmDepsHash = "sha256-Bto6gZcATd4R2ilK4fYlYzfiVaToLxR/6uCPSPqTuuI=";
+    version = "0.68.0";
+    rev = "f3ccf47dc236b6c0fcc0d897cec4a9e6da3e916d";
+    srcHash = "sha256-YamJDmW49sKG1FUhGcJZobeKZSWD/hWjHiSvi1kur54=";
+    npmDepsHash = "sha256-nOPUvjttX8kkUdXSCSf+/OMx9APy5cfJTbt837oNY0Y=";
   };
 
   pi-tps = {
