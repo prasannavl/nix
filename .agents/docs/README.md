@@ -15,6 +15,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ## Design Patterns
 
+- `.agents/docs/design-patterns/host-control-integration-boundaries.md`: Shared
+  host-control composition, publication, admission, and engine compatibility
+  boundaries, with Pvl topology ownership and pending upstream APIs explicit.
+
 - `.agents/docs/design-patterns/external-source-units.md`: Canonical external
   package ownership, `sources.nix` discovery, report-only and update-capable
   unit conventions, and package-local updater rules across `lib/ext` and
@@ -440,6 +444,13 @@ Use this index as the canonical map for `.agents/docs/**`.
   compose, nginx, ingress, and soft backend-dependency policy.
 
 ### Tooling
+
+- `.agents/docs/notes/tooling/abird-post-1fd-port-2026-09.md`: Complete
+  42-commit Abird audit through `829d81ed`, logical fabric/Kanidm/Nixbot ports,
+  Pvl adaptations, source ownership exclusions, review, and validation.
+- `.agents/docs/notes/tooling/abird-post-1fd-parity-2026-09.md`: Byte/blob/mode
+  parity inventory for the same port, every common-path divergence, and complete
+  source-only and Pvl-only path lists.
 
 - `.agents/docs/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`: Records
   the AI-agent validation rule to avoid explicit `path:` flake refs and prefer
