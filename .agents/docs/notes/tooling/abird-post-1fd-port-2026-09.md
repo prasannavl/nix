@@ -20,10 +20,11 @@ Abird local master, origin/master, and Pvl abird/master matched frozen source
 outside this published-master audit.
 
 Implementation commits on primary master are `f5e45bbc` (fabric), `48fccc8d`
-(Kanidm), and `5a836363` (Nixbot). The documentation commit follows these three
-logical units. SSH commit signing remains enabled. Temporary intent-to-add
-entries from candidate validation were cleared. Secret content was not inspected
-or imported. No deployment or persistent live mutation.
+(Kanidm), and `5a836363` (Nixbot). Audit documentation is committed as
+`7c966194` after these three logical units. SSH commit signing remains enabled.
+Temporary intent-to-add entries from candidate validation were cleared. Secret
+content was not inspected or imported. No deployment or persistent live
+mutation.
 
 ## Logical units
 
@@ -149,8 +150,8 @@ following the documented native systemd.user migration; it must not be
 resurrected.
 
 Primary master now contains all relevant ports through the frozen source tip.
-The three implementation commits retain the reviewed candidate behavior and
-parity; the publication and worktree cleanup steps follow under user approval.
+The implementation commits retain the reviewed candidate behavior and parity.
+Publication and worktree removal completed under user approval.
 
 ## Closeout
 
@@ -162,7 +163,27 @@ common paths, 464 exact, 25 explained content differences, no mode differences,
 paths changed in the range, 71 are exact, seven are explicit adaptations and 50
 are owned exclusions.
 
-Markdown formatting and whitespace checks pass. Candidate temporary
-intent-to-add entries and scratch files were cleared before integration.
-Implementation is committed on primary master; publication and authorized
-worktree removal are the remaining closeout steps. No deployment.
+The primary-master series `1b112870..7c966194` was published through the
+configured pre-push hook with import from derivation disabled. Formatting,
+Statix, Deadnix, ShellCheck, Markdownlint, Actionlint and Terraform lint passed;
+root package/app/shell indexes evaluated on all four systems, all seven Pvl host
+toplevel derivations evaluated, and conventional Nixbot package format/lint
+checks passed. No hook bypass or force push.
+
+Local HEAD, origin/master and `git ls-remote origin refs/heads/master` converged
+at `7c966194b0975eb3662289c2d1d8ebcde54403c4`, with clean main status and
+divergence `0 0`. All four implementation/audit commits contain SSH signature
+headers. This closeout-only documentation commit follows that verified
+publication; its push receives the normal hook and final ref-convergence check.
+
+A committed-main blob/mode recheck retains 464 exact common paths, 25 explained
+content differences and no mode differences. Every unchanged candidate code/doc
+file was checked against the retained main commits; the two audit documents
+received only deliberate integration/publication updates. The original candidate
+manifest showed no intervening side-worktree change.
+
+The authorized `worktrees/abird-port-20260915` worktree was removed after
+verified publication. Only the primary worktree remains. Candidate temporary
+intent-to-add state and scratch files were cleared before integration;
+publication scratch files are removed after successful final push. No deployment
+or persistent live mutation.
