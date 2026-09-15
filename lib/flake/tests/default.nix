@@ -71,11 +71,20 @@
         domain = "${stackName}.example.test";
         internalDomain = "${stackName}.internal";
         activeEndpointGroup = "live";
-        endpointGroups.live = {
-          project = stackName;
-          subnetOctet = 10;
-          weight = 100;
-          roles = {};
+        endpointGroups = {
+          live = {
+            project = stackName;
+            subnetOctet = 10;
+            weight = 100;
+            roles = {};
+          };
+          cold = {
+            project = "${stackName}-cold";
+            subnetOctet = 11;
+            weight = 0;
+            memberRoles = ["proxy"];
+            roles.proxy = {};
+          };
         };
         enableExternalConnectors = false;
         tunnels = {};
@@ -102,6 +111,7 @@
           weight = 70;
           nodeLabel = "role";
         };
+        worker = {};
       };
       dependencies.db.stack = "platform";
     };
@@ -119,6 +129,10 @@
       db = {
         host = "platform-db";
         octet = 30;
+      };
+      worker = {
+        host = "app-worker";
+        octet = 40;
       };
     };
     services = {
@@ -161,7 +175,7 @@
       secretNamespace = "test";
       org = "test";
       limits = registry.limits;
-      trustedCidrs = [];
+      trustedCidrs = ["10.30.0.0/16" "fd42:30::/48"];
       splitHorizonRole = "proxy";
       stackBaseArgs = {
         defaultUser = "test";
@@ -201,6 +215,7 @@
     ${system} = outputs;
   };
 in {
+  lib-flake-fabric-contract = import ./fabric-contract.nix {inherit pkgs;};
   lib-flake-fabric-projection = import ./fabric-projection.nix {inherit pkgs;};
   lib-flake-phase-projection = import ./phase-projection.nix {inherit pkgs;};
   lib-flake-service-placements = import ./service-placements.nix {inherit pkgs;};
@@ -209,13 +224,25 @@ in {
     pkgs.runCommand "lib-flake-nested-rust-package-test" {} ''
       touch "$out"
     '';
-  lib-flake-stack-set = assert stackSet.app.fixture.owned == ["proxy" "web"];
+  lib-flake-stack-set = assert stackSet.app.fixture.owned == ["proxy" "web" "worker"];
   assert stackSet.app.fixture.dependencies == ["db"];
   assert builtins.attrNames stackSet.app.serviceRegistry.domains == ["apex"];
   assert stackSet.app.serviceRegistry.dns.routeDomains == ["~app.test"];
+  assert stackSet.app.serviceRegistry.dns.trustedCidrsByFamily
+  == {
+    ipv4 = ["10.30.0.0/16"];
+    ipv6 = ["fd42:30::/48"];
+  };
+  assert stackSet.app.serviceRegistry.dns.loopbackCidrsByFamily
+  == {
+    ipv4 = ["127.0.0.0/8"];
+    ipv6 = ["::1/128"];
+  };
   assert (builtins.head stackSet.app.serviceRegistry.roles.web.endpoints.live).project == "role-project";
   assert (builtins.head stackSet.app.serviceRegistry.roles.web.endpoints.live).weight == 70;
   assert (builtins.head stackSet.app.serviceRegistry.roles.db.endpoints.live).project == "platform";
+  assert stackSet.app.serviceRegistry.roles.db.endpoints ? cold;
+  assert !(stackSet.app.serviceRegistry.roles.worker.endpoints ? cold);
   assert stackSet.app.serviceRegistry.roleForService "app" == "web";
   assert remappedAppStack.serviceRegistry.roleForService "app" == "proxy";
   assert remappedAppStack.serviceRegistry.upstreamForService "app" "http" == "10.10.10.10:8080";

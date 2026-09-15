@@ -25,7 +25,12 @@
             inherit declaration name owner profile registry;
           };
           overrides =
-            builtins.removeAttrs declaration ["stack"]
+            builtins.removeAttrs declaration [
+              "endpoint"
+              "endpointGroup"
+              "placement"
+              "stack"
+            ]
             // {endpoint = endpoint;};
         in
           recursiveMerge registry.roles.${name} overrides

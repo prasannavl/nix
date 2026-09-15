@@ -244,7 +244,7 @@ rec {
     dnsRouteDomains,
     internalDomain,
     limits ? {},
-    loopbackCidrs ? ["127.0.0.0/8"],
+    loopbackCidrs ? ["127.0.0.0/8" "::1/128"],
     domains ? {},
     tunnelDomains ? builtins.attrValues domains,
     roleHosts,
@@ -254,9 +254,38 @@ rec {
     splitHorizonRole ? "proxy",
     trustedCidrs ? [],
   }: let
+    cidrsByFamily = cidrs: {
+      ipv4 = builtins.filter (cidr: builtins.match ".*:.*" cidr == null) cidrs;
+      ipv6 = builtins.filter (cidr: builtins.match ".*:.*" cidr != null) cidrs;
+    };
+    loopbackCidrsByFamily = cidrsByFamily loopbackCidrs;
+    trustedCidrsByFamily = cidrsByFamily trustedCidrs;
+    trustedCidrsWithLoopback = loopbackCidrs ++ trustedCidrs;
+    trustedCidrsWithLoopbackByFamily = cidrsByFamily trustedCidrsWithLoopback;
+    filterAttrs = predicate: attrs:
+      builtins.listToAttrs (
+        builtins.concatMap (
+          name:
+            if predicate name attrs.${name}
+            then [
+              {
+                inherit name;
+                value = attrs.${name};
+              }
+            ]
+            else []
+        ) (builtins.attrNames attrs)
+      );
     hostMap = hostsByDomain domains;
     resolvedTunnelHosts = tunnelHosts tunnelDomains;
-    endpointGroupFor = group: builtins.removeAttrs endpointGroups.${group} ["activeEndpointGroup" "enableExternalConnectors" "roles" "tunnels"];
+    endpointGroupFor = group: builtins.removeAttrs endpointGroups.${group} ["activeEndpointGroup" "enableExternalConnectors" "memberRoles" "reservations" "roles" "tunnels"];
+    hasExplicitRoleEndpoint = role:
+      builtins.hasAttr role roleEndpoints
+      && builtins.attrNames roleEndpoints.${role} != [];
+    roleBelongsToGroup = role: group:
+      hasExplicitRoleEndpoint role
+      || !(endpointGroups.${group} ? memberRoles)
+      || builtins.hasAttr role endpointGroups.${group}.roles;
     endpointSpecFor = role: group:
       (endpointGroupFor group)
       // (endpointGroups.${group}.roles.${role} or {})
@@ -264,7 +293,7 @@ rec {
 
     mkEndpoint = group: spec: {
       project = spec.project;
-      host = roleHosts.${spec.role};
+      host = spec.host or roleHosts.${spec.role};
       address = spec.address or "10.10.${toString spec.subnetOctet}.${toString roleOctets.${spec.role}}";
       weight = spec.weight;
       nodeLabel = spec.nodeLabel or group;
@@ -280,7 +309,7 @@ rec {
             (mkEndpoint group ((endpointSpecFor role group) // {role = role;}))
           ]
         )
-        endpointGroups;
+        (filterAttrs (group: _spec: roleBelongsToGroup role group) endpointGroups);
     };
 
     roles = builtins.mapAttrs (role: _host: mkRole role) roleHosts;
@@ -315,7 +344,10 @@ rec {
                   })
                   roles.${role}.endpoints.${group}
               )
-              dnsEndpointGroups)
+              (builtins.filter (
+                  group: builtins.hasAttr group roles.${role}.endpoints
+                )
+                dnsEndpointGroups))
         )
         roleNames);
     tunnelDnsRecords =
@@ -384,7 +416,7 @@ rec {
         routeDomains = dnsRouteDomains;
         loopbackCidrs = loopbackCidrs;
         trustedCidrs = trustedCidrs;
-        trustedCidrsWithLoopback = loopbackCidrs ++ trustedCidrs;
+        inherit loopbackCidrsByFamily trustedCidrsByFamily trustedCidrsWithLoopback trustedCidrsWithLoopbackByFamily;
         records = dnsRecords;
         hostsLines = dnsHostsLines;
         hostsText = builtins.concatStringsSep "\n" dnsHostsLines;
