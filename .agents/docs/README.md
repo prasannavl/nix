@@ -454,6 +454,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/abird-incompat-surface-2026-09.md`: Post-adoption
+  re-audit and the 18-path byte-to-byte incompatibility surface, all
+  intentional, with per-path causes and parity set SHA.
 - `.agents/docs/notes/tooling/abird-post-8fc-repeat-port-2026-09.md`: Complete
   77-commit Abird audit through `1b64de24`, Kanidm/Postgres/Graphiti/registry
   ports, updater token bridge, per-commit statuses, and parity inventory.
