@@ -1,5 +1,5 @@
 {config, ...}: let
-  ollamaPort = config.services.podman-compose.pvl.instances.ollama.exposedPorts.main.port;
+  ai = config.services.ai;
 in {
   config.services.podman-compose.pvl.instances.openwebui = rec {
     exposedPorts.http = {
@@ -16,7 +16,7 @@ in {
           ports:
             - "${toString exposedPorts.http.port}:8080"
           environment:
-            - OLLAMA_BASE_URL=http://127.0.0.1:${toString ollamaPort}
+            - OLLAMA_BASE_URL=http://127.0.0.1:${toString ai.backends.ollama.portsByName.ollama}
           volumes:
             - ./open-webui_data:/app/backend/data
     '';

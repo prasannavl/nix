@@ -4,6 +4,7 @@
       config.allowUnfree = true;
     },
 }: let
+  aiTests = import ../services/ai/tests {pkgs = pkgs;};
   incusTests = import ../incus/tests {pkgs = pkgs;};
   forgejoTests = import ../services/forgejo/tests {pkgs = pkgs;};
   gcpVmsFirewallTest = import ../../pkgs/ext/gcp-vms/tests {pkgs = pkgs;};
@@ -77,6 +78,8 @@
   };
 in
   {
+    lib-ai-lib = aiTests.lib;
+    lib-ai-module = aiTests.module;
     lib-incus-helper = incusTests.helper;
     lib-incus-module = incusTests.module;
     lib-forgejo-helper = forgejoTests.helper;

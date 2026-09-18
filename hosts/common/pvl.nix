@@ -6,10 +6,13 @@
   imports = [
     ./all.nix
     ../../lib/incus
+    ../../lib/services/ai/module.nix
     ../../lib/swap-auto.nix
     ../../lib/profiles/all.nix
     ../../lib/podman.nix
   ];
+
+  services.ai.stack.name = "pvl";
 
   environment.systemPackages = with pkgs; [
     # Core

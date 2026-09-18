@@ -1,73 +1,39 @@
-{
-  lib,
-  pkgs,
-  ...
-}: let
-  requiredModels = [
-    "nomic-embed-text"
-    "gemma4:e2b"
-    "gemma4:e4b"
-    "gemma4:26b"
-    "gemma4:31b"
-    "qwen3.5:0.8b"
-    "qwen3.5:2b"
-    "qwen3.5:4b"
-    "qwen3.5:9b"
-    "qwen3.8:27b"
-    "qwen3.6:35b-a3b"
-    "gpt-oss:20b"
-    "ornith-1.5:9b"
-    "ornith-1.5:35b"
-  ];
-  retiredModels = [
-    "qwen3.6:27b"
-  ];
-  ollamaLib = import ../../../../lib/services/ollama {inherit lib pkgs;};
+{config, ...}: let
+  ai = config.services.ai;
 in {
-  config = lib.mkMerge [
-    (ollamaLib.mkModelReconciler {
-      backendServices = ["pvl-ollama.service"];
-      conditionUser = "pvl";
-      managedTarget = "pvl-managed";
-      name = "pvl-ollama-models";
-      readyTarget = "pvl-ollama-ready.target";
-      timeoutReadySeconds = 3600;
-      inherit requiredModels retiredModels;
-    })
-    {
-      services.podman-compose.pvl.instances.ollama = rec {
-        exposedPorts.main = {
-          port = 11434;
-          openFirewall = true;
-        };
+  # Container definition only: image, devices, and tuning. Model pulls and
+  # lifecycle are owned by services.ai.
+  services.podman-compose.pvl.instances.ollama = rec {
+    exposedPorts.main = {
+      port = ai.backends.ollama.portsByName.ollama;
+      openFirewall = true;
+    };
 
-        source = ''
-          services:
-            ollama:
-              image: docker.io/ollama/ollama:0.34.0-rocm
-              container_name: ollama
-              ports:
-                - "${toString exposedPorts.main.port}:11434"
-              volumes:
-                - ./ollama_data:/root/.ollama
-              environment:
-                - OLLAMA_VULKAN=1
-                - AMD_VISIBLE_DEVICES=0
-                - OLLAMA_FLASH_ATTENTION=1
-                - OLLAMA_KV_CACHE_TYPE=q8_0
-                - OLLAMA_KEEP_ALIVE=12h
-                - ROCR_VISIBLE_DEVICES=0
-                - OLLAMA_CONTEXT_LENGTH=262144
-              devices:
-                - "/dev/kfd:/dev/kfd"
-                - "/dev/dri:/dev/dri"
-              group_add:
-                - keep-groups
-        '';
+    source = ''
+      services:
+        ollama:
+          image: docker.io/ollama/ollama:0.34.0-rocm
+          container_name: ollama
+          ports:
+            - "${toString exposedPorts.main.port}:11434"
+          volumes:
+            - ./ollama_data:/root/.ollama
+          environment:
+            - OLLAMA_VULKAN=1
+            - AMD_VISIBLE_DEVICES=0
+            - OLLAMA_FLASH_ATTENTION=1
+            - OLLAMA_KV_CACHE_TYPE=q8_0
+            - OLLAMA_KEEP_ALIVE=12h
+            - ROCR_VISIBLE_DEVICES=0
+            - OLLAMA_CONTEXT_LENGTH=262144
+          devices:
+            - "/dev/kfd:/dev/kfd"
+            - "/dev/dri:/dev/dri"
+          group_add:
+            - keep-groups
+    '';
 
-        # Model pulls run in pvl-ollama-models-pull; this covers cold image/container startup.
-        serviceOverrides.serviceConfig.TimeoutStartSec = "5min";
-      };
-    }
-  ];
+    # Model pulls run in pvl-ollama-models-pull; this covers cold image/container startup.
+    serviceOverrides.serviceConfig.TimeoutStartSec = "5min";
+  };
 }

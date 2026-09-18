@@ -1,5 +1,6 @@
 {...}: {
   imports = [
+    ./ai.nix
     ./audiobookshelf
     ./beszel
     ./dockge.nix

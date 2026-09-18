@@ -446,6 +446,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   reconciler lib with Hugging Face reference semantics, staged single-sourced
   preset INI, filesystem cache retirement, and load-failure tolerance for cached
   weights.
+- `.agents/docs/notes/services/ai-model-service-2026-09.md`: Records the
+  byte-shared `lib/services/ai` module and catalog that centralizes AI model
+  policy under `services.ai` (selection, roles, deployments, lifecycle), the
+  policy/machine plane split of the host files, the per-host fleet policy, and
+  the migration deltas from the hand-wired reconciler bindings.
 - `.agents/docs/notes/services/native-user-graph-legacy-manager-removal-2026-07.md`:
   Records the final removal of the superseded `systemd-user-manager` module,
   checks, documentation, and nixbot compatibility path after native

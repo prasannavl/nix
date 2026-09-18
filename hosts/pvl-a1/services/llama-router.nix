@@ -7,7 +7,7 @@ in {
   # variants share one GGUF cache; downloads land once and either container
   # serves the same selection.
   services.podman-compose.pvl.instances = {
-    # AMD/ROCm variant, mirroring the ollama/ollama-nvidia pair.
+    # AMD/ROCm variant, auto-started like the Ollama pair's AMD side.
     llama-router = rec {
       exposedPorts.main.port = ai.backends.llamaRouter.portsByName.llama-router;
 
@@ -26,12 +26,17 @@ in {
               - ${cacheDir}:/cache
             environment:
               - LLAMA_CACHE=/cache
+              - ROCR_VISIBLE_DEVICES=0
             devices:
               - "/dev/kfd:/dev/kfd"
               - "/dev/dri:/dev/dri"
             group_add:
               - keep-groups
       '';
+
+      # GGUF downloads run in pvl-llama-router-models; this covers cold image
+      # and container startup.
+      serviceOverrides.serviceConfig.TimeoutStartSec = "10min";
     };
 
     # NVIDIA/CUDA variant; same models.ini, same shared cache.

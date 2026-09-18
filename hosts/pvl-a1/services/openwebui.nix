@@ -1,6 +1,9 @@
 {config, ...}: let
-  ollamaPort = config.services.podman-compose.pvl.instances.ollama.exposedPorts.main.port;
-  ollamaNvidiaPort = config.services.podman-compose.pvl.instances.ollama-nvidia.exposedPorts.main.port;
+  ai = config.services.ai;
+  ollamaBaseUrls =
+    builtins.concatStringsSep
+    ";"
+    (builtins.map (port: "http://host.containers.internal:${toString port}") ai.backends.ollama.ports);
 in {
   services.podman-compose.pvl.instances.openwebui = rec {
     exposedPorts.http = {
@@ -15,7 +18,7 @@ in {
           ports:
             - "${toString exposedPorts.http.port}:8080"
           environment:
-            - OLLAMA_BASE_URLS=http://host.containers.internal:${toString ollamaPort};http://host.containers.internal:${toString ollamaNvidiaPort}
+            - OLLAMA_BASE_URLS=${ollamaBaseUrls}
           volumes:
             - ./open-webui_data:/app/backend/data
     '';
