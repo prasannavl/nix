@@ -31,6 +31,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/design-patterns/external-service-secret-placement.md`:
   Stack-scoped external-provider secret placement under
   `data/secrets/<stack>/ext/<provider>`.
+- `.agents/docs/design-patterns/service-client-access.md`: Named-port caller
+  policy deriving application destinations and bounded firewall sources from
+  service placement, including bridge and guest-egress assumptions.
 - `.agents/docs/design-patterns/podman-compose-instance.md`: Canonical attribute
   ordering for `services.podman-compose.<stack>.instances.<name>` declarations
   and direct `/nix/store` mounts for read-only package content.
@@ -445,6 +448,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/abird-post-8fc-repeat-port-2026-09.md`: Complete
+  77-commit Abird audit through `1b64de24`, Kanidm/Postgres/Graphiti/registry
+  ports, updater token bridge, per-commit statuses, and parity inventory.
 - `.agents/docs/notes/tooling/abird-post-829-port-2026-09.md`: Complete
   15-commit repeat audit across published and configured Abird branches,
   registry/updater port in main, already adopted units, exclusions, and checks.
