@@ -43,6 +43,12 @@ Use this index as the canonical map for `.agents/docs/**`.
   environment, service-registry, package-boundary, and deferred-consumer rules.
 - `.agents/docs/design-patterns/tunnels-and-static-origins.md`: Tunnel edge-IP
   policy and static-origin rollout rules.
+- `.agents/docs/design-patterns/shared-test-areas.md`: Canonical split of shared
+  `lib/`, `pkgs/`, and `scripts/` test areas into byte-identical generic files
+  plus repository identity homes (the per-topology directory
+  `lib/flake/tests/pvl/`; service-level identity checks localize with their
+  service), with repository composition injected from the manifest through
+  `lib/flake/repo-checks.nix`.
 
 ## Notes
 

@@ -4,25 +4,26 @@
   nixpkgs ? inputs.nixpkgs,
   systems ? flake-utils.lib.defaultSystems,
   stackProfiles ? import ../stacks,
+  # Repository composition enters exclusively through these defaulted
+  # arguments: the shared assembly below stays repository-blind, and each
+  # repository's manifest (flake.nix) declares its own facts (see
+  # .agents/docs/design-patterns/shared-test-areas.md).
   servicePlacementFile ? null,
   serviceMoveDirectory ? null,
   phaseProjectionDirectory ? null,
-}: let
-  flakeProfileInputNames = {
+  repoChecksFn ? ({...}: {}),
+  flakeProfileInputNames ? {
     default = {
       nixpkgs = "nixpkgs";
       homeManager = "home-manager";
       agenix = "agenix";
       disko = "disko";
       vscodeExt = "vscode-ext";
-      antigravity = "antigravity";
-      p7Borders = "p7-borders";
-      p7Cmds = "p7-cmds";
-      noctalia = "noctalia";
-      llmAgents = "llm-agents";
     };
-  };
-
+  },
+  extraCommonModules ? [],
+  defaultMachineProfileName ? null,
+}: let
   machineProfiles = {
     vm = {
       name = "vm";
@@ -42,20 +43,13 @@
 
   mkFlakeProfile = name: inputNames: let
     selected = builtins.mapAttrs (_: inputName: inputs.${inputName}) inputNames;
+    # Each profile key selects a flake input; the selected values override the
+    # same-named flake inputs so hosts see e.g. flakeProfile.inputs.home-manager.
     profileInputs =
       inputs
-      // {
-        nixpkgs = selected.nixpkgs;
-        home-manager = selected.homeManager;
-        agenix = selected.agenix;
-        disko = selected.disko;
-        vscode-ext = selected.vscodeExt;
-        antigravity = selected.antigravity;
-        p7-borders = selected.p7Borders;
-        p7-cmds = selected.p7Cmds;
-        noctalia = selected.noctalia;
-        llm-agents = selected.llmAgents;
-      };
+      // nixpkgs.lib.mapAttrs'
+      (profileKey: inputName: nixpkgs.lib.nameValuePair inputName selected.${profileKey})
+      inputNames;
   in
     selected
     // {
@@ -130,21 +124,24 @@
   projectionRuntimeHosts; projectionRuntimeHosts;
 
   rootLib = import ./. {
-    inherit flake-utils inputs nixpkgs overlays;
+    inherit flake-utils inputs nixpkgs overlays repoChecksFn;
     stackProfiles = effectiveStackProfiles;
   };
 
   packageOutputs = rootLib.outputsFor systems;
 
-  commonModulesFor = flakeProfile: [
-    flakeProfile.homeManager.nixosModules.home-manager
-    flakeProfile.agenix.nixosModules.default
-    {nixpkgs.overlays = flakeProfile.overlays;}
-    ../podman-compose
-    ../services/abird-host-agent
-    rootLib.serviceModule.portCheckModule
-    {imports = builtins.attrValues (builtins.removeAttrs rootLib.nixosModules ["default"]);}
-  ];
+  commonModulesFor = flakeProfile:
+    [
+      flakeProfile.homeManager.nixosModules.home-manager
+      flakeProfile.agenix.nixosModules.default
+      {nixpkgs.overlays = flakeProfile.overlays;}
+      ../podman-compose
+    ]
+    ++ extraCommonModules
+    ++ [
+      rootLib.serviceModule.portCheckModule
+      {imports = builtins.attrValues (builtins.removeAttrs rootLib.nixosModules ["default"]);}
+    ];
 
   defaultStack = {
     nixosConfig = {...}: {
@@ -157,7 +154,11 @@
   mkNixosSystem = {
     hostName,
     flakeProfile ? flakeProfiles.default,
-    machineProfile ? null,
+    machineProfile ? (
+      if defaultMachineProfileName == null
+      then null
+      else machineProfiles.${defaultMachineProfileName}
+    ),
     modules,
     stack ? null,
     system ? "x86_64-linux",

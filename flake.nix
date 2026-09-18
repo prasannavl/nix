@@ -91,5 +91,26 @@
   };
 
   outputs = inputs:
-    (import ./lib/flake/root.nix {inputs = inputs;}).outputs;
+    (import ./lib/flake/root.nix {
+      inherit inputs;
+      # Repository composition manifest: every repository-specific fact about
+      # the shared flake library is declared here and injected as arguments
+      # (see .agents/docs/design-patterns/shared-test-areas.md).
+      repoChecksFn = import ./lib/flake/repo-checks.nix;
+      # The full table is required: this assignment replaces the shared
+      # default wholesale, so omitting an entry drops it from the profile.
+      flakeProfileInputNames.default = {
+        nixpkgs = "nixpkgs";
+        homeManager = "home-manager";
+        agenix = "agenix";
+        disko = "disko";
+        vscodeExt = "vscode-ext";
+        antigravity = "antigravity";
+        p7Borders = "p7-borders";
+        p7Cmds = "p7-cmds";
+        noctalia = "noctalia";
+        llmAgents = "llm-agents";
+      };
+      extraCommonModules = [./lib/services/abird-host-agent];
+    }).outputs;
 }

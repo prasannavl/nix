@@ -4,6 +4,11 @@
   flake-utils,
   overlays ? [],
   stackProfiles ? {},
+  # Repository check composition (identity checks and product check
+  # promotions), injected by the caller with an empty default so this library
+  # stays repository-blind; see
+  # .agents/docs/design-patterns/shared-test-areas.md.
+  repoChecksFn ? ({...}: {}),
 }: let
   lib = nixpkgs.lib;
 
@@ -81,7 +86,9 @@ in rec {
     # This repository's checks exercise NixOS modules and Linux VM tests.
     # Portable packages and development shells remain available on Darwin.
     checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
-      (libTestsFn {pkgs = pkgs;}) // (flakeTestsFn {pkgs = pkgs;})
+      (libTestsFn {pkgs = pkgs;})
+      // (flakeTestsFn {pkgs = pkgs;})
+      // (repoChecksFn {inherit pkgs lib packageSet;})
     );
 
     lint = lintFn {

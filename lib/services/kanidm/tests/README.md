@@ -10,6 +10,14 @@ writes. `default.nix` checks canonical normalization and
 unsupported/legacy-field rejection. Both are registered in
 `lib/tests/default.nix`.
 
+Repository-specific fixtures, real-host acceptance proofs, and their
+documentation consolidate in the repository's identity homes per
+`.agents/docs/design-patterns/shared-test-areas.md`: flake-level identity checks
+in the topology identity directory (`lib/flake/tests/<topology>/`), and this
+service's per-stack identity checks in per-stack files beside these shared tests
+(this repository's: `gap3.nix`). Identity checks are registered from
+repository-owned flake wiring, not from the shared `lib/tests/default.nix`.
+
 The Entry and CLI fixtures describe exact Kanidm 1.10.4 and 1.11.2 contracts.
 When upgrading, compare exact upstream parser/serialization and mutation
 semantics, build the actual CLI, run these fixtures and command/help checks,
@@ -59,10 +67,3 @@ UserInfo on the returned tokens fails. Neither call alone establishes a renewed
 controller lease. The suite also proves stable issuer/subject across sessions,
 ports and rename, current group UUIDs, separate grant revocation, parent logout,
 refresh rotation, and ES256/issuer/audience/nonce/expiry/subject validation.
-
-The Abird controller, hosted-browser, and native application acceptance proofs
-belong to the upstream product and are excluded from Pvl. Their commands and
-fixture requirements are retained in the
-[upstream identity proof guide](https://github.com/abird-ai/z/blob/829d81ed59b06d6d4500c92c5917facabcc92b26/lib/services/kanidm/tests/README.md).
-The shared standalone authority/browser fixtures above remain available here;
-they are separate from the packaged helper and normalization checks.

@@ -261,7 +261,6 @@ in {
   assert !(outputs.packages ? host-manager);
   assert outputs.packages.abird-host-agent.meta.mainProgram == "abird-host-agent";
   assert outputs.packages.abird-host-manager.meta.mainProgram == "abird-host-manager";
-  assert outputs.apps.cr.program == "${outputs.packages.codex-wrapper}/bin/cr";
   assert outputs.apps.cloudflare-apps-deploy.program == "${outputs.packages.cloudflare-apps.deploy}/bin/cloudflare-apps-deploy";
   assert packageOutputs.stdPackages."cloudflare-apps/llmug-hello".drvPath == packageOutputs.packages.cloudflare-apps.llmug-hello.drvPath;
   assert nativeClientCaDefaultsStack.defaultCaCertContainerPath == "/run/secrets/test-ca.crt";
