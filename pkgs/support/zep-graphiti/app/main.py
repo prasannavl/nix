@@ -9,7 +9,6 @@ import re
 import uuid as uuidlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from typing import Any, Optional, get_args, get_origin
 
 import uvicorn
@@ -23,6 +22,7 @@ from graphiti_core.edges import EntityEdge
 from graphiti_core.errors import EdgeNotFoundError, GroupsEdgesNotFoundError, NodeNotFoundError
 from graphiti_core.llm_client import OpenAIClient
 from graphiti_core.llm_client.config import LLMConfig
+from graphiti_core.llm_client.errors import RefusalError
 from graphiti_core.nodes import EntityNode, EpisodeType, EpisodicNode
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 
@@ -442,21 +442,16 @@ def normalize_node_resolutions(value: dict[str, Any]) -> dict[str, Any]:
     for resolution in resolutions:
         if not isinstance(resolution, dict):
             continue
-        if "duplicate_idx" not in resolution and "duplication_idx" in resolution:
-            resolution["duplicate_idx"] = resolution["duplication_idx"]
         resolution["id"] = coerce_int(resolution.get("id"))
-        resolution["duplicate_idx"] = coerce_int(resolution.get("duplicate_idx"))
-        resolution["additional_duplicates"] = coerce_int_list(
-            resolution.get("additional_duplicates")
+        resolution["duplicate_candidate_id"] = coerce_int(
+            resolution.get("duplicate_candidate_id")
         )
     return value
 
 
 def normalize_edge_duplicate(value: dict[str, Any]) -> dict[str, Any]:
-    value["duplicate_fact_id"] = coerce_int(value.get("duplicate_fact_id"))
+    value["duplicate_facts"] = coerce_int_list(value.get("duplicate_facts"))
     value["contradicted_facts"] = coerce_int_list(value.get("contradicted_facts"))
-    if not isinstance(value.get("fact_type"), str) or not value["fact_type"].strip():
-        value["fact_type"] = "DEFAULT"
     return value
 
 
@@ -476,7 +471,7 @@ class ConfigurableOpenAIClient(OpenAIClient):
         self.reasoning_effort = reasoning_effort
         self.request_timeout_seconds = request_timeout_seconds
         if structured_max_retries is not None:
-            self.max_retries = structured_max_retries
+            self.MAX_RETRIES = structured_max_retries
 
     def request_kwargs(self) -> dict[str, Any]:
         kwargs = {}
@@ -545,10 +540,10 @@ class ConfigurableOpenAIClient(OpenAIClient):
                 continue
         raise ValueError("structured response did not contain valid JSON")
 
-    @staticmethod
-    def parsed_response(parsed: BaseModel) -> Any:
-        message = SimpleNamespace(parsed=parsed, refusal=None)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    def _handle_structured_response(self, response: Any) -> tuple[dict[str, Any], int, int]:
+        # This client owns a Chat Completions transport, including token usage.
+        # Graphiti's default structured handler expects a Responses API object.
+        return self._handle_json_response(response)
 
     @staticmethod
     def normalize_structured_json(response_model: type[BaseModel], value: Any) -> Any:
@@ -590,7 +585,11 @@ class ConfigurableOpenAIClient(OpenAIClient):
         temperature: float | None,
         max_tokens: int,
         response_model: type[BaseModel],
+        reasoning: str | None = None,
+        verbosity: str | None = None,
     ) -> Any:
+        # Provider defaults from Graphiti apply to its Responses API transport.
+        # Our local endpoint uses the explicit reasoning_effort configuration.
         response = await self.create_chat_completion(
             model=model,
             messages=self.structured_messages(messages, response_model),
@@ -599,11 +598,15 @@ class ConfigurableOpenAIClient(OpenAIClient):
             response_format={"type": "json_object"},
             **self.request_kwargs(),
         )
-        content = response.choices[0].message.content or ""
+        message = response.choices[0].message
+        if message.refusal:
+            raise RefusalError(message.refusal)
+        content = message.content or ""
         parsed_json = self.extract_json(content)
         parsed_json = self.normalize_structured_json(response_model, parsed_json)
         parsed = response_model.model_validate(parsed_json)
-        return self.parsed_response(parsed)
+        response.choices[0].message.content = parsed.model_dump_json()
+        return response
 
 
 class Message(BaseModel):
@@ -927,8 +930,8 @@ async def add_episode(group_id: str, episode: EpisodeRequest) -> dict[str, Any]:
     graph_token = current_graph_id.set(group_id)
     try:
         result = await require_graph().add_episode(
-            # Graphiti 0.22 treats uuid as an existing episode lookup/update key,
-            # not as a caller-selected id for new episodes.
+            # Graphiti treats uuid as an existing episode lookup/update key,
+            # rather than a caller-selected id for new episodes.
             group_id=group_id,
             name=episode.name or "mirofish",
             episode_body=episode.data,

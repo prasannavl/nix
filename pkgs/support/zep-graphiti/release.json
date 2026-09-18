@@ -1,0 +1,4 @@
+{
+  "image": "docker.io/zepai/graphiti:0.30.2",
+  "coreVersion": "0.30.2"
+}

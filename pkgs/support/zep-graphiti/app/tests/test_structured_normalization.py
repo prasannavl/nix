@@ -113,6 +113,10 @@ def load_app_module():
                 "graphiti_core.llm_client.config",
                 LLMConfig=LLMConfig,
             ),
+            "graphiti_core.llm_client.errors": module(
+                "graphiti_core.llm_client.errors",
+                RefusalError=Exception,
+            ),
             "graphiti_core.nodes": module(
                 "graphiti_core.nodes",
                 EntityNode=object,
@@ -172,11 +176,10 @@ class StructuredNormalizationTest(unittest.TestCase):
             "Olamgroup",
         )
 
-    def test_preserves_node_resolution_typo_recovery(self) -> None:
+    def test_normalizes_node_resolution_candidate_ids(self) -> None:
         class EntityResolution(BaseModel):
             id: int
-            duplicate_idx: int
-            additional_duplicates: list[int]
+            duplicate_candidate_id: int
 
         class NodeResolutions(BaseModel):
             entity_resolutions: list[EntityResolution]
@@ -187,8 +190,7 @@ class StructuredNormalizationTest(unittest.TestCase):
                 "entity_resolutions": [
                     {
                         "id": "3",
-                        "duplication_idx": "4",
-                        "additional_duplicates": ["5", "bad"],
+                        "duplicate_candidate_id": "4",
                     }
                 ]
             },
@@ -196,8 +198,7 @@ class StructuredNormalizationTest(unittest.TestCase):
 
         resolution = normalized["entity_resolutions"][0]
         self.assertEqual(resolution["id"], 3)
-        self.assertEqual(resolution["duplicate_idx"], 4)
-        self.assertEqual(resolution["additional_duplicates"], [5])
+        self.assertEqual(resolution["duplicate_candidate_id"], 4)
         NodeResolutions.model_validate(normalized)
 
     def test_reset_graph_runtime_state_clears_batches_and_failures(self) -> None:
@@ -264,7 +265,7 @@ class StructuredNormalizationTest(unittest.TestCase):
     def test_structured_retry_count_is_configurable(self) -> None:
         client = app.ConfigurableOpenAIClient(structured_max_retries=4)
 
-        self.assertEqual(client.max_retries, 4)
+        self.assertEqual(client.MAX_RETRIES, 4)
 
 
 if __name__ == "__main__":

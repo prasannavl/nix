@@ -1,0 +1,8 @@
+graphiti-core==0.30.2
+# Match the candidate server lock for the contracts used by this wrapper.
+openai==1.92.2
+pydantic==2.11.7
+neo4j==5.28.1
+numpy==2.2.6
+fastapi==0.136.3
+uvicorn==0.45.0
