@@ -1,0 +1,11 @@
+{
+  "image": "docker.io/timescale/timescaledb-ha:pg18.6-ts2.30.0",
+  "postgresMajor": 18,
+  "extensions": {
+    "timescaledb": { "target": "2.30.0", "sources": ["2.26.1", "2.26.4"] },
+    "timescaledb_toolkit": { "target": "1.26.0", "sources": ["1.22.0"] },
+    "postgis": { "target": "3.6.4", "sources": ["3.6.2", "3.6.3"] },
+    "vector": { "target": "0.8.6", "sources": ["0.8.2"] },
+    "vectorscale": { "target": "0.9.1", "sources": ["0.9.0"] }
+  }
+}
