@@ -441,6 +441,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   Records the `pvl-a1` decision to share one staged Ollama models directory
   across the ROCm and NVIDIA instances while keeping separate per-instance
   Ollama homes.
+- `.agents/docs/notes/services/llama-router-model-reconciler-2026-09.md`:
+  Records the llama.cpp router-mode backend on `pvl-l5` port `11436`, the shared
+  reconciler lib with Hugging Face reference semantics, staged single-sourced
+  preset INI, filesystem cache retirement, and load-failure tolerance for cached
+  weights.
 - `.agents/docs/notes/services/native-user-graph-legacy-manager-removal-2026-07.md`:
   Records the final removal of the superseded `systemd-user-manager` module,
   checks, documentation, and nixbot compatibility path after native

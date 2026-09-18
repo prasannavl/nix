@@ -1,5 +1,6 @@
 {...}: {
   imports = [
+    ./llama-router.nix
     ./ollama.nix
     ./openwebui.nix
   ];
