@@ -122,7 +122,7 @@ class KanidmAuthorityProof(unittest.TestCase):
     def oauth(self, client, port=18640, browser=False):
         verifier = secrets.token_urlsafe(32)
         nonce, state = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-        redirect = f"http://127.0.0.1:{port}/api/abird.v1alpha1/login/callback"
+        redirect = f"http://127.0.0.1:{port}/v1/login/callback"
         params = {
             "response_type": "code", "client_id": self.client_id,
             "redirect_uri": redirect, "scope": "openid profile groups",

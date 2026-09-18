@@ -108,25 +108,51 @@
     linkedGroup = application.linkedGroup;
   };
 
-  normalizeState = state: {
-    domain = state.domain or {};
-    pruneGroups = state.pruneGroups or false;
-    pruneGroupMembers = state.pruneGroupMembers or false;
-    pruneOauthApps = state.pruneOauthApps or false;
-    pruneOauthRedirectUrls = state.pruneOauthRedirectUrls or false;
-    pruneOauthScopeMaps = state.pruneOauthScopeMaps or false;
-    pruneScimApps = state.pruneScimApps or false;
-    pruneServiceAccounts = state.pruneServiceAccounts or false;
-    pruneSshPublicKeys = state.pruneSshPublicKeys or false;
-    pruneUsers = state.pruneUsers or false;
-    users = lib.mapAttrsToList normalizePerson (state.users or {});
-    serviceAccounts = lib.mapAttrsToList normalizeServiceAccount (state.serviceAccounts or {});
-    groups = lib.mapAttrsToList normalizeGroup (state.groups or {});
-    absentGroups = map normalizeAbsentGroup (normalizeList (state.absentGroups or []));
-    groupMembers = lib.mapAttrsToList normalizeGroupMembers (state.groupMembers or {});
-    scimApps = lib.mapAttrsToList normalizeScimApp (state.scimApps or {});
-    oauthApps = normalizeOauthApps (state.oauthApps or {});
-  };
+  normalizeState = state:
+    assert lib.assertMsg
+    (builtins.all (name:
+      builtins.elem name [
+        "domain"
+        "pruneGroups"
+        "pruneGroupMembers"
+        "pruneOauthApps"
+        "pruneOauthRedirectUrls"
+        "pruneOauthScopeMaps"
+        "pruneScimApps"
+        "pruneServiceAccounts"
+        "pruneSshPublicKeys"
+        "pruneUsers"
+        "users"
+        "serviceAccounts"
+        "groups"
+        "absentGroups"
+        "groupMembers"
+        "scimApps"
+        "oauthApps"
+      ]) (builtins.attrNames state))
+    "Kanidm state contains an unsupported field; use oauthApps for OAuth clients";
+    assert lib.assertMsg
+    (builtins.all (name: !(builtins.elem (normalizeAccountId name) ["anonymous" "admin" "idm_admin"]))
+      ((builtins.attrNames (state.users or {})) ++ (builtins.attrNames (state.serviceAccounts or {}))))
+    "Builtin Kanidm accounts are outside declarative account ownership"; {
+      domain = state.domain or {};
+      pruneGroups = state.pruneGroups or false;
+      pruneGroupMembers = state.pruneGroupMembers or false;
+      pruneOauthApps = state.pruneOauthApps or false;
+      pruneOauthRedirectUrls = state.pruneOauthRedirectUrls or false;
+      pruneOauthScopeMaps = state.pruneOauthScopeMaps or false;
+      pruneScimApps = state.pruneScimApps or false;
+      pruneServiceAccounts = state.pruneServiceAccounts or false;
+      pruneSshPublicKeys = state.pruneSshPublicKeys or false;
+      pruneUsers = state.pruneUsers or false;
+      users = lib.mapAttrsToList normalizePerson (state.users or {});
+      serviceAccounts = lib.mapAttrsToList normalizeServiceAccount (state.serviceAccounts or {});
+      groups = lib.mapAttrsToList normalizeGroup (state.groups or {});
+      absentGroups = map normalizeAbsentGroup (normalizeList (state.absentGroups or []));
+      groupMembers = lib.mapAttrsToList normalizeGroupMembers (state.groupMembers or {});
+      scimApps = lib.mapAttrsToList normalizeScimApp (state.scimApps or {});
+      oauthApps = normalizeOauthApps (state.oauthApps or {});
+    };
 in {
   mkServerConfig = {
     bindAddress ? "0.0.0.0:8443",
@@ -176,7 +202,7 @@ in {
     systemAdminName ? "admin",
     containerName ? "kanidm_kanidm_1",
     state ? {},
-    kanidmPackage ? pkgs.kanidm_1_9,
+    kanidmPackage ? pkgs.callPackage ../../../pkgs/ext/kanidm-server/cli.nix {},
   }: let
     metadata = pkgs.writeText "${name}.json" (builtins.toJSON {
       name = name;
@@ -184,6 +210,10 @@ in {
       adminName = adminName;
       systemAdminName = systemAdminName;
       containerName = containerName;
+      contract = {
+        helperSha256 = builtins.hashFile "sha256" ./helper.sh;
+        cliVersion = kanidmPackage.version;
+      };
       state = normalizeState state;
     });
   in
@@ -196,6 +226,7 @@ in {
         pkgs.curl
         pkgs.gnugrep
         pkgs.jq
+        pkgs.nodejs
         pkgs.podman
         pkgs.systemd
       ];

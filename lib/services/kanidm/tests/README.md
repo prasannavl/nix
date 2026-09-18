@@ -1,12 +1,21 @@
 # Kanidm Identity Proof
 
-`test_helper.py` exercises localhost-redirect enablement, removal, drift
-verification, and unchanged confidential-client behaviour. It also verifies that
-changed auto-apply stamps require authentication and successful
-verification/application, matching stamps skip work, and failures preserve the
-old stamp. `default.nix` also checks that normalization rejects localhost
-redirects without public-client PKCE. Both are registered in
+`test_helper.py` runs isolated Bash fixtures through the real verification and
+auto-apply control flow. It checks full owned-field drift, previous-owned
+pruning, additive membership preservation, SCIM/service-account overlap, exact
+OAuth scopes, redirect/PKCE policy, image fingerprints, malformed/failed read
+handling, bounded transport, and failed post-apply verification preserving
+ledgers and stamps. Matching stamps authenticate and verify before skipping
+writes. `default.nix` checks canonical normalization and
+unsupported/legacy-field rejection. Both are registered in
 `lib/tests/default.nix`.
+
+The Entry and CLI fixtures describe exact Kanidm 1.10.4 and 1.11.2 contracts.
+When upgrading, compare exact upstream parser/serialization and mutation
+semantics, build the actual CLI, run these fixtures and command/help checks,
+then run authenticated convergence against a disposable server. Mock fixtures
+prove control flow and contracts; they do not establish live server authority or
+arbitrary future-version compatibility.
 
 `authority_proof.py` runs against an **isolated disposable** Kanidm 1.10.4
 server using the image digest pinned in `pkgs/ext/kanidm-server/default.nix`:

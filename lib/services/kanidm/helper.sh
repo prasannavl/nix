@@ -42,7 +42,7 @@ kanidm_cmd_as() {
 	local name
 	name="$1"
 	shift
-	kanidm -H "$kanidm_url" -D "$name" "$@"
+	timeout --kill-after=5s 60s kanidm -H "$kanidm_url" -D "$name" "$@"
 }
 
 kanidm_cmd() {
@@ -83,12 +83,12 @@ run_as() {
 	name="$1"
 	shift
 	log_run_as "$name" "$@"
-	kanidm_cmd_as "$name" "$@"
+	kanidm_cmd_as "$name" "$@" || exit "$?"
 }
 
 run() {
 	log_run "$@"
-	kanidm_cmd "$@"
+	kanidm_cmd "$@" || exit "$?"
 }
 
 exec_in_container() {
@@ -135,8 +135,19 @@ get_named_entry() {
 	local name live
 	name="$1"
 	shift
-	live="$(kanidm_json_cmd "$@" "$name")" || return 1
-	json_entry_has_name "$name" "$live"
+	if ! live="$(kanidm_json_cmd "$@" "$name")"; then
+		printf 'Kanidm read failed: %s %s\n' "$*" "$name" >&2
+		exit 1
+	fi
+	if json_entry_has_name "$name" "$live"; then
+		return 0
+	fi
+	if [[ "$live" == 'No matching entries' ]] ||
+		jq -e 'type == "string" and startswith("No matching")' <<<"$live" >/dev/null 2>&1; then
+		return 1
+	fi
+	printf 'Unexpected Kanidm entry response: %s %s\n' "$*" "$name" >&2
+	exit 1
 }
 
 get_person() {
@@ -152,17 +163,15 @@ get_group() {
 }
 
 get_oauth_app() {
-	local name live
-	name="$1"
-	live="$(kanidm_json_cmd system oauth2 get "$name")"
-	jq -e --arg name "$name" 'type == "object" and (((.attrs.name // []) | index($name)) != null)' <<<"$live" >/dev/null
+	get_named_entry "$1" system oauth2 get
 }
 
 oauth_app_type_matches() {
 	local name desired_type live desired_public
 	name="$1"
 	desired_type="$2"
-	live="$(kanidm_json_cmd system oauth2 get "$name")"
+	live="$(kanidm_json_cmd system oauth2 get "$name")" || exit 1
+	json_entry_has_name "$name" "$live" || exit 1
 
 	if [ "$desired_type" = public ]; then
 		desired_public=true
@@ -176,10 +185,7 @@ oauth_app_type_matches() {
 }
 
 get_service_account() {
-	local name live
-	name="$1"
-	live="$(kanidm_json_cmd service-account get "$name")"
-	jq -e --arg name "$name" 'type == "object" and (((.attrs.name // []) | index($name)) != null)' <<<"$live" >/dev/null
+	get_named_entry "$1" service-account get
 }
 
 group_member_name() {
@@ -246,40 +252,43 @@ kanidm_bearer_token() {
 }
 
 curl_common_args() {
-	printf '%s\0' --fail-with-body --silent --show-error
+	printf '%s\0' --fail-with-body --silent --show-error --connect-timeout 5 --max-time 30
 	if [ "${KANIDM_ACCEPT_INVALID_CERTS-}" = true ]; then
 		printf '%s\0' --insecure
 	fi
 }
 
 scim_request() {
-	local method path body token
+	local method path body token response status
 	local -a curl_args
 	method="$1"
 	path="$2"
 	body="${3-}"
-	token="$(kanidm_bearer_token)"
+	token="$(kanidm_bearer_token)" || return 1
 	mapfile -d '' -t curl_args < <(curl_common_args)
-
+	curl_args+=(--request "$method" --header "Authorization: Bearer $token" --write-out $'\n%{http_code}')
 	if [ -n "$body" ]; then
-		curl "${curl_args[@]}" \
-			--request "$method" \
-			--header "Authorization: Bearer $token" \
-			--header "Content-Type: application/json" \
-			--data "$body" \
-			"$kanidm_url$path"
-	else
-		curl "${curl_args[@]}" \
-			--request "$method" \
-			--header "Authorization: Bearer $token" \
-			"$kanidm_url$path"
+		curl_args+=(--header "Content-Type: application/json" --data "$body")
 	fi
+	if response="$(curl "${curl_args[@]}" "$kanidm_url$path")"; then
+		status="${response##*$'\n'}"
+		if [[ "$status" == 2[0-9][0-9] ]]; then
+			printf '%s\n' "${response%$'\n'*}"
+			return 0
+		fi
+	else
+		status="${response##*$'\n'}"
+	fi
+	if [ "${KANIDM_ALLOW_NOT_FOUND-}" = true ] && [ "$status" = 404 ]; then
+		printf 'null\n'
+		return 0
+	fi
+	printf 'Kanidm HTTP %s %s failed (status %s)\n' "$method" "$path" "$status" >&2
+	return 1
 }
 
 scim_get_application() {
-	local name
-	name="$1"
-	scim_request GET "/scim/v1/Application/$name"
+	scim_request GET "/scim/v1/Application/$1"
 }
 
 scim_list_applications() {
@@ -296,19 +305,12 @@ put_service_account_attr() {
 }
 
 get_application() {
-	local name
-	name="$1"
-	scim_get_application "$name" >/dev/null 2>&1
-}
-
-ignore_missing() {
-	log_run "$@"
-	kanidm_cmd "$@" >/dev/null 2>&1 || true
-}
-
-try_add() {
-	log_run "$@"
-	kanidm_cmd "$@" || true
+	local live
+	live="$(KANIDM_ALLOW_NOT_FOUND=true scim_get_application "$1")" || exit 1
+	if jq -e --arg name "$1" 'type == "object" and .name == $name' <<<"$live" >/dev/null; then return 0; fi
+	if [ "$live" = null ]; then return 1; fi
+	printf 'Unexpected Kanidm SCIM application response: %s\n' "$1" >&2
+	exit 1
 }
 
 require_login() {
@@ -389,7 +391,7 @@ auto_apply_stamp_metadata() {
 
 	case "$command" in
 	apply-system)
-		jq -c '{state: {domain: (.state.domain // {})}}' "$kanidm_metadata"
+		jq -c '{contract: (.contract // {}), state: {domain: (.state.domain // {})}}' "$kanidm_metadata"
 		;;
 	*)
 		jq -c 'del(.state.oauthApps[]?.iconPath)' "$kanidm_metadata"
@@ -561,8 +563,8 @@ is_declared_oauth_app() {
 }
 
 is_protected_service_account() {
-	case "$1" in
-	admin | idm_admin)
+	case "${1%%@*}" in
+	anonymous | admin | idm_admin)
 		return 0
 		;;
 	*)
@@ -572,81 +574,23 @@ is_protected_service_account() {
 }
 
 live_service_account_ids() {
-	kanidm_json_cmd service-account list |
-		jq -r '
-			def first_string(value):
-				if (value | type) == "array" then
-					value[0] // empty
-				elif (value | type) == "string" then
-					value
-				else
-					empty
-				end;
-			def account_id:
-				(
-					if (.attrs.name? != null) then
-						first_string(.attrs.name)
-					elif (.name? != null) then
-						first_string(.name)
-					else
-						first_string(.spn)
-					end
-				)
-				| split("@")[0];
-			if type == "array" then
-				.[] | account_id
-			elif type == "object" and (.items? | type) == "array" then
-				.items[] | account_id
-			elif type == "object" and (.resources? | type) == "array" then
-				.resources[] | account_id
-			elif type == "object" then
-				account_id
-			else
-				empty
-			end
-		' | LC_ALL=C sort -u
+	scim_request GET "/v1/service_account" |
+		jq -r 'if type == "array" then if all(.[]; type == "object" and (.attrs | type == "object" and all(.[]; type == "array" and all(.[]; type == "string"))) and (.attrs.name[0] | type == "string")) then .[] | select(((.attrs.class // []) | index("builtin")) == null) |
+   select((.attrs.uuid // [] | any(. == "00000000-0000-0000-0000-000000000000" or . == "00000000-0000-0000-0000-000000000018" or . == "00000000-0000-0000-0000-ffffffffffff")) | not) |
+   .attrs.name[0] else error("invalid service-account entry") end else error("invalid service-account collection") end' |
+		LC_ALL=C sort -u
 }
 
 live_scim_app_ids() {
 	scim_list_applications |
-		jq -r '.resources[]?.name // empty' |
+		jq -r 'if type == "object" and (.resources | type == "array") and all(.resources[]; .name | type == "string") then .resources[].name else error("invalid SCIM application collection") end' |
 		LC_ALL=C sort -u
 }
 
 live_oauth_app_ids() {
 	kanidm_json_cmd system oauth2 list |
-		jq -r '
-			def first_string(value):
-				if (value | type) == "array" then
-					value[0] // empty
-				elif (value | type) == "string" then
-					value
-				else
-					empty
-				end;
-			def client_id:
-				(
-					if (.attrs.name? != null) then
-						first_string(.attrs.name)
-					elif (.name? != null) then
-						first_string(.name)
-					else
-						empty
-					end
-				)
-				| split("@")[0];
-			if type == "array" then
-				.[] | client_id
-			elif type == "object" and (.items? | type) == "array" then
-				.items[] | client_id
-			elif type == "object" and (.resources? | type) == "array" then
-				.resources[] | client_id
-			elif type == "object" then
-				client_id
-			else
-				empty
-			end
-		' | LC_ALL=C sort -u
+		jq -r 'if type == "array" and all(.[]; .name[0] | type == "string") then .[].name[0] else error("invalid OAuth collection") end' |
+		LC_ALL=C sort -u
 }
 
 prune_missing_people() {
@@ -662,6 +606,7 @@ prune_missing_people() {
 
 	while IFS= read -r previous; do
 		[ -n "$previous" ] || continue
+		is_protected_service_account "$previous" && continue
 		if ! is_declared_person "$previous" && get_person "$previous"; then
 			run person delete "$previous"
 		fi
@@ -715,7 +660,7 @@ prune_group_members() {
 		[ -n "$group" ] || continue
 		[ -n "$member" ] || continue
 		if get_group "$group"; then
-			ignore_missing group remove-members "$group" "$member"
+			run group remove-members "$group" "$member"
 		fi
 	done <"$state_file"
 }
@@ -747,16 +692,17 @@ prune_ssh_public_keys() {
 		IFS=$'\t' read -r kind account_id tag <<<"$previous"
 		[ -n "$kind" ] || continue
 		[ -n "$account_id" ] || continue
+		is_protected_service_account "$account_id" && continue
 		[ -n "$tag" ] || continue
 		case "$kind" in
 		person)
 			if get_person "$account_id"; then
-				ignore_missing person ssh delete-publickey "$account_id" "$tag"
+				run person ssh delete-publickey "$account_id" "$tag"
 			fi
 			;;
 		service-account)
 			if get_service_account "$account_id"; then
-				ignore_missing service-account ssh delete-publickey "$account_id" "$tag"
+				run service-account ssh delete-publickey "$account_id" "$tag"
 			fi
 			;;
 		esac
@@ -764,43 +710,46 @@ prune_ssh_public_keys() {
 }
 
 prune_missing_service_accounts() {
-	local account_id
+	local account_id live_ids
 	prune_missing_service_accounts_enabled || return 0
 
+	live_ids="$(live_service_account_ids)" || return 1
 	while IFS= read -r account_id; do
 		[ -n "$account_id" ] || continue
 		if is_protected_service_account "$account_id"; then
 			continue
 		fi
-		if ! is_declared_service_account "$account_id" && get_service_account "$account_id"; then
+		if ! is_declared_service_account "$account_id" && ! is_declared_scim_app "$account_id" && get_service_account "$account_id"; then
 			run service-account delete "$account_id"
 		fi
-	done < <(live_service_account_ids)
+	done <<<"$live_ids"
 }
 
 prune_missing_scim_apps() {
-	local name
+	local name live_ids
 	prune_missing_scim_apps_enabled || return 0
 
+	live_ids="$(live_scim_app_ids)" || return 1
 	while IFS= read -r name; do
 		[ -n "$name" ] || continue
 		if ! is_declared_scim_app "$name" && get_application "$name"; then
 			printf '+ scim app delete %q\n' "$name"
-			scim_request DELETE "/scim/v1/Application/$name" >/dev/null
+			scim_request DELETE "/scim/v1/Application/$name" >/dev/null || exit 1
 		fi
-	done < <(live_scim_app_ids)
+	done <<<"$live_ids"
 }
 
 prune_missing_oauth_apps() {
-	local name
+	local name live_ids
 	prune_missing_oauth_apps_enabled || return 0
 
+	live_ids="$(live_oauth_app_ids)" || return 1
 	while IFS= read -r name; do
 		[ -n "$name" ] || continue
 		if ! is_declared_oauth_app "$name" && get_oauth_app "$name"; then
 			run system oauth2 delete "$name"
 		fi
-	done < <(live_oauth_app_ids)
+	done <<<"$live_ids"
 }
 
 remember_declared_people() {
@@ -843,12 +792,35 @@ remember_declared_ssh_public_keys() {
 	mv "$tmp_file" "$state_file"
 }
 
+verify_domain() {
+	local desired live
+	desired="$(jq_state_raw '.state.domain.displayName // empty')"
+	[ -n "$desired" ] || return 0
+	if ! live="$(kanidm_name="$kanidm_system_name" scim_request GET /v1/domain)"; then
+		printf 'Kanidm domain verification read failed.\n' >&2
+		return 2
+	fi
+	# /v1/domain returns Vec<ProtoEntry> in both 1.10.4 and 1.11.2.
+	if ! jq -e '
+  if type == "array" and length == 1 then .[0] |
+   type == "object" and (.attrs | type == "object" and
+    all(.[]; type == "array" and all(.[]; type == "string"))) and
+   (.attrs.domain_display_name | type == "array")
+  else false end
+ ' <<<"$live" >/dev/null; then
+		printf 'Kanidm domain verification expected one domain Entry with string attributes.\n' >&2
+		return 2
+	fi
+	jq -e --arg desired "$desired" '.[0].attrs.domain_display_name == [$desired]' <<<"$live" >/dev/null
+}
+
 apply_domain() {
 	local display_name
 	display_name="$(jq_state_raw '.state.domain.displayName // empty')"
 	if [ -n "$display_name" ]; then
 		require_login_as "$kanidm_system_name" "login-system-admin"
 		run_as "$kanidm_system_name" system domain set-displayname "$display_name"
+		verify_domain || exit 1
 	fi
 }
 
@@ -857,6 +829,10 @@ apply_person() {
 	local -a update_args posix_args mail_args
 	person="$1"
 	account_id="$(jq_value '.accountId' "$person")"
+	if is_protected_service_account "$account_id"; then
+		printf 'Builtin Kanidm account %s is outside declarative account ownership.\n' "$account_id" >&2
+		exit 1
+	fi
 	display_name="$(jq_value '.displayName' "$person")"
 	legal_name="$(jq_value '.legalName // empty' "$person")"
 
@@ -893,36 +869,65 @@ apply_person() {
 
 	while IFS=$'\t' read -r tag public_key; do
 		[ -n "$tag" ] || continue
-		ignore_missing person ssh delete-publickey "$account_id" "$tag"
+		run person ssh delete-publickey "$account_id" "$tag"
 		run person ssh add-publickey "$account_id" "$tag" "$public_key"
 	done < <(jq -r '.sshPublicKeys | to_entries[]? | [.key, .value] | @tsv' <<<"$person")
 }
 
 apply_service_account() {
-	local account service_account_id display_name entry_managed_by
+	local account service_account_id display_name entry_managed_by live read_rc tag public_key
 	local -a update_args mail_args
 	account="$1"
 	service_account_id="$(jq_value '.accountId' "$account")"
+	if is_protected_service_account "$service_account_id"; then
+		printf 'Builtin Kanidm account %s is outside declarative account ownership.\n' "$service_account_id" >&2
+		exit 1
+	fi
 	display_name="$(jq_value '.displayName' "$account")"
 	entry_managed_by="$(jq_value '.entryManagedBy' "$account")"
 
-	update_args=(--displayname "$display_name")
-	mail_args=()
-	while IFS= read -r mail; do
-		[ -n "$mail" ] || continue
-		mail_args+=(--mail "$mail")
-	done < <(jq -r '.mail[]?' <<<"$account")
-
-	if get_service_account "$service_account_id"; then
-		run service-account update "$service_account_id" "${update_args[@]}" "${mail_args[@]}"
-	else
+	if live="$(read_verify_entry "$service_account_id" service-account get)"; then :; else
+		read_rc="$?"
+		if [ "$read_rc" -ne 1 ]; then
+			printf 'Service account %s could not be read safely before applying.\n' "$service_account_id" >&2
+			exit 2
+		fi
 		run service-account create "$service_account_id" "$display_name" "$entry_managed_by"
+		live="$(read_verify_entry "$service_account_id" service-account get)" || exit 2
+	fi
+
+	# A PATCH requests permission for each supplied attribute even if its value
+	# is unchanged. Manager reassignment has separate privileges from metadata.
+	update_args=()
+	if ! jq -e --arg expected "$display_name" '.attrs.displayname == [$expected]' <<<"$live" >/dev/null; then
+		update_args+=(--displayname "$display_name")
+	fi
+	if ! jq -e --arg expected "$entry_managed_by" \
+		'(.attrs.entry_managed_by // [] | map(split("@")[0])) == [($expected | split("@")[0])]' <<<"$live" >/dev/null; then
+		update_args+=(--entry-managed-by "$entry_managed_by")
+	fi
+	mail_args=()
+	if [ "$(jq '.mail | length' <<<"$account")" -gt 0 ] && ! jq -e --argjson desired "$account" '
+  (.attrs.mail // []) as $actual | $desired.mail as $expected |
+  ($actual[0] // null) == ($expected[0] // null) and
+  ($actual[1:] | unique | sort) == ($expected[1:] | unique | sort)
+ ' <<<"$live" >/dev/null; then
+		while IFS= read -r mail; do
+			mail_args+=(--mail "$mail")
+		done < <(jq -r '.mail[]' <<<"$account")
+	fi
+	if [ "$((${#update_args[@]} + ${#mail_args[@]}))" -gt 0 ]; then
 		run service-account update "$service_account_id" "${update_args[@]}" "${mail_args[@]}"
 	fi
 
 	while IFS=$'\t' read -r tag public_key; do
 		[ -n "$tag" ] || continue
-		ignore_missing service-account ssh delete-publickey "$service_account_id" "$tag"
+		if jq -e --arg tag "$tag" --arg key "$public_key" '
+   def material: gsub("[[:space:]]+"; " ") | split(" ")[:2] | join(" ");
+   any((.attrs.ssh_publickey // [])[];
+    startswith($tag + ": ") and (sub("^[^:]+: "; "") | material) == ($key | material))
+  ' <<<"$live" >/dev/null; then continue; fi
+		run service-account ssh delete-publickey "$service_account_id" "$tag"
 		run service-account ssh add-publickey "$service_account_id" "$tag" "$public_key"
 	done < <(jq -r '.sshPublicKeys | to_entries[]? | [.key, .value] | @tsv' <<<"$account")
 }
@@ -983,7 +988,7 @@ apply_group_members() {
 	done < <(jq -r '.members[]?' <<<"$group")
 
 	if [ "${#members[@]}" -gt 0 ]; then
-		try_add group add-members "$name" "${members[@]}"
+		run group add-members "$name" "${members[@]}"
 	fi
 }
 
@@ -1015,7 +1020,7 @@ apply_scim_app() {
 				--arg linked_group "$linked_group" \
 				'{name: $name, displayname: $display_name, linked_group: [$linked_group]}'
 		)"
-		scim_request POST "/scim/v1/Application" "$body" >/dev/null
+		scim_request POST "/scim/v1/Application" "$body" >/dev/null || exit 1
 	fi
 
 	run service-account update "$name" --displayname "$display_name"
@@ -1023,10 +1028,32 @@ apply_scim_app() {
 	put_service_account_attr "$name" linked_group "$linked_group"
 }
 
+normalize_oauth_client_urls() {
+	# Rust url::Url and Node URL implement WHATWG serialization. Never replace
+	# exact callback matching with origin-only comparison or strip path/query.
+	node -e '
+  const fs = require("node:fs");
+  try {
+   const client = JSON.parse(fs.readFileSync(0, "utf8"));
+   const canonical = value => {
+    if (typeof value !== "string") throw new Error("URL must be a string");
+    return new URL(value).href;
+   };
+   client.origin = canonical(client.origin);
+   client.landingUrl = canonical(client.landingUrl);
+   client.redirectUrls = [...new Set((client.redirectUrls || []).map(canonical))];
+   process.stdout.write(JSON.stringify(client));
+  } catch (_) {
+   process.stderr.write("Invalid Kanidm OAuth URL declaration.\n");
+   process.exitCode = 1;
+  }
+ ' <<<"$1"
+}
+
 apply_oauth_app() {
 	local client name display_name origin landing_url icon_path type create_command pkce
 	local -a scopes
-	client="$1"
+	client="$(normalize_oauth_client_urls "$1")" || exit 1
 	name="$(jq_value '.name' "$client")"
 	display_name="$(jq_value '.displayName' "$client")"
 	origin="$(jq_value '.origin' "$client")"
@@ -1046,18 +1073,19 @@ apply_oauth_app() {
 			run system oauth2 set-displayname "$name" "$display_name"
 			run system oauth2 set-landing-url "$name" "$landing_url"
 		else
-			run system oauth2 delete "$name"
-			run system oauth2 "$create_command" "$name" "$display_name" "$origin"
-			run system oauth2 set-landing-url "$name" "$landing_url"
+			printf 'OAuth client %s type differs; coordinate client credentials and grants before replacing it.\n' "$name" >&2
+			exit 1
 		fi
 	else
 		run system oauth2 "$create_command" "$name" "$display_name" "$origin"
 		run system oauth2 set-landing-url "$name" "$landing_url"
 	fi
 
+	# Creation origin is a landing URL, not permission for an OAuth callback.
+
 	while IFS= read -r redirect_url; do
 		[ -n "$redirect_url" ] || continue
-		try_add system oauth2 add-redirect-url "$name" "$redirect_url"
+		run system oauth2 add-redirect-url "$name" "$redirect_url"
 	done < <(jq -r '.redirectUrls[]?' <<<"$client")
 
 	if [ "$pkce" = true ]; then
@@ -1092,12 +1120,12 @@ prune_oauth_redirect_urls() {
 	local client name live desired_urls redirect_url
 	prune_oauth_redirect_urls_enabled || return 0
 
-	client="$1"
+	client="$(normalize_oauth_client_urls "$1")" || exit 1
 	name="$(jq_value '.name' "$client")"
 	live="$(kanidm_json_cmd system oauth2 get "$name")"
 	desired_urls="$(
 		jq -c '
-			([.origin] + (.redirectUrls // []))
+			(.redirectUrls // [])
 			| map(select(. != null and . != ""))
 			| map({key: ., value: true})
 			| from_entries
@@ -1146,12 +1174,178 @@ verify_fail() {
 	return 0
 }
 
+read_verify_entry() {
+	local name live
+	name="$1"
+	shift
+	if ! live="$(kanidm_json_cmd "$@" "$name")"; then return 2; fi
+	if json_entry_has_name "$name" "$live" && jq -e '
+  (.attrs | type == "object") and all(.attrs[]; type == "array" and all(.[]; type == "string"))
+ ' <<<"$live" >/dev/null; then
+		printf '%s\n' "$live"
+		return 0
+	fi
+	if [[ "$live" == 'No matching entries' ]] || jq -e 'type == "string" and startswith("No matching")' <<<"$live" >/dev/null 2>&1; then return 1; fi
+	return 2
+}
+
+verify_read_fail() {
+	kanidm_verify_probe_failed=1
+	verify_fail "$@"
+}
+
+verify_entry_contract() {
+	local kind desired live errors error label
+	kind="$1"
+	desired="$2"
+	live="$3"
+	label="$(jq -r '.accountId // .name' <<<"$desired")"
+	if ! errors="$(jq -c --arg kind "$kind" --argjson d "$desired" '
+  def issue(ok; message): if ok then [] else [message] end;
+  def short: split("@")[0];
+  def mail_matches(actual; expected):
+   (actual[0] // null) == (expected[0] // null) and
+   (actual[1:] | unique | sort) == (expected[1:] | unique | sort);
+  def key_material: gsub("[[:space:]]+"; " ") | split(" ")[:2] | join(" ");
+  .attrs as $a |
+  (if $kind == "person" or $kind == "service-account" then
+   (if ($d.mail // [] | length) > 0 then issue(mail_matches(($a.mail // []); $d.mail); "mail differs") else [] end) +
+   issue(($a.displayname // []) == [$d.displayName]; "display name differs") +
+   (if $kind == "person" and $d.legalName != null then
+    issue(($a.legalname // []) == [$d.legalName]; "legal name differs") else [] end) +
+   (if $kind == "service-account" then
+    issue(any(($a.entry_managed_by // [])[]; short == ($d.entryManagedBy | short)); "entry manager differs") else [] end) +
+   (if $d.posix.enable // false then
+    issue((($a.class // []) | index("posixaccount")) != null; "POSIX account missing") +
+    (if $d.posix.shell != null then issue(($a.loginshell // []) == [$d.posix.shell]; "POSIX shell differs") else [] end) +
+    (if $d.posix.gidNumber != null then issue(($a.gidnumber // []) == [($d.posix.gidNumber | tostring)]; "POSIX gid differs") else [] end)
+    else [] end) +
+   [($d.sshPublicKeys // {} | to_entries[]) as $key |
+    select(any(($a.ssh_publickey // [])[];
+     startswith($key.key + ": ") and
+     (sub("^[^:]+: "; "") | key_material) == ($key.value | key_material)) | not) |
+    "SSH public key differs: " + $key.key]
+  elif $kind == "group" then
+   (if $d.description != null then issue(($a.description // []) == [$d.description]; "description differs") else [] end) +
+   (if $d.members != null then
+    issue(([($a.member // [])[] | short] | sort) == ([$d.members[] | short] | unique | sort); "authoritative membership differs") else [] end) +
+   (if $d.mail != null then
+    issue(mail_matches(($a.mail // []); $d.mail); "group mail differs") else [] end)
+  elif $kind == "oauth" then
+   issue(((($a.class // []) | index("oauth2_resource_server_public")) != null) == ($d.type == "public"); "client type differs") +
+   issue(($a.displayname // []) == [$d.displayName]; "display name differs") +
+   issue(($a.oauth2_rs_origin_landing // []) == [$d.landingUrl]; "landing URL differs") +
+   issue((($a.oauth2_allow_insecure_client_disable_pkce // ["false"])[0] == "true") == ($d.pkce | not); "PKCE policy differs")
+  else error("unknown contract kind") end)
+ ' <<<"$live")"; then
+		verify_read_fail "$kind $label has an invalid live contract"
+		return 0
+	fi
+	while IFS= read -r error; do
+		verify_fail "$kind $label $error"
+	done < <(jq -r '.[]' <<<"$errors")
+}
+
+verify_owned_pruning() {
+	local previous group member live kind account_id tag ids
+	if prune_missing_users_enabled && [ -f "$(managed_people_file)" ]; then
+		while IFS= read -r previous; do
+			[ -n "$previous" ] || continue
+			is_protected_service_account "$previous" && continue
+			if ! is_declared_person "$previous" && get_person "$previous"; then
+				verify_fail "previously managed person $previous remains"
+			fi
+		done <"$(managed_people_file)"
+	fi
+	if prune_missing_groups_enabled && [ -f "$(managed_groups_file)" ]; then
+		while IFS= read -r previous; do
+			[ -n "$previous" ] || continue
+			if ! is_declared_group "$previous" && get_group "$previous"; then
+				verify_fail "previously managed group $previous remains"
+			fi
+		done <"$(managed_groups_file)"
+	fi
+	if prune_group_members_enabled && [ -f "$(managed_group_members_file)" ]; then
+		while IFS=$'\t' read -r group member; do
+			[ -n "$group" ] && [ -n "$member" ] || continue
+			if jq -e --arg group "$group" --arg member "$member" '
+    any(.state.groupMembers[]?; .name == $group and any(.members[]?; split("@")[0] == $member))
+   ' "$kanidm_metadata" >/dev/null; then continue; fi
+			if live="$(read_verify_entry "$group" group get)"; then :; else
+				[ "$?" -ne 1 ] || continue
+				verify_read_fail "group $group read failed during owned-member verification"
+				return 2
+			fi
+			if jq -e --arg member "$member" 'any((.attrs.member // [])[]; split("@")[0] == $member)' <<<"$live" >/dev/null; then
+				verify_fail "previously managed member $group/$member remains"
+			fi
+		done <"$(managed_group_members_file)"
+	fi
+	if prune_ssh_public_keys_enabled && [ -f "$(managed_ssh_public_keys_file)" ]; then
+		while IFS=$'\t' read -r kind account_id tag; do
+			[ -n "$account_id" ] && [ -n "$tag" ] || continue
+			is_protected_service_account "$account_id" && continue
+			if jq -e --arg kind "$kind" --arg account "$account_id" --arg tag "$tag" '
+    (if $kind == "person" then .state.users else .state.serviceAccounts end) |
+    any(.[]?; .accountId == $account and (.sshPublicKeys | has($tag)))
+   ' "$kanidm_metadata" >/dev/null; then continue; fi
+			if live="$(read_verify_entry "$account_id" "$kind" get)"; then :; else
+				[ "$?" -ne 1 ] || continue
+				verify_read_fail "$kind $account_id read failed during owned-key verification"
+				return 2
+			fi
+			if jq -e --arg prefix "$tag: " 'any((.attrs.ssh_publickey // [])[]; startswith($prefix))' <<<"$live" >/dev/null; then
+				verify_fail "previously managed SSH key $account_id/$tag remains"
+			fi
+		done <"$(managed_ssh_public_keys_file)"
+	fi
+	if prune_missing_service_accounts_enabled; then
+		if ids="$(live_service_account_ids)"; then
+			while IFS= read -r account_id; do
+				[ -n "$account_id" ] || continue
+				if ! is_protected_service_account "$account_id" && ! is_declared_service_account "$account_id" && ! is_declared_scim_app "$account_id"; then
+					verify_fail "unmanaged service account $account_id remains in owned namespace"
+				fi
+			done <<<"$ids"
+		else
+			verify_read_fail "service-account collection read failed"
+			return 2
+		fi
+	fi
+	if prune_missing_scim_apps_enabled; then
+		if ids="$(live_scim_app_ids)"; then
+			while IFS= read -r previous; do
+				[ -n "$previous" ] || continue
+				if ! is_declared_scim_app "$previous"; then verify_fail "unmanaged SCIM application $previous remains"; fi
+			done <<<"$ids"
+		else
+			verify_read_fail "SCIM application collection read failed"
+			return 2
+		fi
+	fi
+	if prune_missing_oauth_apps_enabled; then
+		if ids="$(live_oauth_app_ids)"; then
+			while IFS= read -r previous; do
+				[ -n "$previous" ] || continue
+				if ! is_declared_oauth_app "$previous"; then verify_fail "unmanaged OAuth client $previous remains"; fi
+			done <<<"$ids"
+		else
+			verify_read_fail "OAuth collection read failed"
+			return 2
+		fi
+	fi
+}
+
 verify_person() {
 	local person account_id live expected_mail primary_mail actual_primary_mail
 	person="$1"
 	account_id="$(jq_value '.accountId' "$person")"
 
-	live="$(kanidm_json_cmd person get "$account_id")"
+	if live="$(read_verify_entry "$account_id" person get)"; then :; else
+		if [ "$?" -eq 1 ]; then verify_fail "person get $account_id missing"; else verify_read_fail "person get $account_id read failed or invalid response"; fi
+		return 0
+	fi
+	verify_entry_contract person "$person" "$live"
 
 	primary_mail="$(jq -r '.mail[0] // empty' <<<"$person")"
 	if [ -n "$primary_mail" ]; then
@@ -1175,7 +1369,11 @@ verify_group() {
 	name="$(jq_value '.name' "$group")"
 	domain="$(kanidm_domain)"
 
-	live="$(kanidm_json_cmd group get "$name")"
+	if live="$(read_verify_entry "$name" group get)"; then :; else
+		if [ "$?" -eq 1 ]; then verify_fail "group get $name missing"; else verify_read_fail "group get $name read failed or invalid response"; fi
+		return 0
+	fi
+	verify_entry_contract group "$group" "$live"
 
 	primary_mail="$(jq -r '.mail[0] // empty' <<<"$group")"
 	if [ -n "$primary_mail" ]; then
@@ -1211,7 +1409,10 @@ verify_group_members() {
 	name="$(jq_value '.name' "$group")"
 	domain="$(kanidm_domain)"
 
-	live="$(kanidm_json_cmd group get "$name")"
+	if live="$(read_verify_entry "$name" group get)"; then :; else
+		if [ "$?" -eq 1 ]; then verify_fail "group get $name missing"; else verify_read_fail "group get $name read failed or invalid response"; fi
+		return 0
+	fi
 
 	while IFS= read -r member; do
 		[ -n "$member" ] || continue
@@ -1244,26 +1445,65 @@ verify_scim_app() {
 	linked_group="$(jq_value '.linkedGroup' "$application")"
 	domain="$(kanidm_domain)"
 
-	live="$(scim_get_application "$name")"
+	if ! live="$(KANIDM_ALLOW_NOT_FOUND=true scim_get_application "$name")"; then
+		verify_read_fail "application $name read failed"
+		return 0
+	fi
+	if [ "$live" = null ]; then
+		verify_fail "application $name missing"
+		return 0
+	fi
+	if ! jq -e 'type == "object" and (.name | type == "string") and (.displayname | type == "string") and (.linked_group | type == "array") and all(.linked_group[]; .value | type == "string")' <<<"$live" >/dev/null; then
+		verify_read_fail "application $name has an invalid response"
+		return 0
+	fi
 	if ! jq -e --arg name "$name" '.name == $name' <<<"$live" >/dev/null; then
 		verify_fail "application $name name mismatch"
 	fi
 	if ! jq -e --arg display_name "$display_name" '.displayname == $display_name' <<<"$live" >/dev/null; then
 		verify_fail "application $name display name mismatch"
 	fi
-	if ! jq -e --arg linked_group "$linked_group" --arg group_spn "$linked_group@$domain" '(.linked_group // []) | any(.value == $linked_group or .value == $group_spn)' <<<"$live" >/dev/null; then
+	if ! jq -e --arg linked_group "$linked_group" --arg group_spn "$linked_group@$domain" '[.linked_group[].value | split("@")[0]] == [($linked_group | split("@")[0])]' <<<"$live" >/dev/null; then
 		verify_fail "application $name missing linked group '$linked_group'"
 	fi
 }
 
+# Exact 1.10/1.11 Entry image serialization: SHA256(filename || enum byte || payload).
+# Keep this representation in the versioned contract fixture when upgrading Kanidm.
+oauth_image_fingerprint() {
+	local path filename image_type
+	path="$1"
+	filename="${path##*/}"
+	case "${filename##*.}" in
+	png) image_type='\000' ;;
+	jpg | jpeg) image_type='\001' ;;
+	gif) image_type='\002' ;;
+	svg) image_type='\003' ;;
+	webp) image_type='\004' ;;
+	*) return 1 ;;
+	esac
+	{
+		printf '%s' "$filename"
+		printf '%b' "$image_type"
+		cat "$path"
+	} | sha256sum | cut -d' ' -f1
+}
+
 verify_oauth_app() {
-	local client name icon_path group scopes_json live domain group_spn scope_map scope redirect_url desired_urls desired_groups live_group
-	client="$1"
+	local client name icon_path icon_hash group scopes_json live domain group_spn scope_map scope_values redirect_url desired_urls desired_groups live_group
+	if ! client="$(normalize_oauth_client_urls "$1")"; then
+		verify_read_fail "OAuth declaration has an invalid URL"
+		return 0
+	fi
 	name="$(jq_value '.name' "$client")"
 	icon_path="$(jq -r '.iconPath // empty' <<<"$client")"
 	domain="$(kanidm_domain)"
 
-	live="$(kanidm_json_cmd system oauth2 get "$name")"
+	if live="$(read_verify_entry "$name" system oauth2 get)"; then :; else
+		if [ "$?" -eq 1 ]; then verify_fail "system oauth2 get $name missing"; else verify_read_fail "system oauth2 get $name read failed or invalid response"; fi
+		return 0
+	fi
+	verify_entry_contract oauth "$client" "$live"
 	if ! jq -e 'type == "object" and (.attrs | type == "object")' <<<"$live" >/dev/null; then
 		verify_fail "oauth app $name missing"
 		return 0
@@ -1275,8 +1515,12 @@ verify_oauth_app() {
 		verify_fail "oauth app $name localhost redirect setting differs"
 	fi
 
-	if [ -n "$icon_path" ] && ! jq -e '(.attrs.image // []) | length > 0' <<<"$live" >/dev/null; then
-		verify_fail "oauth app $name missing image"
+	if [ -n "$icon_path" ]; then
+		if icon_hash="$(oauth_image_fingerprint "$icon_path")"; then
+			if ! jq -e --arg expected "$icon_hash" '(.attrs.image // []) == [$expected]' <<<"$live" >/dev/null; then
+				verify_fail "oauth app $name image differs"
+			fi
+		else verify_read_fail "oauth app $name desired image cannot be fingerprinted"; fi
 	fi
 
 	while IFS= read -r redirect_url; do
@@ -1289,7 +1533,7 @@ verify_oauth_app() {
 	if prune_oauth_redirect_urls_enabled; then
 		desired_urls="$(
 			jq -c '
-				([.origin] + (.redirectUrls // []))
+				(.redirectUrls // [])
 				| map(select(. != null and . != ""))
 				| map({key: ., value: true})
 				| from_entries
@@ -1313,13 +1557,16 @@ verify_oauth_app() {
 		scope_map="$(jq -r --arg prefix "$group_spn: " '(.attrs.oauth2_rs_scope_map // [])[] | select(startswith($prefix))' <<<"$live")"
 		if [ -z "$scope_map" ]; then
 			verify_fail "oauth app $name missing scope map for '$group_spn'"
+			continue
 		fi
-		while IFS= read -r scope; do
-			[ -n "$scope" ] || continue
-			if [[ "$scope_map" != *"\"$scope\""* ]]; then
-				verify_fail "oauth app $name scope map for '$group_spn' missing '$scope'"
-			fi
-		done < <(jq -r '.[]' <<<"$scopes_json")
+		if ! scope_values="$(jq -c '
+   sub("^[^:]+: "; "") | sub("^\\{"; "[") | sub("\\}$"; "]") | fromjson |
+   if type == "array" and all(.[]; type == "string") then sort else error("invalid scope representation") end
+  ' <<<"$(jq -Rn --arg text "$scope_map" '$text')")"; then
+			verify_read_fail "oauth app $name scope map representation is invalid"
+		elif ! jq -e --argjson expected "$scopes_json" '. == ($expected | unique | sort)' <<<"$scope_values" >/dev/null; then
+			verify_fail "oauth app $name scope values differ for '$group_spn'"
+		fi
 	done < <(jq -r '.scopeMaps | to_entries[]? | [.key, (.value | tojson)] | @tsv' <<<"$client")
 
 	if prune_oauth_scope_maps_enabled; then
@@ -1343,44 +1590,66 @@ verify_oauth_app() {
 
 verify_idm() {
 	local item
+	if ! jq -e '
+  (.state | type == "object") and
+  all([.state.users // [], .state.serviceAccounts // [], .state.groups // [],
+       .state.groupMembers // [], .state.absentGroups // [], .state.scimApps // [],
+       .state.oauthApps // []][]; type == "array" and all(.[]; type == "object")) and
+  all([.state.users // [], .state.serviceAccounts // []][] | .[];
+   (.accountId | split("@")[0]) as $name | $name != "anonymous" and $name != "admin" and $name != "idm_admin") and
+  all(.state | to_entries[] | select(.key | startswith("prune")); .value | type == "boolean")
+ ' "$kanidm_metadata" >/dev/null; then
+		printf 'Kanidm verification metadata is invalid.\n' >&2
+		return 2
+	fi
 	require_login
 	kanidm_verify_failed=0
+	kanidm_verify_probe_failed=0
 
 	while IFS= read -r item; do
 		[ -n "$item" ] || continue
 		verify_person "$item"
+		[ "$kanidm_verify_probe_failed" -eq 0 ] || return 2
 	done < <(jq_state '.state.users[]?')
 
 	while IFS= read -r item; do
 		[ -n "$item" ] || continue
 		verify_service_account "$item"
+		[ "$kanidm_verify_probe_failed" -eq 0 ] || return 2
 	done < <(jq_state '.state.serviceAccounts[]?')
 
 	while IFS= read -r item; do
 		[ -n "$item" ] || continue
 		verify_group "$item"
+		[ "$kanidm_verify_probe_failed" -eq 0 ] || return 2
 	done < <(jq_state '.state.groups[]?')
 
 	while IFS= read -r item; do
 		[ -n "$item" ] || continue
 		verify_group_members "$item"
+		[ "$kanidm_verify_probe_failed" -eq 0 ] || return 2
 	done < <(jq_state '.state.groupMembers[]?')
 
 	while IFS= read -r item; do
 		[ -n "$item" ] || continue
 		verify_absent_group "$item"
+		[ "$kanidm_verify_probe_failed" -eq 0 ] || return 2
 	done < <(jq_state '.state.absentGroups[]?')
 
 	while IFS= read -r item; do
 		[ -n "$item" ] || continue
 		verify_scim_app "$item"
+		[ "$kanidm_verify_probe_failed" -eq 0 ] || return 2
 	done < <(jq_state '.state.scimApps[]?')
 
 	while IFS= read -r item; do
 		[ -n "$item" ] || continue
 		verify_oauth_app "$item"
+		[ "$kanidm_verify_probe_failed" -eq 0 ] || return 2
 	done < <(jq_state '.state.oauthApps[]?')
 
+	verify_owned_pruning
+	[ "$kanidm_verify_probe_failed" -eq 0 ] || return 2
 	[ "$kanidm_verify_failed" -eq 0 ]
 }
 
@@ -1389,7 +1658,11 @@ verify_service_account() {
 	account="$1"
 	service_account_id="$(jq_value '.accountId' "$account")"
 
-	live="$(kanidm_json_cmd service-account get "$service_account_id")"
+	if live="$(read_verify_entry "$service_account_id" service-account get)"; then :; else
+		if [ "$?" -eq 1 ]; then verify_fail "service-account get $service_account_id missing"; else verify_read_fail "service-account get $service_account_id read failed or invalid response"; fi
+		return 0
+	fi
+	verify_entry_contract service-account "$account" "$live"
 
 	primary_mail="$(jq -r '.mail[0] // empty' <<<"$account")"
 	if [ -n "$primary_mail" ]; then
@@ -1458,7 +1731,7 @@ apply_idm() {
 	prune_missing_groups
 	prune_group_members
 	prune_ssh_public_keys
-	verify_idm
+	verify_idm || return "$?"
 	remember_declared_people
 	remember_declared_groups
 	remember_declared_group_members
@@ -1473,32 +1746,30 @@ curl_status_args() {
 }
 
 wait_for_kanidm_status() {
-	local wait_seconds ready
+	local wait_seconds deadline remaining request_seconds
 	local -a curl_args
 	wait_seconds="${KANIDM_AUTO_APPLY_WAIT_SECONDS:-60}"
-	ready=false
-
-	if [[ ! "$wait_seconds" =~ ^[0-9]+$ ]]; then
-		printf 'KANIDM_AUTO_APPLY_WAIT_SECONDS must be an integer, got: %s\n' "$wait_seconds" >&2
-		exit 1
+	if [[ ! "$wait_seconds" =~ ^[1-9][0-9]*$ ]]; then
+		printf 'KANIDM_AUTO_APPLY_WAIT_SECONDS must be a positive integer, got: %s\n' "$wait_seconds" >&2
+		return 1
 	fi
-
+	deadline=$((SECONDS + wait_seconds))
 	mapfile -d '' -t curl_args < <(curl_status_args)
-	for _ in $(seq 1 "$wait_seconds"); do
-		if curl "${curl_args[@]}" "$kanidm_url/status" >/dev/null; then
-			ready=true
-			break
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		remaining=$((deadline - SECONDS))
+		request_seconds="$remaining"
+		[ "$request_seconds" -le 10 ] || request_seconds=10
+		if curl "${curl_args[@]}" --connect-timeout "$request_seconds" --max-time "$request_seconds" "$kanidm_url/status" >/dev/null; then
+			return 0
 		fi
-		sleep 1
+		[ "$SECONDS" -ge "$deadline" ] || sleep 1
 	done
-
-	if [ "$ready" != true ]; then
-		curl "${curl_args[@]}" "$kanidm_url/status" >/dev/null
-	fi
+	printf 'Kanidm status was not ready within %s seconds.\n' "$wait_seconds" >&2
+	return 1
 }
 
 auto_apply_idm() {
-	local account_name command desired_stamp login_started_epoch login_output login_rc password_file stamp_file
+	local account_name command desired_stamp login_started_epoch login_output login_rc password_file stamp_file stamp_matches verify_rc
 	command="${KANIDM_AUTO_APPLY_COMMAND:-apply-idm}"
 	password_file="${KANIDM_AUTO_APPLY_PASSWORD_FILE-}"
 
@@ -1523,10 +1794,8 @@ auto_apply_idm() {
 
 	desired_stamp="$(auto_apply_desired_stamp "$command" "$account_name")"
 	stamp_file="$(auto_apply_stamp_file "$command" "$account_name")"
-	if auto_apply_stamp_matches "$stamp_file" "$desired_stamp"; then
-		printf 'Kanidm %s declarative stamp is current; skipping auto-apply.\n' "$command"
-		return 0
-	fi
+	stamp_matches=false
+	if auto_apply_stamp_matches "$stamp_file" "$desired_stamp"; then stamp_matches=true; fi
 	kanidm_auto_apply_token_dir="$(mktemp -d)"
 	trap 'rm -rf "$kanidm_auto_apply_token_dir"' EXIT
 	export KANIDM_TOKEN_CACHE_PATH="$kanidm_auto_apply_token_dir/tokens.json"
@@ -1542,14 +1811,27 @@ auto_apply_idm() {
 		rm -f "$login_output"
 		case "$command" in
 		apply-idm)
-			if verify_idm; then
-				printf 'Kanidm declared IdM state is already applied; recording auto-apply stamp.\n'
-				record_auto_apply_stamp "$stamp_file" "$desired_stamp"
-				return
+			if [ "$stamp_matches" = true ]; then
+				if verify_idm; then
+					printf 'Kanidm owned IdM state verified; skipping unchanged writes.\n'
+					return 0
+				else
+					verify_rc="$?"
+					[ "$verify_rc" -eq 1 ] || return "$verify_rc"
+				fi
 			fi
 			apply_idm
 			;;
 		apply-system)
+			if [ "$stamp_matches" = true ]; then
+				if verify_domain; then
+					printf 'Kanidm owned domain state verified; skipping unchanged writes.\n'
+					return 0
+				else
+					verify_rc="$?"
+					[ "$verify_rc" -eq 1 ] || return "$verify_rc"
+				fi
+			fi
 			apply_domain
 			;;
 		esac
