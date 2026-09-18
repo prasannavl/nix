@@ -163,6 +163,21 @@ workflow for explicit pre-cutover validation. It does not replace the packaged
 `nixbot`, its callers, or its Bash implementation until a separate reviewed
 cutover.
 
+### GitHub API Authentication
+
+To reuse the credential already stored by GitHub CLI, populate `GH_TOKEN` in the
+current shell with:
+
+```bash
+export GH_TOKEN="$(gh auth token --hostname github.com)"
+```
+
+Nixbot automatically exports the resolved token as `GITHUB_TOKEN` for GitHub API
+consumers and appends it to Nix's `access-tokens` through the inherited
+`NIX_CONFIG`. Existing Nix configuration remains in effect, and the token is not
+written to the repository or Nix store. `GITHUB_TOKEN` can be supplied directly
+and takes precedence when both variables are set.
+
 ## Deploy Actions
 
 `nixbot` supports multiple top-level actions:

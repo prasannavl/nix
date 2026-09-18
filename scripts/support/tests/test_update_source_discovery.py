@@ -39,16 +39,48 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
             script.chmod(0o755)
         return unit
 
-    def run_update(self, *args, trace=None):
-        env = os.environ.copy()
+    def run_update(self, *args, trace=None, env=None):
+        full_env = os.environ.copy()
+        full_env.pop("GITHUB_TOKEN", None)
+        full_env.pop("GH_TOKEN", None)
+        full_env.update(env or {})
         if trace is not None:
-            env["TRACE"] = str(trace)
+            full_env["TRACE"] = str(trace)
         return subprocess.run(
             [self.repo / "scripts/update.sh", *args],
             check=False,
             capture_output=True,
             text=True,
-            env=env,
+            env=full_env,
+        )
+
+    def test_github_token_configures_reporters_and_nix(self):
+        trace = Path(self.temp_dir.name) / "trace"
+        unit = self.add_unit("lib/ext", "example", sources=True, updater=True)
+        (unit / "update.sh").write_text(
+            '#!/usr/bin/env bash\nprintf "%s\\n%s\\n" '
+            '"$GITHUB_TOKEN" "$NIX_CONFIG" >"$TRACE"\n'
+        )
+        (unit / "update.sh").chmod(0o755)
+
+        result = self.run_update(
+            "--only-ext",
+            trace=trace,
+            env={
+                "GH_TOKEN": "gh_test_token",
+                "GITHUB_TOKEN": "",
+                "NIX_CONFIG": "warn-dirty = false",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            trace.read_text().splitlines(),
+            [
+                "gh_test_token",
+                "warn-dirty = false",
+                "extra-access-tokens = github.com=gh_test_token",
+            ],
         )
 
     def test_sources_and_updater_participate_in_updates(self):

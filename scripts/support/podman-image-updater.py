@@ -491,7 +491,8 @@ def latest_release_tag(registry, repository):
         return None
     source_repository, strip_prefix = release_source
     data = request_json(
-        f"https://api.github.com/repos/{source_repository}/releases/latest"
+        f"https://api.github.com/repos/{source_repository}/releases/latest",
+        os.environ.get("GITHUB_TOKEN"),
     )
     tag = data.get("tag_name")
     if isinstance(tag, str) and tag:

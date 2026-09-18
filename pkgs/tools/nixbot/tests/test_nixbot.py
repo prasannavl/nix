@@ -34,6 +34,8 @@ class NixbotScriptTest(unittest.TestCase):
         # host-agent state. Tests that exercise integration provide an exact
         # fake agent explicitly.
         full_env["NIXBOT_HOST_AGENT"] = str(self.work_dir / "missing-host-agent")
+        full_env.pop("GITHUB_TOKEN", None)
+        full_env.pop("GH_TOKEN", None)
         full_env.update(env or {})
         return subprocess.run(
             [
@@ -132,6 +134,47 @@ class NixbotScriptTest(unittest.TestCase):
                 "logFormat": "plain",
             },
             parsed,
+        )
+
+    def test_github_token_configures_nix_once_and_survives_reexec(self):
+        result = self.run_script(
+            """
+            unset GITHUB_TOKEN
+            export GH_TOKEN=gh_test_token
+            export NIX_CONFIG='warn-dirty = false'
+            configure_github_nix_access_token
+            configure_github_nix_access_token
+            printf '%s\n---\n%s\n' "$GITHUB_TOKEN" "$NIX_CONFIG"
+            """
+        )
+
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "gh_test_token",
+                "---",
+                "warn-dirty = false",
+                "extra-access-tokens = github.com=gh_test_token",
+            ],
+        )
+
+    def test_github_token_takes_precedence_over_gh_token(self):
+        result = self.run_script(
+            """
+            export GITHUB_TOKEN=github_test_token
+            export GH_TOKEN=gh_test_token
+            unset NIX_CONFIG
+            configure_github_nix_access_token
+            printf '%s\n%s\n' "$GITHUB_TOKEN" "$NIX_CONFIG"
+            """
+        )
+
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "github_test_token",
+                "extra-access-tokens = github.com=github_test_token",
+            ],
         )
 
     def test_restart_managed_forces_only_host_deploy_change_detection(self):

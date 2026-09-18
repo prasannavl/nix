@@ -436,11 +436,15 @@ class PodmanImageUpdaterTest(unittest.TestCase):
 
     def test_immich_uses_latest_github_release_tag(self):
         with (
+            mock.patch.dict(
+                podman_image_updater.os.environ,
+                {"GITHUB_TOKEN": "github_test_token"},
+            ),
             mock.patch.object(
                 podman_image_updater,
                 "request_json",
                 return_value={"tag_name": "v3.0.2"},
-            ),
+            ) as request,
             mock.patch.object(
                 podman_image_updater,
                 "registry_tags",
@@ -454,6 +458,10 @@ class PodmanImageUpdaterTest(unittest.TestCase):
             )
 
         self.assertEqual(latest, "v3.0.2")
+        request.assert_called_once_with(
+            "https://api.github.com/repos/immich-app/immich/releases/latest",
+            "github_test_token",
+        )
 
     def test_stirling_release_strips_non_registry_v_prefix(self):
         with mock.patch.object(

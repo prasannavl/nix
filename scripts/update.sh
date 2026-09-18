@@ -33,6 +33,31 @@ die() {
 	exit 1
 }
 
+configure_github_nix_access_token() {
+	local github_token="${GITHUB_TOKEN:-${GH_TOKEN:-}}" token_setting=""
+
+	[[ -n "$github_token" ]] || return 0
+	if [[ "$github_token" == *[$' \t\r\n']* ]]; then
+		die "GITHUB_TOKEN and GH_TOKEN must not contain whitespace"
+	fi
+
+	# The source reporters consume GITHUB_TOKEN, while Nix consumes
+	# access-tokens from its configuration. Project either supported ambient
+	# variable into both interfaces without replacing other Nix settings.
+	export GITHUB_TOKEN="$github_token"
+	token_setting="extra-access-tokens = github.com=${github_token}"
+	case $'\n'"${NIX_CONFIG:-}"$'\n' in
+	*$'\n'"${token_setting}"$'\n'*) ;;
+	*)
+		if [[ -n "${NIX_CONFIG:-}" ]]; then
+			export NIX_CONFIG="${NIX_CONFIG}"$'\n'"${token_setting}"
+		else
+			export NIX_CONFIG="$token_setting"
+		fi
+		;;
+	esac
+}
+
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
 	LIB_EXT_DIR="${REPO_ROOT}/lib/ext"
@@ -489,6 +514,7 @@ run_updates() {
 
 main() {
 	init_vars
+	configure_github_nix_access_token
 	parse_args "$@"
 	normalize_options
 	run_updates

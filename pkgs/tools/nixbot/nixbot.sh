@@ -217,6 +217,8 @@ Environment (Workflow Behavior):
   NIXBOT_LOG_FORMAT           Same as --log-format
 
 Environment (Auth / Config):
+  GITHUB_TOKEN               GitHub API token; also projected into Nix access-tokens
+  GH_TOKEN                   Fallback GitHub API token when GITHUB_TOKEN is unset
   NIXBOT_USER                 Same as --user
   NIXBOT_SSH_KEY              Same as --ssh-key
   NIXBOT_OPERATOR_USER        Same as --operator-user
@@ -504,6 +506,31 @@ restore_initial_tty_state() {
 	[ -n "${NIXBOT_TTY_STTY_STATE}" ] || return 0
 
 	stty "${NIXBOT_TTY_STTY_STATE}" <"${NIXBOT_TTY_STDIN_PATH}" 2>/dev/null || true
+}
+
+configure_github_nix_access_token() {
+	local github_token="${GITHUB_TOKEN:-${GH_TOKEN:-}}" token_setting=""
+
+	[[ -n "$github_token" ]] || return 0
+	if [[ "$github_token" == *[$' \t\r\n']* ]]; then
+		die "GITHUB_TOKEN and GH_TOKEN must not contain whitespace"
+	fi
+
+	# Nixbot may re-exec through nix shell. Export the normalized token and
+	# append the Nix setting once so both the bootstrap and re-executed process
+	# authenticate without replacing any caller-provided Nix configuration.
+	export GITHUB_TOKEN="$github_token"
+	token_setting="extra-access-tokens = github.com=${github_token}"
+	case $'\n'"${NIX_CONFIG:-}"$'\n' in
+	*$'\n'"${token_setting}"$'\n'*) ;;
+	*)
+		if [[ -n "${NIX_CONFIG:-}" ]]; then
+			export NIX_CONFIG="${NIX_CONFIG}"$'\n'"${token_setting}"
+		else
+			export NIX_CONFIG="$token_setting"
+		fi
+		;;
+	esac
 }
 
 init_vars() {
@@ -15483,6 +15510,7 @@ main() {
 	local -a request_args=("$@")
 
 	init_vars
+	configure_github_nix_access_token
 	capture_initial_tty_state
 	trap cleanup_trap EXIT
 	trap request_hangup HUP
