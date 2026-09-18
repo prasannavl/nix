@@ -402,6 +402,58 @@ rec {
       in
         endpointForGroup spec.role (spec.placement or activeEndpointGroup);
       ipForService = service: (serviceRegistry.endpointForService service).address;
+      servicesShareHost = client: service: let
+        caller = serviceRegistry.endpointForService client;
+        target = serviceRegistry.endpointForService service;
+      in
+        caller.project
+        == target.project
+        && caller.host == target.host
+        && caller.address == target.address;
+      # Named-port access policy owns both client routing and firewall sources.
+      allowedClientsFor = service: portName: let
+        clients = (serviceRegistry.portSpecFor service portName).allowedServices or [];
+        unknown = builtins.filter (client: !(builtins.hasAttr client serviceSpecs)) clients;
+      in
+        if unknown != []
+        then throw "Unknown client(s) for '${service}.${portName}': ${builtins.concatStringsSep ", " unknown}"
+        else clients;
+      clientEndpointForService = {
+        client,
+        service,
+        portName,
+      }: let
+        caller = serviceRegistry.serviceFor client;
+        localContainer = serviceRegistry.servicesShareHost client service && caller ? podmanSubnet;
+      in
+        if !(builtins.elem client (serviceRegistry.allowedClientsFor service portName))
+        then throw "Service '${client}' is not allowed to call '${service}.${portName}'"
+        else {
+          host =
+            if localContainer
+            then "host.containers.internal"
+            else serviceRegistry.ipForService service;
+          port = serviceRegistry.portFor service portName;
+        };
+      allowedClientIpv4CidrsFor = service: portName: let
+        sourceFor = client: let
+          caller = serviceRegistry.serviceFor client;
+          cidr =
+            if serviceRegistry.servicesShareHost client service && caller ? podmanSubnet
+            then caller.podmanSubnet
+            else "${serviceRegistry.ipForService client}/32";
+        in
+          if builtins.match ".*:.*" cidr != null
+          then throw "Service '${service}.${portName}' requires an IPv4 source for '${client}'"
+          else cidr;
+      in
+        builtins.foldl' (cidrs: client: let
+          cidr = sourceFor client;
+        in
+          if builtins.elem cidr cidrs
+          then cidrs
+          else cidrs ++ [cidr]) []
+        (serviceRegistry.allowedClientsFor service portName);
       portSpecFor = service: portName: (serviceRegistry.serviceFor service).ports.${portName};
       portFor = service: portName: (serviceRegistry.portSpecFor service portName).port;
       upstreamForService = service: portName: "${serviceRegistry.ipForService service}:${toString (serviceRegistry.portFor service portName)}";

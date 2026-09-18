@@ -218,6 +218,7 @@ in {
   lib-flake-fabric-contract = import ./fabric-contract.nix {inherit pkgs;};
   lib-flake-fabric-projection = import ./fabric-projection.nix {inherit pkgs;};
   lib-flake-phase-projection = import ./phase-projection.nix {inherit pkgs;};
+  lib-flake-service-client-endpoints = import ./service-client-endpoints.nix {inherit pkgs;};
   lib-flake-service-placements = import ./service-placements.nix {inherit pkgs;};
   lib-flake-service-moves = import ./service-moves.nix {inherit pkgs;};
   lib-flake-nested-rust-package = assert toString nestedRustPackage.sourcePath == toString ../../../pkgs/examples/hello-rust/default.nix;
