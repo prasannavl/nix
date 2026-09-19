@@ -16,7 +16,7 @@ The same model set as Ollama is expressed as Hugging Face references
 model arguments and the router's staged `models.ini` are both derived from
 `requiredModels`, so the preset cannot drift from the reconciler policy.
 
-## Upstream semantics (verified at image revision b9190)
+## Upstream semantics (verified at image revision b29c606e)
 
 - Router mode is `llama-server` without a model, driven by
   `--models-preset /etc/llama-router/models.ini`; the container command only
@@ -34,7 +34,7 @@ model arguments and the router's staged `models.ini` are both derived from
   `failed`. `POST /models/load`/`models/unload` answer `{"success":true}`.
 - Children download `hf` refs into `LLAMA_CACHE` in the Hugging Face hub layout
   (`models--org--repo/{blobs,snapshots}`), which the host binds from
-  `/var/lib/pvl/llama-router/cache`.
+  `/var/lib/pvl/ai/llama-router`.
 
 ## Deltas from the Ollama reconciler
 
@@ -54,6 +54,50 @@ model arguments and the router's staged `models.ini` are both derived from
 - `cacheDir` is mandatory (retirement pruning and the failure diagnostics read
   the HF cache layout directly) and the helper never uses `find` or `awk`,
   preserving the ollama helper's minimal runtime-input contract.
+
+## Idle-power policy: load-lazy reconcile (2026-09-19)
+
+Measured on `pvl-a1` (AMD iGPU, ROCm image): the first deployed generation
+loaded every required model at each dispatch, and with `--models-max` 4 that
+left four resident workers on the APU with the GPU pinned at idle - `gpu_busy`
+100%, SCLK 2900 MHz, 17-19 W, 26 GiB of GTT - until the service was stopped
+(100% -> 5%, 655 MHz instantly at teardown). The burn is a step function of
+resident worker count, not of traffic: one resident model idles at 20-24% busy /
+~900 MHz / ~7 W, two resident models pin 96-100% / 2900 MHz. Two or more
+concurrent ROCm contexts defeat amdgpu clock gating; it is a driver-level
+effect, independent of workload.
+
+Non-causes verified against the pinned llama.cpp source and the live router:
+
+- The server never eager-loads with our preset: the "loaded on-demand" banner is
+  literal, and the first generation's startup load burst was the reconcile
+  worker itself (`unloaded` -> force `POST /models/load`), matching every spawn
+  timestamp to the second.
+- Cache-scanned presets carry no `load-on-startup`; the merged presets served by
+  `GET /models` are a mirror of our own ini. No override keys are needed.
+- `--no-models-autoload` is not a lazy switch: at this revision it makes
+  `router_validate_model` reject requests for models that are not already
+  running (clients can opt back in per request with `?autoload=true`). The
+  flag's default (on) is exactly the on-demand behavior we want.
+
+Policy, in force since:
+
+- Reconcile is download-verify, not load-ensure: an `unloaded` or `failed`
+  required model with cached weights is left to its first request; only models
+  with missing weights are load-requested (the download path) - with the
+  resource-limit recovery semantics unchanged.
+- Every generated preset sets `poll = "0"`: the server default of 50 busy-polls
+  the backend while waiting for work.
+- The laptop variants (`pvl-a1`, `pvl-l5`) pass `--models-max 1` so concurrent
+  requests cannot stack resident contexts; swapping models goes through LRU
+  eviction. `abird-srv` keeps the upstream default of 4.
+
+Trade-off: this llama.cpp revision has no idle TTL (no Ollama `keep_alive`
+equivalent), so a resident model holds memory until the next different-model
+request evicts it, and at `--models-max 1` a router-side `/embeddings` request
+swaps out the resident chat model. Embeddings are served by the Ollama pair
+today, and the first request after boot pays the load (seconds, like Ollama
+cold).
 
 ## Host mapping
 

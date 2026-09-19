@@ -269,6 +269,13 @@ model_cache_has_weights() {
 	[ "${#files[@]}" -gt 0 ]
 }
 
+# Whether a model's weights are already present in the HF cache, without
+# touching the router. Reconciles only download missing weights; loads are
+# left to the first request so resident workers do not sit on the GPU idle.
+model_has_cached_weights() {
+	model_cache_has_weights "$(model_repo_dir "$1")"
+}
+
 handle_model_load_failure() {
 	local model="$1" repo_dir
 
@@ -348,11 +355,19 @@ ensure_required_model() {
 		echo "llama-router model load: model $model is already loading; waiting for it"
 		;;
 	unloaded)
+		if model_has_cached_weights "$model"; then
+			echo "llama-router model load: model $model has cached weights; leaving load to first request"
+			return
+		fi
 		if ! request_model_load "$model"; then
 			return 1
 		fi
 		;;
 	failed)
+		if model_has_cached_weights "$model"; then
+			echo "llama-router model load: model $model failed previously but has cached weights; leaving load to first request"
+			return
+		fi
 		echo "llama-router model load: previous load attempt for $model failed; retrying"
 		if ! request_model_load "$model"; then
 			return 1

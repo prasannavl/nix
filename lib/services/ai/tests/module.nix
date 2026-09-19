@@ -196,6 +196,7 @@ in
   == {
     alias = "nomic-embed-text";
     embeddings = "true";
+    poll = "0";
   };
   assert cfg.services.ai.backends.llamaRouter.cacheDir == "/var/lib/test/ai/llama-router";
   # Lifecycle projection onto compose instances.

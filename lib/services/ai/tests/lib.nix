@@ -80,9 +80,18 @@ in
   == {
     alias = "nomic-embed-text";
     embeddings = "true";
+    poll = "0";
   };
-  assert presetsWithoutEmbedding."nomic-ai/nomic-embed-text-v1.5-GGUF:Q4_K_M" == {alias = "nomic-embed-text";};
-  assert presetsWithEmbedding."unsloth/gemma-4-E2B-it-GGUF:Q4_K_M" == {alias = "gemma4:e2b";};
+  assert presetsWithoutEmbedding."nomic-ai/nomic-embed-text-v1.5-GGUF:Q4_K_M"
+  == {
+    alias = "nomic-embed-text";
+    poll = "0";
+  };
+  assert presetsWithEmbedding."unsloth/gemma-4-E2B-it-GGUF:Q4_K_M"
+  == {
+    alias = "gemma4:e2b";
+    poll = "0";
+  };
   assert builtins.length (builtins.attrNames presetsWithEmbedding) == builtins.length hostEntries;
   assert builtins.length (builtins.attrNames presetsWithoutEmbedding) == builtins.length hostEntries;
     pkgs.runCommand "ai-lib-test" {} ''

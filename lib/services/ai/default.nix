@@ -20,11 +20,17 @@ in {
   # Build llama.cpp router presets for selected entries. The entry whose id
   # matches the embedding role id (when set) is additionally flagged with
   # embeddings = "true" so the router routes embedding requests to it.
+  # Every preset also sets poll = "0": the server default of 50 busy-polls
+  # the GPU while waiting for work, so resident models read as constant GPU
+  # usage even when idle.
   llamaPresets = embeddingId: entries:
     builtins.listToAttrs (builtins.map (entry: {
         name = entry.llama;
         value =
-          {alias = entry.id;}
+          {
+            alias = entry.id;
+            poll = "0";
+          }
           // (
             if embeddingId != null && entry.id == embeddingId
             then {embeddings = "true";}

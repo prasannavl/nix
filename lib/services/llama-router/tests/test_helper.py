@@ -241,6 +241,18 @@ esac
         self.assertNotIn("/models/load", curl_log)
         self.assertNotIn("/models?reload=1", curl_log)
 
+    def test_unloaded_model_with_cached_weights_is_left_lazy(self):
+        self.set_unit_state("pvl-llama-router.service", "active")
+        self.write_model_cache("models--test--model")
+
+        result = self.run_helper(FAKE_CURL_MODELS_STATUS="0")
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("has cached weights; leaving load to first request", result.stdout)
+        curl_log = "\n".join(self.read_log("curl.log"))
+        self.assertNotIn("/models/load", curl_log)
+        self.assertNotIn("/models?reload=1", curl_log)
+
     def test_unloaded_model_is_downloaded_and_loaded(self):
         self.set_unit_state("pvl-llama-router.service", "active")
 
@@ -252,7 +264,7 @@ esac
         self.assertIn("/models/load", curl_log)
         self.assertNotIn("/models?reload=1", curl_log)
 
-    def test_failed_load_with_cached_weights_warns(self):
+    def test_failed_model_with_cached_weights_is_left_lazy(self):
         self.set_unit_state("pvl-llama-router.service", "active")
         self.write_model_cache("models--test--model")
 
@@ -266,7 +278,9 @@ esac
         )
 
         self.assertEqual(result.returncode, 0)
-        self.assertIn("failed to load despite cached weights", result.stderr)
+        self.assertIn("failed previously but has cached weights", result.stdout)
+        curl_log = "\n".join(self.read_log("curl.log"))
+        self.assertNotIn("/models/load", curl_log)
 
     def test_failed_load_without_cached_weights_fails(self):
         self.set_unit_state("pvl-llama-router.service", "active")
