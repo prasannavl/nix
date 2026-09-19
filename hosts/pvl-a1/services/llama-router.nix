@@ -16,13 +16,15 @@ in {
           llama-router:
             image: ghcr.io/ggml-org/llama.cpp:server-rocm-v0.4.1
             container_name: llama-router
-            # One resident worker: with two or more, concurrent ROCm contexts
-            # defeat AMD clock gating and pin the GPU while idle.
+            # Two resident workers keep the embedding model co-resident with
+            # a chat model (an /embeddings request no longer LRU-evicts the
+            # chat worker); the poll = 0 presets keep idle residents off the
+            # GPU.
             command:
               - --models-preset
               - /etc/llama-router/models.ini
               - --models-max
-              - "1"
+              - "2"
             ports:
               - "${toString exposedPorts.main.port}:8080"
             volumes:
@@ -52,13 +54,14 @@ in {
           llama-router:
             image: ghcr.io/ggml-org/llama.cpp:server-cuda-v0.4.1
             container_name: llama-router-nvidia
-            # One resident worker so a single request stream cannot stack
-            # contexts and pin the discrete GPU while idle either.
+            # Two resident workers for the same co-residency reason as the
+            # AMD variant; the poll = 0 presets keep idle residents from
+            # busy-polling the GPU.
             command:
               - --models-preset
               - /etc/llama-router/models.ini
               - --models-max
-              - "1"
+              - "2"
             ports:
               - "${toString exposedPorts.main.port}:8080"
             volumes:

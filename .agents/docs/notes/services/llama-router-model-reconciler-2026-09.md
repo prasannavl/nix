@@ -63,9 +63,10 @@ left four resident workers on the APU with the GPU pinned at idle - `gpu_busy`
 100%, SCLK 2900 MHz, 17-19 W, 26 GiB of GTT - until the service was stopped
 (100% -> 5%, 655 MHz instantly at teardown). The burn is a step function of
 resident worker count, not of traffic: one resident model idles at 20-24% busy /
-~900 MHz / ~7 W, two resident models pin 96-100% / 2900 MHz. Two or more
-concurrent ROCm contexts defeat amdgpu clock gating; it is a driver-level
-effect, independent of workload.
+~900 MHz / ~7 W, two resident models pin 96-100% / 2900 MHz. That step was
+measured with the server's default `poll` 50 busy-poll active on each worker, so
+the context-count share of it is not separated out; re-measure two residents
+under the `poll = "0"` presets after deploy.
 
 Non-causes verified against the pinned llama.cpp source and the live router:
 
@@ -88,16 +89,20 @@ Policy, in force since:
   resource-limit recovery semantics unchanged.
 - Every generated preset sets `poll = "0"`: the server default of 50 busy-polls
   the backend while waiting for work.
-- The laptop variants (`pvl-a1`, `pvl-l5`) pass `--models-max 1` so concurrent
-  requests cannot stack resident contexts; swapping models goes through LRU
-  eviction. `abird-srv` keeps the upstream default of 4.
+- The laptop variants (`pvl-a1`, `pvl-l5`) pass `--models-max 2` so the
+  embedding model stays co-resident with a chat model (a router-side
+  `/embeddings` request no longer LRU-evicts the chat worker); a third
+  distinct-model request still goes through LRU eviction. `abird-srv` keeps the
+  upstream default of 4.
 
 Trade-off: this llama.cpp revision has no idle TTL (no Ollama `keep_alive`
-equivalent), so a resident model holds memory until the next different-model
-request evicts it, and at `--models-max 1` a router-side `/embeddings` request
-swaps out the resident chat model. Embeddings are served by the Ollama pair
-today, and the first request after boot pays the load (seconds, like Ollama
-cold).
+equivalent), so resident models hold memory until a different-model request
+evicts them via LRU, and the first request after boot pays the load (seconds,
+like Ollama cold). With `--models-max 2` the common steady state is embedding
+
+- chat resident, so the two-resident idle cost under `poll = "0"` should be
+  verified after deploy; the original complaint scenario (all required models
+  force-loaded at boot) cannot recur with the lazy reconcile.
 
 ## Host mapping
 
