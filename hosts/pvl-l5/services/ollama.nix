@@ -6,7 +6,7 @@ in {
   # lifecycle, and the shared models dir are owned by services.ai.
   services.podman-compose.pvl.instances = {
     ollama = rec {
-      exposedPorts.main.port = ai.backends.ollama.portsByName.ollama;
+      exposedPorts.main.port = 11434;
 
       source = ''
         services:
@@ -34,7 +34,7 @@ in {
     };
 
     ollama-nvidia = rec {
-      exposedPorts.main.port = ai.backends.ollama.portsByName.ollama-nvidia;
+      exposedPorts.main.port = 11435;
 
       source = ''
         services:

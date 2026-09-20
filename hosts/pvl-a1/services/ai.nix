@@ -22,14 +22,12 @@
         modelsDir = "/var/lib/pvl/ollama-models";
         deployments = [
           {
-            name = "ollama";
-            port = 11434;
+            instance = "ollama";
             lifecycle = "auto";
           }
           {
             # Warmed by hand; the reconciler keeps its models current.
-            name = "ollama-nvidia";
-            port = 11435;
+            instance = "ollama-nvidia";
             lifecycle = "manual";
           }
         ];
@@ -40,12 +38,10 @@
       # default /var/lib/pvl/ai/llama-router).
       llamaRouter.deployments = [
         {
-          port = 11436;
           lifecycle = "auto";
         }
         {
-          name = "llama-router-nvidia";
-          port = 11437;
+          instance = "llama-router-nvidia";
           lifecycle = "manual";
         }
       ];

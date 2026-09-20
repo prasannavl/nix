@@ -22,14 +22,12 @@
         modelsDir = "/var/lib/pvl/ollama-models";
         deployments = [
           {
-            name = "ollama";
-            port = 11434;
+            instance = "ollama";
             # Declaratively stopped; started by hand for GPU sessions.
             lifecycle = "stopped";
           }
           {
-            name = "ollama-nvidia";
-            port = 11435;
+            instance = "ollama-nvidia";
             lifecycle = "stopped";
           }
         ];
@@ -38,13 +36,11 @@
         {
           # AMD/ROCm router, mirroring the Ollama pair: declaratively
           # stopped, started by hand for GPU sessions.
-          port = 11436;
           lifecycle = "stopped";
         }
         {
           # NVIDIA/CUDA router on the same shared cache.
-          name = "llama-router-nvidia";
-          port = 11437;
+          instance = "llama-router-nvidia";
           lifecycle = "stopped";
         }
       ];

@@ -25,11 +25,9 @@
     backends.ollama = {
       deployments = [
         {
-          port = 11434;
           lifecycle = "auto";
         }
       ];
-      retiredModels = ["qwen3.6:27b"];
     };
   };
 }

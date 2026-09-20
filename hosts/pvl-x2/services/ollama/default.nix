@@ -1,11 +1,9 @@
-{config, ...}: let
-  ai = config.services.ai;
-in {
+{...}: {
   # Container definition only: image, devices, and tuning. Model pulls and
   # lifecycle are owned by services.ai.
   services.podman-compose.pvl.instances.ollama = rec {
     exposedPorts.main = {
-      port = ai.backends.ollama.portsByName.ollama;
+      port = 11434;
       openFirewall = true;
     };
 

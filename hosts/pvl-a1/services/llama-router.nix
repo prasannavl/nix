@@ -9,7 +9,7 @@ in {
   services.podman-compose.pvl.instances = {
     # AMD/ROCm variant, auto-started like the Ollama pair's AMD side.
     llama-router = rec {
-      exposedPorts.main.port = ai.backends.llamaRouter.portsByName.llama-router;
+      exposedPorts.main.port = 11436;
 
       source = ''
         services:
@@ -47,7 +47,7 @@ in {
 
     # NVIDIA/CUDA variant; same models.ini, same shared cache.
     llama-router-nvidia = rec {
-      exposedPorts.main.port = ai.backends.llamaRouter.portsByName.llama-router-nvidia;
+      exposedPorts.main.port = 11437;
 
       source = ''
         services:
