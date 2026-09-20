@@ -2,34 +2,66 @@
   lib = pkgs.lib;
   inherit (lib) mkOption types;
 
-  # Minimal option stubs for the surfaces the ai module assigns to; keeps the
-  # test independent of the full compose module while exercising the module's
-  # own projections and emissions.
+  exposedPortType = types.submodule {
+    options.port = mkOption {type = types.port;};
+  };
+  instanceType = types.submodule {
+    options = {
+      state = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      autoStart = mkOption {
+        type = types.nullOr types.bool;
+        default = null;
+      };
+      source = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      files = mkOption {
+        type = types.attrs;
+        default = {};
+      };
+      user = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      serviceName = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      exposedPorts = mkOption {
+        type = types.attrsOf exposedPortType;
+        default = {};
+      };
+      serviceOverrides = mkOption {
+        type = types.attrs;
+        default = {};
+      };
+    };
+  };
+  stackType = types.submodule ({name, ...}: {
+    options = {
+      user = mkOption {
+        type = types.str;
+        default = "root";
+      };
+      servicePrefix = mkOption {
+        type = types.str;
+        default = "${name}-";
+      };
+      instances = mkOption {
+        type = types.attrsOf instanceType;
+        default = {};
+      };
+    };
+  });
+
   stubModule = {
     options = {
       services.podman-compose = mkOption {
-        type = types.attrsOf (types.attrsOf (types.attrsOf (types.submodule {
-          options = {
-            state = mkOption {
-              type = types.nullOr types.str;
-              default = null;
-            };
-            autoStart = mkOption {
-              type = types.nullOr types.bool;
-              default = null;
-            };
-            source = mkOption {
-              type = types.nullOr types.str;
-              default = null;
-            };
-            # Raw attrs: instance file payloads stay unforced until read, so
-            # existence checks do not evaluate reconciler-derived texts.
-            files = mkOption {
-              type = types.attrs;
-              default = {};
-            };
-          };
-        })));
+        type = types.attrsOf stackType;
         default = {};
       };
       systemd = {
@@ -53,12 +85,12 @@
     };
   };
 
-  eval = cfg:
+  eval = moduleConfig:
     (lib.evalModules {
       modules = [
         (import ../module.nix)
         stubModule
-        cfg
+        moduleConfig
       ];
       specialArgs = {inherit pkgs;};
     })
@@ -74,6 +106,22 @@
     "qwen35-9b"
   ];
 
+  baseInstances = {
+    ollama = {
+      source = "ollama";
+      serviceName = "special-ollama";
+      exposedPorts.main.port = 11434;
+    };
+    ollama-2 = {
+      source = "ollama-2";
+      exposedPorts.main.port = 11435;
+    };
+    llama-router = {
+      source = "llama-router";
+      exposedPorts.main.port = 11436;
+    };
+  };
+
   baseConfig = {
     services.ai = {
       stack.name = "test";
@@ -84,42 +132,34 @@
           modelsDir = "/var/lib/test/ollama-models";
           deployments = [
             {
-              name = "ollama";
-              port = 11434;
+              instance = "ollama";
               lifecycle = "stopped";
             }
             {
-              name = "ollama-2";
-              port = 11435;
+              instance = "ollama-2";
               lifecycle = "manual";
             }
           ];
         };
         llamaRouter.deployments = [
           {
-            port = 11436;
             lifecycle = "manual";
           }
         ];
       };
     };
-    services.podman-compose.test.instances = baseInstances;
+    services.podman-compose.test = {
+      user = "test-user";
+      servicePrefix = "custom-";
+      instances = baseInstances;
+    };
   };
 
   cfg = eval baseConfig;
+  allAssertionsHold = value: builtins.all (assertion: assertion.assertion) value.assertions;
 
-  allAssertionsHold = c: builtins.all (a: a.assertion) c.assertions;
-
-  baseInstances = {
-    ollama.source = "ollama";
-    ollama-2.source = "ollama-2";
-    llama-router.source = "llama-router";
-  };
-
-  # Failure variants; each keeps the happy-path shape but breaks one
-  # invariant, and must fail at least one assertion.
   badKeyCfg = lib.recursiveUpdate baseConfig {
-    services.ai.models = models ++ ["gemma99-typo"];
+    services.ai.backends.ollama.models = models ++ ["gemma99-typo"];
   };
   badRoleCfg = lib.recursiveUpdate baseConfig {
     services.ai.roles.main = "gemma4-26b";
@@ -130,38 +170,67 @@
       services =
         baseConfig.services
         // {
-          podman-compose.test.instances = builtins.removeAttrs baseInstances ["llama-router"];
+          podman-compose.test =
+            baseConfig.services.podman-compose.test
+            // {
+              instances = builtins.removeAttrs baseInstances ["llama-router"];
+            };
         };
     };
-  duplicatePortCfg = lib.recursiveUpdate baseConfig {
-    services.ai.backends.ollama.deployments = [
+  crossBackendNameCollisionCfg = lib.recursiveUpdate baseConfig {
+    services.ai.backends.llamaRouter.deployments = [
       {
-        name = "ollama";
-        port = 11434;
-      }
-      {
-        name = "ollama-2";
-        port = 11434;
+        instance = "ollama";
+        lifecycle = "manual";
       }
     ];
   };
-  missingStackCfg =
-    (builtins.removeAttrs baseConfig ["services.ai"])
-    // {
-      services.ai = {
-        inherit models;
-        backends.ollama.deployments = [{port = 11434;}];
-      };
+  crossBackendPortCollisionCfg = lib.recursiveUpdate baseConfig {
+    services.podman-compose.test.instances.llama-router.exposedPorts.main.port = 11434;
+  };
+  crossBackendStateCollisionCfg = lib.recursiveUpdate baseConfig {
+    services.ai.backends = {
+      ollama.stateFile = "/var/lib/test/shared-model-ownership.json";
+      llamaRouter.stateFile = "/var/lib/test/shared-model-ownership.json";
     };
+  };
+  missingStackCfg = {
+    services.ai = {
+      inherit models;
+      backends.ollama.deployments = [{}];
+    };
+  };
   autoCfg = lib.recursiveUpdate baseConfig {
     services.ai.backends = {
-      ollama.deployments = [{port = 11434;}];
-      llamaRouter.deployments = [{port = 11436;}];
+      ollama.deployments = [{instance = "ollama";}];
+      llamaRouter.deployments = [{}];
+    };
+  };
+  backendSpecificCfg = lib.recursiveUpdate baseConfig {
+    services.ai = {
+      catalog = {
+        only-ollama = {
+          id = "only-ollama";
+          ollama = "only-ollama:1";
+        };
+        only-llama = {
+          id = "only-llama";
+          llama = "example/only-llama-GGUF:Q4_K_M";
+        };
+      };
+      models = [];
+      roles = {
+        main = "only-ollama";
+        embedding = null;
+      };
+      backends = {
+        ollama.models = ["only-ollama"];
+        llamaRouter.models = ["only-llama"];
+      };
     };
   };
 in
   assert allAssertionsHold cfg;
-  # Projections.
   assert cfg.services.ai.backends.ollama.urls == ["http://127.0.0.1:11434" "http://127.0.0.1:11435"];
   assert cfg.services.ai.backends.ollama.ports == [11434 11435];
   assert cfg.services.ai.backends.ollama.portsByName
@@ -169,7 +238,7 @@ in
     ollama = 11434;
     ollama-2 = 11435;
   };
-  assert cfg.services.ai.backends.ollama.serviceNames == ["test-ollama.service" "test-ollama-2.service"];
+  assert cfg.services.ai.backends.ollama.serviceNames == ["special-ollama.service" "custom-ollama-2.service"];
   assert cfg.services.ai.backends.ollama.readyTarget == null;
   assert cfg.services.ai.backends.ollama.requiredModels
   == [
@@ -198,30 +267,35 @@ in
     embeddings = "true";
     poll = "0";
   };
-  assert cfg.services.ai.backends.llamaRouter.cacheDir == "/var/lib/test/ai/llama-router";
-  # Lifecycle projection onto compose instances.
+  assert cfg.services.ai.backends.ollama.stateFile == "/var/lib/test-user/ai/reconciler/ollama.json";
+  assert cfg.services.ai.backends.llamaRouter.stateFile == "/var/lib/test-user/ai/reconciler/llama-router.json";
   assert cfg.services.podman-compose.test.instances.ollama.state == "stopped";
   assert cfg.services.podman-compose.test.instances.ollama-2.autoStart == false;
   assert cfg.services.podman-compose.test.instances.llama-router.files."models.ini".text != "";
-  # Reconciler units under their canonical fleet names.
+  assert builtins.any
+  (lib.hasInfix "restart --no-block test-ollama-models-pull.service")
+  cfg.systemd.user.services.special-ollama.serviceConfig.ExecStartPost;
+  assert builtins.any
+  (lib.hasInfix "restart --no-block test-llama-router-models-load.service")
+  cfg.systemd.user.services.custom-llama-router.serviceConfig.ExecStartPost;
   assert cfg.systemd.user.services ? "test-ollama-models";
   assert cfg.systemd.user.services ? "test-ollama-models-pull";
   assert cfg.systemd.user.services ? "test-llama-router-models";
   assert cfg.systemd.user.services ? "test-llama-router-models-load";
-  # Storage rules.
   assert builtins.any (rule: lib.hasPrefix "d /var/lib/test/ollama-models " rule) cfg.systemd.tmpfiles.rules;
-  assert builtins.any (rule: lib.hasPrefix "d /var/lib/test/ai/llama-router " rule) cfg.systemd.tmpfiles.rules;
-  # A single auto deployment yields its ready target.
-  assert (eval autoCfg).services.ai.backends.ollama.readyTarget == "test-ollama-ready.target";
-  # Auto llama deployments get ready-target ordering like the Ollama family.
-  assert (eval autoCfg).services.ai.backends.llamaRouter.readyTarget == "test-llama-router-ready.target";
-  # Manual/stopped backends keep readyTarget null.
-  assert cfg.services.ai.backends.llamaRouter.readyTarget == null;
-  # Failure variants must break assertions, not evaluation.
+  assert builtins.any (rule: lib.hasPrefix "d /var/lib/test-user/ai/reconciler " rule) cfg.systemd.tmpfiles.rules;
+  assert (eval autoCfg).services.ai.backends.ollama.readyTarget == "special-ollama-ready.target";
+  assert (eval autoCfg).services.ai.backends.llamaRouter.readyTarget == "custom-llama-router-ready.target";
+  assert allAssertionsHold (eval backendSpecificCfg);
+  assert (eval backendSpecificCfg).services.ai.backends.ollama.requiredModels == ["only-ollama:1"];
+  assert (eval backendSpecificCfg).services.ai.backends.llamaRouter.requiredModels
+  == ["example/only-llama-GGUF:Q4_K_M"];
   assert !(allAssertionsHold (eval badKeyCfg));
   assert !(allAssertionsHold (eval badRoleCfg));
   assert !(allAssertionsHold (eval missingInstanceCfg));
-  assert !(allAssertionsHold (eval duplicatePortCfg));
+  assert !(allAssertionsHold (eval crossBackendNameCollisionCfg));
+  assert !(allAssertionsHold (eval crossBackendPortCollisionCfg));
+  assert !(allAssertionsHold (eval crossBackendStateCollisionCfg));
   assert !(allAssertionsHold (eval missingStackCfg));
     pkgs.runCommand "ai-module-test" {} ''
       touch $out

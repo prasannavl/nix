@@ -15,6 +15,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ## Design Patterns
 
+- `.agents/docs/design-patterns/ai-model-ownership.md`: Exact managed-model
+  ownership, ad-hoc retention, preservation handoff, API-only reconciliation,
+  and compose-derived backend projection rules.
 - `.agents/docs/design-patterns/host-control-integration-boundaries.md`: Shared
   host-control composition, publication, admission, and engine compatibility
   boundaries, with Pvl topology ownership and pending upstream APIs explicit.

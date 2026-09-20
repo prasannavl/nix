@@ -8,10 +8,11 @@
     managedTarget,
     name,
     ollamaUrls ? [],
+    preservedModels ? [],
     readyTarget ? null,
     reconcileTriggers ? [],
     requiredModels,
-    retiredModels ? [],
+    stateFile,
     timeoutReadySeconds,
   }: let
     serviceModuleFactory = import ../../flake/service-module.nix;
@@ -26,7 +27,9 @@
       ];
       runtimeEnv =
         {
-          OLLAMA_RETIRED_MODELS = lib.concatStringsSep "\n" retiredModels;
+          MODEL_RECONCILER_OWNERSHIP_LIB = ../model-reconciler/ownership.sh;
+          MODEL_RECONCILER_STATE_FILE = stateFile;
+          OLLAMA_PRESERVED_MODELS = lib.concatStringsSep "\n" preservedModels;
         }
         // lib.optionalAttrs (ollamaUrls != []) {
           OLLAMA_URLS = lib.concatStringsSep " " ollamaUrls;
@@ -45,8 +48,8 @@
   in {
     assertions = [
       {
-        assertion = lib.intersectLists requiredModels retiredModels == [];
-        message = "Ollama models cannot be both required and retired";
+        assertion = lib.intersectLists requiredModels preservedModels == [];
+        message = "Ollama models cannot be both managed and preserved";
       }
       {
         assertion = readyTarget != null || backendServices != [];

@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -15,15 +16,17 @@ class OllamaHelperTest(unittest.TestCase):
         cls.tmp_root.mkdir(exist_ok=True)
 
     def setUp(self):
-        self.work_dir = Path(tempfile.mkdtemp(prefix="ollama-helper-test.", dir=self.tmp_root))
+        self.work_dir = Path(
+            tempfile.mkdtemp(prefix="ollama-helper-test.", dir=self.tmp_root)
+        )
         self.fake_bin = self.work_dir / "bin"
         self.state_dir = self.work_dir / "state"
+        self.manifest = self.state_dir / "managed.json"
         self.fake_bin.mkdir()
         self.state_dir.mkdir()
         self.write_fake_curl()
         self.write_fake_sleep()
         self.write_fake_systemctl()
-        self.write_fake_awk()
 
     def tearDown(self):
         shutil.rmtree(self.work_dir)
@@ -69,9 +72,7 @@ case "$url" in
     fi
     printf '%s\\n' '{{"status":"success"}}'
     ;;
-  *)
-    exit 7
-    ;;
+  *) exit 7 ;;
 esac
 """,
         )
@@ -86,15 +87,6 @@ exit "${{FAKE_SLEEP_STATUS:-0}}"
 """,
         )
 
-    def write_fake_awk(self):
-        self.write_executable(
-            self.fake_bin / "awk",
-            """#!/bin/sh
-printf '%s\n' "awk should not be required" >&2
-exit 127
-""",
-        )
-
     def write_fake_systemctl(self):
         log_path = self.state_dir / "systemctl.log"
         states_dir = self.state_dir / "unit-states"
@@ -103,13 +95,9 @@ exit 127
             f"""#!/bin/sh
 set -eu
 printf '%s\\n' "$*" >> {log_path}
-if [ "${{1-}}" = "--user" ]; then
-  shift
-fi
+if [ "${{1-}}" = "--user" ]; then shift; fi
 cmd="${{1-}}"
-if [ "$#" -gt 0 ]; then
-  shift
-fi
+if [ "$#" -gt 0 ]; then shift; fi
 case "$cmd" in
   show)
     property=""
@@ -124,28 +112,15 @@ case "$cmd" in
     done
     case "$property" in
       ActiveState)
-        if [ -n "$unit" ]; then
-          state_file="{states_dir}/$unit"
-          if [ -f "$state_file" ]; then
-            cat "$state_file"
-          else
-            printf '%s\\n' "active"
-          fi
-        fi
+        state_file="{states_dir}/$unit"
+        if [ -f "$state_file" ]; then cat "$state_file"; else printf '%s\\n' active; fi
         ;;
+      SubState) printf '%s\\n' dead ;;
+      Result) printf '%s\\n' success ;;
       After)
-        case "$unit" in
-          pvl-ollama-models.service)
-            printf '%s\\n' "pvl-ollama.service pvl-ollama-nvidia.service network-online.target"
-            ;;
-        esac
+        printf '%s\\n' "pvl-ollama.service pvl-ollama-nvidia.service network-online.target"
         ;;
     esac
-    ;;
-  try-restart)
-    if [ "${{FAKE_SYSTEMCTL_TRY_RESTART_STATUS:-0}}" != 0 ]; then
-      exit "$FAKE_SYSTEMCTL_TRY_RESTART_STATUS"
-    fi
     ;;
 esac
 """,
@@ -155,6 +130,14 @@ esac
         states_dir = self.state_dir / "unit-states"
         states_dir.mkdir(exist_ok=True)
         (states_dir / unit).write_text(f"{state}\n", encoding="utf-8")
+
+    def write_manifest(self, models):
+        self.manifest.write_text(
+            json.dumps({"version": 1, "models": models}), encoding="utf-8"
+        )
+
+    def read_manifest(self):
+        return json.loads(self.manifest.read_text(encoding="utf-8"))
 
     def read_log(self, name: str):
         path = self.state_dir / name
@@ -168,15 +151,16 @@ esac
             {
                 "PATH": f"{self.fake_bin}:{env['PATH']}",
                 "OLLAMA_URLS": "http://127.0.0.1:11434 http://127.0.0.1:11435",
-                "OLLAMA_CURRENT_UNIT": "pvl-ollama-models.service",
+                "OLLAMA_CURRENT_UNIT": "pvl-ollama-models-pull.service",
+                "MODEL_RECONCILER_STATE_FILE": str(self.manifest),
             }
         )
         env.update(overrides)
         return env
 
-    def run_helper(self, *, check=True, **env_overrides):
+    def run_helper(self, *, check=True, models=("nomic-embed-text",), **env_overrides):
         return subprocess.run(
-            ["bash", str(self.helper), "nomic-embed-text"],
+            ["bash", str(self.helper), *models],
             cwd=self.repo_root,
             env=self.helper_env(**env_overrides),
             text=True,
@@ -185,141 +169,117 @@ esac
             check=check,
         )
 
+    def test_dispatch_restarts_worker_to_apply_latest_policy(self):
+        worker = "pvl-ollama-models-pull.service"
+        self.set_unit_state(worker, "inactive")
+        result = subprocess.run(
+            ["bash", str(self.helper), "dispatch", worker, "nomic-embed-text"],
+            cwd=self.repo_root,
+            env=self.helper_env(),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(
+            f"--user restart --no-block {worker}",
+            self.read_log("systemctl.log"),
+        )
+
     def test_skip_if_configured_backends_are_inactive(self):
         self.set_unit_state("pvl-ollama.service", "inactive")
         self.set_unit_state("pvl-ollama-nvidia.service", "failed")
-
         result = self.run_helper(
             OLLAMA_WAIT_ATTEMPTS="120",
             OLLAMA_WAIT_DELAY_SECONDS="60",
             FAKE_SLEEP_STATUS="99",
         )
-
         self.assertEqual(result.returncode, 0)
         self.assertIn("dependent service units are inactive", result.stderr)
         self.assertEqual(self.read_log("sleep.log"), [])
-        self.assertEqual(len(self.read_log("curl.log")), 2)
 
-    def test_active_backend_keeps_normal_wait_path(self):
+    def test_missing_model_is_pulled_and_owned(self):
         self.set_unit_state("pvl-ollama.service", "active")
-        self.set_unit_state("pvl-ollama-nvidia.service", "inactive")
+        result = self.run_helper(FAKE_CURL_TAGS_STATUS="0")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("/api/pull", "\n".join(self.read_log("curl.log")))
+        self.assertEqual(self.read_manifest()["models"], ["nomic-embed-text:latest"])
 
-        result = self.run_helper(
-            check=False,
-            OLLAMA_WAIT_ATTEMPTS="2",
-            OLLAMA_WAIT_DELAY_SECONDS="0",
-        )
-
-        self.assertEqual(result.returncode, 1)
-        self.assertNotIn("dependent service units are inactive", result.stderr)
-        self.assertIn("no Ollama API available", result.stderr)
-        self.assertEqual(len(self.read_log("curl.log")), 4)
-        self.assertEqual(self.read_log("sleep.log"), ["0"])
-
-    def test_downloaded_model_try_restarts_dependent_services(self):
+    def test_existing_required_is_adopted_and_manual_model_is_untouched(self):
         self.set_unit_state("pvl-ollama.service", "active")
-        self.set_unit_state("pvl-ollama-nvidia.service", "inactive")
-
         result = self.run_helper(
             FAKE_CURL_TAGS_STATUS="0",
-            FAKE_CURL_TAGS_RESPONSE='{"models":[]}',
+            FAKE_CURL_TAGS_RESPONSE=(
+                '{"models":[{"name":"nomic-embed-text:latest"},{"name":"manual:1"}]}'
+            ),
         )
-
         self.assertEqual(result.returncode, 0)
-        systemctl_log = "\n".join(self.read_log("systemctl.log"))
-        self.assertIn("--user try-restart pvl-ollama.service", systemctl_log)
-        self.assertIn("--user try-restart pvl-ollama-nvidia.service", systemctl_log)
+        self.assertEqual(self.read_manifest()["models"], ["nomic-embed-text:latest"])
+        self.assertNotIn("/api/delete", "\n".join(self.read_log("curl.log")))
 
-    def test_existing_required_and_manual_models_are_left_unchanged(self):
+    def test_only_owned_model_is_deleted(self):
         self.set_unit_state("pvl-ollama.service", "active")
-        self.set_unit_state("pvl-ollama-nvidia.service", "inactive")
-
+        self.write_manifest(["old:1"])
         result = self.run_helper(
             FAKE_CURL_TAGS_STATUS="0",
             FAKE_CURL_TAGS_RESPONSE=(
                 '{"models":['
                 '{"name":"nomic-embed-text:latest"},'
+                '{"name":"old:1"},'
                 '{"name":"manual:1"}'
                 "]}"
             ),
         )
-
-        self.assertEqual(result.returncode, 0)
-        systemctl_log = "\n".join(self.read_log("systemctl.log"))
-        self.assertNotIn("try-restart", systemctl_log)
-        curl_log = "\n".join(self.read_log("curl.log"))
-        self.assertNotIn("/api/delete", curl_log)
-
-    def test_retired_model_is_removed_after_required_model_is_present(self):
-        self.set_unit_state("pvl-ollama.service", "active")
-        self.set_unit_state("pvl-ollama-nvidia.service", "inactive")
-
-        result = self.run_helper(
-            FAKE_CURL_TAGS_STATUS="0",
-            FAKE_CURL_TAGS_RESPONSE=(
-                '{"models":['
-                '{"name":"nomic-embed-text:latest"},'
-                '{"name":"qwen3.6:27b"}'
-                "]}"
-            ),
-            OLLAMA_RETIRED_MODELS="qwen3.6:27b",
-        )
-
         self.assertEqual(result.returncode, 0)
         curl_log = "\n".join(self.read_log("curl.log"))
-        self.assertIn("-X DELETE", curl_log)
         self.assertIn("/api/delete", curl_log)
-        systemctl_log = "\n".join(self.read_log("systemctl.log"))
-        self.assertIn("--user try-restart pvl-ollama.service", systemctl_log)
-        self.assertIn("--user try-restart pvl-ollama-nvidia.service", systemctl_log)
-
-    def test_absent_retired_model_does_not_restart_dependencies(self):
-        self.set_unit_state("pvl-ollama.service", "active")
-        self.set_unit_state("pvl-ollama-nvidia.service", "inactive")
-
-        result = self.run_helper(
-            FAKE_CURL_TAGS_STATUS="0",
-            FAKE_CURL_TAGS_RESPONSE='{"models":[{"name":"nomic-embed-text:latest"}]}',
-            OLLAMA_RETIRED_MODELS="qwen3.6:27b",
+        self.assertIn("old:1", curl_log)
+        self.assertNotIn(
+            "manual:1",
+            [line for line in self.read_log("curl.log") if "/api/delete" in line],
         )
+        self.assertEqual(self.read_manifest()["models"], ["nomic-embed-text:latest"])
 
+    def test_preserved_model_is_relinquished_without_delete(self):
+        self.set_unit_state("pvl-ollama.service", "active")
+        self.write_manifest(["old:1"])
+        result = self.run_helper(
+            models=(),
+            FAKE_CURL_TAGS_STATUS="0",
+            OLLAMA_PRESERVED_MODELS="old:1",
+        )
         self.assertEqual(result.returncode, 0)
-        curl_log = "\n".join(self.read_log("curl.log"))
-        self.assertNotIn("/api/delete", curl_log)
-        systemctl_log = "\n".join(self.read_log("systemctl.log"))
-        self.assertNotIn("try-restart", systemctl_log)
+        self.assertNotIn("/api/delete", "\n".join(self.read_log("curl.log")))
+        self.assertEqual(self.read_manifest()["models"], [])
 
-    def test_failed_required_pull_does_not_remove_retired_model(self):
+    def test_corrupt_manifest_fails_before_api_mutation(self):
+        self.manifest.write_text('{"version":99,"models":[]}', encoding="utf-8")
+        result = self.run_helper(check=False, FAKE_CURL_TAGS_STATUS="0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("invalid ownership manifest", result.stderr)
+        self.assertEqual(self.read_log("curl.log"), [])
+
+    def test_missing_manifest_never_prunes_observed_inventory(self):
         self.set_unit_state("pvl-ollama.service", "active")
-        self.set_unit_state("pvl-ollama-nvidia.service", "inactive")
+        result = self.run_helper(
+            models=(),
+            FAKE_CURL_TAGS_STATUS="0",
+            FAKE_CURL_TAGS_RESPONSE='{"models":[{"name":"manual:1"}]}',
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(self.read_log("curl.log"), [])
 
+    def test_failed_pull_does_not_claim_ownership(self):
+        self.set_unit_state("pvl-ollama.service", "active")
         result = self.run_helper(
             check=False,
             FAKE_CURL_TAGS_STATUS="0",
-            FAKE_CURL_TAGS_RESPONSE='{"models":[{"name":"qwen3.6:27b"}]}',
             FAKE_CURL_PULL_STATUS="22",
-            OLLAMA_RETIRED_MODELS="qwen3.6:27b",
         )
-
         self.assertEqual(result.returncode, 1)
-        curl_log = "\n".join(self.read_log("curl.log"))
-        self.assertIn("/api/pull", curl_log)
-        self.assertNotIn("/api/delete", curl_log)
+        self.assertFalse(self.manifest.exists())
 
-    def test_model_cannot_be_both_required_and_retired(self):
-        self.set_unit_state("pvl-ollama.service", "active")
-        self.set_unit_state("pvl-ollama-nvidia.service", "inactive")
 
-        result = self.run_helper(
-            check=False,
-            FAKE_CURL_TAGS_STATUS="0",
-            FAKE_CURL_TAGS_RESPONSE=(
-                '{"models":[{"name":"nomic-embed-text:latest"}]}'
-            ),
-            OLLAMA_RETIRED_MODELS="nomic-embed-text:latest",
-        )
-
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("cannot be both required and retired", result.stderr)
-        curl_log = "\n".join(self.read_log("curl.log"))
-        self.assertNotIn("/api/delete", curl_log)
+if __name__ == "__main__":
+    unittest.main()

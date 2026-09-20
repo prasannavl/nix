@@ -4,26 +4,27 @@
   mkReconciler = {
     backendServices ? [],
     ollamaUrls ? [],
+    preservedModels ? [],
     readyTarget ? "test-ollama-ready.target",
     reconcileTriggers ? [],
-    retiredModels ? [],
     timeoutReadySeconds ? 900,
   }:
     ollamaLib.mkModelReconciler {
-      inherit backendServices ollamaUrls readyTarget reconcileTriggers retiredModels timeoutReadySeconds;
+      inherit backendServices ollamaUrls preservedModels readyTarget reconcileTriggers timeoutReadySeconds;
       managedTarget = "test-managed";
       name = "test-ollama-models";
       requiredModels = ["new:1"];
+      stateFile = "/var/lib/test/ollama.json";
     };
   baseline = mkReconciler {
     backendServices = ["test-ollama.service"];
     reconcileTriggers = ["backend-config"];
   };
-  retirement = mkReconciler {
-    retiredModels = ["old:1"];
+  preservation = mkReconciler {
+    preservedModels = ["old:1"];
   };
   conflict = mkReconciler {
-    retiredModels = ["new:1"];
+    preservedModels = ["new:1"];
   };
   inactiveBackends = mkReconciler {
     backendServices = [
@@ -41,17 +42,18 @@
   };
   dispatcher = baseline.systemd.user.services."test-ollama-models";
   worker = baseline.systemd.user.services."test-ollama-models-pull";
-  retirementDispatcher = retirement.systemd.user.services."test-ollama-models";
+  preservationDispatcher = preservation.systemd.user.services."test-ollama-models";
   inactiveDispatcher = inactiveBackends.systemd.user.services."test-ollama-models";
   inactiveWorker = inactiveBackends.systemd.user.services."test-ollama-models-pull";
 in
   assert dispatcher.restartIfChanged;
   assert dispatcher.restartTriggers == ["backend-config"];
   assert dispatcher.serviceConfig.RemainAfterExit;
-  assert dispatcher.serviceConfig.ExecStart != retirementDispatcher.serviceConfig.ExecStart;
+  assert dispatcher.serviceConfig.ExecStart != preservationDispatcher.serviceConfig.ExecStart;
   assert dispatcher.unitConfig.Requires == ["test-ollama-ready.target"];
   assert builtins.elem "test-ollama.service" worker.after;
   assert worker.environment.NIXBOT_TIMEOUT_READY_SECONDS == "900";
+  assert worker.serviceConfig.ExecStart != "";
   assert worker.serviceConfig.TimeoutStartSec == 900;
   assert !(inactiveDispatcher.unitConfig ? Requires);
   assert builtins.elem "test-ollama.service" inactiveWorker.after;

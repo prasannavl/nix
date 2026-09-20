@@ -45,14 +45,22 @@ in
     key: let
       entry = catalog.${key};
     in
-      (entry ? id) && (entry ? hf) && (entry ? ollama) && (entry ? llama)
+      entry ? id
   )
   allKeys;
   assert aiLib.missingKeys hostSelection == [];
+  assert aiLib.missingKeysFrom {backend-only = {id = "backend-only";};} ["backend-only"] == [];
   assert aiLib.missingKeys (hostSelection ++ ["gemma99-typo" "nomic-embed-text"]) == ["gemma99-typo"];
   assert aiLib.missingRefs "ollama" hostEntries == [];
   assert aiLib.missingRefs "llama" hostEntries == [];
   assert aiLib.missingRefs "nonexistent" hostEntries == hostEntries;
+  assert aiLib.missingRefs "llama" [
+    {
+      id = "ollama-only";
+      ollama = "ollama-only:1";
+    }
+  ]
+  != [];
   assert aiLib.projectModels "ollama" hostEntries
   == [
     "nomic-embed-text"

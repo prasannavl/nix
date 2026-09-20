@@ -1,11 +1,12 @@
 {lib}: let
   catalog = import ./catalog.nix;
+  missingKeysFrom = sourceCatalog: models:
+    builtins.filter (model: !(sourceCatalog ? ${model})) models;
 in {
-  inherit catalog;
+  inherit catalog missingKeysFrom;
 
   # Catalog keys in a host selection that do not exist in the catalog.
-  missingKeys = models:
-    builtins.filter (model: !(catalog ? ${model})) models;
+  missingKeys = missingKeysFrom catalog;
 
   # Selected entries that lack a reference for the given backend. Entries are
   # catalog attrsets (or {id; missing = true;} sentinels for unknown keys).

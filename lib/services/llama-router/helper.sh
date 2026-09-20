@@ -6,16 +6,22 @@ init_vars() {
 	: "${LLAMA_ROUTER_URLS:=$LLAMA_ROUTER_URL}"
 	: "${LLAMA_ROUTER_WAIT_ATTEMPTS:=120}"
 	: "${LLAMA_ROUTER_WAIT_DELAY_SECONDS:=2}"
-	: "${LLAMA_ROUTER_LOAD_ATTEMPTS:=900}"
-	: "${LLAMA_ROUTER_LOAD_DELAY_SECONDS:=2}"
-	: "${LLAMA_ROUTER_RETIRED_MODELS:=}"
-	LLAMA_ROUTER_MODELS_CHANGED=0
+	: "${LLAMA_ROUTER_DOWNLOAD_ATTEMPTS:=900}"
+	: "${LLAMA_ROUTER_DOWNLOAD_DELAY_SECONDS:=2}"
+	: "${LLAMA_ROUTER_PRESERVED_MODELS:=}"
+}
+
+load_ownership_helpers() {
+	local helper_path
+
+	helper_path="${MODEL_RECONCILER_OWNERSHIP_LIB:-$(dirname "${BASH_SOURCE[0]}")/../model-reconciler/ownership.sh}"
+	# Nix injects the immutable library path.
+	# shellcheck disable=SC1090
+	source "$helper_path"
 }
 
 # Router models are Hugging Face references: "org/repo" with an optional
-# ":tag" quant suffix. The repo part also names the HF cache directory that
-# retirement pruning removes, so the shape is enforced here as well as in the
-# Nix assertion layer.
+# ":tag" quant suffix.
 valid_model_ref() {
 	local model="$1" repo tag
 
@@ -40,12 +46,6 @@ valid_model_ref() {
 	fi
 }
 
-model_repo_dir() {
-	local repo="${1%%:*}"
-
-	printf 'models--%s\n' "${repo//\//--}"
-}
-
 model_is_required() {
 	local model="$1" required_model
 
@@ -59,12 +59,12 @@ model_is_required() {
 }
 
 reconciliation_requested() {
-	[ "$#" -gt 0 ] || [ -n "$LLAMA_ROUTER_RETIRED_MODELS" ]
+	[ "$#" -gt 0 ] || [ -e "$MODEL_RECONCILER_STATE_FILE" ]
 }
 
-validate_cache_dir() {
-	if [ -z "${LLAMA_ROUTER_CACHE_DIR:-}" ]; then
-		echo "llama-router model reconcile: LLAMA_ROUTER_CACHE_DIR is required" >&2
+validate_ownership_config() {
+	if [ -z "${MODEL_RECONCILER_STATE_FILE:-}" ]; then
+		echo "llama-router model reconcile: MODEL_RECONCILER_STATE_FILE is required" >&2
 		return 1
 	fi
 }
@@ -80,20 +80,16 @@ validate_required_models() {
 	done
 }
 
-validate_retired_models() {
-	local model
+model_is_preserved() {
+	local model="$1" preserved_model
 
-	while IFS= read -r model; do
-		[ -n "$model" ] || continue
-		if model_is_required "$model" "$@"; then
-			echo "llama-router model reconcile: model $model cannot be both required and retired" >&2
-			return 1
+	while IFS= read -r preserved_model; do
+		[ -n "$preserved_model" ] || continue
+		if [ "$model" = "$preserved_model" ]; then
+			return 0
 		fi
-		if ! valid_model_ref "$model"; then
-			echo "llama-router model reconcile: model $model is not a valid org/repo[:tag] Hugging Face reference" >&2
-			return 1
-		fi
-	done <<<"$LLAMA_ROUTER_RETIRED_MODELS"
+	done <<<"$LLAMA_ROUTER_PRESERVED_MODELS"
+	return 1
 }
 
 probe_llama_router_urls() {
@@ -221,9 +217,8 @@ wait_for_llama_router() {
 	done
 }
 
-# Reports one of: absent | unloaded | loading | loaded | sleeping | failed |
-# unreachable | unknown. "failed" marks an unload-with-nonzero-exit child,
-# which at this llama.cpp revision is also how interrupted downloads appear.
+# Reports one of: absent | unloaded | downloading | downloaded | loading |
+# loaded | sleeping | failed | unreachable | unknown.
 model_status() {
 	local model="$1" response status
 
@@ -251,94 +246,57 @@ model_status() {
 	printf '%s\n' "$status"
 }
 
-# A finished download leaves a GGUF snapshot behind in the HF cache layout
-# (blobs land first, snapshot symlinks only after the download completes), so
-# this distinguishes "download failed" from "weights are cached but the child
-# could not load them" without any router-side status for downloads.
-model_cache_has_weights() {
-	local repo_dir="$1"
-	local -a files=()
-
-	shopt -s nullglob
-	files=(
-		"$LLAMA_ROUTER_CACHE_DIR/$repo_dir"/snapshots/*/*.gguf
-		"$LLAMA_ROUTER_CACHE_DIR/$repo_dir"/snapshots/*/**/*.gguf
-	)
-	shopt -u nullglob
-
-	[ "${#files[@]}" -gt 0 ]
-}
-
-# Whether a model's weights are already present in the HF cache, without
-# touching the router. Reconciles only download missing weights; loads are
-# left to the first request so resident workers do not sit on the GPU idle.
-model_has_cached_weights() {
-	model_cache_has_weights "$(model_repo_dir "$1")"
-}
-
-handle_model_load_failure() {
-	local model="$1" repo_dir
-
-	repo_dir="$(model_repo_dir "$model")"
-	if model_cache_has_weights "$repo_dir"; then
-		echo "llama-router model load: model $model failed to load despite cached weights (likely a resource limit such as VRAM); keeping it cached for recovery" >&2
-		return 0
-	fi
-	echo "llama-router model load: model $model failed to load and has no cached weights; the download may have failed" >&2
-	return 1
-}
-
-request_model_load() {
+request_model_download() {
 	local model="$1" payload status
 
 	payload="$(jq -n --arg model "$model" '{model: $model}')"
 	if ! curl -fsS -X POST \
 		-H 'Content-Type: application/json' \
 		--data "$payload" \
-		"$LLAMA_ROUTER_URL/models/load" >/dev/null 2>&1; then
+		"$LLAMA_ROUTER_URL/models" >/dev/null 2>&1; then
 		status="$(model_status "$model")"
 		case "$status" in
-		loading | loaded | sleeping)
-			echo "llama-router model load: model $model is already running"
+		downloading | downloaded | unloaded | loading | loaded | sleeping)
+			echo "llama-router model download: model $model is already present or downloading"
 			;;
 		*)
-			echo "llama-router model load: failed to request load for model $model" >&2
+			echo "llama-router model download: failed to request download for model $model" >&2
 			return 1
 			;;
 		esac
 	fi
 }
 
-wait_for_model_load() {
+wait_for_model_download() {
 	local model="$1" attempt=1 status
 
-	while [ "$attempt" -le "$LLAMA_ROUTER_LOAD_ATTEMPTS" ]; do
+	while [ "$attempt" -le "$LLAMA_ROUTER_DOWNLOAD_ATTEMPTS" ]; do
 		status="$(model_status "$model")"
 		case "$status" in
-		loaded | sleeping)
-			echo "llama-router model load: model $model is loaded"
+		unloaded | loaded | sleeping)
+			echo "llama-router model download: model $model is cached"
 			return 0
 			;;
 		failed)
-			handle_model_load_failure "$model"
-			return
+			echo "llama-router model download: model $model download failed" >&2
+			return 1
 			;;
-		loading | unloaded)
+		downloading | downloaded | loading | absent)
 			;;
 		*)
-			echo "llama-router model load: unexpected router status '$status' while loading model $model" >&2
+			echo "llama-router model download: unexpected router status '$status' for model $model" >&2
 			return 1
 			;;
 		esac
 
-		if [ "$attempt" -eq "$LLAMA_ROUTER_LOAD_ATTEMPTS" ]; then
+		if [ "$attempt" -eq "$LLAMA_ROUTER_DOWNLOAD_ATTEMPTS" ]; then
 			break
 		fi
-		sleep "$LLAMA_ROUTER_LOAD_DELAY_SECONDS"
+		sleep "$LLAMA_ROUTER_DOWNLOAD_DELAY_SECONDS"
 		attempt=$((attempt + 1))
 	done
 
-	echo "llama-router model load: model $model did not reach the loaded state within $LLAMA_ROUTER_LOAD_ATTEMPTS attempts" >&2
+	echo "llama-router model download: model $model did not reach the cached state within $LLAMA_ROUTER_DOWNLOAD_ATTEMPTS attempts" >&2
 	return 1
 }
 
@@ -347,38 +305,30 @@ ensure_required_model() {
 
 	status="$(model_status "$model")"
 	case "$status" in
-	loaded | sleeping)
-		echo "llama-router model load: model $model already loaded"
-		return
+	unloaded | loaded | sleeping)
+		echo "llama-router model download: model $model already cached"
 		;;
-	loading)
-		echo "llama-router model load: model $model is already loading; waiting for it"
-		;;
-	unloaded)
-		if model_has_cached_weights "$model"; then
-			echo "llama-router model load: model $model has cached weights; leaving load to first request"
-			return
-		fi
-		if ! request_model_load "$model"; then
+	absent)
+		if ! request_model_download "$model"; then
 			return 1
 		fi
+		wait_for_model_download "$model"
+		;;
+	downloading | downloaded | loading)
+		echo "llama-router model download: model $model is already in progress; waiting"
+		wait_for_model_download "$model"
 		;;
 	failed)
-		if model_has_cached_weights "$model"; then
-			echo "llama-router model load: model $model failed previously but has cached weights; leaving load to first request"
-			return
-		fi
-		echo "llama-router model load: previous load attempt for $model failed; retrying"
-		if ! request_model_load "$model"; then
-			return 1
-		fi
+		echo "llama-router model download: previous download for model $model failed" >&2
+		return 1
 		;;
 	*)
-		echo "llama-router model load: unexpected router status '$status' for required model $model" >&2
+		echo "llama-router model download: unexpected router status '$status' for required model $model" >&2
 		return 1
 		;;
 	esac
-	wait_for_model_load "$model"
+
+	model_reconciler_remember "$model"
 }
 
 load_required_models() {
@@ -389,84 +339,48 @@ load_required_models() {
 	done
 }
 
-unload_model() {
-	local model="$1" payload status
+delete_owned_model() {
+	local model="$1" status
 
 	status="$(model_status "$model")"
-	case "$status" in
-	loaded | loading | sleeping)
-		echo "llama-router model reconcile: unloading model $model"
-		payload="$(jq -n --arg model "$model" '{model: $model}')"
-		if ! curl -fsS -X POST \
-			-H 'Content-Type: application/json' \
-			--data "$payload" \
-			"$LLAMA_ROUTER_URL/models/unload" >/dev/null 2>&1; then
-			echo "llama-router model reconcile: failed to unload model $model" >&2
-			return 1
-		fi
-		LLAMA_ROUTER_MODELS_CHANGED=1
-		;;
-	absent | unloaded | failed)
-		echo "llama-router model reconcile: model $model is not running; skipping unload"
-		;;
-	*)
-		echo "llama-router model reconcile: unexpected router status '$status' while unloading model $model" >&2
-		return 1
-		;;
-	esac
-}
-
-unload_retired_models() {
-	local model
-
-	while IFS= read -r model; do
-		[ -n "$model" ] || continue
-		unload_model "$model"
-	done <<<"$LLAMA_ROUTER_RETIRED_MODELS"
-	return 0
-}
-
-prune_model_cache() {
-	local model="$1" repo_dir cache_path
-
-	repo_dir="$(model_repo_dir "$model")"
-	cache_path="$LLAMA_ROUTER_CACHE_DIR/$repo_dir"
-	if [ ! -e "$cache_path" ]; then
-		echo "llama-router model reconcile: cache for model $model already absent"
+	if [ "$status" = absent ]; then
+		echo "llama-router model reconcile: owned model $model already absent"
 		return
 	fi
 
-	echo "llama-router model reconcile: pruning cache for model $model"
-	rm -rf -- "$cache_path"
-	LLAMA_ROUTER_MODELS_CHANGED=1
+	echo "llama-router model reconcile: deleting exact cached model $model"
+	curl -fsS -X DELETE -G \
+		--data-urlencode "model=$model" \
+		"$LLAMA_ROUTER_URL/models" >/dev/null
 }
 
-prune_retired_model_caches() {
+retire_unrequired_owned_models() {
 	local model
+	local -a owned_models=("${MODEL_RECONCILER_OWNED_MODELS[@]}")
 
-	while IFS= read -r model; do
-		[ -n "$model" ] || continue
-		prune_model_cache "$model"
-	done <<<"$LLAMA_ROUTER_RETIRED_MODELS"
-	return 0
-}
-
-# The router scans its cache once at startup; reloading its model view makes
-# pruned entries disappear without restarting the router service (a restart
-# would also unload every loaded model).
-reload_router_view() {
-	if ! curl -fsS "$LLAMA_ROUTER_URL/models?reload=1" >/dev/null 2>&1; then
-		echo "llama-router model reconcile: failed to refresh router model view; ignoring because pruning already completed" >&2
-	fi
+	for model in "${owned_models[@]}"; do
+		if model_is_required "$model" "$@"; then
+			continue
+		fi
+		if model_is_preserved "$model"; then
+			echo "llama-router model reconcile: preserving $model and relinquishing managed ownership"
+			model_reconciler_forget "$model"
+			continue
+		fi
+		delete_owned_model "$model"
+		model_reconciler_forget "$model"
+	done
 }
 
 load_main() {
 	local wait_status=0
 
 	init_vars
+	validate_ownership_config
+	model_reconciler_load_state
 
 	if ! reconciliation_requested "$@"; then
-		echo "llama-router model reconcile: no required or retired models configured"
+		echo "llama-router model reconcile: no managed models configured"
 		return
 	fi
 
@@ -479,15 +393,9 @@ load_main() {
 		return 1
 	fi
 
-	validate_cache_dir
 	validate_required_models "$@"
-	validate_retired_models "$@"
-	unload_retired_models
 	load_required_models "$@"
-	prune_retired_model_caches
-	if [ "$LLAMA_ROUTER_MODELS_CHANGED" -eq 1 ]; then
-		reload_router_view
-	fi
+	retire_unrequired_owned_models "$@"
 }
 
 dispatch_load_worker() {
@@ -496,14 +404,15 @@ dispatch_load_worker() {
 	shift
 
 	init_vars
+	validate_ownership_config
 
 	if ! reconciliation_requested "$@"; then
-		echo "llama-router model reconcile: no required or retired models configured"
+		echo "llama-router model reconcile: no managed models configured"
 		return
 	fi
 
 	systemctl --user reset-failed "$worker_unit" >/dev/null 2>&1 || true
-	systemctl --user start --no-block "$worker_unit"
+	systemctl --user restart --no-block "$worker_unit"
 
 	poll_deadline="$(($(date +%s) + 10))"
 	while [ "$(date +%s)" -lt "$poll_deadline" ]; do
@@ -520,7 +429,7 @@ dispatch_load_worker() {
 			echo "llama-router model load: worker completed during dispatch"
 			return
 			;;
-		activating:* | active:*)
+		activating:* | active:* | deactivating:* | reloading:*)
 			sleep 1
 			continue
 			;;
@@ -536,6 +445,7 @@ dispatch_load_worker() {
 
 main() {
 	local command="${1:-load}"
+	load_ownership_helpers
 
 	case "$command" in
 	load)

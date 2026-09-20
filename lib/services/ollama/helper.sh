@@ -6,8 +6,16 @@ init_vars() {
 	: "${OLLAMA_URLS:=$OLLAMA_URL}"
 	: "${OLLAMA_WAIT_ATTEMPTS:=120}"
 	: "${OLLAMA_WAIT_DELAY_SECONDS:=2}"
-	: "${OLLAMA_RETIRED_MODELS:=}"
-	OLLAMA_MODELS_CHANGED=0
+	: "${OLLAMA_PRESERVED_MODELS:=}"
+}
+
+load_ownership_helpers() {
+	local helper_path
+
+	helper_path="${MODEL_RECONCILER_OWNERSHIP_LIB:-$(dirname "${BASH_SOURCE[0]}")/../model-reconciler/ownership.sh}"
+	# Nix injects the immutable library path.
+	# shellcheck disable=SC1090
+	source "$helper_path"
 }
 
 canonical_model_name() {
@@ -38,7 +46,27 @@ model_is_required() {
 }
 
 reconciliation_requested() {
-	[ "$#" -gt 0 ] || [ -n "$OLLAMA_RETIRED_MODELS" ]
+	[ "$#" -gt 0 ] || [ -e "$MODEL_RECONCILER_STATE_FILE" ]
+}
+
+validate_ownership_config() {
+	if [ -z "${MODEL_RECONCILER_STATE_FILE:-}" ]; then
+		echo "ollama model reconcile: MODEL_RECONCILER_STATE_FILE is required" >&2
+		return 1
+	fi
+}
+
+model_is_preserved() {
+	local model preserved_model
+
+	model="$(canonical_model_name "$1")"
+	while IFS= read -r preserved_model; do
+		[ -n "$preserved_model" ] || continue
+		if [ "$model" = "$(canonical_model_name "$preserved_model")" ]; then
+			return 0
+		fi
+	done <<<"$OLLAMA_PRESERVED_MODELS"
+	return 1
 }
 
 probe_ollama_urls() {
@@ -182,11 +210,16 @@ has_model() {
 }
 
 pull_model() {
-	local model="$1"
+	local model
 	local payload response_file error_message
 
+	model="$(canonical_model_name "$1")"
 	if has_model "$model"; then
 		echo "ollama model pull: $model already present"
+		if ! model_reconciler_owns "$model"; then
+			echo "ollama model reconcile: adopting existing model $model"
+			model_reconciler_remember "$model"
+		fi
 		return
 	fi
 
@@ -219,7 +252,7 @@ pull_model() {
 		return 1
 	fi
 
-	OLLAMA_MODELS_CHANGED=1
+	model_reconciler_remember "$model"
 }
 
 pull_required_models() {
@@ -246,55 +279,35 @@ remove_model() {
 		-H 'Content-Type: application/json' \
 		--data "$payload" \
 		"$OLLAMA_URL/api/delete" >/dev/null
-	OLLAMA_MODELS_CHANGED=1
 }
 
-remove_retired_models() {
+retire_unrequired_owned_models() {
 	local model
+	local -a owned_models=("${MODEL_RECONCILER_OWNED_MODELS[@]}")
 
-	while IFS= read -r model; do
-		[ -n "$model" ] || continue
-		remove_model "$model"
-	done <<<"$OLLAMA_RETIRED_MODELS"
-	return 0
-}
-
-validate_retired_models() {
-	local model
-
-	while IFS= read -r model; do
-		[ -n "$model" ] || continue
+	for model in "${owned_models[@]}"; do
 		if model_is_required "$model" "$@"; then
-			echo "ollama model reconcile: model $model cannot be both required and retired" >&2
-			return 1
+			continue
 		fi
-	done <<<"$OLLAMA_RETIRED_MODELS"
-}
-
-restart_dependent_services_after_changes() {
-	local dep saw_unit=0
-
-	while IFS= read -r dep; do
-		saw_unit=1
-		echo "ollama model reconcile: try-restarting dependent service unit $dep after model changes"
-		if ! systemctl --user try-restart "$dep"; then
-			echo "ollama model reconcile: failed to try-restart dependent service unit $dep" >&2
-			return 1
+		if model_is_preserved "$model"; then
+			echo "ollama model reconcile: preserving $model and relinquishing managed ownership"
+			model_reconciler_forget "$model"
+			continue
 		fi
-	done < <(dependent_service_units)
-
-	if [ "$saw_unit" -eq 0 ]; then
-		echo "ollama model reconcile: no dependent service units found after model changes; skipping restart"
-	fi
+		remove_model "$model"
+		model_reconciler_forget "$model"
+	done
 }
 
 pull_main() {
 	local wait_status=0
 
 	init_vars
+	validate_ownership_config
+	model_reconciler_load_state
 
 	if ! reconciliation_requested "$@"; then
-		echo "ollama model reconcile: no required or retired models configured"
+		echo "ollama model reconcile: no managed models configured"
 		return
 	fi
 
@@ -307,12 +320,8 @@ pull_main() {
 		return 1
 	fi
 
-	validate_retired_models "$@"
 	pull_required_models "$@"
-	remove_retired_models "$@"
-	if [ "$OLLAMA_MODELS_CHANGED" -eq 1 ]; then
-		restart_dependent_services_after_changes
-	fi
+	retire_unrequired_owned_models "$@"
 }
 
 dispatch_pull_worker() {
@@ -321,14 +330,15 @@ dispatch_pull_worker() {
 	shift
 
 	init_vars
+	validate_ownership_config
 
 	if ! reconciliation_requested "$@"; then
-		echo "ollama model reconcile: no required or retired models configured"
+		echo "ollama model reconcile: no managed models configured"
 		return
 	fi
 
 	systemctl --user reset-failed "$worker_unit" >/dev/null 2>&1 || true
-	systemctl --user start --no-block "$worker_unit"
+	systemctl --user restart --no-block "$worker_unit"
 
 	poll_deadline="$(($(date +%s) + 10))"
 	while [ "$(date +%s)" -lt "$poll_deadline" ]; do
@@ -345,7 +355,7 @@ dispatch_pull_worker() {
 			echo "ollama model pull: worker completed during dispatch"
 			return
 			;;
-		activating:* | active:*)
+		activating:* | active:* | deactivating:* | reloading:*)
 			sleep 1
 			continue
 			;;
@@ -361,10 +371,13 @@ dispatch_pull_worker() {
 
 main() {
 	local command="${1:-pull}"
+	load_ownership_helpers
 
 	case "$command" in
 	pull)
-		shift
+		if [ "$#" -gt 0 ]; then
+			shift
+		fi
 		pull_main "$@"
 		;;
 	dispatch)

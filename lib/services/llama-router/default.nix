@@ -4,17 +4,17 @@
 }: {
   mkModelReconciler = {
     backendServices ? [],
-    cacheDir,
     conditionUser ? null,
     globalPreset ? {},
     managedTarget,
     modelPresets ? {},
     name,
+    preservedModels ? [],
     readyTarget ? null,
     reconcileTriggers ? [],
     requiredModels,
-    retiredModels ? [],
     routerUrls ? [],
+    stateFile,
     timeoutReadySeconds,
   }: let
     serviceModuleFactory = import ../../flake/service-module.nix;
@@ -29,8 +29,9 @@
       ];
       runtimeEnv =
         {
-          LLAMA_ROUTER_CACHE_DIR = cacheDir;
-          LLAMA_ROUTER_RETIRED_MODELS = lib.concatStringsSep "\n" retiredModels;
+          LLAMA_ROUTER_PRESERVED_MODELS = lib.concatStringsSep "\n" preservedModels;
+          MODEL_RECONCILER_OWNERSHIP_LIB = ../model-reconciler/ownership.sh;
+          MODEL_RECONCILER_STATE_FILE = stateFile;
         }
         // lib.optionalAttrs (routerUrls != []) {
           LLAMA_ROUTER_URLS = lib.concatStringsSep " " routerUrls;
@@ -47,9 +48,7 @@
     dispatchCommand = "${lib.getExe reconcileModels} dispatch ${workerName}.service ${modelArgs}";
     reconcileCommand = "${lib.getExe reconcileModels} load ${modelArgs}";
 
-    # Router models are Hugging Face references ("org/repo" or "org/repo:tag");
-    # the repo part also maps onto the HF cache directory that retirement
-    # pruning removes, so the shape is validated here and in the helper.
+    # Router models are Hugging Face references ("org/repo" or "org/repo:tag").
     modelRefPattern = "^[^/ \t]+/[^/ \t]+(:[^/ \t]+)?$";
     presetKeyPattern = "^[A-Za-z0-9][A-Za-z0-9._-]*$";
     presetEntries =
@@ -62,17 +61,19 @@
     renderPresetSection = name: attrs:
       "[${name}]\n"
       + lib.concatStrings (lib.mapAttrsToList (key: value: "${key} = ${value}\n") attrs);
-    # Preset section names use the full Hugging Face reference so they merge
-    # with the cache-scanned entries the router already knows; `hf` makes the
-    # section resolvable before the model has ever been downloaded.
+    presetModels = builtins.filter (model: modelPresets ? ${model}) requiredModels;
+    presetName = model: (modelPresets.${model}.alias or model);
+    # Presets use client-facing aliases as section names. The exact Hugging
+    # Face reference therefore remains available to the router's cache API for
+    # independent download and deletion without colliding with the preset.
     modelsPresetIni =
       lib.optionalString (globalPreset != {}) ((renderPresetSection "*" globalPreset) + "\n")
       + lib.concatStrings (
         map (
           model:
-            renderPresetSection model ({hf = model;} // (modelPresets.${model} or {}))
+            renderPresetSection (presetName model) ({hf = model;} // (modelPresets.${model} or {}))
         )
-        requiredModels
+        presetModels
       );
   in {
     assertions = [
@@ -81,12 +82,12 @@
         message = "llama-router required models must be Hugging Face references (org/repo or org/repo:tag)";
       }
       {
-        assertion = lib.all (model: lib.match modelRefPattern model != null) retiredModels;
-        message = "llama-router retired models must be Hugging Face references (org/repo or org/repo:tag)";
+        assertion = lib.all (model: lib.match modelRefPattern model != null) preservedModels;
+        message = "llama-router preserved models must be Hugging Face references (org/repo or org/repo:tag)";
       }
       {
-        assertion = lib.intersectLists requiredModels retiredModels == [];
-        message = "llama-router models cannot be both required and retired";
+        assertion = lib.intersectLists requiredModels preservedModels == [];
+        message = "llama-router models cannot be both managed and preserved";
       }
       {
         assertion = readyTarget != null || backendServices != [];
@@ -95,6 +96,14 @@
       {
         assertion = lib.all (model: builtins.elem model requiredModels) (lib.attrNames modelPresets);
         message = "llama-router model presets must reference required models";
+      }
+      {
+        assertion = lib.all (model: presetName model != model) presetModels;
+        message = "llama-router model presets require an alias distinct from the managed cache reference";
+      }
+      {
+        assertion = lib.length (lib.unique (map presetName presetModels)) == lib.length presetModels;
+        message = "llama-router model preset aliases must be unique";
       }
       {
         assertion =

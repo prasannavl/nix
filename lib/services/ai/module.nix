@@ -8,10 +8,18 @@
   inherit (lib) mkIf mkMerge mkOption types;
 
   aiLib = import ./default.nix {inherit lib;};
-  catalog = aiLib.catalog;
+  catalog = cfg.catalog;
 
   stackName = cfg.stack.name;
   stackReady = stackName != null;
+  composeStack =
+    if stackReady && config.services.podman-compose ? ${stackName}
+    then config.services.podman-compose.${stackName}
+    else {
+      instances = {};
+      servicePrefix = "";
+      user = "root";
+    };
 
   # Canonical podman-compose instance name for a backend deployment when the
   # deployment does not pin one explicitly.
@@ -22,17 +30,21 @@
 
   deploymentType = types.submodule {
     options = {
-      name = mkOption {
+      instance = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = ''
-          Podman-compose instance name for this deployment. Defaults to the
+          Podman-compose instance backing this deployment. Defaults to the
           backend's canonical instance name.
         '';
       };
-      port = mkOption {
-        type = types.port;
-        description = "Host port this deployment serves its API on.";
+      portName = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Exposed-port name carrying the backend API. May be omitted when the
+          compose instance exposes exactly one port.
+        '';
       };
       lifecycle = mkOption {
         type = types.enum ["auto" "manual" "stopped"];
@@ -48,20 +60,38 @@
 
   ollamaDeployments = cfg.backends.ollama.deployments;
   llamaDeployments = cfg.backends.llamaRouter.deployments;
+  ollamaModelKeys =
+    if cfg.backends.ollama.models == null
+    then cfg.models
+    else cfg.backends.ollama.models;
+  llamaModelKeys =
+    if cfg.backends.llamaRouter.models == null
+    then cfg.models
+    else cfg.backends.llamaRouter.models;
+  selectedKeys = lib.unique (cfg.models ++ ollamaModelKeys ++ llamaModelKeys);
 
-  # Selected catalog entries in the host's selection order. Unknown keys map
-  # to a sentinel entry so assertions can report them; reconciler emissions
-  # stay gated on catalog completeness below.
-  selected = builtins.map (key:
-    catalog.${
-      key
-    } or {
-      id = key;
-      missing = true;
-    })
-  cfg.models;
-  unknownKeys = aiLib.missingKeys cfg.models;
-  selectionValid = unknownKeys == [];
+  selectedFor = keys:
+    builtins.map (key: let
+      entry = catalog.${key} or null;
+    in
+      if builtins.isAttrs entry && (entry ? id) && builtins.isString entry.id
+      then entry
+      else {
+        id = key;
+        missing = true;
+      })
+    keys;
+  ollamaSelected = selectedFor ollamaModelKeys;
+  llamaSelected = selectedFor llamaModelKeys;
+  unknownKeys = aiLib.missingKeysFrom catalog selectedKeys;
+  invalidCatalogKeys = builtins.filter (key: let
+    entry = catalog.${key} or null;
+  in
+    entry != null && (!(builtins.isAttrs entry) || !(entry ? id) || !(builtins.isString entry.id)))
+  selectedKeys;
+  selectionValid = unknownKeys == [] && invalidCatalogKeys == [];
+  ollamaPolicyValid = selectionValid && aiLib.missingRefs "ollama" ollamaSelected == [];
+  llamaPolicyValid = selectionValid && aiLib.missingRefs "llama" llamaSelected == [];
 
   # A backend only emits anything once the stack identity is known and the
   # selection is fully resolvable; otherwise the assertions below report the
@@ -69,89 +99,129 @@
   ollamaActive =
     stackReady
     && ollamaDeployments != []
-    && selectionValid
-    && aiLib.missingRefs "ollama" selected == [];
+    && ollamaPolicyValid
+    && ollamaProjection.user != null
+    && cfg.backends.ollama.stateFile != null;
   llamaActive =
     stackReady
     && llamaDeployments != []
-    && selectionValid
-    && aiLib.missingRefs "llama" selected == [];
+    && llamaPolicyValid
+    && llamaProjection.user != null
+    && cfg.backends.llamaRouter.stateFile != null;
 
-  depName = backend: deployment:
-    if deployment.name != null
-    then deployment.name
+  depInstance = backend: deployment:
+    if deployment.instance != null
+    then deployment.instance
     else defaultInstanceName.${backend};
 
-  ollamaRequired = aiLib.projectModels "ollama" selected;
-  llamaRequired = aiLib.projectModels "llama" selected;
+  instanceConfig = backend: deployment:
+    composeStack.instances.${depInstance backend deployment} or {};
+  deploymentServiceName = backend: deployment: let
+    instance = instanceConfig backend deployment;
+  in
+    if (instance.serviceName or null) != null
+    then instance.serviceName
+    else "${composeStack.servicePrefix}${depInstance backend deployment}";
+  deploymentUser = backend: deployment: let
+    instance = instanceConfig backend deployment;
+  in
+    if (instance.user or null) != null
+    then instance.user
+    else composeStack.user;
+  deploymentPortNames = backend: deployment:
+    builtins.attrNames ((instanceConfig backend deployment).exposedPorts or {});
+  deploymentPortName = backend: deployment: let
+    names = deploymentPortNames backend deployment;
+  in
+    if deployment.portName != null
+    then deployment.portName
+    else if builtins.length names == 1
+    then builtins.head names
+    else null;
+  deploymentPortResolved = backend: deployment: let
+    instance = instanceConfig backend deployment;
+    portName = deploymentPortName backend deployment;
+  in
+    portName != null && (instance.exposedPorts or {}) ? ${portName};
+  deploymentPort = backend: deployment:
+    if deploymentPortResolved backend deployment
+    then (instanceConfig backend deployment).exposedPorts.${deploymentPortName backend deployment}.port
+    else 1;
+
+  ollamaRequired =
+    if ollamaPolicyValid
+    then aiLib.projectModels "ollama" ollamaSelected
+    else [];
+  llamaRequired =
+    if llamaPolicyValid
+    then aiLib.projectModels "llama" llamaSelected
+    else [];
   llamaModelPresets =
-    aiLib.llamaPresets
-    (
-      if cfg.roles.embedding == null
-      then null
-      else (catalog.${cfg.roles.embedding} or {id = null;}).id
-    )
-    selected;
+    if llamaPolicyValid
+    then
+      aiLib.llamaPresets
+      (
+        if cfg.roles.embedding == null
+        then null
+        else (catalog.${cfg.roles.embedding} or {id = null;}).id
+      )
+      llamaSelected
+    else {};
 
   backendProjections = backend: deployments: let
-    names = builtins.map (depName backend) deployments;
+    names = builtins.map (depInstance backend) deployments;
     autos = builtins.filter (deployment: deployment.lifecycle == "auto") deployments;
+    users = lib.unique (builtins.map (deploymentUser backend) deployments);
   in {
     inherit names autos;
-    serviceNames = builtins.map (name: "${stackName}-${name}.service") names;
-    urls = builtins.map (deployment: "http://127.0.0.1:${toString deployment.port}") deployments;
-    ports = builtins.map (deployment: deployment.port) deployments;
+    user =
+      if builtins.length users == 1
+      then builtins.head users
+      else null;
+    serviceNames = builtins.map (deployment: "${deploymentServiceName backend deployment}.service") deployments;
+    urls = builtins.map (deployment: "http://127.0.0.1:${toString (deploymentPort backend deployment)}") deployments;
+    ports = builtins.map (deploymentPort backend) deployments;
     portsByName = builtins.listToAttrs (builtins.map (deployment: {
-        name = depName backend deployment;
-        value = deployment.port;
+        name = depInstance backend deployment;
+        value = deploymentPort backend deployment;
       })
       deployments);
     readyTarget =
       if autos == []
       then null
-      else "${stackName}-${depName backend (builtins.head autos)}-ready.target";
+      else "${deploymentServiceName backend (builtins.head autos)}-ready.target";
   };
 
   ollamaProjection = backendProjections "ollama" ollamaDeployments;
   llamaProjection = backendProjections "llamaRouter" llamaDeployments;
-
-  # Reconcilers restart when any deployment's container configuration
-  # changes (e.g. an image bump), re-checking pulled models.
-  deploymentStamp = backend: deployments:
-    builtins.hashString "sha256" (builtins.toJSON (builtins.listToAttrs (builtins.map (deployment: {
-        name = depName backend deployment;
-        value = config.services.podman-compose.${stackName}.instances.${depName backend deployment};
-      })
-      deployments)));
 
   ollamaReconciler = import ../ollama {inherit lib pkgs;};
   llamaReconciler = import ../llama-router {inherit lib pkgs;};
 
   ollamaBinding = ollamaReconciler.mkModelReconciler {
     backendServices = ollamaProjection.serviceNames;
-    conditionUser = stackName;
-    managedTarget = "${stackName}-managed";
+    conditionUser = ollamaProjection.user;
+    managedTarget = "${lib.strings.sanitizeDerivationName ollamaProjection.user}-managed";
     name = "${stackName}-ollama-models";
     ollamaUrls = ollamaProjection.urls;
+    preservedModels = cfg.backends.ollama.preservedModels;
     readyTarget = ollamaProjection.readyTarget;
-    reconcileTriggers = [(deploymentStamp "ollama" ollamaDeployments)];
     requiredModels = ollamaRequired;
-    retiredModels = cfg.backends.ollama.retiredModels;
+    stateFile = cfg.backends.ollama.stateFile;
     timeoutReadySeconds = 3600;
   };
 
   llamaBinding = llamaReconciler.mkModelReconciler {
     backendServices = llamaProjection.serviceNames;
-    cacheDir = cfg.backends.llamaRouter.cacheDir;
-    conditionUser = stackName;
-    managedTarget = "${stackName}-managed";
+    conditionUser = llamaProjection.user;
+    managedTarget = "${lib.strings.sanitizeDerivationName llamaProjection.user}-managed";
     modelPresets = llamaModelPresets;
     name = "${stackName}-llama-router-models";
+    preservedModels = cfg.backends.llamaRouter.preservedModels;
     readyTarget = llamaProjection.readyTarget;
-    reconcileTriggers = [(deploymentStamp "llamaRouter" llamaDeployments)];
     requiredModels = llamaRequired;
-    retiredModels = cfg.backends.llamaRouter.retiredModels;
     routerUrls = llamaProjection.urls;
+    stateFile = cfg.backends.llamaRouter.stateFile;
     timeoutReadySeconds = 3600;
   };
 
@@ -166,15 +236,30 @@
       inherit deployment;
     })
     llamaDeployments;
+  backendWorkerName = backend:
+    if backend == "ollama"
+    then "${stackName}-ollama-models-pull"
+    else "${stackName}-llama-router-models-load";
+  systemctl = lib.getExe' pkgs.systemd "systemctl";
+  backendReconcileCommand = backend: "-${systemctl} --user restart --no-block ${backendWorkerName backend}.service";
 in {
   options.services.ai = {
     stack.name = mkOption {
       type = types.nullOr types.str;
       default = null;
       description = ''
-        Fleet stack identity backing the AI services ("pvl", "abird").
-        Derives the reconciler user, unit prefix, managed target, and default
-        cache locations. Set once by the stack's common host profile.
+        Podman-compose stack containing the AI backend instances. Deployment
+        users, unit names, readiness targets, and API ports are derived from
+        that stack rather than from this string.
+      '';
+    };
+
+    catalog = mkOption {
+      type = types.attrsOf types.attrs;
+      default = aiLib.catalog;
+      description = ''
+        Model catalog keyed by stable policy names. Entries require an id and
+        only the references used by their selected backends.
       '';
     };
 
@@ -182,9 +267,9 @@ in {
       type = types.listOf types.str;
       default = [];
       description = ''
-        Catalog keys this host serves, in pull order. This is the host's
-        complete model policy: every enabled backend serves exactly this
-        selection through its own references.
+        Default managed catalog keys for this host, in pull order. A backend
+        may override this selection when it intentionally serves a different
+        model set.
       '';
     };
 
@@ -207,6 +292,11 @@ in {
     };
 
     backends.ollama = {
+      models = mkOption {
+        type = types.nullOr (types.listOf types.str);
+        default = null;
+        description = "Managed catalog keys for Ollama; null inherits services.ai.models.";
+      };
       deployments = mkOption {
         type = types.listOf deploymentType;
         default = [];
@@ -219,13 +309,25 @@ in {
           Shared models directory mounted read-write into deployments:
           pulls run through the backend API, so blobs land here regardless
           of which deployment performs them. When set, a tmpfiles rule creates
-          it and reconcilers treat it as the pull source of truth.
+          it with the deployment user's ownership.
         '';
       };
-      retiredModels = mkOption {
+      preservedModels = mkOption {
         type = types.listOf types.str;
         default = [];
-        description = "Ollama tags this host historically served; reconcilers remove them when present.";
+        description = ''
+          Exact managed tags to retain while relinquishing ownership. Models
+          downloaded outside reconciliation need not be listed: they are
+          unowned and always left untouched.
+        '';
+      };
+      stateFile = mkOption {
+        type = types.nullOr types.str;
+        default =
+          if ollamaProjection.user != null
+          then "/var/lib/${ollamaProjection.user}/ai/reconciler/ollama.json"
+          else null;
+        description = "Fail-closed ownership manifest for reconciler-managed Ollama tags.";
       };
 
       active = mkOption {
@@ -259,6 +361,11 @@ in {
     };
 
     backends.llamaRouter = {
+      models = mkOption {
+        type = types.nullOr (types.listOf types.str);
+        default = null;
+        description = "Managed catalog keys for llama.cpp router; null inherits services.ai.models.";
+      };
       deployments = mkOption {
         type = types.listOf deploymentType;
         default = [];
@@ -272,10 +379,21 @@ in {
           else null;
         description = "Download cache for GGUF model files.";
       };
-      retiredModels = mkOption {
+      preservedModels = mkOption {
         type = types.listOf types.str;
         default = [];
-        description = "GGUF references this host historically served; reconcilers remove them when present.";
+        description = ''
+          Exact managed GGUF references to retain while relinquishing
+          ownership. Ad-hoc cache entries are unowned and always untouched.
+        '';
+      };
+      stateFile = mkOption {
+        type = types.nullOr types.str;
+        default =
+          if llamaProjection.user != null
+          then "/var/lib/${llamaProjection.user}/ai/reconciler/llama-router.json"
+          else null;
+        description = "Fail-closed ownership manifest for reconciler-managed GGUF references.";
       };
 
       active = mkOption {
@@ -341,18 +459,16 @@ in {
     # Reconciler wiring. Unit names follow "<stack>-<backend>-models" and are
     # unchanged from the pre-module host modules by construction.
     (mkIf ollamaActive ollamaBinding)
+    (mkIf llamaActive (builtins.removeAttrs llamaBinding ["modelsPresetIni"]))
     (mkIf
-      llamaActive
-      (mkMerge [
-        (builtins.removeAttrs llamaBinding ["modelsPresetIni"])
-        {
-          services.podman-compose.${stackName}.instances = builtins.listToAttrs (builtins.map (deployment: {
-              name = depName "llamaRouter" deployment;
-              value.files."models.ini".text = llamaBinding.modelsPresetIni;
-            })
-            llamaDeployments);
-        }
-      ]))
+      (stackReady && llamaDeployments != [] && llamaPolicyValid)
+      {
+        services.podman-compose.${stackName}.instances = builtins.listToAttrs (builtins.map (deployment: {
+            name = depInstance "llamaRouter" deployment;
+            value.files."models.ini".text = llamaBinding.modelsPresetIni;
+          })
+          llamaDeployments);
+      })
 
     # Deployment lifecycle: podman-compose instances keep owning container
     # definitions (image, devices, volumes); the module only projects
@@ -364,11 +480,19 @@ in {
             backend,
             deployment,
           }: {
-            name = depName backend deployment;
+            name = depInstance backend deployment;
             value = {
               autoStart = mkIf (deployment.lifecycle == "manual") false;
               state = mkIf (deployment.lifecycle == "stopped") "stopped";
             };
+          })
+          allDeployments);
+        systemd.user.services = builtins.listToAttrs (builtins.map ({
+            backend,
+            deployment,
+          }: {
+            name = deploymentServiceName backend deployment;
+            value.serviceConfig.ExecStartPost = lib.mkAfter [(backendReconcileCommand backend)];
           })
           allDeployments);
       })
@@ -376,40 +500,53 @@ in {
     # Storage locations. Container files bind-mount these paths; tmpfiles
     # guarantees they exist with stack ownership.
     {
-      systemd.tmpfiles.rules = mkMerge [
-        (mkIf
-          (stackReady && cfg.backends.ollama.modelsDir != null)
-          ["d ${cfg.backends.ollama.modelsDir} 0755 ${stackName} ${stackName} -"])
-        (mkIf
-          (llamaActive && cfg.backends.llamaRouter.cacheDir != null)
-          ["d ${cfg.backends.llamaRouter.cacheDir} 0755 ${stackName} ${stackName} -"])
-      ];
+      systemd.tmpfiles.rules = lib.unique (
+        lib.optional
+        (ollamaProjection.user != null && cfg.backends.ollama.modelsDir != null)
+        "d ${cfg.backends.ollama.modelsDir} 0755 ${ollamaProjection.user} ${ollamaProjection.user} -"
+        ++ lib.optional
+        (llamaProjection.user != null && cfg.backends.llamaRouter.cacheDir != null)
+        "d ${cfg.backends.llamaRouter.cacheDir} 0755 ${llamaProjection.user} ${llamaProjection.user} -"
+        ++ lib.optional
+        (ollamaProjection.user != null && cfg.backends.ollama.stateFile != null)
+        "d ${builtins.dirOf cfg.backends.ollama.stateFile} 0750 ${ollamaProjection.user} ${ollamaProjection.user} -"
+        ++ lib.optional
+        (llamaProjection.user != null && cfg.backends.llamaRouter.stateFile != null)
+        "d ${builtins.dirOf cfg.backends.llamaRouter.stateFile} 0750 ${llamaProjection.user} ${llamaProjection.user} -"
+      );
     }
 
     # Eval-time invariants.
     {
       assertions = let
-        ollamaMissing = aiLib.missingRefs "ollama" selected;
-        llamaMissing = aiLib.missingRefs "llama" selected;
+        ollamaMissing = aiLib.missingRefs "ollama" ollamaSelected;
+        llamaMissing = aiLib.missingRefs "llama" llamaSelected;
         roleKeys = builtins.filter (role: cfg.roles.${role} != null) ["main" "smallTask" "embedding"];
-        badRoles = builtins.filter (role: !builtins.elem cfg.roles.${role} cfg.models) roleKeys;
+        badRoles = builtins.filter (role: !builtins.elem cfg.roles.${role} selectedKeys) roleKeys;
         anyBackends = ollamaDeployments != [] || llamaDeployments != [];
-        duplicateFree = backend: deployments: let
-          names = builtins.map (depName backend) deployments;
-          ports = builtins.map (deployment: deployment.port) deployments;
-        in
-          builtins.length (lib.unique names)
-          == builtins.length names
-          && builtins.length (lib.unique ports) == builtins.length ports;
-        # The module's own lifecycle/files emissions create instance attrs, so
-        # existence is probed via the host-owned compose source. Quadlet and
-        # compose instances alike declare their compose content there.
-        instanceDefined = backend: deployment: let
-          name = depName backend deployment;
-        in
+        deploymentNames = builtins.map ({
+          backend,
+          deployment,
+        }:
+          depInstance backend deployment)
+        allDeployments;
+        deploymentPorts = builtins.map ({
+          backend,
+          deployment,
+        }:
+          deploymentPort backend deployment)
+        allDeployments;
+        deploymentServiceNames = builtins.map ({
+          backend,
+          deployment,
+        }:
+          deploymentServiceName backend deployment)
+        allDeployments;
+        instanceDefined = backend: deployment:
           stackReady
-          && config.services.podman-compose.${stackName}.instances ? ${name}
-          && config.services.podman-compose.${stackName}.instances.${name}.source != null;
+          && composeStack.instances ? ${depInstance backend deployment}
+          && ((instanceConfig backend deployment).source or null) != null;
+        backendUsersValid = projection: projection.user != null;
       in
         [
           {
@@ -418,7 +555,11 @@ in {
           }
           {
             assertion = unknownKeys == [];
-            message = "services.ai.models: unknown catalog keys: ${lib.concatStringsSep ", " unknownKeys}";
+            message = "services.ai: unknown catalog keys: ${lib.concatStringsSep ", " unknownKeys}";
+          }
+          {
+            assertion = invalidCatalogKeys == [];
+            message = "services.ai.catalog: selected entries require a string id: ${lib.concatStringsSep ", " invalidCatalogKeys}";
           }
           {
             assertion = ollamaDeployments == [] || ollamaMissing == [];
@@ -430,15 +571,57 @@ in {
           }
           {
             assertion = badRoles == [];
-            message = "services.ai.roles: keys outside the services.ai.models selection: ${lib.concatStringsSep ", " (builtins.map (role: "${role}=${cfg.roles.${role}}") badRoles)}";
+            message = "services.ai.roles: keys outside all managed model selections: ${lib.concatStringsSep ", " (builtins.map (role: "${role}=${cfg.roles.${role}}") badRoles)}";
           }
           {
-            assertion = ollamaDeployments == [] || duplicateFree "ollama" ollamaDeployments;
-            message = "services.ai.backends.ollama: deployments have duplicate names or ports.";
+            assertion = builtins.length (lib.unique deploymentNames) == builtins.length deploymentNames;
+            message = "services.ai: deployment instance names must be unique across backends.";
           }
           {
-            assertion = llamaDeployments == [] || duplicateFree "llamaRouter" llamaDeployments;
-            message = "services.ai.backends.llamaRouter: deployments have duplicate names or ports.";
+            assertion = builtins.length (lib.unique deploymentServiceNames) == builtins.length deploymentServiceNames;
+            message = "services.ai: resolved deployment service names must be unique across backends.";
+          }
+          {
+            assertion = builtins.length (lib.unique deploymentPorts) == builtins.length deploymentPorts;
+            message = "services.ai: deployment API ports must be unique across backends.";
+          }
+          {
+            assertion = ollamaDeployments == [] || backendUsersValid ollamaProjection;
+            message = "services.ai.backends.ollama: deployments must resolve to one systemd user.";
+          }
+          {
+            assertion = llamaDeployments == [] || backendUsersValid llamaProjection;
+            message = "services.ai.backends.llamaRouter: deployments must resolve to one systemd user.";
+          }
+          {
+            assertion = ollamaDeployments == [] || cfg.backends.ollama.stateFile != null;
+            message = "services.ai.backends.ollama.stateFile is required when deployments are configured.";
+          }
+          {
+            assertion = llamaDeployments == [] || cfg.backends.llamaRouter.stateFile != null;
+            message = "services.ai.backends.llamaRouter.stateFile is required when deployments are configured.";
+          }
+          {
+            assertion =
+              cfg.backends.ollama.stateFile
+              == null
+              || lib.hasPrefix "/" cfg.backends.ollama.stateFile;
+            message = "services.ai.backends.ollama.stateFile must be an absolute path.";
+          }
+          {
+            assertion =
+              cfg.backends.llamaRouter.stateFile
+              == null
+              || lib.hasPrefix "/" cfg.backends.llamaRouter.stateFile;
+            message = "services.ai.backends.llamaRouter.stateFile must be an absolute path.";
+          }
+          {
+            assertion =
+              ollamaDeployments
+              == []
+              || llamaDeployments == []
+              || cfg.backends.ollama.stateFile != cfg.backends.llamaRouter.stateFile;
+            message = "services.ai backend ownership manifests must use distinct state files.";
           }
         ]
         ++ builtins.map ({
@@ -446,7 +629,15 @@ in {
           deployment,
         }: {
           assertion = !stackReady || !anyBackends || instanceDefined backend deployment;
-          message = "services.ai.backends.${backend}: deployment ${depName backend deployment} has no matching podman-compose instance (declare its compose source).";
+          message = "services.ai.backends.${backend}: deployment ${depInstance backend deployment} has no matching podman-compose instance.";
+        })
+        allDeployments
+        ++ builtins.map ({
+          backend,
+          deployment,
+        }: {
+          assertion = !instanceDefined backend deployment || deploymentPortResolved backend deployment;
+          message = "services.ai.backends.${backend}: deployment ${depInstance backend deployment} must select an existing exposed API port (set portName when the instance exposes more than one).";
         })
         allDeployments;
     }
