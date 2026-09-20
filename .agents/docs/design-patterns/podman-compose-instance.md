@@ -95,6 +95,11 @@ source pins, conflicting replacements, lookup failures, and concurrent source
 changes before writing. Stage every changed file beside its target, preserve its
 mode, and roll back already replaced files if publication fails.
 
+Exact declaration lookup compares the complete parsed `image:` or `image =`
+value, not a substring. Prefix-related tags such as `app:1.0.0` and
+`app:1.0.0-rocm` may coexist in one owning file without creating nested edits.
+Keep overlap rejection as the final safety boundary.
+
 Only comparable fixed version tags participate in updates. Keep generated
 `localhost/nix-local` images out of inventory, and leave digest pins,
 runtime-variable tags, and floating tags unchanged. Major and pre-1.0 minor

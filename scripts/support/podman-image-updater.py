@@ -38,7 +38,8 @@ SAME_MAJOR_REPOSITORIES = {
     ("docker.io", "library/postgres"),
 }
 IMAGE_DECLARATION_RE = re.compile(
-    r'^\s*(?:(?:[A-Za-z0-9_.-]+\.)?image|["\']image["\'])\s*[:=]'
+    r'^\s*(?:(?:[A-Za-z0-9_.-]+\.)?image|["\']image["\'])\s*[:=]\s*'
+    r'(?P<quote>["\']?)(?P<ref>[^\'"\s,;#]+)(?P=quote)'
 )
 
 
@@ -824,11 +825,11 @@ def image_reference_spans(content, ref):
     spans = []
     offset = 0
     for line in content.splitlines(keepends=True):
-        if IMAGE_DECLARATION_RE.match(line) and not line.lstrip().startswith("#"):
-            index = line.find(ref)
-            while index >= 0:
-                spans.append((offset + index, offset + index + len(ref)))
-                index = line.find(ref, index + len(ref))
+        match = IMAGE_DECLARATION_RE.match(line)
+        if match and match.group("ref") == ref:
+            spans.append(
+                (offset + match.start("ref"), offset + match.end("ref"))
+            )
         offset += len(line)
     return spans
 

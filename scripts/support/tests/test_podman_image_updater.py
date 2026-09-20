@@ -698,6 +698,52 @@ class PodmanImageUpdaterTest(unittest.TestCase):
         self.assertEqual(len(edits), 1)
         self.assertIn("docker.io/example/app:1.1.0", updated[source_file])
 
+    def test_plan_updates_distinguishes_image_reference_prefixes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source_file = pathlib.Path(directory) / "default.nix"
+            source_file.write_text(
+                "source = ''\n"
+                "  image: docker.io/example/app:1.0.0-rocm\n"
+                "  image: docker.io/example/app:1.0.0\n"
+                "'';\n"
+            )
+            context = ("pvl", "host", "pvl")
+            rocm_ref = "docker.io/example/app:1.0.0-rocm"
+            default_ref = "docker.io/example/app:1.0.0"
+            contexts = {context: {"app": [rocm_ref, default_ref]}}
+            source_files = {context: {"app": [source_file]}}
+            checks = {
+                rocm_ref: podman_image_updater.ImageCheck(
+                    rocm_ref,
+                    "docker.io/example/app",
+                    "1.0.0-rocm",
+                    "1.1.0-rocm",
+                    "update",
+                ),
+                default_ref: podman_image_updater.ImageCheck(
+                    default_ref,
+                    "docker.io/example/app",
+                    "1.0.0",
+                    "1.1.0",
+                    "update",
+                ),
+            }
+
+            edits, originals, errors = podman_image_updater.plan_updates(
+                contexts, source_files, checks
+            )
+            updated = podman_image_updater.updated_contents(edits, originals)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(edits), 2)
+        self.assertEqual(
+            updated[source_file],
+            "source = ''\n"
+            "  image: docker.io/example/app:1.1.0-rocm\n"
+            "  image: docker.io/example/app:1.1.0\n"
+            "'';\n",
+        )
+
     def test_plan_updates_deduplicates_shared_version_pin(self):
         with tempfile.TemporaryDirectory() as directory:
             source_file = pathlib.Path(directory) / "default.nix"
