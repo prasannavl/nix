@@ -10,7 +10,7 @@
     source = ''
       services:
         ollama:
-          image: docker.io/ollama/ollama:0.34.0-rocm
+          image: docker.io/ollama/ollama:0.34.2-rocm
           container_name: ollama
           ports:
             - "${toString exposedPorts.main.port}:11434"

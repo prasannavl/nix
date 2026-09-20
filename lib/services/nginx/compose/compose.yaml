@@ -1,6 +1,6 @@
 services:
   nginx:
-    image: nginx:1.30.4
+    image: nginx:1.30.5
     user: 0:0
     ports:
       - "${NGINX_HTTP_PORT}:80"

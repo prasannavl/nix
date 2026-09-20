@@ -4,7 +4,7 @@
   ...
 }: let
   composeSecretUser = "pvl";
-  immichVersion = "v3.2.1";
+  immichVersion = "v3.2.2";
 in {
   config = {
     services.podman-compose.pvl.instances.immich = rec {
