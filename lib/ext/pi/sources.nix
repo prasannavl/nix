@@ -4,9 +4,9 @@
     package = "pi-models-discovery";
     owner = "maplezzk";
     repo = "pi-extensions";
-    version = "1.3.0";
-    rev = "527d7324b0c713f0f141b22cc0e640ed9e4dcca2";
-    srcHash = "sha256-9ll9dV3UKQ3ZqzOffV8N/P1lt6oQO54nvsfNZMPt4MI=";
+    version = "1.3.1";
+    rev = "8ec1ea0790ea338b4905d9fecae599fae9e2a4c7";
+    srcHash = "sha256-AuA4bQAyfxqtW+fdxC38E9dkueCnsaOtj2YAHTbIG5o=";
   };
 
   pi-session-manager = {
@@ -21,10 +21,10 @@
     package = "pi-subagents";
     owner = "nicobailon";
     repo = "pi-subagents";
-    version = "0.68.0";
-    rev = "f3ccf47dc236b6c0fcc0d897cec4a9e6da3e916d";
-    srcHash = "sha256-YamJDmW49sKG1FUhGcJZobeKZSWD/hWjHiSvi1kur54=";
-    npmDepsHash = "sha256-nOPUvjttX8kkUdXSCSf+/OMx9APy5cfJTbt837oNY0Y=";
+    version = "0.69.0";
+    rev = "f4918e80b531f1bf9f1d9e847b8f86c9016108f1";
+    srcHash = "sha256-j6nEmECD1jDXBCgc65AJMa6QFtbRYq4TblGB7ghQ1Ms=";
+    npmDepsHash = "sha256-K9gDFwFEoXO8ekGOaSoq8OQ2CEVjX8kwOtY7PEdDWnw=";
   };
 
   pi-tps = {
