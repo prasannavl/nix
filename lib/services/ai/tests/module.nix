@@ -188,12 +188,6 @@
   crossBackendPortCollisionCfg = lib.recursiveUpdate baseConfig {
     services.podman-compose.test.instances.llama-router.exposedPorts.main.port = 11434;
   };
-  crossBackendStateCollisionCfg = lib.recursiveUpdate baseConfig {
-    services.ai.backends = {
-      ollama.stateFile = "/var/lib/test/shared-model-ownership.json";
-      llamaRouter.stateFile = "/var/lib/test/shared-model-ownership.json";
-    };
-  };
   missingStackCfg = {
     services.ai = {
       inherit models;
@@ -267,8 +261,6 @@ in
     embeddings = "true";
     poll = "0";
   };
-  assert cfg.services.ai.backends.ollama.stateFile == "/var/lib/test-user/ai/reconciler/ollama.json";
-  assert cfg.services.ai.backends.llamaRouter.stateFile == "/var/lib/test-user/ai/reconciler/llama-router.json";
   assert cfg.services.podman-compose.test.instances.ollama.state == "stopped";
   assert cfg.services.podman-compose.test.instances.ollama-2.autoStart == false;
   assert cfg.services.podman-compose.test.instances.llama-router.files."models.ini".text != "";
@@ -282,8 +274,17 @@ in
   assert cfg.systemd.user.services ? "test-ollama-models-pull";
   assert cfg.systemd.user.services ? "test-llama-router-models";
   assert cfg.systemd.user.services ? "test-llama-router-models-load";
+  assert cfg.systemd.user.services."test-ollama-models".serviceConfig.StateDirectory == "ai/reconciler";
+  assert cfg.systemd.user.services."test-ollama-models".environment.MODEL_RECONCILER_STATE_NAME == "ollama.json";
+  assert cfg.systemd.user.services."test-ollama-models".environment.MODEL_RECONCILER_LEGACY_STATE_FILE
+  == "/var/lib/test-user/ai/reconciler/ollama.json";
+  assert cfg.systemd.user.services."test-llama-router-models".serviceConfig.StateDirectory == "ai/reconciler";
+  assert cfg.systemd.user.services."test-llama-router-models".environment.MODEL_RECONCILER_STATE_NAME
+  == "llama-router.json";
+  assert cfg.systemd.user.services."test-llama-router-models".environment.MODEL_RECONCILER_LEGACY_STATE_FILE
+  == "/var/lib/test-user/ai/reconciler/llama-router.json";
   assert builtins.any (rule: lib.hasPrefix "d /var/lib/test/ollama-models " rule) cfg.systemd.tmpfiles.rules;
-  assert builtins.any (rule: lib.hasPrefix "d /var/lib/test-user/ai/reconciler " rule) cfg.systemd.tmpfiles.rules;
+  assert !(builtins.any (rule: lib.hasPrefix "d /var/lib/test-user/ai/reconciler " rule) cfg.systemd.tmpfiles.rules);
   assert (eval autoCfg).services.ai.backends.ollama.readyTarget == "special-ollama-ready.target";
   assert (eval autoCfg).services.ai.backends.llamaRouter.readyTarget == "custom-llama-router-ready.target";
   assert allAssertionsHold (eval backendSpecificCfg);
@@ -295,7 +296,6 @@ in
   assert !(allAssertionsHold (eval missingInstanceCfg));
   assert !(allAssertionsHold (eval crossBackendNameCollisionCfg));
   assert !(allAssertionsHold (eval crossBackendPortCollisionCfg));
-  assert !(allAssertionsHold (eval crossBackendStateCollisionCfg));
   assert !(allAssertionsHold (eval missingStackCfg));
     pkgs.runCommand "ai-module-test" {} ''
       touch $out

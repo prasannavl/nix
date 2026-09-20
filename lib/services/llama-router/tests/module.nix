@@ -4,6 +4,7 @@
   mkReconciler = {
     backendServices ? [],
     globalPreset ? {},
+    legacyStateFile ? "/var/lib/test/llama-router.json",
     modelPresets ? {},
     preservedModels ? [],
     readyTarget ? "test-llama-router-ready.target",
@@ -13,10 +14,9 @@
     timeoutReadySeconds ? 900,
   }:
     llamaRouterLib.mkModelReconciler {
-      inherit backendServices globalPreset modelPresets preservedModels readyTarget reconcileTriggers requiredModels routerUrls timeoutReadySeconds;
+      inherit backendServices globalPreset legacyStateFile modelPresets preservedModels readyTarget reconcileTriggers requiredModels routerUrls timeoutReadySeconds;
       managedTarget = "test-managed";
       name = "test-llama-router-models";
-      stateFile = "/var/lib/test/llama-router.json";
     };
   baseline = mkReconciler {
     backendServices = ["test-llama-router.service"];
@@ -64,10 +64,15 @@ in
   assert dispatcher.restartIfChanged;
   assert dispatcher.restartTriggers == ["backend-config"];
   assert dispatcher.serviceConfig.RemainAfterExit;
+  assert dispatcher.serviceConfig.StateDirectory == "ai/reconciler";
+  assert dispatcher.serviceConfig.StateDirectoryMode == "0750";
+  assert dispatcher.environment.MODEL_RECONCILER_STATE_NAME == "llama-router.json";
+  assert dispatcher.environment.MODEL_RECONCILER_LEGACY_STATE_FILE == "/var/lib/test/llama-router.json";
   assert dispatcher.serviceConfig.ExecStart != preservationDispatcher.serviceConfig.ExecStart;
   assert dispatcher.unitConfig.Requires == ["test-llama-router-ready.target"];
   assert builtins.elem "test-llama-router.service" worker.after;
   assert worker.environment.NIXBOT_TIMEOUT_READY_SECONDS == "900";
+  assert worker.serviceConfig.StateDirectory == "ai/reconciler";
   assert worker.serviceConfig.TimeoutStartSec == 900;
   assert !(inactiveDispatcher.unitConfig ? Requires);
   assert builtins.elem "test-llama-router.service" inactiveWorker.after;

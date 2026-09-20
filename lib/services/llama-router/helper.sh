@@ -18,6 +18,7 @@ load_ownership_helpers() {
 	# Nix injects the immutable library path.
 	# shellcheck disable=SC1090
 	source "$helper_path"
+	model_reconciler_init_state
 }
 
 # Router models are Hugging Face references: "org/repo" with an optional
@@ -59,7 +60,7 @@ model_is_required() {
 }
 
 reconciliation_requested() {
-	[ "$#" -gt 0 ] || [ -e "$MODEL_RECONCILER_STATE_FILE" ]
+	[ "$#" -gt 0 ] || model_reconciler_state_exists
 }
 
 validate_ownership_config() {

@@ -14,13 +14,18 @@
     reconcileTriggers ? [],
     requiredModels,
     routerUrls ? [],
-    stateFile,
+    legacyStateFile ? null,
+    stateDirectory ? "ai/reconciler",
+    stateName ? "llama-router.json",
     timeoutReadySeconds,
   }: let
     serviceModuleFactory = import ../../flake/service-module.nix;
+    modelReconciler = import ../model-reconciler {inherit lib pkgs;};
+    stateBinding = modelReconciler.mkStateBinding {inherit legacyStateFile stateDirectory stateName;};
     workerName = "${name}-load";
     modelArgs = lib.escapeShellArgs requiredModels;
-    reconcileModels = pkgs.writeShellApplication {
+    reconcileModels = modelReconciler.mkApplication {
+      helper = ./helper.sh;
       name = "${name}-reconcile";
       runtimeInputs = [
         pkgs.coreutils
@@ -30,15 +35,10 @@
       runtimeEnv =
         {
           LLAMA_ROUTER_PRESERVED_MODELS = lib.concatStringsSep "\n" preservedModels;
-          MODEL_RECONCILER_OWNERSHIP_LIB = ../model-reconciler/ownership.sh;
-          MODEL_RECONCILER_STATE_FILE = stateFile;
         }
         // lib.optionalAttrs (routerUrls != []) {
           LLAMA_ROUTER_URLS = lib.concatStringsSep " " routerUrls;
         };
-      text = ''
-        exec ${lib.getExe pkgs.bash} ${./helper.sh} "$@"
-      '';
     };
     conditionConfig = lib.optionalAttrs (conditionUser != null) {
       ConditionUser = conditionUser;
@@ -76,48 +76,50 @@
         presetModels
       );
   in {
-    assertions = [
-      {
-        assertion = lib.all (model: lib.match modelRefPattern model != null) requiredModels;
-        message = "llama-router required models must be Hugging Face references (org/repo or org/repo:tag)";
-      }
-      {
-        assertion = lib.all (model: lib.match modelRefPattern model != null) preservedModels;
-        message = "llama-router preserved models must be Hugging Face references (org/repo or org/repo:tag)";
-      }
-      {
-        assertion = lib.intersectLists requiredModels preservedModels == [];
-        message = "llama-router models cannot be both managed and preserved";
-      }
-      {
-        assertion = readyTarget != null || backendServices != [];
-        message = "llama-router model reconciliation requires a ready target or backend services";
-      }
-      {
-        assertion = lib.all (model: builtins.elem model requiredModels) (lib.attrNames modelPresets);
-        message = "llama-router model presets must reference required models";
-      }
-      {
-        assertion = lib.all (model: presetName model != model) presetModels;
-        message = "llama-router model presets require an alias distinct from the managed cache reference";
-      }
-      {
-        assertion = lib.length (lib.unique (map presetName presetModels)) == lib.length presetModels;
-        message = "llama-router model preset aliases must be unique";
-      }
-      {
-        assertion =
-          builtins.all (
-            entry:
-              builtins.isString entry.value
-              && (builtins.stringLength entry.value) > 0
-              && !lib.hasInfix "\n" entry.value
-              && lib.match presetKeyPattern entry.key != null
-          )
-          presetEntries;
-        message = "llama-router model preset keys must be llama.cpp option names and values non-empty single-line strings";
-      }
-    ];
+    assertions =
+      stateBinding.assertions
+      ++ [
+        {
+          assertion = lib.all (model: lib.match modelRefPattern model != null) requiredModels;
+          message = "llama-router required models must be Hugging Face references (org/repo or org/repo:tag)";
+        }
+        {
+          assertion = lib.all (model: lib.match modelRefPattern model != null) preservedModels;
+          message = "llama-router preserved models must be Hugging Face references (org/repo or org/repo:tag)";
+        }
+        {
+          assertion = lib.intersectLists requiredModels preservedModels == [];
+          message = "llama-router models cannot be both managed and preserved";
+        }
+        {
+          assertion = readyTarget != null || backendServices != [];
+          message = "llama-router model reconciliation requires a ready target or backend services";
+        }
+        {
+          assertion = lib.all (model: builtins.elem model requiredModels) (lib.attrNames modelPresets);
+          message = "llama-router model presets must reference required models";
+        }
+        {
+          assertion = lib.all (model: presetName model != model) presetModels;
+          message = "llama-router model presets require an alias distinct from the managed cache reference";
+        }
+        {
+          assertion = lib.length (lib.unique (map presetName presetModels)) == lib.length presetModels;
+          message = "llama-router model preset aliases must be unique";
+        }
+        {
+          assertion =
+            builtins.all (
+              entry:
+                builtins.isString entry.value
+                && (builtins.stringLength entry.value) > 0
+                && !lib.hasInfix "\n" entry.value
+                && lib.match presetKeyPattern entry.key != null
+            )
+            presetEntries;
+          message = "llama-router model preset keys must be llama.cpp option names and values non-empty single-line strings";
+        }
+      ];
 
     inherit modelsPresetIni;
 
@@ -128,6 +130,7 @@
         restartTriggers = reconcileTriggers;
         stopIfChanged = false;
         wantedBy = [];
+        environment = stateBinding.environment;
         after = readyTargets ++ ["network-online.target"];
         wants = ["network-online.target"];
         unitConfig =
@@ -135,16 +138,18 @@
           // lib.optionalAttrs (readyTarget != null) {
             Requires = readyTargets;
           };
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = dispatchCommand;
-        };
+        serviceConfig =
+          stateBinding.serviceConfig
+          // {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = dispatchCommand;
+          };
       };
 
       ${workerName} = {
         description = "Reconcile declarative llama-router models";
-        inherit (workerTimeout) environment;
+        environment = workerTimeout.environment // stateBinding.environment;
         restartIfChanged = false;
         stopIfChanged = false;
         wantedBy = [];
@@ -153,6 +158,7 @@
         unitConfig = conditionConfig;
         serviceConfig =
           workerTimeout.serviceConfig
+          // stateBinding.serviceConfig
           // {
             Type = "oneshot";
             ExecStart = reconcileCommand;

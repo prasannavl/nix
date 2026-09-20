@@ -51,6 +51,7 @@
       [ "$effective_ifd" = false ]
       touch "$out"
     '';
+  modelReconcilerTest = import ../services/model-reconciler/tests {inherit pkgs;};
   ollamaTests = import ../services/ollama/tests {pkgs = pkgs;};
   podmanImageUpdaterTest =
     pkgs.runCommand "podman-image-updater-test" {
@@ -92,6 +93,7 @@ in
     lib-llama-router-module = llamaRouterTests.module;
     lib-lint-manifest-temp-cleanup = lintManifestTempCleanupTest;
     lib-lint-no-ifd = lintNoIfdTest;
+    lib-model-reconciler-wrapper = modelReconcilerTest;
     lib-openssh = import ./openssh.nix {inherit pkgs;};
     lib-ollama-helper = ollamaTests.helper;
     lib-ollama-module = ollamaTests.module;

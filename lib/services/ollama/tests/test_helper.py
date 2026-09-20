@@ -251,7 +251,24 @@ esac
         )
         self.assertEqual(result.returncode, 0)
         self.assertNotIn("/api/delete", "\n".join(self.read_log("curl.log")))
+        self.assertFalse(self.manifest.exists())
+
+    def test_legacy_manifest_requests_reconciliation_and_is_imported(self):
+        legacy_manifest = self.state_dir / "legacy.json"
+        legacy_manifest.write_text(
+            json.dumps({"version": 1, "models": ["old:1"]}), encoding="utf-8"
+        )
+        self.set_unit_state("pvl-ollama.service", "active")
+        result = self.run_helper(
+            models=(),
+            FAKE_CURL_TAGS_STATUS="0",
+            MODEL_RECONCILER_LEGACY_STATE_FILE=str(legacy_manifest),
+            OLLAMA_PRESERVED_MODELS="old:1",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("imported ownership manifest", result.stdout)
         self.assertEqual(self.read_manifest()["models"], [])
+        self.assertNotIn("/api/delete", "\n".join(self.read_log("curl.log")))
 
     def test_corrupt_manifest_fails_before_api_mutation(self):
         self.manifest.write_text('{"version":99,"models":[]}', encoding="utf-8")

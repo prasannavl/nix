@@ -3,6 +3,7 @@
   ollamaLib = import ../default.nix {inherit lib pkgs;};
   mkReconciler = {
     backendServices ? [],
+    legacyStateFile ? "/var/lib/test/ollama.json",
     ollamaUrls ? [],
     preservedModels ? [],
     readyTarget ? "test-ollama-ready.target",
@@ -10,11 +11,10 @@
     timeoutReadySeconds ? 900,
   }:
     ollamaLib.mkModelReconciler {
-      inherit backendServices ollamaUrls preservedModels readyTarget reconcileTriggers timeoutReadySeconds;
+      inherit backendServices legacyStateFile ollamaUrls preservedModels readyTarget reconcileTriggers timeoutReadySeconds;
       managedTarget = "test-managed";
       name = "test-ollama-models";
       requiredModels = ["new:1"];
-      stateFile = "/var/lib/test/ollama.json";
     };
   baseline = mkReconciler {
     backendServices = ["test-ollama.service"];
@@ -49,10 +49,15 @@ in
   assert dispatcher.restartIfChanged;
   assert dispatcher.restartTriggers == ["backend-config"];
   assert dispatcher.serviceConfig.RemainAfterExit;
+  assert dispatcher.serviceConfig.StateDirectory == "ai/reconciler";
+  assert dispatcher.serviceConfig.StateDirectoryMode == "0750";
+  assert dispatcher.environment.MODEL_RECONCILER_STATE_NAME == "ollama.json";
+  assert dispatcher.environment.MODEL_RECONCILER_LEGACY_STATE_FILE == "/var/lib/test/ollama.json";
   assert dispatcher.serviceConfig.ExecStart != preservationDispatcher.serviceConfig.ExecStart;
   assert dispatcher.unitConfig.Requires == ["test-ollama-ready.target"];
   assert builtins.elem "test-ollama.service" worker.after;
   assert worker.environment.NIXBOT_TIMEOUT_READY_SECONDS == "900";
+  assert worker.serviceConfig.StateDirectory == "ai/reconciler";
   assert worker.serviceConfig.ExecStart != "";
   assert worker.serviceConfig.TimeoutStartSec == 900;
   assert !(inactiveDispatcher.unitConfig ? Requires);

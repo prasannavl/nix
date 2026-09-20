@@ -27,7 +27,6 @@
     ollama = "ollama";
     llamaRouter = "llama-router";
   };
-
   deploymentType = types.submodule {
     options = {
       instance = mkOption {
@@ -100,14 +99,12 @@
     stackReady
     && ollamaDeployments != []
     && ollamaPolicyValid
-    && ollamaProjection.user != null
-    && cfg.backends.ollama.stateFile != null;
+    && ollamaProjection.user != null;
   llamaActive =
     stackReady
     && llamaDeployments != []
     && llamaPolicyValid
-    && llamaProjection.user != null
-    && cfg.backends.llamaRouter.stateFile != null;
+    && llamaProjection.user != null;
 
   depInstance = backend: deployment:
     if deployment.instance != null
@@ -195,6 +192,11 @@
   ollamaProjection = backendProjections "ollama" ollamaDeployments;
   llamaProjection = backendProjections "llamaRouter" llamaDeployments;
 
+  legacyStateFile = backend: projection:
+    if projection.user == null
+    then null
+    else "/var/lib/${projection.user}/ai/reconciler/${backend}.json";
+
   ollamaReconciler = import ../ollama {inherit lib pkgs;};
   llamaReconciler = import ../llama-router {inherit lib pkgs;};
 
@@ -207,7 +209,7 @@
     preservedModels = cfg.backends.ollama.preservedModels;
     readyTarget = ollamaProjection.readyTarget;
     requiredModels = ollamaRequired;
-    stateFile = cfg.backends.ollama.stateFile;
+    legacyStateFile = legacyStateFile "ollama" ollamaProjection;
     timeoutReadySeconds = 3600;
   };
 
@@ -221,7 +223,7 @@
     readyTarget = llamaProjection.readyTarget;
     requiredModels = llamaRequired;
     routerUrls = llamaProjection.urls;
-    stateFile = cfg.backends.llamaRouter.stateFile;
+    legacyStateFile = legacyStateFile "llama-router" llamaProjection;
     timeoutReadySeconds = 3600;
   };
 
@@ -321,15 +323,6 @@ in {
           unowned and always left untouched.
         '';
       };
-      stateFile = mkOption {
-        type = types.nullOr types.str;
-        default =
-          if ollamaProjection.user != null
-          then "/var/lib/${ollamaProjection.user}/ai/reconciler/ollama.json"
-          else null;
-        description = "Fail-closed ownership manifest for reconciler-managed Ollama tags.";
-      };
-
       active = mkOption {
         type = types.bool;
         readOnly = true;
@@ -387,15 +380,6 @@ in {
           ownership. Ad-hoc cache entries are unowned and always untouched.
         '';
       };
-      stateFile = mkOption {
-        type = types.nullOr types.str;
-        default =
-          if llamaProjection.user != null
-          then "/var/lib/${llamaProjection.user}/ai/reconciler/llama-router.json"
-          else null;
-        description = "Fail-closed ownership manifest for reconciler-managed GGUF references.";
-      };
-
       active = mkOption {
         type = types.bool;
         readOnly = true;
@@ -507,12 +491,6 @@ in {
         ++ lib.optional
         (llamaProjection.user != null && cfg.backends.llamaRouter.cacheDir != null)
         "d ${cfg.backends.llamaRouter.cacheDir} 0755 ${llamaProjection.user} ${llamaProjection.user} -"
-        ++ lib.optional
-        (ollamaProjection.user != null && cfg.backends.ollama.stateFile != null)
-        "d ${builtins.dirOf cfg.backends.ollama.stateFile} 0750 ${ollamaProjection.user} ${ollamaProjection.user} -"
-        ++ lib.optional
-        (llamaProjection.user != null && cfg.backends.llamaRouter.stateFile != null)
-        "d ${builtins.dirOf cfg.backends.llamaRouter.stateFile} 0750 ${llamaProjection.user} ${llamaProjection.user} -"
       );
     }
 
@@ -592,36 +570,6 @@ in {
           {
             assertion = llamaDeployments == [] || backendUsersValid llamaProjection;
             message = "services.ai.backends.llamaRouter: deployments must resolve to one systemd user.";
-          }
-          {
-            assertion = ollamaDeployments == [] || cfg.backends.ollama.stateFile != null;
-            message = "services.ai.backends.ollama.stateFile is required when deployments are configured.";
-          }
-          {
-            assertion = llamaDeployments == [] || cfg.backends.llamaRouter.stateFile != null;
-            message = "services.ai.backends.llamaRouter.stateFile is required when deployments are configured.";
-          }
-          {
-            assertion =
-              cfg.backends.ollama.stateFile
-              == null
-              || lib.hasPrefix "/" cfg.backends.ollama.stateFile;
-            message = "services.ai.backends.ollama.stateFile must be an absolute path.";
-          }
-          {
-            assertion =
-              cfg.backends.llamaRouter.stateFile
-              == null
-              || lib.hasPrefix "/" cfg.backends.llamaRouter.stateFile;
-            message = "services.ai.backends.llamaRouter.stateFile must be an absolute path.";
-          }
-          {
-            assertion =
-              ollamaDeployments
-              == []
-              || llamaDeployments == []
-              || cfg.backends.ollama.stateFile != cfg.backends.llamaRouter.stateFile;
-            message = "services.ai backend ownership manifests must use distinct state files.";
           }
         ]
         ++ builtins.map ({

@@ -12,13 +12,18 @@
     readyTarget ? null,
     reconcileTriggers ? [],
     requiredModels,
-    stateFile,
+    legacyStateFile ? null,
+    stateDirectory ? "ai/reconciler",
+    stateName ? "ollama.json",
     timeoutReadySeconds,
   }: let
     serviceModuleFactory = import ../../flake/service-module.nix;
+    modelReconciler = import ../model-reconciler {inherit lib pkgs;};
+    stateBinding = modelReconciler.mkStateBinding {inherit legacyStateFile stateDirectory stateName;};
     workerName = "${name}-pull";
     modelArgs = lib.escapeShellArgs requiredModels;
-    reconcileModels = pkgs.writeShellApplication {
+    reconcileModels = modelReconciler.mkApplication {
+      helper = ./helper.sh;
       name = "${name}-reconcile";
       runtimeInputs = [
         pkgs.coreutils
@@ -27,16 +32,11 @@
       ];
       runtimeEnv =
         {
-          MODEL_RECONCILER_OWNERSHIP_LIB = ../model-reconciler/ownership.sh;
-          MODEL_RECONCILER_STATE_FILE = stateFile;
           OLLAMA_PRESERVED_MODELS = lib.concatStringsSep "\n" preservedModels;
         }
         // lib.optionalAttrs (ollamaUrls != []) {
           OLLAMA_URLS = lib.concatStringsSep " " ollamaUrls;
         };
-      text = ''
-        exec ${lib.getExe pkgs.bash} ${./helper.sh} "$@"
-      '';
     };
     conditionConfig = lib.optionalAttrs (conditionUser != null) {
       ConditionUser = conditionUser;
@@ -46,16 +46,18 @@
     dispatchCommand = "${lib.getExe reconcileModels} dispatch ${workerName}.service ${modelArgs}";
     reconcileCommand = "${lib.getExe reconcileModels} pull ${modelArgs}";
   in {
-    assertions = [
-      {
-        assertion = lib.intersectLists requiredModels preservedModels == [];
-        message = "Ollama models cannot be both managed and preserved";
-      }
-      {
-        assertion = readyTarget != null || backendServices != [];
-        message = "Ollama model reconciliation requires a ready target or backend services";
-      }
-    ];
+    assertions =
+      stateBinding.assertions
+      ++ [
+        {
+          assertion = lib.intersectLists requiredModels preservedModels == [];
+          message = "Ollama models cannot be both managed and preserved";
+        }
+        {
+          assertion = readyTarget != null || backendServices != [];
+          message = "Ollama model reconciliation requires a ready target or backend services";
+        }
+      ];
 
     systemd.user.services = {
       ${name} = {
@@ -64,6 +66,7 @@
         restartTriggers = reconcileTriggers;
         stopIfChanged = false;
         wantedBy = [];
+        environment = stateBinding.environment;
         after = readyTargets ++ ["network-online.target"];
         wants = ["network-online.target"];
         unitConfig =
@@ -71,16 +74,18 @@
           // lib.optionalAttrs (readyTarget != null) {
             Requires = readyTargets;
           };
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = dispatchCommand;
-        };
+        serviceConfig =
+          stateBinding.serviceConfig
+          // {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = dispatchCommand;
+          };
       };
 
       ${workerName} = {
         description = "Reconcile declarative Ollama models";
-        inherit (workerTimeout) environment;
+        environment = workerTimeout.environment // stateBinding.environment;
         restartIfChanged = false;
         stopIfChanged = false;
         wantedBy = [];
@@ -89,6 +94,7 @@
         unitConfig = conditionConfig;
         serviceConfig =
           workerTimeout.serviceConfig
+          // stateBinding.serviceConfig
           // {
             Type = "oneshot";
             ExecStart = reconcileCommand;

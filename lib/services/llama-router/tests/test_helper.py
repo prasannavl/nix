@@ -255,7 +255,7 @@ esac
         )
         self.assertEqual(result.returncode, 0)
         self.assertNotIn("-X DELETE", "\n".join(self.read_log("curl.log")))
-        self.assertEqual(self.read_manifest()["models"], [])
+        self.assertFalse(self.manifest.exists())
 
     def test_corrupt_manifest_fails_before_api_mutation(self):
         self.manifest.write_text('{"version":99,"models":[]}', encoding="utf-8")
