@@ -60,6 +60,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/apps/package-architecture.md`: Canonical package,
   child-flake, package-owned module, service-module helper, and repo stack
   rules.
+- `.agents/docs/notes/apps/llm-agents-nixpkgs-ownership-2026-09.md`: Records
+  `llm-agents` ownership of its upstream Nixpkgs package set, the retained
+  non-package follows, and the Electron compatibility boundary.
 - `.agents/docs/notes/apps/bulwarkmail-package-patches-2026-06.md`: Records the
   reusable Bulwarkmail package patches, including the server-side logout route
   used by edge-auth logout chains, and package-local serialization of only the
