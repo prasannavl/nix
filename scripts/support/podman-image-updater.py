@@ -16,11 +16,15 @@ from pathlib import Path
 
 
 VERSION_RE = re.compile(r"^v?([0-9]+(?:[._-][0-9]+)*)(.*)$")
+TRAILING_VERSION_RE = re.compile(
+    r"^(?P<prefix>.+?)(?P<marker>v?)(?P<version>[0-9]+(?:\.[0-9]+){2,})$"
+)
 TIMESCALE_PG_TAG_RE = re.compile(
     r"^pg([0-9]+(?:[._-][0-9]+)*)-ts([0-9]+(?:[._-][0-9]+)*)(.*)$"
 )
 STABLE_BUILD_TAG_RE = re.compile(r"^stable-([0-9]+)(?:-([0-9]+))?$")
 HTTP_TIMEOUT_SECONDS = 20
+REGISTRY_TAG_PAGE_SIZE = 1000
 RELEASE_TAG_REPOSITORIES = {
     ("ghcr.io", "immich-app/immich-machine-learning"): ("immich-app/immich", ""),
     ("ghcr.io", "immich-app/immich-server"): ("immich-app/immich", ""),
@@ -437,9 +441,17 @@ def registry_token_url(parameters):
     )
 
 
-def request_registry_json(url):
+def request_registry_json_with_token(url, token=None):
+    if token is not None:
+        try:
+            return request_json(url, token), token
+        except (urllib.error.URLError, RuntimeError) as error:
+            raise request_failure(
+                "Authenticated registry tag lookup failed", url, error
+            ) from error
+
     try:
-        return request_json(url)
+        return request_json(url), None
     except urllib.error.HTTPError as error:
         if error.code != 401:
             raise request_failure("Registry tag lookup failed", url, error) from error
@@ -472,18 +484,41 @@ def request_registry_json(url):
             "Registry token endpoint returned no Bearer token",
         )
     try:
-        return request_json(url, token)
+        return request_json(url, token), token
     except (urllib.error.URLError, RuntimeError) as error:
         raise request_failure("Authenticated registry tag lookup failed", url, error) from error
 
 
-def quay_tags(repository):
+def request_registry_json(url):
+    data, _ = request_registry_json_with_token(url)
+    return data
+
+
+def quay_tags(repository, all_pages=False):
     namespace, _, repo = repository.partition("/")
     if not namespace or not repo:
         return []
-    url = f"https://quay.io/api/v1/repository/{namespace}/{repo}/tag/?limit=100&page=1&onlyActiveTags=true"
-    data = request_json(url)
-    return [tag["name"] for tag in data.get("tags", []) if tag.get("name")]
+    tags = []
+    page = 1
+    while True:
+        parameters = {
+            "limit": 100,
+            "page": page,
+            "onlyActiveTags": "true",
+        }
+        url = (
+            f"https://quay.io/api/v1/repository/{namespace}/{repo}/tag/"
+            f"?{urllib.parse.urlencode(parameters)}"
+        )
+        data = request_json(url)
+        tags.extend(tag["name"] for tag in data.get("tags", []) if tag.get("name"))
+        if not all_pages or not data.get("has_additional"):
+            break
+        next_page = data.get("page", page) + 1
+        if next_page <= page:
+            raise RuntimeError(f"quay.io/{repository}: tag pagination did not advance")
+        page = next_page
+    return list(dict.fromkeys(tags))
 
 
 def latest_release_tag(registry, repository):
@@ -503,19 +538,82 @@ def latest_release_tag(registry, repository):
     return None
 
 
-def registry_tags(registry, repository):
+def registry_tags(registry, repository, all_pages=False):
     if registry == "localhost":
         return []
     if registry == "quay.io":
-        return quay_tags(repository)
+        return quay_tags(repository, all_pages)
     if registry == "docker.io":
         registry = "registry-1.docker.io"
-    data = request_registry_json(f"https://{registry}/v2/{repository}/tags/list")
-    return data.get("tags") or []
+    endpoint = f"https://{registry}/v2/{repository}/tags/list"
+    if not all_pages:
+        data = request_registry_json(endpoint)
+        return data.get("tags") or []
+
+    tags = []
+    token = None
+    seen_cursors = set()
+    last = None
+    while True:
+        parameters = {"n": REGISTRY_TAG_PAGE_SIZE}
+        if last is not None:
+            parameters["last"] = last
+        url = f"{endpoint}?{urllib.parse.urlencode(parameters)}"
+        data, token = request_registry_json_with_token(url, token)
+        page = data.get("tags") or []
+        if not page:
+            break
+        next_cursor = page[-1]
+        if next_cursor in seen_cursors:
+            raise RuntimeError(
+                f"{registry}/{repository}: registry tag pagination did not advance"
+            )
+        tags.extend(page)
+        seen_cursors.add(next_cursor)
+        last = next_cursor
+    return list(dict.fromkeys(tags))
 
 
 def version_parts(version):
     return tuple(int(part) for part in re.split(r"[._-]", version))
+
+
+def trailing_version_tag_parts(tag):
+    leading_match = VERSION_RE.match(tag)
+    if leading_match and not leading_match.group(2):
+        return None
+    match = TRAILING_VERSION_RE.match(tag)
+    if not match:
+        return None
+    return match.group("prefix"), match.group("marker"), version_parts(
+        match.group("version")
+    )
+
+
+def latest_trailing_version_tag(current, tags):
+    current_parts = trailing_version_tag_parts(current)
+    if current_parts is None:
+        return None
+
+    current_prefix, current_marker, current_version = current_parts
+    comparable = []
+    for tag in tags:
+        candidate_parts = trailing_version_tag_parts(tag)
+        if candidate_parts is None:
+            continue
+        prefix, marker, version = candidate_parts
+        if prefix != current_prefix or marker != current_marker:
+            continue
+        if len(version) != len(current_version):
+            continue
+        comparable.append((version, tag))
+
+    if not comparable:
+        return current
+    latest_version, latest_tag = max(comparable)
+    if latest_version <= current_version:
+        return current
+    return latest_tag
 
 
 def timescale_pg_tag_parts(tag):
@@ -593,6 +691,10 @@ def latest_comparable_tag(current, tags):
     if stable_build_latest is not None:
         return stable_build_latest
 
+    trailing_version_latest = latest_trailing_version_tag(current, tags)
+    if trailing_version_latest is not None:
+        return trailing_version_latest
+
     match = VERSION_RE.match(current)
     if not match:
         return None
@@ -658,13 +760,23 @@ def is_floating_tag(tag):
     )
 
 
+def comparable_tag_version(tag):
+    match = VERSION_RE.match(tag)
+    if match:
+        return version_parts(match.group(1)), not match.group(2)
+    trailing_parts = trailing_version_tag_parts(tag)
+    if trailing_parts is None:
+        return None
+    return trailing_parts[2], True
+
+
 def is_attention_update(current, latest):
-    current_match = VERSION_RE.match(current)
-    latest_match = VERSION_RE.match(latest)
-    if not current_match or not latest_match:
+    current_version = comparable_tag_version(current)
+    latest_version = comparable_tag_version(latest)
+    if current_version is None or latest_version is None:
         return False
-    current_parts = version_parts(current_match.group(1))
-    latest_parts = version_parts(latest_match.group(1))
+    current_parts, current_is_plain = current_version
+    latest_parts, latest_is_plain = latest_version
     if not current_parts or not latest_parts:
         return False
     if latest_parts[0] > current_parts[0]:
@@ -672,8 +784,8 @@ def is_attention_update(current, latest):
     if (
         current_parts[0] == 0
         and latest_parts[0] == 0
-        and not current_match.group(2)
-        and not latest_match.group(2)
+        and current_is_plain
+        and latest_is_plain
         and len(current_parts) > 1
         and len(latest_parts) > 1
         and len(current_parts) > 2
@@ -684,20 +796,26 @@ def is_attention_update(current, latest):
     return False
 
 
-def latest_known_tag(registry, repository, tag):
+def latest_known_tag(registry, repository, tag, tags=None):
     release_tag = latest_release_tag(registry, repository)
     if release_tag is not None:
         return latest_comparable_tag(tag, [release_tag])
+    if tags is None:
+        tags = registry_tags(
+            registry,
+            repository,
+            all_pages=trailing_version_tag_parts(tag) is not None,
+        )
     tags = repository_tags_for_policy(
         registry,
         repository,
         tag,
-        registry_tags(registry, repository),
+        tags,
     )
     return latest_comparable_tag(tag, tags)
 
 
-def inspect_image(ref):
+def inspect_image(ref, tags=None):
     registry, repository, display_name, tag, digest = parse_image_ref(ref)
     if digest is not None:
         return ImageCheck(ref, display_name, tag, None, "digest")
@@ -707,7 +825,9 @@ def inspect_image(ref):
     if is_floating_tag(tag):
         return ImageCheck(ref, display_name, tag, None, "floating")
     try:
-        latest = latest_known_tag(registry, repository, tag)
+        if isinstance(tags, Exception):
+            raise tags
+        latest = latest_known_tag(registry, repository, tag, tags)
     except Exception as error:
         return ImageCheck(ref, display_name, tag, None, "failed", str(error))
 
@@ -778,8 +898,39 @@ def inspect_images(contexts, jobs):
             for ref in images
         }
     )
+    lookups = {}
+    repositories = {}
+    for ref in refs:
+        registry, repository, _, tag, digest = parse_image_ref(ref)
+        if (
+            digest is None
+            and not is_variable_tag(tag)
+            and not is_floating_tag(tag)
+            and (registry, repository) not in RELEASE_TAG_REPOSITORIES
+        ):
+            key = (registry, repository)
+            lookups[ref] = key
+            repositories[key] = repositories.get(key, False) or (
+                trailing_version_tag_parts(tag) is not None
+            )
+
+    def load_tags(key):
+        registry, repository = key
+        try:
+            return registry_tags(registry, repository, repositories[key])
+        except Exception as error:
+            return error
+
+    keys = sorted(repositories)
     with ThreadPoolExecutor(max_workers=jobs) as executor:
-        checks = executor.map(inspect_image, refs)
+        tag_sets = dict(zip(keys, executor.map(load_tags, keys), strict=True))
+        checks = executor.map(
+            lambda ref: inspect_image(
+                ref,
+                tag_sets[lookups[ref]] if ref in lookups else None,
+            ),
+            refs,
+        )
     return dict(zip(refs, checks, strict=True))
 
 

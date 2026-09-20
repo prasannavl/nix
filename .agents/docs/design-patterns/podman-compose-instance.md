@@ -100,6 +100,13 @@ value, not a substring. Prefix-related tags such as `app:1.0.0` and
 `app:1.0.0-rocm` may coexist in one owning file without creating nested edits.
 Keep overlap rejection as the final safety boundary.
 
+Version discovery stays with the image registry. For tag families ending in a
+three-or-more-component `vX.Y.Z` or `X.Y.Z`, page that registry's tag inventory
+and compare only tags with the exact same prefix and `v` convention. Fetch one
+inventory per repository even when multiple variants consume it. Do not infer a
+container tag from a separate source-control release feed merely because its
+version resembles the image tag.
+
 Only comparable fixed version tags participate in updates. Keep generated
 `localhost/nix-local` images out of inventory, and leave digest pins,
 runtime-variable tags, and floating tags unchanged. Major and pre-1.0 minor

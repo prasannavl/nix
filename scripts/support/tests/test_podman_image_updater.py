@@ -61,6 +61,60 @@ class PodmanImageUpdaterTest(unittest.TestCase):
         self.assertEqual(tags, ["1.0", "1.1"])
         self.assertEqual(len(requests), 3)
 
+    def test_registry_tag_pagination_reuses_bearer_token(self):
+        first_url = "https://registry.example/v2/team/image/tags/list?n=1000"
+        second_url = (
+            "https://registry.example/v2/team/image/tags/list?n=1000&last=app-v1.1.0"
+        )
+        error = urllib.error.HTTPError(
+            first_url,
+            401,
+            "Unauthorized",
+            {
+                "WWW-Authenticate": (
+                    'Bearer realm="https://auth.example/token",'
+                    'service="registry.example",scope="repository:team/image:pull"'
+                )
+            },
+            None,
+        )
+        with mock.patch.object(
+            podman_image_updater,
+            "request_json",
+            side_effect=[
+                error,
+                {"token": "opaque-token"},
+                {"tags": ["app-v1.0.0", "app-v1.1.0"]},
+                {"tags": []},
+            ],
+        ) as request:
+            tags = podman_image_updater.registry_tags(
+                "registry.example", "team/image", all_pages=True
+            )
+
+        self.assertEqual(tags, ["app-v1.0.0", "app-v1.1.0"])
+        self.assertEqual(request.call_args_list[0], mock.call(first_url))
+        self.assertEqual(
+            request.call_args_list[2], mock.call(first_url, "opaque-token")
+        )
+        self.assertEqual(
+            request.call_args_list[3], mock.call(second_url, "opaque-token")
+        )
+
+    def test_registry_tag_pagination_rejects_repeated_cursor(self):
+        with mock.patch.object(
+            podman_image_updater,
+            "request_registry_json_with_token",
+            side_effect=[
+                ({"tags": ["app-v1.0.0"]}, None),
+                ({"tags": ["app-v1.0.0"]}, None),
+            ],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "did not advance"):
+                podman_image_updater.registry_tags(
+                    "registry.example", "team/image", all_pages=True
+                )
+
     def test_malformed_bearer_parameters_remain_explicit_failures(self):
         for challenge in ['Bearer realm=', 'Bearer realm="https://auth.example",broken']:
             with self.subTest(challenge=challenge):
@@ -82,8 +136,34 @@ class PodmanImageUpdaterTest(unittest.TestCase):
         ):
             tags = podman_image_updater.registry_tags("quay.io", "team/image")
         self.assertEqual(tags, ["1.0"])
-        quay.assert_called_once_with("team/image")
+        quay.assert_called_once_with("team/image", False)
         standard.assert_not_called()
+
+    def test_quay_tag_pagination_stays_on_quay(self):
+        with mock.patch.object(
+            podman_image_updater,
+            "request_json",
+            side_effect=[
+                {
+                    "page": 1,
+                    "has_additional": True,
+                    "tags": [{"name": "app-v1.0.0"}],
+                },
+                {
+                    "page": 2,
+                    "has_additional": False,
+                    "tags": [{"name": "app-v1.1.0"}],
+                },
+            ],
+        ) as request:
+            tags = podman_image_updater.registry_tags(
+                "quay.io", "team/image", all_pages=True
+            )
+
+        self.assertEqual(tags, ["app-v1.0.0", "app-v1.1.0"])
+        self.assertIn("quay.io/api/v1/repository/team/image/tag/", request.call_args_list[0].args[0])
+        self.assertIn("page=1", request.call_args_list[0].args[0])
+        self.assertIn("page=2", request.call_args_list[1].args[0])
 
     def test_invalid_token_realms_fail_before_token_fetch(self):
         for parameters in [
@@ -555,6 +635,73 @@ class PodmanImageUpdaterTest(unittest.TestCase):
             line,
             "- docker.io/jitsi/jvb: stable-10978 -> stable-11031",
         )
+
+    def test_trailing_semver_compares_only_within_exact_tag_family(self):
+        latest = podman_image_updater.latest_comparable_tag(
+            "server-rocm-v0.4.1",
+            [
+                "server-rocm-v0.4.1",
+                "server-rocm-v0.4.2",
+                "server-rocm-0.5.0",
+                "server-cuda-v0.6.0",
+                "server-rocm-b11058",
+            ],
+        )
+        unprefixed_v = podman_image_updater.latest_comparable_tag(
+            "enterprise-1.2.3",
+            ["enterprise-1.2.3", "enterprise-1.3.0", "community-2.0.0"],
+        )
+
+        self.assertEqual(latest, "server-rocm-v0.4.2")
+        self.assertEqual(unprefixed_v, "enterprise-1.3.0")
+        self.assertIsNone(podman_image_updater.trailing_version_tag_parts("v1.2.3"))
+
+    def test_inspection_shares_registry_tags_across_image_variants(self):
+        rocm = "ghcr.io/ggml-org/llama.cpp:server-rocm-v0.4.1"
+        cuda = "ghcr.io/ggml-org/llama.cpp:server-cuda-v0.4.1"
+        contexts = {
+            ("pvl", "host", "pvl"): {
+                "llama-router": [rocm],
+                "llama-router-nvidia": [cuda],
+            }
+        }
+        tags = [
+            "server-rocm-v0.4.1",
+            "server-rocm-v0.4.2",
+            "server-cuda-v0.4.1",
+            "server-cuda-v0.4.2",
+        ]
+        with mock.patch.object(
+            podman_image_updater, "registry_tags", return_value=tags
+        ) as registry_tags:
+            checks = podman_image_updater.inspect_images(contexts, 2)
+
+        registry_tags.assert_called_once_with(
+            "ghcr.io", "ggml-org/llama.cpp", True
+        )
+        self.assertEqual(checks[rocm].latest, "server-rocm-v0.4.2")
+        self.assertEqual(checks[cuda].latest, "server-cuda-v0.4.2")
+
+    def test_inspection_pages_once_when_one_repository_tag_family_needs_it(self):
+        plain = "registry.example/team/image:1.2.3"
+        variant = "registry.example/team/image:gpu-v1.2.3"
+        contexts = {
+            ("pvl", "host", "pvl"): {
+                "plain": [plain],
+                "variant": [variant],
+            }
+        }
+        tags = ["1.2.3", "1.2.4", "gpu-v1.2.3", "gpu-v1.2.4"]
+        with mock.patch.object(
+            podman_image_updater, "registry_tags", return_value=tags
+        ) as registry_tags:
+            checks = podman_image_updater.inspect_images(contexts, 2)
+
+        registry_tags.assert_called_once_with(
+            "registry.example", "team/image", True
+        )
+        self.assertEqual(checks[plain].latest, "1.2.4")
+        self.assertEqual(checks[variant].latest, "gpu-v1.2.4")
 
     def test_collect_images_keeps_instance_boundary(self):
         contexts = podman_image_updater.collect_images_by_context_and_instance(
