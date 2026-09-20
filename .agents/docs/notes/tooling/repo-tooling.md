@@ -61,6 +61,12 @@ scripts.
 - Podman Compose image maintenance uses one provenance-aware tool for read-only
   reports and atomic declarative updates. `--only-images` updates fixed image
   tags; combine it with `--report` for the read-only view.
+- Exact image-declaration matching must compare the complete declaration token,
+  not a raw substring. Pins such as `ollama:0.34.0` and `ollama:0.34.0-rocm` may
+  coexist in one owning file; treating the former as a match inside the latter
+  creates overlapping edits that the atomic writer must reject. Keep that
+  rejection as the final safety boundary and cover prefix-tag pairs in matcher
+  regression tests.
 
 ## Source of truth files
 
