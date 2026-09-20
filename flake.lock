@@ -593,11 +593,11 @@
         "nixpkgs-50": "nixpkgs-50"
       },
       "locked": {
-        "lastModified": 1789473615,
-        "narHash": "sha256-gbMU4WgGHoO7I23ylJtKnovQjK/yi1b6sIUDRCzbCd4=",
+        "lastModified": 1789931550,
+        "narHash": "sha256-Db1NC0BFvg9iLkXkG48D9u6T1gdnPlIzduKTG6pHNhE=",
         "owner": "prasannavl",
         "repo": "p7-borders-shell-extension",
-        "rev": "0480069d2f8f8a707dfab33b607b83d5a83f34b0",
+        "rev": "0e91371e8db53e4ab9cfa2dcb178b2c4674f2d54",
         "type": "github"
       },
       "original": {
