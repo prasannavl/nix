@@ -131,7 +131,8 @@
     };
   };
 
-  systemd.tmpfiles.rules = [
+  systemd.tmpfiles.rules = lib.mkBefore [
+    "d /var/lib/pvl 0755 pvl pvl -"
     "d /var/log/pvl 0755 pvl pvl -"
   ];
 }

@@ -223,6 +223,9 @@
       };
     };
   };
+  customLlamaCacheCfg = lib.recursiveUpdate baseConfig {
+    services.ai.backends.llamaRouter.cacheDir = "/mnt/models/llama-router";
+  };
 in
   assert allAssertionsHold cfg;
   assert cfg.services.ai.backends.ollama.urls == ["http://127.0.0.1:11434" "http://127.0.0.1:12434"];
@@ -283,8 +286,19 @@ in
   == "llama-router.json";
   assert cfg.systemd.user.services."test-llama-router-models".environment.MODEL_RECONCILER_LEGACY_STATE_FILE
   == "/var/lib/test-user/ai/reconciler/llama-router.json";
-  assert builtins.any (rule: lib.hasPrefix "d /var/lib/test/ollama-models " rule) cfg.systemd.tmpfiles.rules;
+  assert cfg.systemd.tmpfiles.rules
+  == [
+    "d /var/lib/test/ai 0755 test-user test-user -"
+    "d /var/lib/test/ollama-models 0755 test-user test-user -"
+    "d /var/lib/test/ai/llama-router 0755 test-user test-user -"
+  ];
   assert !(builtins.any (rule: lib.hasPrefix "d /var/lib/test-user/ai/reconciler " rule) cfg.systemd.tmpfiles.rules);
+  assert builtins.elem
+  "d /mnt/models/llama-router 0755 test-user test-user -"
+  (eval customLlamaCacheCfg).systemd.tmpfiles.rules;
+  assert !(builtins.any
+    (rule: lib.hasPrefix "d /mnt " rule || lib.hasPrefix "d /mnt/models " rule)
+    (eval customLlamaCacheCfg).systemd.tmpfiles.rules);
   assert (eval autoCfg).services.ai.backends.ollama.readyTarget == "special-ollama-ready.target";
   assert (eval autoCfg).services.ai.backends.llamaRouter.readyTarget == "custom-llama-router-ready.target";
   assert allAssertionsHold (eval backendSpecificCfg);

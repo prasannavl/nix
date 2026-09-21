@@ -89,3 +89,22 @@ byte-identical after the migration. The intended diffs:
 The registry stays untouched: `data.services` is role-scoped (`services.x2`),
 and mkApi consumers iterate it, so listing l5-hosted service ports there would
 be misleading. Ports stay explicit per host in `ai.nix`.
+
+## Stack storage ownership repair
+
+The first `pvl-l5` llama-router start after the shared AI deployment failed
+before container creation. The cache rule declared only
+`/var/lib/pvl/ai/llama-router`; tmpfiles created the missing intermediate
+`/var/lib/pvl/ai` as `root:root`, then rejected the transition from the
+`pvl:pvl` stack root as unsafe. Later runs could neither correct the parent nor
+create the cache leaf, so Podman returned status 125 while resolving the bind
+source.
+
+The common Pvl host profile now owns `/var/lib/pvl` once for `pvl-a1`, `pvl-l5`,
+and `pvl-x2`, ordered before service-specific rules. The AI module owns the `ai`
+parent and its configured backend leaves with the deployment user's ownership.
+Together they emit the complete stack root, `ai` parent, and cache leaf
+hierarchy without duplicate ownership declarations. An explicit custom cache
+path receives only its leaf rule; the module does not take ownership of an
+operator-selected mount hierarchy. Reapplying tmpfiles corrects an existing
+root-owned `ai` parent and creates the missing leaf in the same run.

@@ -12,6 +12,10 @@
 
   stackName = cfg.stack.name;
   stackReady = stackName != null;
+  defaultLlamaCacheDir =
+    if stackReady
+    then "/var/lib/${stackName}/ai/llama-router"
+    else null;
   composeStack =
     if stackReady && config.services.podman-compose ? ${stackName}
     then config.services.podman-compose.${stackName}
@@ -191,6 +195,10 @@
 
   ollamaProjection = backendProjections "ollama" ollamaDeployments;
   llamaProjection = backendProjections "llamaRouter" llamaDeployments;
+  aiStorageUser =
+    if llamaProjection.user != null
+    then llamaProjection.user
+    else ollamaProjection.user;
 
   legacyStateFile = backend: projection:
     if projection.user == null
@@ -366,10 +374,7 @@ in {
       };
       cacheDir = mkOption {
         type = types.nullOr types.str;
-        default =
-          if stackReady
-          then "/var/lib/${stackName}/ai/llama-router"
-          else null;
+        default = defaultLlamaCacheDir;
         description = "Download cache for GGUF model files.";
       };
       preservedModels = mkOption {
@@ -482,10 +487,15 @@ in {
       })
 
     # Storage locations. Container files bind-mount these paths; tmpfiles
-    # guarantees they exist with stack ownership.
+    # guarantees they exist with stack ownership. The AI parent is explicit so
+    # tmpfiles never creates a root-owned intermediate directory below the
+    # stack-owned data root.
     {
       systemd.tmpfiles.rules = lib.unique (
         lib.optional
+        (stackReady && aiStorageUser != null)
+        "d /var/lib/${stackName}/ai 0755 ${aiStorageUser} ${aiStorageUser} -"
+        ++ lib.optional
         (ollamaProjection.user != null && cfg.backends.ollama.modelsDir != null)
         "d ${cfg.backends.ollama.modelsDir} 0755 ${ollamaProjection.user} ${ollamaProjection.user} -"
         ++ lib.optional
