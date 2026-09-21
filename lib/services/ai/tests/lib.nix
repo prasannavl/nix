@@ -39,6 +39,17 @@
 
   presetsWithEmbedding = aiLib.llamaPresets "nomic-embed-text" hostEntries;
   presetsWithoutEmbedding = aiLib.llamaPresets null hostEntries;
+  chatKeys = builtins.filter (key: key != "nomic-embed-text") allKeys;
+  protectedOverride = builtins.tryEval (builtins.deepSeq (aiLib.llamaPresets null [
+      {
+        id = "invalid";
+        llama = {
+          ref = "example/invalid:Q4_K_M";
+          preset.alias = "override";
+        };
+      }
+    ])
+    true);
 in
   assert allKeys == expectedKeys;
   assert builtins.all (
@@ -54,10 +65,25 @@ in
   assert aiLib.missingRefs "ollama" hostEntries == [];
   assert aiLib.missingRefs "llama" hostEntries == [];
   assert aiLib.missingRefs "nonexistent" hostEntries == hostEntries;
+  assert builtins.all (key: catalog.${key}.llama.preset.jinja == "true") chatKeys;
+  assert builtins.isString catalog.nomic-embed-text.llama;
+  assert aiLib.backendConfig "ollama" catalog.gemma4-e2b == {ref = "gemma4:e2b";};
+  assert aiLib.backendConfig "llama" catalog.gemma4-e2b
+  == {
+    ref = "unsloth/gemma-4-E2B-it-GGUF:Q4_K_M";
+    preset.jinja = "true";
+  };
   assert aiLib.missingRefs "llama" [
     {
       id = "ollama-only";
       ollama = "ollama-only:1";
+    }
+  ]
+  != [];
+  assert aiLib.missingRefs "llama" [
+    {
+      id = "invalid-llama";
+      llama.preset.jinja = "true";
     }
   ]
   != [];
@@ -98,8 +124,10 @@ in
   assert presetsWithEmbedding."unsloth/gemma-4-E2B-it-GGUF:Q4_K_M"
   == {
     alias = "gemma4:e2b";
+    jinja = "true";
     poll = "0";
   };
+  assert !protectedOverride.success;
   assert builtins.length (builtins.attrNames presetsWithEmbedding) == builtins.length hostEntries;
   assert builtins.length (builtins.attrNames presetsWithoutEmbedding) == builtins.length hostEntries;
     pkgs.runCommand "ai-lib-test" {} ''

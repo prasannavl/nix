@@ -16,6 +16,15 @@ The same model set as Ollama is expressed as Hugging Face references
 model arguments and the router's staged `models.ini` are both derived from
 `requiredModels`, so the preset cannot drift from the reconciler policy.
 
+Each catalog backend value accepts a reference string as the minimal form or an
+expanded attrset with `ref` plus backend configuration. The projector normalizes
+both forms immediately. Chat models use the expanded `llama` form with
+`preset.jinja = true`, which flows into `models.ini` so llama.cpp uses each
+model's embedded Jinja chat template; the embedding model keeps the string form
+and deliberately omits it. The derived `alias`, `hf`, and `embeddings` keys are
+protected from preset overrides. This does not add external template files or
+generate any Codex, Pi, or OpenCode client configuration.
+
 ## Upstream semantics (verified at image revision b29c606e)
 
 - Router mode is `llama-server` without a model, driven by
