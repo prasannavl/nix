@@ -150,7 +150,7 @@ esac
         env.update(
             {
                 "PATH": f"{self.fake_bin}:{env['PATH']}",
-                "OLLAMA_URLS": "http://127.0.0.1:11434 http://127.0.0.1:11435",
+                "OLLAMA_URLS": "http://127.0.0.1:11434 http://127.0.0.1:12434",
                 "OLLAMA_CURRENT_UNIT": "pvl-ollama-models-pull.service",
                 "MODEL_RECONCILER_STATE_FILE": str(self.manifest),
             }

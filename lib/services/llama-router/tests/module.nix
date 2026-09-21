@@ -34,8 +34,8 @@
       "test-llama-router-nvidia.service"
     ];
     routerUrls = [
-      "http://127.0.0.1:11434"
-      "http://127.0.0.1:11435"
+      "http://127.0.0.1:11000"
+      "http://127.0.0.1:12000"
     ];
     readyTarget = null;
   };

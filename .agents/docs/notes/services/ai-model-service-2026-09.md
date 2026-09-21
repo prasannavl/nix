@@ -51,14 +51,14 @@ reconciler arguments, lifecycle (`auto`, `manual` → `autoStart = false`,
 ## Fleet policy (pvl)
 
 - `pvl-l5`: 7 models, four stopped deployments across two backends — `ollama`
-  (11434, ROCm) and `ollama-nvidia` (11435, CUDA), started by hand for GPU
-  sessions; `llama-router` (11436, ROCm) and `llama-router-nvidia` (11437, CUDA)
+  (11434, ROCm) and `ollama-nvidia` (12434, CUDA), started by hand for GPU
+  sessions; `llama-router` (11000, ROCm) and `llama-router-nvidia` (12000, CUDA)
   the same way. Shared models dir `/var/lib/pvl/ollama-models`; shared GGUF
   cache `/var/lib/pvl/ai/llama-router`.
-- `pvl-a1`: same 7 models; `ollama` (11434, auto), `ollama-nvidia` (11435,
+- `pvl-a1`: same 7 models; `ollama` (11434, auto), `ollama-nvidia` (12434,
   manual), and the same llama.cpp pair with the ROCm router auto-started
-  (`llama-router`, 11436) and the CUDA router warmed by hand
-  (`llama-router-nvidia`, 11437).
+  (`llama-router`, 11000) and the CUDA router warmed by hand
+  (`llama-router-nvidia`, 12000).
 - `pvl-x2`: 14 models (full catalog minus `gemma4-12b`); `ollama` (11434, auto);
   keeps `qwen3.6:27b` retired. AMD-only host — no llama.cpp deployments.
 

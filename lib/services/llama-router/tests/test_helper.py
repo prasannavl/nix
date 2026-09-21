@@ -154,7 +154,7 @@ esac
         env.update(
             {
                 "PATH": f"{self.fake_bin}:{env['PATH']}",
-                "LLAMA_ROUTER_URLS": "http://127.0.0.1:11434 http://127.0.0.1:11435",
+                "LLAMA_ROUTER_URLS": "http://127.0.0.1:11000 http://127.0.0.1:12000",
                 "LLAMA_ROUTER_CURRENT_UNIT": "pvl-llama-router-models-load.service",
                 "MODEL_RECONCILER_STATE_FILE": str(self.manifest),
             }

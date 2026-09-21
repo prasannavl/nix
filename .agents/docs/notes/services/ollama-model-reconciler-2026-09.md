@@ -32,11 +32,11 @@ after the model store changes.
 
 - `pvl-x2` requires `pvl-ollama-ready.target` and observes `pvl-ollama.service`.
 - `pvl-a1` requires the primary `pvl-ollama-ready.target`, observes both ROCm
-  and optional NVIDIA services, and probes ports `11434` and `11435`.
+  and optional NVIDIA services, and probes ports `11434` and `12434`.
 - `pvl-l5` has no required readiness target because both backends are
-  declaratively stopped. It observes both services and probes both ports, so a
-  manually active backend can reconcile while the normal stopped state exits
-  cleanly without starting either backend.
+  declaratively stopped. It observes both services and probes ports `11434` and
+  `12434`, so a manually active backend can reconcile while the normal stopped
+  state exits cleanly without starting either backend.
 
 The legacy per-host boot timers are removed. `pvl-managed.target` now wants the
 retained dispatcher directly.

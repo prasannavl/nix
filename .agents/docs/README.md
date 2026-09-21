@@ -137,6 +137,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-a1-copilot-keyd-regression-2026-09.md`: Records
   the lost host-local keyd enablement that left the FA401WV
   Copilot-to-Right-Ctrl mapping evaluated but inactive on `pvl-a1`.
+- `.agents/docs/notes/hosts/pvl-ai-backend-port-convention-2026-09.md`: Records
+  the VS Code Remote collision on `11435` and the resulting shared local/NVIDIA
+  port convention for Ollama and llama.cpp backends.
 - `.agents/docs/notes/hosts/pvl-l5-home-manager-vscode-extensions-2026-06.md`:
   Records the `pvl-l5` Home Manager activation conflict where
   `mutableExtensionsDir = false` made Home Manager own `.vscode/extensions`,

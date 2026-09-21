@@ -34,7 +34,9 @@ in {
     };
 
     ollama-nvidia = rec {
-      exposedPorts.main.port = 11435;
+      # Fleet convention: local Ollama uses its native 11434; NVIDIA uses the
+      # corresponding 12xxx port.
+      exposedPorts.main.port = 12434;
 
       source = ''
         services:

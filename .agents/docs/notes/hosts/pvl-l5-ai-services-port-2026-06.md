@@ -38,6 +38,15 @@ Validation:
 - `alejandra hosts/pvl-l5/default.nix hosts/pvl-l5/services/default.nix hosts/pvl-l5/services/ollama.nix hosts/pvl-l5/services/openwebui.nix`
 - `nix eval .#nixosConfigurations.pvl-l5.config.system.build.toplevel.drvPath --raw`
 
+## 2026-09-21 Ollama NVIDIA host-port separation
+
+The manual `ollama-nvidia` endpoint moved from `11435` to `12434` under the
+fleet backend convention: local/ROCm Ollama stays on its native `11434`, while
+NVIDIA Ollama uses `12434`. The llama.cpp pair similarly uses `11000` for the
+local/ROCm router and `12000` for its NVIDIA variant. Open WebUI and both model
+reconcilers derive the new endpoints from `services.ai`, so their rendered URLs
+move with the Compose declarations.
+
 The eval required temporary `git add -N` for the new service files because flake
 source filtering does not include untracked imported paths.
 

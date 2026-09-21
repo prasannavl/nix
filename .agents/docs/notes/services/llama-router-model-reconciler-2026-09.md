@@ -2,14 +2,14 @@
 
 ## Decision
 
-`pvl-l5` runs llama.cpp's router mode
-(`ghcr.io/ggml-org/llama.cpp:server-cuda-v0.4.1`) as a third Podman Compose
-backend next to the Ollama pair, published on host port `11436`. Declarative
-model reconciliation uses `lib/services/llama-router.mkModelReconciler`, which
-mirrors the shared Ollama reconciler: a retained dispatcher attached to
-`pvl-managed.target` and an asynchronous `pvl-llama-router-models-load.service`
-worker with a 3600-second start timeout, `ConditionUser pvl`, backend `After=`
-(never `Wants=`) ordering, and the skip-if-all-backends-inactive API wait.
+`pvl-l5` runs llama.cpp's router mode as a Podman Compose pair next to the
+Ollama pair: the local/ROCm variant publishes host port `11000`, and the
+NVIDIA/CUDA variant publishes `12000`. Declarative model reconciliation uses
+`lib/services/llama-router.mkModelReconciler`, which mirrors the shared Ollama
+reconciler: a retained dispatcher attached to `pvl-managed.target` and an
+asynchronous `pvl-llama-router-models-load.service` worker with a 3600-second
+start timeout, `ConditionUser pvl`, backend `After=` (never `Wants=`) ordering,
+and the skip-if-all-backends-inactive API wait.
 
 The same model set as Ollama is expressed as Hugging Face references
 (`org/repo:quant`), and the lib single-sources it: the worker's `ExecStart`
@@ -107,16 +107,17 @@ like Ollama cold). With `--models-max 2` the common steady state is embedding
 ## Host mapping
 
 `pvl-l5` has no readiness target; the reconciler observes
-`pvl-llama-router.service` and probes `http://127.0.0.1:11436`, so a manually
-started router reconciles while the declaratively stopped state skips cleanly
-without starting the backend. The cache directory is a host tmpfiles rule
+`pvl-llama-router.service` and `pvl-llama-router-nvidia.service`, probing
+`http://127.0.0.1:11000` and `http://127.0.0.1:12000`. A manually started router
+therefore reconciles while the declaratively stopped state skips cleanly without
+starting either backend. The cache directory is a host tmpfiles rule
 (`/var/lib/pvl/llama-router/cache`, `0755 pvl pvl`) like the shared Ollama
 models directory, and the staged `models.ini` is a bind-mounted recreate-class
 file, so model-list changes recreate the container and re-trigger the dispatcher
 via the instance config hash.
 
-Open WebUI still points only at the two Ollama ports; wiring it to
-`http://127.0.0.1:11436` is a deliberate follow-up, not part of this change.
+Open WebUI still points only at the two Ollama ports; wiring it to the llama.cpp
+router endpoints is a deliberate follow-up, not part of this change.
 
 The same `lib/services/llama-router` also binds on the Abird upstream stack:
 `abird-srv` derives its model list from the shared `modelCatalog` (`llama` GGUF
@@ -133,8 +134,8 @@ with a failing `awk` on `PATH`), including cache-presence failure semantics,
 retirement prune plus reload, and skip-when-stopped behavior. The `pvl-l5` NixOS
 toplevel builds, and rendered-unit inspection confirms the dispatcher
 `X-Restart-Triggers`, worker `After=` ordering without `Wants=`, the staged
-preset INI, port `11436:8080`, and the NVIDIA reservation block mirroring
-`ollama-nvidia`.
+preset INI, port mappings `11000:8080` and `12000:8080`, and the NVIDIA
+reservation block mirroring `ollama-nvidia`.
 
 The service is built but not deployed; the instance stays declaratively stopped
 until it is activated manually.

@@ -114,11 +114,11 @@
     };
     ollama-2 = {
       source = "ollama-2";
-      exposedPorts.main.port = 11435;
+      exposedPorts.main.port = 12434;
     };
     llama-router = {
       source = "llama-router";
-      exposedPorts.main.port = 11436;
+      exposedPorts.main.port = 11000;
     };
   };
 
@@ -225,12 +225,12 @@
   };
 in
   assert allAssertionsHold cfg;
-  assert cfg.services.ai.backends.ollama.urls == ["http://127.0.0.1:11434" "http://127.0.0.1:11435"];
-  assert cfg.services.ai.backends.ollama.ports == [11434 11435];
+  assert cfg.services.ai.backends.ollama.urls == ["http://127.0.0.1:11434" "http://127.0.0.1:12434"];
+  assert cfg.services.ai.backends.ollama.ports == [11434 12434];
   assert cfg.services.ai.backends.ollama.portsByName
   == {
     ollama = 11434;
-    ollama-2 = 11435;
+    ollama-2 = 12434;
   };
   assert cfg.services.ai.backends.ollama.serviceNames == ["special-ollama.service" "custom-ollama-2.service"];
   assert cfg.services.ai.backends.ollama.readyTarget == null;
@@ -244,7 +244,7 @@ in
     "qwen3.5:4b"
     "qwen3.5:9b"
   ];
-  assert cfg.services.ai.backends.llamaRouter.portsByName."llama-router" == 11436;
+  assert cfg.services.ai.backends.llamaRouter.portsByName."llama-router" == 11000;
   assert cfg.services.ai.backends.llamaRouter.requiredModels
   == [
     "nomic-ai/nomic-embed-text-v1.5-GGUF:Q4_K_M"
