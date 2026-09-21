@@ -363,6 +363,11 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/nixbot/build-only-ssh-copyback-2026-09.md`: Records why
   remote build-only results return through the authenticated builder store while
   signed-cache enforcement remains the deployment boundary.
+- `.agents/docs/notes/nixbot/build-host-known-hosts-route-failure-2026-09.md`:
+  Diagnoses transient direct-SSH failure to overridden `pvl-x2`, the distinct
+  Tailscale transport and OpenSSH scan-penalty behavior, and per-run known-hosts
+  truncation that turned transport loss into misleading strict verification
+  failures.
 - `.agents/docs/notes/nixbot/abird-shared-port-parity-2026-06.md`: Records the
   June 2026 shared Abird port, byte-parity files, local adaptations, and skipped
   topology-owned units.
