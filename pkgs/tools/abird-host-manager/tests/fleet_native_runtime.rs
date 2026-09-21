@@ -424,7 +424,7 @@ esac
 }
 
 #[test]
-fn dry_deploy_evaluates_the_plan_without_building_or_contacting_hosts() {
+fn dry_deploy_builds_the_plan_without_contacting_deploy_targets() {
     let temporary = tempfile::tempdir().unwrap();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
@@ -454,6 +454,7 @@ case "$*" in
   *'--file '*'hosts.nix') printf '%s\n' '{"hosts":{"app":{}},"config":{}}' ;;
   *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
   *'.#nixbot.plans.app.drvPath') printf '%s\n' '/nix/store/aaaaaaaa-system.drv' ;;
+  build*'/nix/store/aaaaaaaa-system.drv^out'*) printf '%s\n' '/nix/store/bbbbbbbb-system' ;;
   *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
 esac
 "#,
@@ -500,7 +501,9 @@ esac
         String::from_utf8_lossy(&output.stderr)
     );
     let commands = fs::read_to_string(log).unwrap();
-    assert!(!commands.lines().any(|line| line.starts_with("build ")));
+    assert!(commands.lines().any(|line| {
+        line.starts_with("build ") && line.contains("/nix/store/aaaaaaaa-system.drv^out")
+    }));
 }
 
 #[test]

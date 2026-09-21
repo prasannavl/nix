@@ -23,6 +23,9 @@ const SYSTEM_TEE: &str = "/run/current-system/sw/bin/tee";
 const ACTIVATION_RESULT_DIR: &str = "/var/lib/nixbot/activation-results";
 const ACTIVATION_LOCK: &str = "/run/nixos/switch-to-configuration.lock";
 const HOST_LOCAL_ACTIVATION_LOCK: &str = "/dev/shm/nixbot-host-local.lock.d";
+const HOST_AGENT_CONFIG_DIR: &str = "/etc/abird-host-agent";
+const HOST_AGENT_STATE_DIR: &str = "/var/lib/abird-host-agent";
+const HOST_AGENT_RUNTIME_DIR: &str = "/run/abird-host-agent";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandSpec {
@@ -440,12 +443,149 @@ pub struct ActivationCommand {
     pub lock_wait: Duration,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActivationAdmissionMode {
+    Normal,
+    Rollback,
+}
+
+impl ActivationAdmissionMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Rollback => "rollback",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenerationAdmissionPaths {
+    pub current_system: String,
+    pub host_agent_config_dir: String,
+    pub host_agent_state_dir: String,
+    pub host_agent_runtime_dir: String,
+}
+
+impl Default for GenerationAdmissionPaths {
+    fn default() -> Self {
+        Self {
+            current_system: CURRENT_SYSTEM.to_owned(),
+            host_agent_config_dir: HOST_AGENT_CONFIG_DIR.to_owned(),
+            host_agent_state_dir: HOST_AGENT_STATE_DIR.to_owned(),
+            host_agent_runtime_dir: HOST_AGENT_RUNTIME_DIR.to_owned(),
+        }
+    }
+}
+
+pub fn generation_admission_script(
+    target_system: &str,
+    goal: ActivationGoal,
+    mode: ActivationAdmissionMode,
+    paths: &GenerationAdmissionPaths,
+) -> String {
+    format!(
+        r#"system_path={target_system}
+goal={goal}
+admission_mode={mode}
+current_system={current_system}
+current_generation_preflight="${{current_system}}/sw/bin/abird-host-agent-generation-preflight"
+current_placement_preflight="${{current_system}}/sw/bin/abird-host-agent-service-placement-preflight"
+current_projection_preflight="${{current_system}}/sw/bin/abird-host-agent-projection-preflight"
+host_agent_config_dir={host_agent_config_dir}
+host_agent_state_dir={host_agent_state_dir}
+host_agent_runtime_dir={host_agent_runtime_dir}
+
+reject_generation_admission() {{
+    printf '[generation-admission] %s\n' "$1" >&2
+    echo '[generation-admission] rejected-before-switch' >&2
+    exit "${{2:-1}}"
+}}
+
+admission_programs=()
+if [ -f "${{current_generation_preflight}}" ] && [ -x "${{current_generation_preflight}}" ]; then
+    admission_programs=("${{current_generation_preflight}}")
+else
+    admission_generations=("${{current_system}}")
+    if [ "${{admission_mode}}" = rollback ]; then
+        admission_generations+=("${{system_path}}")
+    fi
+    for generation in "${{admission_generations[@]}}"; do
+        for evidence in \
+            "${{generation}}/sw/bin/abird-host-agent-generation-preflight" \
+            "${{generation}}/etc/abird-host-agent/generation-admission-registry.json"; do
+            if [ -e "${{evidence}}" ] || [ -L "${{evidence}}" ]; then
+                reject_generation_admission "generation interface exists at ${{evidence}} but current dispatcher is unavailable"
+            fi
+        done
+    done
+
+    if [ "${{admission_mode}}" = rollback ]; then
+        if [ ! -d "${{current_system}}" ]; then
+            reject_generation_admission 'current generation is unavailable; refusing automatic rollback'
+        fi
+        if [ -f "${{current_projection_preflight}}" ] && [ -x "${{current_projection_preflight}}" ]; then
+            if [ -f "${{current_placement_preflight}}" ] && [ -x "${{current_placement_preflight}}" ]; then
+                admission_programs+=("${{current_placement_preflight}}")
+            else
+                for evidence in \
+                    "${{current_placement_preflight}}" \
+                    "${{system_path}}/sw/bin/abird-host-agent-service-placement-preflight" \
+                    "${{current_system}}/etc/abird-host-agent/service-placement-contract.json" \
+                    "${{system_path}}/etc/abird-host-agent/service-placement-contract.json" \
+                    "${{host_agent_config_dir}}/service-placement-contract.json"; do
+                    if [ -e "${{evidence}}" ] || [ -L "${{evidence}}" ]; then
+                        reject_generation_admission "placement evidence exists at ${{evidence}} but current placement validator is unavailable"
+                    fi
+                done
+            fi
+            admission_programs+=("${{current_projection_preflight}}")
+        else
+            for evidence in \
+                "${{current_system}}/etc/abird-host-agent" \
+                "${{current_system}}/sw/bin/abird-host-agent" \
+                "${{current_projection_preflight}}" \
+                "${{current_system}}/sw/bin/abird-host-agent-service-placement-preflight" \
+                "${{system_path}}/etc/abird-host-agent" \
+                "${{system_path}}/sw/bin/abird-host-agent" \
+                "${{system_path}}/sw/bin/abird-host-agent-projection-preflight" \
+                "${{system_path}}/sw/bin/abird-host-agent-service-placement-preflight" \
+                "${{host_agent_config_dir}}" "${{host_agent_state_dir}}" "${{host_agent_runtime_dir}}"; do
+                if [ -e "${{evidence}}" ] || [ -L "${{evidence}}" ]; then
+                    reject_generation_admission "host-agent evidence exists at ${{evidence}}; refusing automatic rollback because projection safety cannot be proven"
+                fi
+            done
+            echo '[rollback-admission] no host-agent authority or state; proceeding with unmanaged-host rollback' >&2
+        fi
+    fi
+fi
+
+for admission_program in "${{admission_programs[@]}}"; do
+    echo "[generation-admission] mode=${{admission_mode}} validating ${{system_path}} against durable host-agent state" >&2
+    if "${{admission_program}}" "${{system_path}}" "${{goal}}" "${{admission_mode}}"; then
+        :
+    else
+        admission_rc="$?"
+        reject_generation_admission "validator rejected ${{system_path}}" "${{admission_rc}}"
+    fi
+done
+export ABIRD_HOST_AGENT_GENERATION_ADMISSION_MODE="${{admission_mode}}"
+"#,
+        target_system = shell_single_quote(target_system),
+        goal = goal.as_str(),
+        mode = mode.as_str(),
+        current_system = shell_single_quote(&paths.current_system),
+        host_agent_config_dir = shell_single_quote(&paths.host_agent_config_dir),
+        host_agent_state_dir = shell_single_quote(&paths.host_agent_state_dir),
+        host_agent_runtime_dir = shell_single_quote(&paths.host_agent_runtime_dir),
+    )
+}
+
 fn activation_script(
     generation: &SystemGeneration,
     goal: ActivationGoal,
     boot_environment: BootEnvironment,
     restart_managed: bool,
-    rollback_projection_admission: bool,
+    admission_mode: ActivationAdmissionMode,
     unit: &str,
     lock_wait: Duration,
 ) -> String {
@@ -464,18 +604,12 @@ if [ ! -x {switch} ]; then
 fi
 "#
     );
-    if rollback_projection_admission {
-        body.push_str(&format!(
-            r#"projection_preflight={CURRENT_SYSTEM}/sw/bin/abird-host-agent-projection-preflight
-if [ ! -x "$projection_preflight" ]; then
-    echo '[rollback-admission] current generation has no projection preflight; refusing automatic rollback because projection safety cannot be proven' >&2
-    exit 1
-fi
-"$projection_preflight" {system} {} rollback
-"#,
-            goal.as_str()
-        ));
-    }
+    body.push_str(&generation_admission_script(
+        system,
+        goal,
+        admission_mode,
+        &GenerationAdmissionPaths::default(),
+    ));
     body.push_str(&format!(
         "NIXOS_INSTALL_BOOTLOADER=0 {switch} {}\n",
         goal.as_str()
@@ -621,7 +755,7 @@ pub fn activation_command(spec: ActivationCommand) -> RemoteCommand {
         spec.goal,
         spec.boot_environment,
         spec.restart_managed,
-        false,
+        ActivationAdmissionMode::Normal,
         &unit,
         spec.lock_wait,
     );
@@ -643,7 +777,7 @@ pub fn rollback_command(
         ActivationGoal::Switch,
         boot_environment,
         false,
-        true,
+        ActivationAdmissionMode::Rollback,
         &unit,
         lock_wait,
     );
@@ -812,7 +946,9 @@ pub fn classify_deploy_failure(
     if matches!(status, 130 | 143) {
         return DeployFailureAction::ReturnSignal(status);
     }
-    if output.contains("Pre-switch checks failed") {
+    if output.contains("Pre-switch checks failed")
+        || output.contains("[generation-admission] rejected-before-switch")
+    {
         return DeployFailureAction::RejectBeforeSwitch;
     }
     if !activation_admitted && pre_admission_ssh_failure(output) {

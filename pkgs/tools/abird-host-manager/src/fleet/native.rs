@@ -467,9 +467,6 @@ impl<'a> NativeFleetEffects<'a> {
             self.derivations.insert(host, derivation);
         }
 
-        if self.invocation.options.dry_run {
-            return Ok(());
-        }
         let control_plane = self.inventory.control_plane_hosts()?;
         let schedule = BuildSchedule::new(
             self.selection.ordered.clone(),
@@ -753,7 +750,7 @@ impl<'a> NativeFleetEffects<'a> {
             )?;
             let output = self.host_runtime.execute_local_command(
                 &pull,
-                EffectKind::Mutation,
+                EffectKind::Build,
                 "remote-build-copy-closure-local",
             )?;
             if !output.succeeded() {

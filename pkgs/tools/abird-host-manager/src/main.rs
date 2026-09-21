@@ -24,7 +24,9 @@ use abird_host_manager::backup_runtime::{
     InstanceExportLocation, RestorePhase,
 };
 use abird_host_manager::fleet::cli::Invocation as FleetInvocation;
-use abird_host_manager::fleet::environment::Environment as FleetEnvironment;
+use abird_host_manager::fleet::environment::{
+    Environment as FleetEnvironment, configure_github_nix_access,
+};
 use abird_host_manager::fleet::runtime::{RuntimeConfig as FleetRuntimeConfig, run as run_fleet};
 use abird_host_manager::instance_backup::{self, InstanceBackupContext};
 use abird_host_manager::physical::{
@@ -1849,6 +1851,7 @@ fn run() -> Result<()> {
     };
     match cli.command {
         Command::Fleet { arguments } => {
+            configure_github_nix_access()?;
             let mut reexec_arguments = vec!["fleet".to_owned()];
             reexec_arguments.extend(arguments.clone());
             let invocation = FleetInvocation::parse_canonical_with_environment(

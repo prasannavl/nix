@@ -249,6 +249,86 @@ fn canonical_cli_uses_one_fleet_namespace_without_losing_actions() {
 }
 
 #[test]
+fn legacy_and_canonical_cli_forms_produce_identical_invocations() {
+    let action_pairs = [
+        (vec!["nixbot", "--list-hosts"], vec!["fleet", "hosts"]),
+        (vec!["nixbot", "--list-groups"], vec!["fleet", "groups"]),
+        (vec!["nixbot", "tf"], vec!["fleet", "terraform", "all"]),
+        (
+            vec!["nixbot", "tf/cloudflare-dns"],
+            vec!["fleet", "terraform", "project", "cloudflare-dns"],
+        ),
+        (vec!["nixbot", "--clean=all"], vec!["fleet", "clean", "all"]),
+    ];
+    for (legacy, canonical) in action_pairs {
+        assert_eq!(
+            Invocation::parse_legacy(legacy).unwrap(),
+            Invocation::parse_canonical(canonical).unwrap()
+        );
+    }
+
+    let options = [
+        "--group=prod,minimal",
+        "--hosts=app-a,-app-b",
+        "--goal=test",
+        "--build-host=builder",
+        "--build-host-deploy-mode=local-copy",
+        "--build-cache-url=https://cache.invalid",
+        "--build-cache-host=cache",
+        "--build-plan-jobs=3",
+        "--build-jobs=2",
+        "--deploy-jobs=5",
+        "--deploy-jobs-per-domain=2",
+        "--verify-jobs=7",
+        "--build-logs",
+        "--force",
+        "--restart-managed",
+        "--bootstrap",
+        "--control-plane-first",
+        "--skip-global-lock",
+        "--dirty-staged",
+        "--dry",
+        "--no-override",
+        "--no-rollback",
+        "--no-verify",
+        "--prefix-host-logs",
+        "--verbose",
+        "--log-format=plain",
+        "--user=root",
+        "--ssh-key=/tmp/id",
+        "--operator-user=operator",
+        "--operator-key=/tmp/operator-id",
+        "--bootstrap-key=/tmp/bootstrap-id",
+        "--known-hosts=/tmp/known-hosts",
+        "--config=hosts.nix",
+        "--age-key-file=/tmp/age-key",
+        "--discover-keys=off",
+        "--repo-url=ssh://git@example/z",
+        "--repo-path=/var/lib/nixbot/z",
+        "--ci-check-ssh-key-path=/tmp/ci-id",
+        "--ci-trigger",
+        "--ci-host=ci.example",
+        "--ci-user=runner",
+        "--ci-ssh-key=secret",
+        "--ci-known-hosts=ci.example ssh-ed25519 AAAA",
+        "--dirty-staged-patch-stdin",
+        "--dirty-staged-base=base-sha",
+    ];
+    let legacy = std::iter::once("nixbot")
+        .chain(std::iter::once("deploy"))
+        .chain(options)
+        .collect::<Vec<_>>();
+    let canonical = std::iter::once("fleet")
+        .chain(std::iter::once("deploy"))
+        .chain(options)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        Invocation::parse_legacy(legacy).unwrap(),
+        Invocation::parse_canonical(canonical).unwrap()
+    );
+}
+
+#[test]
 fn legacy_options_preserve_selection_build_deploy_and_repository_contracts() {
     let invocation = Invocation::parse_legacy([
         "nixbot",

@@ -446,7 +446,7 @@ fn build_plan_then_local_build_preserves_order_cwd_and_parsing() {
     let runner = runtime.into_runner();
     assert_eq!(runner.requests.len(), 2);
     assert_eq!(runner.requests[0].effect, EffectKind::ReadOnly);
-    assert_eq!(runner.requests[1].effect, EffectKind::Mutation);
+    assert_eq!(runner.requests[1].effect, EffectKind::Build);
     assert_eq!(runner.requests[0].cwd, PathBuf::from("/repo/worktree"));
     assert_eq!(
         runner.requests[0].args.last().unwrap(),
@@ -519,6 +519,39 @@ fn remote_build_reports_action_failure_without_cleanup_side_effects() {
         .unwrap();
     assert_eq!(result.status, CommandStatus::Exit(7));
     assert_eq!(runtime.into_runner().requests.len(), 2);
+}
+
+#[test]
+fn dry_run_executes_remote_builder_store_effects() {
+    let runner =
+        FakeRunner::with_outputs([success(""), success("/nix/store/def-nixos-system-new\n")]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::Yes).unwrap();
+    let result = runtime
+        .remote_build(RemoteBuildRequest {
+            target: target(),
+            copy_derivation: CommandSpec::new(
+                "nix",
+                strings(&["copy", "--to", "ssh-ng://builder", "/nix/store/abc.drv"]),
+            ),
+            build: CommandSpec::new(
+                "nix",
+                strings(&["build", "--no-link", "--print-out-paths", "drv^out"]),
+            ),
+            retry: RetryPolicy::new(1, Duration::ZERO).unwrap(),
+        })
+        .unwrap();
+    assert_eq!(result.status, CommandStatus::Success);
+    assert_eq!(
+        result.output.unwrap().path.as_str(),
+        "/nix/store/def-nixos-system-new"
+    );
+    let requests = runtime.into_runner().requests;
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.effect == EffectKind::Build)
+    );
 }
 
 #[test]
@@ -659,6 +692,44 @@ fn pre_switch_failure_does_not_cross_rollback_boundary() {
 }
 
 #[test]
+fn generation_admission_rejection_does_not_cross_rollback_boundary() {
+    let runner = FakeRunner::with_outputs([
+        success("/nix/store/abc-nixos-system-old\n"),
+        success(""),
+        success(""),
+        failure(23, "[generation-admission] rejected-before-switch"),
+    ]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+    let mut health = AlwaysHealthy;
+    let rollback_factory = |snapshot: &SystemGeneration| rollback_for(snapshot.clone());
+    let result = runtime
+        .deploy_host(
+            &target(),
+            &generation("new"),
+            SnapshotRequirement::Required,
+            true,
+            &pre_switch_admission_command(),
+            &activation(ActivationGoal::Switch),
+            ActivationGoal::Switch,
+            Some(&rollback_factory),
+            &[],
+            &mut health,
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        DeployOutcome::FailedBeforeActivation(CommandStatus::Exit(23))
+    );
+    let requests = runtime.into_runner().requests;
+    assert_eq!(requests.len(), 4);
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.label.contains("rollback"))
+    );
+}
+
+#[test]
 fn failure_after_activation_admission_runs_rollback_submit_and_observer() {
     let runner = FakeRunner::with_outputs([
         success("/nix/store/abc-nixos-system-old\n"),
@@ -744,8 +815,11 @@ fn transport_loss_after_submission_can_be_recovered_by_authoritative_verificatio
 }
 
 #[test]
-fn dry_run_executes_read_only_evaluation_but_no_mutating_process() {
-    let runner = FakeRunner::with_outputs([success("/nix/store/abc-system.drv")]);
+fn dry_run_executes_evaluation_and_build_but_no_target_mutation() {
+    let runner = FakeRunner::with_outputs([
+        success("/nix/store/abc-system.drv"),
+        success("/nix/store/abc-system"),
+    ]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::Yes).unwrap();
     let eval = build_plan_evaluation_command("nix", &[], BuildPlanAttribute::Native, "gap3");
     assert!(
@@ -757,7 +831,10 @@ fn dry_run_executes_read_only_evaluation_but_no_mutating_process() {
     );
 
     let build = CommandSpec::new("nix", strings(&["build", "drv^out"]));
-    assert!(runtime.local_build(&build).unwrap().is_dry_run());
+    assert_eq!(
+        runtime.local_build(&build).unwrap().executed().unwrap(),
+        NixStorePath::closure_output("/nix/store/abc-system").unwrap()
+    );
     assert!(
         runtime
             .pre_switch(&target(), &pre_switch_admission_command())
@@ -776,7 +853,10 @@ fn dry_run_executes_read_only_evaluation_but_no_mutating_process() {
             .unwrap(),
         ActivationExecution::DryRun
     );
-    assert_eq!(runtime.into_runner().requests.len(), 1);
+    let requests = runtime.into_runner().requests;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].effect, EffectKind::ReadOnly);
+    assert_eq!(requests[1].effect, EffectKind::Build);
 }
 
 #[test]

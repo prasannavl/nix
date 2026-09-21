@@ -2,18 +2,23 @@
 mod deploy;
 
 use std::collections::VecDeque;
+use std::fs;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use deploy::{
-    ActivationCommand, ActivationExecutor, ActivationGoal, ActivationResult, ActivationSample,
-    ActivationStatus, BootEnvironment, CancellationAction, CancellationController, DeployDecision,
-    DeployFailureAction, GenerationSnapshot, LockContentionEvidence, SnapshotRequirement,
-    SystemGeneration, VerificationDecision, activation_command, activation_verification_command,
+    ActivationAdmissionMode, ActivationCommand, ActivationExecutor, ActivationGoal,
+    ActivationResult, ActivationSample, ActivationStatus, BootEnvironment, CancellationAction,
+    CancellationController, DeployDecision, DeployFailureAction, GenerationAdmissionPaths,
+    GenerationSnapshot, LockContentionEvidence, SnapshotRequirement, SystemGeneration,
+    VerificationDecision, activation_command, activation_verification_command,
     boot_is_container_command, classify_deploy_failure, deploy_unit_name,
-    parent_readiness_commands, pre_activation_image_pull_command, pre_switch_admission_command,
-    rollback_command, rollback_unit_name, rollback_waves, snapshot_command, verify_activation,
+    generation_admission_script, parent_readiness_commands, pre_activation_image_pull_command,
+    pre_switch_admission_command, rollback_command, rollback_unit_name, rollback_waves,
+    snapshot_command, verify_activation,
 };
 
 fn generation(name: &str) -> SystemGeneration {
@@ -33,6 +38,25 @@ fn assert_bash_syntax(script: &str) {
         .write_all(script.as_bytes())
         .unwrap();
     assert!(child.wait().unwrap().success());
+}
+
+fn executable(path: &Path, contents: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, contents).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+fn admission_paths(root: &Path) -> GenerationAdmissionPaths {
+    GenerationAdmissionPaths {
+        current_system: root.join("current-system").display().to_string(),
+        host_agent_config_dir: root.join("live-config").display().to_string(),
+        host_agent_state_dir: root.join("live-state").display().to_string(),
+        host_agent_runtime_dir: root.join("live-runtime").display().to_string(),
+    }
+}
+
+fn run_admission(script: &str) -> std::process::Output {
+    Command::new("bash").arg("-c").arg(script).output().unwrap()
 }
 
 #[test]
@@ -254,6 +278,12 @@ fn activation_is_a_supervised_detached_attempt_with_an_authoritative_marker() {
     assert!(command.script.contains("switch-to-configuration boot"));
     assert!(command.script.contains("podman-composectl"));
     assert!(command.script.contains("restart-managed"));
+    assert!(command.script.contains("admission_mode=normal"));
+    assert!(
+        command
+            .script
+            .contains("abird-host-agent-generation-preflight")
+    );
     assert!(command.script.contains("flock -w 900"));
     assert!(command.script.contains("/dev/shm/nixbot-host-local.lock.d"));
     assert!(command.script.contains("/run/current-system/sw/bin/bash"));
@@ -309,14 +339,223 @@ fn rollback_is_switch_activation_with_projection_admission_and_profile_persisten
     assert!(
         command
             .script
-            .contains("abird-host-agent-projection-preflight")
+            .contains("abird-host-agent-generation-preflight")
     );
+    assert!(command.script.contains("admission_mode=rollback"));
     assert!(command.script.contains(" rollback"));
     assert!(command.script.contains("switch-to-configuration switch"));
     assert!(command.script.contains("/nix/var/nix/profiles/system"));
     assert!(!command.script.contains("NIXOS_INSTALL_BOOTLOADER=1"));
     assert!(!command.script.contains("restart-managed"));
     assert_bash_syntax(&command.script);
+}
+
+#[test]
+fn generation_dispatcher_owns_normal_and_rollback_admission() {
+    for mode in [
+        ActivationAdmissionMode::Normal,
+        ActivationAdmissionMode::Rollback,
+    ] {
+        for status in [0, 23, 255] {
+            let temporary = tempfile::tempdir().unwrap();
+            let paths = admission_paths(temporary.path());
+            let current = PathBuf::from(&paths.current_system);
+            let target = temporary.path().join("target-system");
+            let calls = temporary.path().join("calls");
+            fs::create_dir_all(&current).unwrap();
+            executable(
+                &current.join("sw/bin/abird-host-agent-generation-preflight"),
+                &format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$*\" > {}\nexit {status}\n",
+                    calls.display()
+                ),
+            );
+            let script = generation_admission_script(
+                &target.display().to_string(),
+                ActivationGoal::Switch,
+                mode,
+                &paths,
+            );
+            let output = run_admission(&script);
+            assert_eq!(output.status.code(), Some(status));
+            assert_eq!(
+                fs::read_to_string(&calls).unwrap(),
+                format!(
+                    "{} switch {}\n",
+                    target.display(),
+                    match mode {
+                        ActivationAdmissionMode::Normal => "normal",
+                        ActivationAdmissionMode::Rollback => "rollback",
+                    }
+                )
+            );
+            if status == 0 {
+                assert!(
+                    !String::from_utf8_lossy(&output.stderr).contains("rejected-before-switch")
+                );
+            } else {
+                assert!(
+                    String::from_utf8_lossy(&output.stderr)
+                        .contains("[generation-admission] rejected-before-switch")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn rollback_admission_allows_only_truly_unmanaged_hosts_without_a_dispatcher() {
+    let temporary = tempfile::tempdir().unwrap();
+    let paths = admission_paths(temporary.path());
+    let current = PathBuf::from(&paths.current_system);
+    let target = temporary.path().join("target-system");
+    fs::create_dir_all(&current).unwrap();
+    let script = generation_admission_script(
+        &target.display().to_string(),
+        ActivationGoal::Switch,
+        ActivationAdmissionMode::Rollback,
+        &paths,
+    );
+    let unmanaged = run_admission(&script);
+    assert!(unmanaged.status.success());
+    assert!(
+        String::from_utf8_lossy(&unmanaged.stderr).contains("no host-agent authority or state")
+    );
+
+    fs::remove_dir(&current).unwrap();
+    let missing_current = run_admission(&script);
+    assert!(!missing_current.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing_current.stderr)
+            .contains("current generation is unavailable")
+    );
+
+    fs::create_dir_all(&current).unwrap();
+    let evidence = target.join("sw/bin/abird-host-agent-projection-preflight");
+    fs::create_dir_all(evidence.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(temporary.path().join("missing"), &evidence).unwrap();
+    let retained = run_admission(&script);
+    assert!(!retained.status.success());
+    assert!(String::from_utf8_lossy(&retained.stderr).contains("rejected-before-switch"));
+}
+
+#[test]
+fn rollback_never_uses_the_target_generation_dispatcher() {
+    let temporary = tempfile::tempdir().unwrap();
+    let paths = admission_paths(temporary.path());
+    let current = PathBuf::from(&paths.current_system);
+    let target = temporary.path().join("target-system");
+    let marker = temporary.path().join("target-dispatcher-ran");
+    fs::create_dir_all(&current).unwrap();
+    executable(
+        &target.join("sw/bin/abird-host-agent-generation-preflight"),
+        &format!("#!/bin/sh\ntouch {}\n", marker.display()),
+    );
+    let script = generation_admission_script(
+        &target.display().to_string(),
+        ActivationGoal::Switch,
+        ActivationAdmissionMode::Rollback,
+        &paths,
+    );
+    let output = run_admission(&script);
+    assert!(!output.status.success());
+    assert!(!marker.exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("current dispatcher is unavailable"));
+}
+
+#[test]
+fn legacy_rollback_fails_closed_when_placement_evidence_lacks_a_validator() {
+    let temporary = tempfile::tempdir().unwrap();
+    let paths = admission_paths(temporary.path());
+    let current = PathBuf::from(&paths.current_system);
+    let target = temporary.path().join("target-system");
+    let marker = temporary.path().join("projection-ran");
+    fs::create_dir_all(&current).unwrap();
+    executable(
+        &current.join("sw/bin/abird-host-agent-projection-preflight"),
+        &format!("#!/bin/sh\ntouch {}\n", marker.display()),
+    );
+    let placement_contract =
+        PathBuf::from(&paths.host_agent_config_dir).join("service-placement-contract.json");
+    fs::create_dir_all(placement_contract.parent().unwrap()).unwrap();
+    fs::write(&placement_contract, "{}\n").unwrap();
+    let script = generation_admission_script(
+        &target.display().to_string(),
+        ActivationGoal::Switch,
+        ActivationAdmissionMode::Rollback,
+        &paths,
+    );
+    let output = run_admission(&script);
+    assert!(!output.status.success());
+    assert!(!marker.exists());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("current placement validator is unavailable")
+    );
+}
+
+#[test]
+fn legacy_rollback_admission_preserves_current_authority_and_rejects_broken_interfaces() {
+    let temporary = tempfile::tempdir().unwrap();
+    let paths = admission_paths(temporary.path());
+    let current = PathBuf::from(&paths.current_system);
+    let target = temporary.path().join("target-system");
+    let calls = temporary.path().join("calls");
+    fs::create_dir_all(&current).unwrap();
+    executable(
+        &current.join("sw/bin/abird-host-agent-service-placement-preflight"),
+        &format!(
+            "#!/bin/sh\nprintf 'placement:%s\\n' \"$*\" >> {}\n",
+            calls.display()
+        ),
+    );
+    executable(
+        &current.join("sw/bin/abird-host-agent-projection-preflight"),
+        &format!(
+            "#!/bin/sh\nprintf 'projection:%s\\n' \"$*\" >> {}\n",
+            calls.display()
+        ),
+    );
+    let rollback = generation_admission_script(
+        &target.display().to_string(),
+        ActivationGoal::Switch,
+        ActivationAdmissionMode::Rollback,
+        &paths,
+    );
+    assert!(run_admission(&rollback).status.success());
+    assert_eq!(
+        fs::read_to_string(&calls).unwrap(),
+        format!(
+            "placement:{} switch rollback\nprojection:{} switch rollback\n",
+            target.display(),
+            target.display()
+        )
+    );
+
+    let normal_target = temporary.path().join("new-target");
+    fs::create_dir_all(normal_target.join("etc/abird-host-agent")).unwrap();
+    fs::write(
+        normal_target.join("etc/abird-host-agent/generation-admission-registry.json"),
+        "{}\n",
+    )
+    .unwrap();
+    let normal = generation_admission_script(
+        &normal_target.display().to_string(),
+        ActivationGoal::Switch,
+        ActivationAdmissionMode::Normal,
+        &paths,
+    );
+    assert!(run_admission(&normal).status.success());
+
+    fs::create_dir_all(current.join("etc/abird-host-agent")).unwrap();
+    fs::write(
+        current.join("etc/abird-host-agent/generation-admission-registry.json"),
+        "{}\n",
+    )
+    .unwrap();
+    let broken = run_admission(&normal);
+    assert!(!broken.status.success());
+    assert!(String::from_utf8_lossy(&broken.stderr).contains("rejected-before-switch"));
 }
 
 #[test]
@@ -407,6 +646,16 @@ fn deploy_failure_interpretation_preserves_signals_and_activation_boundaries() {
     );
     assert_eq!(
         classify_deploy_failure(1, "Pre-switch checks failed: projection", false, 1, 3),
+        DeployFailureAction::RejectBeforeSwitch
+    );
+    assert_eq!(
+        classify_deploy_failure(
+            23,
+            "[generation-admission] rejected-before-switch",
+            true,
+            1,
+            3
+        ),
         DeployFailureAction::RejectBeforeSwitch
     );
     assert_eq!(

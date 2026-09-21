@@ -6,6 +6,75 @@ use anyhow::{Result, bail};
 
 use super::cli::{ActivationGoal, BuildHostDeployMode, DiscoverKeys, JobCount, LogFormat, Options};
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GithubNixAccess {
+    pub github_token: String,
+    pub nix_config: String,
+}
+
+pub fn github_nix_access(
+    github_token: Option<&str>,
+    gh_token: Option<&str>,
+    nix_config: Option<&str>,
+) -> Result<Option<GithubNixAccess>> {
+    let Some(token) = github_token
+        .filter(|value| !value.is_empty())
+        .or_else(|| gh_token.filter(|value| !value.is_empty()))
+    else {
+        return Ok(None);
+    };
+    if token
+        .bytes()
+        .any(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+    {
+        bail!("GITHUB_TOKEN and GH_TOKEN must not contain whitespace");
+    }
+    let setting = format!("extra-access-tokens = github.com={token}");
+    let inherited = nix_config.unwrap_or_default();
+    let configured = if inherited.split('\n').any(|line| line == setting) {
+        inherited.to_owned()
+    } else if inherited.is_empty() {
+        setting
+    } else {
+        format!("{inherited}\n{setting}")
+    };
+    Ok(Some(GithubNixAccess {
+        github_token: token.to_owned(),
+        nix_config: configured,
+    }))
+}
+
+/// Project GitHub credentials into Nix before fleet execution starts.
+///
+/// Both binaries call this on their single main thread before installing signal
+/// handlers or spawning workers. The environment then remains immutable and is
+/// inherited by repository re-exec and every Nix subprocess.
+pub fn configure_github_nix_access() -> Result<()> {
+    let read = |name| match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => bail!("{name} must be valid UTF-8"),
+    };
+    let github_token = read("GITHUB_TOKEN")?;
+    let gh_token = read("GH_TOKEN")?;
+    let nix_config = read("NIX_CONFIG")?;
+    let Some(access) = github_nix_access(
+        github_token.as_deref(),
+        gh_token.as_deref(),
+        nix_config.as_deref(),
+    )?
+    else {
+        return Ok(());
+    };
+    // SAFETY: fleet entrypoints call this once on the main thread before any
+    // worker thread exists. No later code mutates the process environment.
+    unsafe {
+        env::set_var("GITHUB_TOKEN", access.github_token);
+        env::set_var("NIX_CONFIG", access.nix_config);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum LocalSelfTarget {
     #[default]

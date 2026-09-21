@@ -57,14 +57,20 @@ diagnostics remain on stderr.
 
 ## Parity and validation
 
-The Abird source implementation accounted for all 237 legacy characterization
-tests: 219 were directly ported, 17 were superseded by the shared move-style
-output contract, and one was superseded by the invocation-scoped SSH
-control-master design. Pvl keeps those Rust tests and adds regression coverage
-for its inventory extensions.
+Frozen Abird accounts for all 272 current legacy characterization tests in its
+source-owned parity ledger. Pvl carries the same 272 shared runtime tests plus
+one Pvl inventory identity test. It omits only the generic source assertion that
+mechanically reads Abird's `.agents/plans/**/TEST-DISPOSITION.md`, because that
+repository-specific plan ledger is absent here.
+
+The September 22 shared parity port added current-generation admission for
+normal deployment and rollback, GitHub-token projection into Nix, build effects
+during dry deploys, and explicit pre-switch rejection classification. It also
+keeps Rust and Bash remote realizations aligned on `--fallback`. These changes
+remain pre-cutover code: Bash Nixbot is still the active deployment engine.
 
 The landing gate requires Rust formatting, Clippy, tests, the host-manager
-binary, the unchanged Bash Nixbot package/tests, and repository diff lint with
+binary, the active Bash Nixbot package/tests, and repository diff lint with
 import from derivation disabled at both outer and nested Nix boundaries. It also
 asserts that the installed host-manager output has no `bin/nixbot`.
 

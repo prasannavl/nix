@@ -37,6 +37,68 @@ fn both_binary_surfaces_report_the_native_fleet_version() {
 }
 
 #[test]
+fn both_binary_surfaces_configure_github_nix_access_before_execution() {
+    let temporary = tempfile::tempdir().unwrap();
+    fixture_repository(temporary.path());
+    let token_log = temporary.path().join("token.log");
+    let nix = temporary.path().join("nix");
+    executable(
+        &nix,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n---\n%s\n' "$GITHUB_TOKEN" "$NIX_CONFIG" > "$TOKEN_LOG"
+case "$*" in
+  'eval --json --file '*'/hosts.nix') printf '%s\n' '{"hosts":{"app":{}},"config":{}}' ;;
+  'eval --json --no-write-lock-file .#nixbot.deployDependencies') printf '{}\n' ;;
+  *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
+esac
+"#,
+    );
+    let config = temporary.path().join("hosts.nix");
+    fs::write(&config, "{}\n").unwrap();
+
+    for (program, arguments) in [
+        (
+            env!("CARGO_BIN_EXE_nixbot"),
+            vec![
+                "--list-groups".to_owned(),
+                format!("--config={}", config.display()),
+                "--no-override".to_owned(),
+            ],
+        ),
+        (
+            env!("CARGO_BIN_EXE_abird-host-manager"),
+            vec![
+                format!("--nix-program={}", nix.display()),
+                "fleet".to_owned(),
+                "groups".to_owned(),
+                format!("--config={}", config.display()),
+                "--no-override".to_owned(),
+            ],
+        ),
+    ] {
+        let output = Command::new(program)
+            .args(arguments)
+            .env("ABIRD_HOST_MANAGER_NIX", &nix)
+            .env("GH_TOKEN", "fallback-token")
+            .env_remove("GITHUB_TOKEN")
+            .env("NIX_CONFIG", "warn-dirty = false")
+            .env("TOKEN_LOG", &token_log)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(&token_log).unwrap(),
+            "fallback-token\n---\nwarn-dirty = false\nextra-access-tokens = github.com=fallback-token\n"
+        );
+    }
+}
+
+#[test]
 fn list_groups_evaluates_the_nix_inventory_and_renders_stable_members() {
     let temporary = tempfile::tempdir().unwrap();
     fixture_repository(temporary.path());

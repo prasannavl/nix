@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use abird_host_manager::fleet::cli::{
     ActivationGoal, BuildHostDeployMode, DiscoverKeys, Invocation, JobCount, LogFormat,
 };
-use abird_host_manager::fleet::environment::{Environment, LocalSelfTarget};
+use abird_host_manager::fleet::environment::{Environment, LocalSelfTarget, github_nix_access};
 
 fn environment(values: &[(&str, &str)]) -> Environment {
     Environment::from_map(
@@ -177,5 +177,39 @@ fn malformed_booleans_and_operational_numbers_are_rejected() {
             .unwrap_err()
             .to_string()
             .contains("NIXBOT_TRANSPORT_RETRY_ATTEMPTS")
+    );
+}
+
+#[test]
+fn github_token_projects_into_nix_once_and_preserves_inherited_configuration() {
+    let access = github_nix_access(None, Some("gh_test_token"), Some("warn-dirty = false"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(access.github_token, "gh_test_token");
+    assert_eq!(
+        access.nix_config,
+        "warn-dirty = false\nextra-access-tokens = github.com=gh_test_token"
+    );
+    let repeated = github_nix_access(
+        Some(&access.github_token),
+        Some("ignored"),
+        Some(&access.nix_config),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(repeated, access);
+}
+
+#[test]
+fn github_token_precedence_and_validation_match_legacy_nixbot() {
+    let access = github_nix_access(Some("github"), Some("gh"), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(access.github_token, "github");
+    assert_eq!(access.nix_config, "extra-access-tokens = github.com=github");
+    assert!(github_nix_access(Some("unsafe token"), None, None).is_err());
+    assert_eq!(
+        github_nix_access(None, None, Some("keep = true")).unwrap(),
+        None
     );
 }

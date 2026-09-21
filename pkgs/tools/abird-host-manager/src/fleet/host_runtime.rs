@@ -46,6 +46,9 @@ pub enum DryRun {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EffectKind {
     ReadOnly,
+    /// Realize or copy immutable Nix store paths. Dry deploys deliberately
+    /// execute these effects so they validate the complete build boundary.
+    Build,
     Mutation,
 }
 
@@ -1080,7 +1083,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
         command: &CommandSpec,
         label: &str,
     ) -> Result<Execution<NixStorePath>> {
-        let request = self.local_request(command, EffectKind::Mutation, label);
+        let request = self.local_request(command, EffectKind::Build, label);
         let output = self.run(request)?;
         if output.skipped {
             return Ok(Execution::DryRun);
@@ -1146,17 +1149,9 @@ impl<R: ProcessRunner> HostRuntime<R> {
     }
 
     pub fn remote_build(&mut self, request: RemoteBuildRequest) -> Result<RemoteBuildExecution> {
-        if self.dry_run == DryRun::Yes {
-            return Ok(RemoteBuildExecution {
-                output: None,
-                failures: Vec::new(),
-                status: CommandStatus::Success,
-                dry_run: true,
-            });
-        }
         let copied = self.execute_local_command(
             &request.copy_derivation,
-            EffectKind::Mutation,
+            EffectKind::Build,
             "remote-build-copy-derivation",
         )?;
         let mut tracker = RetryTracker::new(request.retry);
@@ -1165,7 +1160,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 let process = self.remote_command_request(
                     &request.target,
                     &request.build,
-                    EffectKind::Mutation,
+                    EffectKind::Build,
                     "remote-build-realize",
                 )?;
                 let output = self.run(process)?;
@@ -1195,7 +1190,6 @@ impl<R: ProcessRunner> HostRuntime<R> {
             output,
             failures: tracker.failures().to_vec(),
             status,
-            dry_run: false,
         })
     }
 
@@ -1443,14 +1437,21 @@ impl<R: ProcessRunner> HostRuntime<R> {
             return Ok(ActivationExecution::Succeeded);
         }
         let observer_command_status = command_status(observer_status.status);
+        let failure = deploy::classify_deploy_failure(
+            observer_command_status.code(),
+            &observer_status.combined_output(),
+            true,
+            1,
+            1,
+        );
+        if failure == deploy::DeployFailureAction::RejectBeforeSwitch {
+            return Ok(ActivationExecution::Failed {
+                status: observer_command_status,
+                admitted: false,
+            });
+        }
         if matches!(observer_status.status, ProcessStatus::Signal(_))
-            || deploy::classify_deploy_failure(
-                observer_command_status.code(),
-                &observer_status.combined_output(),
-                true,
-                1,
-                1,
-            ) != deploy::DeployFailureAction::VerifyTarget
+            || failure != deploy::DeployFailureAction::VerifyTarget
         {
             return Ok(ActivationExecution::Failed {
                 status: observer_command_status,
@@ -1652,7 +1653,6 @@ pub struct RemoteBuildExecution {
     pub output: Option<RemoteBuildOutput>,
     pub failures: Vec<BuildFailureEvidence>,
     pub status: CommandStatus,
-    pub dry_run: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
