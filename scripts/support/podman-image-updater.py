@@ -58,6 +58,13 @@ class ImageCheck:
 
 
 @dataclass(frozen=True)
+class ImageUse:
+    ref: str
+    service: str = ""
+    hold: str = ""
+
+
+@dataclass(frozen=True)
 class TextEdit:
     path: Path
     start: int
@@ -157,6 +164,7 @@ def run_nix_eval():
         "(_: inst: { "
         "source = inst.renderedSource or inst.source; "
         "sourcePath = if builtins.isPath inst.source then toString inst.source else null; "
+        "imageUpdateHolds = inst.imageUpdateHolds or {}; "
         "}) stack.instances) "
         'cfg.config.services."podman-compose"; '
         "}) cfgs"
@@ -188,11 +196,12 @@ def images_from_yaml_text(text):
     for line in text.splitlines():
         match = re.match(r"^\s*image:\s*['\"]?([^'\"\s]+)['\"]?\s*$", line)
         if match:
-            images.append(match.group(1))
+            images.append(ImageUse(match.group(1)))
     return images
 
 
-def images_from_source(source):
+def images_from_source(source, holds=None):
+    holds = holds or {}
     if source is None:
         return []
     if isinstance(source, str):
@@ -205,14 +214,28 @@ def images_from_source(source):
         return []
 
     images = []
-    for service in services.values():
+    for service_name, service in services.items():
         if isinstance(service, dict) and isinstance(service.get("image"), str):
-            images.append(service["image"])
+            images.append(
+                ImageUse(
+                    service["image"],
+                    service_name,
+                    holds.get(service_name, ""),
+                )
+            )
     return images
 
 
+def image_ref(image):
+    return image.ref if isinstance(image, ImageUse) else image
+
+
+def image_hold(image):
+    return image.hold if isinstance(image, ImageUse) else ""
+
+
 def reportable_image(image):
-    return not image.startswith("localhost/nix-local/")
+    return not image_ref(image).startswith("localhost/nix-local/")
 
 
 def collect_images_by_context_and_instance(sources):
@@ -234,10 +257,19 @@ def collect_images_by_context_and_instance(sources):
                 if not isinstance(instance, dict):
                     continue
                 images = set(
-                    filter(reportable_image, images_from_source(instance.get("source")))
+                    filter(
+                        reportable_image,
+                        images_from_source(
+                            instance.get("source"),
+                            instance.get("imageUpdateHolds"),
+                        ),
+                    )
                 )
                 if images:
-                    context_instances[instance_name] = sorted(images)
+                    context_instances[instance_name] = sorted(
+                        images,
+                        key=lambda image: (image.ref, image.service),
+                    )
     return {
         context: dict(sorted(instances.items()))
         for context, instances in contexts.items()
@@ -892,10 +924,10 @@ def format_context(context):
 def inspect_images(contexts, jobs):
     refs = sorted(
         {
-            ref
+            image_ref(image)
             for instances in contexts.values()
             for images in instances.values()
-            for ref in images
+            for image in images
         }
     )
     lookups = {}
@@ -944,10 +976,15 @@ def print_inventory(contexts, checks, color):
         if header:
             print(title_line(header, color), flush=True)
         for instance_name, images in contexts[context].items():
-            for ref in images:
+            for image in images:
+                ref = image_ref(image)
+                line = format_image_check(checks[ref], color)
+                hold = image_hold(image)
+                if hold:
+                    line = f"{line} [held: {hold}]"
                 print(
                     prefix_image_report_line(
-                        format_image_check(checks[ref], color), instance_name, color
+                        line, instance_name, color
                     ),
                     flush=True,
                 )
@@ -965,7 +1002,7 @@ def print_failed_image_checks(contexts, failed, report):
             (*context, instance)
             for context, instances in contexts.items()
             for instance, images in instances.items()
-            if check.ref in images
+            if any(image_ref(image) == check.ref for image in images)
         }
         for use in sorted(uses):
             lines.append(f"  Used by: {' | '.join(part for part in use if part)}")
@@ -1052,13 +1089,43 @@ def plan_updates(contexts, source_files, checks):
     edits = {}
     errors = []
     candidate_cache = {}
+    policies = {}
+
+    for context in sorted(contexts, key=image_context_key):
+        for instance_name, images in contexts[context].items():
+            owning_files = tuple(
+                source_files.get(context, {}).get(instance_name, [])
+            )
+            for image in images:
+                ref = image_ref(image)
+                check = checks[ref]
+                if check.state != "update":
+                    continue
+                key = (ref, check.latest, owning_files)
+                policies.setdefault(key, set()).add(bool(image_hold(image)))
+
+    conflicting_policies = {
+        key for key, values in policies.items() if values == {False, True}
+    }
+    for ref, latest, owning_files in sorted(conflicting_policies):
+        owners = ", ".join(str(path) for path in owning_files) or "<none>"
+        errors.append(
+            f"{ref}: conflicting held and automatic uses for the same owning "
+            f"sources ({owners}) while resolving {latest}"
+        )
 
     for context in sorted(contexts, key=image_context_key):
         for instance_name, images in contexts[context].items():
             owning_files = source_files.get(context, {}).get(instance_name, [])
-            for ref in images:
+            for image in images:
+                ref = image_ref(image)
                 check = checks[ref]
-                if check.state != "update":
+                policy_key = (ref, check.latest, tuple(owning_files))
+                if (
+                    check.state != "update"
+                    or image_hold(image)
+                    or policy_key in conflicting_policies
+                ):
                     continue
                 cache_key = (ref, check.latest, tuple(owning_files))
                 if cache_key not in candidate_cache:

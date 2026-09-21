@@ -164,7 +164,10 @@
                 };
 
                 db = {
-                  source.services.db.image = "docker.io/library/postgres:latest";
+                  source.services.db.image = {
+                    ref = "docker.io/library/postgres:latest";
+                    hold = "database migration review required";
+                  };
                   exposedPorts.http.port = 15432;
                   verifyCommand = ["${pkgs.coreutils}/bin/true"];
                 };
@@ -299,7 +302,10 @@
               stackDir = "/srv/inherited";
               servicePrefix = "inherited-";
               instances.worker.source.services.worker = {
-                image = "docker.io/library/busybox:latest";
+                image = {
+                  ref = "docker.io/library/busybox:latest";
+                  hold = "quadlet image review required";
+                };
                 command = ["true"];
               };
             };
@@ -327,6 +333,32 @@
       ];
     }).config;
   invalidNativePreStopAssertions = builtins.filter (assertion: !assertion.assertion) invalidNativePreStopConfig.assertions;
+  invalidStructuredImage = builtins.tryEval (
+    builtins.deepSeq
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.podman-compose.demo.instances.db.source = lib.mkForce {
+            services.db.image = {
+              ref = "docker.io/library/postgres:latest";
+              hold = "";
+            };
+          };
+        }
+      ];
+    }).config.services.podman-compose.demo.instances.db.renderedSource
+    true
+  );
+  unheldStructuredImage =
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.podman-compose.demo.instances.db.source = lib.mkForce {
+            services.db.image.ref = "docker.io/library/postgres:latest";
+          };
+        }
+      ];
+    }).config.services.podman-compose.demo.instances.db;
   quadletOnlyConfig =
     (evalConfig.extendModules {
       modules = [
@@ -827,6 +859,11 @@ in
   assert appMetadata.preStop == ["-printf stop"];
   assert appMetadata.expectedComposeServices == ["web" "worker"];
   assert appMetadata.declaredImages == ["docker.io/library/nginx:latest" "docker.io/library/busybox:latest"];
+  assert db.renderedSource.services.db.image == "docker.io/library/postgres:latest";
+  assert db.imageUpdateHolds == {db = "database migration review required";};
+  assert !invalidStructuredImage.success;
+  assert unheldStructuredImage.renderedSource.services.db.image == "docker.io/library/postgres:latest";
+  assert unheldStructuredImage.imageUpdateHolds == {};
   assert builtins.length appComposeFiles == 3;
   assert builtins.elem "/srv/demo/app/compose.yml" appComposeFiles;
   assert builtins.elem "/srv/demo/app/__podman-env-secrets.override.yml" appComposeFiles;
@@ -920,6 +957,8 @@ in
     "demo-recreate-policy-verify.service"
   ];
   assert native.backend == "quadlet";
+  assert inheritedNative.renderedSource.services.worker.image == "docker.io/library/busybox:latest";
+  assert inheritedNative.imageUpdateHolds == {worker = "quadlet image review required";};
   assert native.nativeBundle != null;
   assert nativeUnit.wantedBy == [];
   assert nativeUnit.unitConfig.PartOf == ["tester-managed.target"];
@@ -1009,6 +1048,8 @@ in
       grep -F 'while [ "$SECONDS" -lt "$deadline" ]' ${appGeneratedProbePath}
       grep -F 'docker.io/library/nginx:latest' ${app.sourcePaths."compose.yml"}
       grep -F 'docker.io/library/busybox:latest' ${app.sourcePaths."compose.yml"}
+      grep -F 'docker.io/library/postgres:latest' ${db.sourcePaths."compose.yml"}
+      ! grep -Fq 'database migration review required' ${db.sourcePaths."compose.yml"}
       cmp ${textSource.sourcePaths."compose.yml"} ${sourceInlineTextFixture}
       cmp ${fileSource.sourcePaths."compose.yml"} ${sourceFile}
       grep -F 'FROM_SIDECAR' ${extended.pullSourcePaths."sidecar.yml"}

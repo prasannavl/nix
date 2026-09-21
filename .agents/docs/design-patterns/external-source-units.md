@@ -102,6 +102,36 @@ covers image pins: earlier phases of the outer update command may already have
 written their own dependency updates. Successful lookups and displayed update
 arrows do not authorize application upgrades or database migrations.
 
+### Inline image update holds
+
+Structured Nix Compose sources may attach a review boundary directly to an image
+declaration:
+
+```nix
+image = {
+  ref = "docker.io/example/database:1.2.3";
+  hold = "The next release requires a separate persisted-data migration.";
+};
+```
+
+An ordinary image string remains automatically updateable. The structured form
+contains exactly one current `ref` and, while held, one non-empty `hold` reason;
+it does not duplicate a current version, predict a target, or require a central
+policy catalog. The Podman Compose module renders only `ref` into Compose and
+exposes the hold as evaluated updater metadata. Removing `hold` re-enables
+automatic updates without moving the reference.
+
+The image updater still checks and reports the newest comparable tag for a held
+image, appends the reason to that occurrence, and excludes it from edit
+planning. Holds are per declaration, so another service may update the same
+registry reference independently. Conflicting held and automatic uses of one
+owning declaration are an error rather than a policy bypass.
+
+Use a hold when an image transition is coupled to package-owned artifacts,
+compatibility work, or an explicit state migration. Remove the hold only when
+that boundary has been reviewed; do not add registry-wide exceptions or hide a
+pin from discovery.
+
 The outer report command retains failures from serial and parallel package
 updaters, generic source reporters, flake metadata, and image reporting. Its
 final stderr footer names each failed job and exit status; a later successful

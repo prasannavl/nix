@@ -737,8 +737,16 @@ class PodmanImageUpdaterTest(unittest.TestCase):
             contexts,
             {
                 ("pvl", "pvl-x2", "pvl"): {
-                    "dockge": ["louislam/dockge:1.5.0"],
-                    "immich": ["docker.io/valkey/valkey:9"],
+                    "dockge": [
+                        podman_image_updater.ImageUse(
+                            "louislam/dockge:1.5.0", "dockge"
+                        )
+                    ],
+                    "immich": [
+                        podman_image_updater.ImageUse(
+                            "docker.io/valkey/valkey:9"
+                        )
+                    ],
                 },
             },
         )
@@ -775,8 +783,53 @@ class PodmanImageUpdaterTest(unittest.TestCase):
             contexts,
             {
                 ("pvl", "pvl-x2", "pvl"): {
-                    "remote": ["docker.io/library/nginx:1.29"],
+                    "remote": [
+                        podman_image_updater.ImageUse(
+                            "docker.io/library/nginx:1.29"
+                        )
+                    ],
                 },
+            },
+        )
+
+    def test_collect_images_keeps_inline_hold_with_its_service(self):
+        contexts = podman_image_updater.collect_images_by_context_and_instance(
+            {
+                "nixos-host": {
+                    "hostName": "abird-data",
+                    "stackName": "abird",
+                    "podmanSources": {
+                        "abird": {
+                            "graphiti": {
+                                "source": {
+                                    "services": {
+                                        "neo4j": {
+                                            "image": "docker.io/neo4j:5.26.26-community"
+                                        }
+                                    }
+                                },
+                                "imageUpdateHolds": {
+                                    "neo4j": "requires a store migration"
+                                },
+                            }
+                        }
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(
+            contexts,
+            {
+                ("abird", "abird-data", "abird"): {
+                    "graphiti": [
+                        podman_image_updater.ImageUse(
+                            "docker.io/neo4j:5.26.26-community",
+                            "neo4j",
+                            "requires a store migration",
+                        )
+                    ]
+                }
             },
         )
 
@@ -788,6 +841,36 @@ class PodmanImageUpdaterTest(unittest.TestCase):
         )
 
         self.assertEqual(line, "- dockge | louislam/dockge: 1.5.0 [latest]")
+
+    def test_inventory_reports_held_update_without_hiding_target(self):
+        ref = "docker.io/neo4j:5.26.26-community"
+        contexts = {
+            ("abird", "abird-data", "abird"): {
+                "graphiti": [
+                    podman_image_updater.ImageUse(
+                        ref,
+                        "neo4j",
+                        "requires a store migration",
+                    )
+                ]
+            }
+        }
+        checks = {
+            ref: podman_image_updater.ImageCheck(
+                ref,
+                "docker.io/neo4j",
+                "5.26.26-community",
+                "2026.08.1-community",
+                "update",
+            )
+        }
+
+        with mock.patch("builtins.print") as output:
+            podman_image_updater.print_inventory(contexts, checks, False)
+
+        rendered = "\n".join(call.args[0] for call in output.call_args_list)
+        self.assertIn("5.26.26-community -> 2026.08.1-community", rendered)
+        self.assertIn("[held: requires a store migration]", rendered)
 
     def test_collect_source_files_maps_flake_definitions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -844,6 +927,75 @@ class PodmanImageUpdaterTest(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(len(edits), 1)
         self.assertIn("docker.io/example/app:1.1.0", updated[source_file])
+
+    def test_plan_updates_skips_held_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source_file = pathlib.Path(directory) / "default.nix"
+            ref = "docker.io/neo4j:5.26.26-community"
+            source_file.write_text(f'image.ref = "{ref}";\n')
+            context = ("abird", "abird-data", "abird")
+            check = podman_image_updater.ImageCheck(
+                ref,
+                "docker.io/neo4j",
+                "5.26.26-community",
+                "2026.08.1-community",
+                "update",
+            )
+
+            edits, originals, errors = podman_image_updater.plan_updates(
+                {
+                    context: {
+                        "graphiti": [
+                            podman_image_updater.ImageUse(
+                                ref,
+                                "neo4j",
+                                "requires a store migration",
+                            )
+                        ]
+                    }
+                },
+                {context: {"graphiti": [source_file]}},
+                {ref: check},
+            )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(edits, [])
+        self.assertEqual(originals, {})
+
+    def test_plan_updates_rejects_mixed_policy_for_one_declaration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source_file = pathlib.Path(directory) / "default.nix"
+            ref = "docker.io/example/app:1.0.0"
+            source_file.write_text(f'image.ref = "{ref}";\n')
+            first = ("one", "host", "stack")
+            second = ("two", "host", "stack")
+            check = podman_image_updater.ImageCheck(
+                ref,
+                "docker.io/example/app",
+                "1.0.0",
+                "1.1.0",
+                "update",
+            )
+
+            edits, _, errors = podman_image_updater.plan_updates(
+                {
+                    first: {
+                        "app": [
+                            podman_image_updater.ImageUse(ref, "app", "held")
+                        ]
+                    },
+                    second: {"app": [podman_image_updater.ImageUse(ref, "app")]},
+                },
+                {
+                    first: {"app": [source_file]},
+                    second: {"app": [source_file]},
+                },
+                {ref: check},
+            )
+
+        self.assertEqual(edits, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("conflicting held and automatic uses", errors[0])
 
     def test_plan_updates_distinguishes_image_reference_prefixes(self):
         with tempfile.TemporaryDirectory() as directory:

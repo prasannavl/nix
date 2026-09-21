@@ -3380,12 +3380,49 @@ in {
                   && builtins.isAttrs rawSourceCompose.services
                 then rawSourceCompose.services
                 else {};
-              imageValueRef = imageValue:
+              structuredImageValue = imageValue:
+                builtins.isAttrs imageValue && !lib.isDerivation imageValue;
+              imageValueRef = composeServiceName: imageValue:
                 if lib.isDerivation imageValue
                 then localImagePackageRef imageValue
                 else if builtins.isString imageValue
                 then imageValue
+                else if structuredImageValue imageValue
+                then
+                  if
+                    builtins.elem (builtins.attrNames imageValue) [
+                      ["ref"]
+                      ["hold" "ref"]
+                    ]
+                    && builtins.isString imageValue.ref
+                    && imageValue.ref != ""
+                    && (
+                      !(imageValue ? hold)
+                      || (builtins.isString imageValue.hold && imageValue.hold != "")
+                    )
+                  then imageValue.ref
+                  else
+                    throw ''
+                      services.podman-compose.${stackName}.instances.${serviceName}.source.services.${composeServiceName}.image:
+                      a structured image must contain a non-empty string `ref` and an optional non-empty string `hold`.
+                    ''
                 else null;
+              imageValueHold = composeServiceName: imageValue:
+                if structuredImageValue imageValue
+                then let
+                  checkedRef = imageValueRef composeServiceName imageValue;
+                in
+                  builtins.seq checkedRef (imageValue.hold or null)
+                else null;
+              sourceImageUpdateHolds = lib.filterAttrs (_: hold: hold != null) (
+                lib.mapAttrs (
+                  composeServiceName: composeService:
+                    if builtins.isAttrs composeService && builtins.hasAttr "image" composeService
+                    then imageValueHold composeServiceName composeService.image
+                    else null
+                )
+                rawSourceComposeServices
+              );
               autoPackageLocalImageEntries = lib.filter (entry: entry != null) (
                 lib.mapAttrsToList (
                   _: composeService:
@@ -3404,9 +3441,9 @@ in {
                   then
                     lib.filter (imageRef: imageRef != null) (
                       lib.mapAttrsToList (
-                        _: composeService:
+                        composeServiceName: composeService:
                           if builtins.isAttrs composeService && builtins.hasAttr "image" composeService
-                          then imageValueRef composeService.image
+                          then imageValueRef composeServiceName composeService.image
                           else null
                       )
                       rawSourceComposeServices
@@ -3436,28 +3473,33 @@ in {
                   suffix = builtins.elemAt match 2;
                 in "${prefix}${rewriteComposeImageRef imageRef}${suffix}"
                 else line;
-              rewriteComposeServiceImage = composeService:
+              rewriteComposeServiceImage = composeServiceName: composeService:
                 if builtins.isAttrs composeService && builtins.hasAttr "image" composeService
-                then let
-                  rewrittenImage = rewriteComposeImageRef (imageValueRef composeService.image);
-                in
-                  if rewrittenImage == null
+                then
+                  if normalizedService.backend == "quadlet" && !structuredImageValue composeService.image
                   then composeService
-                  else composeService // {image = rewrittenImage;}
+                  else let
+                    imageRef = imageValueRef composeServiceName composeService.image;
+                    renderedImage =
+                      if normalizedService.backend == "quadlet"
+                      then imageRef
+                      else rewriteComposeImageRef imageRef;
+                  in
+                    if renderedImage == null
+                    then composeService
+                    else composeService // {image = renderedImage;}
                 else composeService;
               sourceCompose =
-                if normalizedService.backend == "quadlet"
-                then rawSourceCompose
-                else if
+                if
                   builtins.isAttrs rawSourceCompose
                   && builtins.hasAttr "services" rawSourceCompose
                   && builtins.isAttrs rawSourceCompose.services
                 then
                   rawSourceCompose
                   // {
-                    services = lib.mapAttrs (_: rewriteComposeServiceImage) rawSourceCompose.services;
+                    services = lib.mapAttrs rewriteComposeServiceImage rawSourceCompose.services;
                   }
-                else if builtins.isString rawSourceCompose
+                else if normalizedService.backend != "quadlet" && builtins.isString rawSourceCompose
                 then lib.concatStringsSep "\n" (map rewriteComposeImageTextLine (lib.splitString "\n" rawSourceCompose))
                 else rawSourceCompose;
               sourceTextComposeServices =
@@ -3880,6 +3922,7 @@ in {
                 envSecretRuntimePaths = envSecretRuntimePaths;
                 knownSourceComposeServices = knownSourceComposeServices;
                 declaredImages = sourceDeclaredImages;
+                imageUpdateHolds = sourceImageUpdateHolds;
                 localImageMetadata = localImageMetadata;
                 nativeBundle = nativeBundle;
                 verifyCommand =
