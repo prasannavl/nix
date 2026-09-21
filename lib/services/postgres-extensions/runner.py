@@ -77,24 +77,49 @@ def run_command(command: list[str], timeout: int, guard=None) -> subprocess.Comp
         raise
 
 
+def numeric_version(version):
+    if not isinstance(version, str) or not re.fullmatch(r"\d+(?:\.\d+)+", version):
+        return None
+    return tuple(map(int, version.split(".")))
+
+
+def upgrade_from(rule: dict):
+    if "upgradeFrom" in rule and "sources" in rule:
+        raise ValueError("Policy may use upgradeFrom or legacy sources, not both")
+    return rule.get("upgradeFrom", rule.get("sources"))
+
+
 def validate_policy(policy: dict) -> None:
     if not isinstance(policy.get("image"), str) or not policy["image"]:
         raise ValueError("Policy must pin the container image")
     if not isinstance(policy.get("postgresMajor"), int):
         raise ValueError("Policy must pin the PostgreSQL major")
     if not isinstance(policy.get("extensions"), dict) or not policy["extensions"]:
-        raise ValueError("Policy must pin extension targets and reviewed source versions")
+        raise ValueError("Policy must pin extension targets")
     for name, rule in policy["extensions"].items():
         if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
             raise ValueError(f"Invalid extension name: {name}")
-        target, sources = rule["target"], rule["sources"]
-        if not isinstance(sources, list) or not sources:
-            raise ValueError(f"No reviewed source versions for {name}")
-        versions = [target, *sources]
-        if any(not isinstance(v, str) or not re.fullmatch(r"\d+(?:\.\d+)+", v) for v in versions):
-            raise ValueError(f"Only explicit numeric release versions are supported: {name}")
-        if any(tuple(map(int, v.split("."))) > tuple(map(int, target.split("."))) for v in sources):
-            raise ValueError(f"Downgrades are not permitted: {name}")
+        if not isinstance(rule, dict):
+            raise ValueError(f"Extension policy must be an object: {name}")
+        unknown = set(rule) - {"target", "upgradeFrom", "sources"}
+        if unknown:
+            raise ValueError(f"Unsupported extension policy fields for {name}: {sorted(unknown)}")
+        target = rule.get("target")
+        target_version = numeric_version(target)
+        if target_version is None:
+            raise ValueError(f"Extension target must be an explicit numeric version: {name}")
+        allowed = upgrade_from(rule)
+        if allowed is None:
+            continue
+        if not isinstance(allowed, list) or not allowed:
+            raise ValueError(f"upgradeFrom must be a non-empty version list: {name}")
+        versions = [numeric_version(version) for version in allowed]
+        if any(version is None for version in versions):
+            raise ValueError(f"upgradeFrom must contain numeric versions: {name}")
+        if any(current >= following for current, following in zip(versions, versions[1:])):
+            raise ValueError(f"upgradeFrom must be strictly increasing: {name}")
+        if any(version >= target_version for version in versions):
+            raise ValueError(f"upgradeFrom versions must be older than target: {name}")
 
 
 def migration_order(installed: dict, dependencies: list, policy: dict) -> list[str]:
@@ -233,8 +258,21 @@ SELECT coalesce(json_agg(datname ORDER BY datname), '[]') FROM pg_database WHERE
             source = state["installed"][name]
             rule = policy["extensions"][name]
             target = rule["target"]
-            if source != target and source not in rule["sources"]:
-                raise RuntimeError(f"{db}/{name}: unreviewed source version {source}")
+            source_version = numeric_version(source)
+            target_version = numeric_version(target)
+            if source_version is None:
+                raise RuntimeError(f"{db}/{name}: installed version is not numeric: {source}")
+            if source_version > target_version:
+                raise RuntimeError(
+                    f"{db}/{name}: installed version {source} is newer than target {target}; "
+                    "downgrade prohibited"
+                )
+            allowed = upgrade_from(rule)
+            if source != target and allowed is not None and source not in allowed:
+                raise RuntimeError(
+                    f"{db}/{name}: installed version {source} is not permitted by "
+                    f"upgradeFrom for target {target}"
+                )
             path = database.query(db, f"""
 SELECT json_build_object(
   'available', EXISTS(SELECT FROM pg_available_extension_versions

@@ -78,6 +78,16 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual({s["database"] for s in steps}, {"abird", "postgres", "template1"})
         self.assertEqual(self.database.writes, [])
 
+    def test_target_only_policy_uses_catalog_version_and_update_path(self):
+        policy = copy.deepcopy(POLICY)
+        for rule in policy["extensions"].values():
+            rule.pop("sources")
+        runner.migrate(self.database, policy, True)
+        self.assertEqual(len(self.database.writes), 9)
+        self.database.writes.clear()
+        runner.migrate(self.database, policy, True)
+        self.assertEqual(self.database.writes, [])
+
     def test_apply_only_installed_in_dependency_order_and_rerun_noops(self):
         runner.migrate(self.database, POLICY, True)
         names = [name for db, name, _ in self.database.writes if db == "abird"]
@@ -96,8 +106,17 @@ class MigrationTests(unittest.TestCase):
 
     def test_unreviewed_newer_source_is_not_downgraded(self):
         self.database.states["abird"]["vector"] = "0.9.0"
-        with self.assertRaisesRegex(RuntimeError, "unreviewed source"):
+        with self.assertRaisesRegex(RuntimeError, "downgrade prohibited"):
             runner.migrate(self.database, POLICY, True)
+        self.assertEqual(self.database.writes, [])
+
+    def test_optional_upgrade_from_restricts_catalog_source(self):
+        policy = copy.deepcopy(POLICY)
+        for rule in policy["extensions"].values():
+            rule.pop("sources")
+        policy["extensions"]["vector"]["upgradeFrom"] = ["0.8.1"]
+        with self.assertRaisesRegex(RuntimeError, "not permitted by upgradeFrom"):
+            runner.migrate(self.database, policy, True)
         self.assertEqual(self.database.writes, [])
 
     def test_unavailable_target_blocks_all_writes(self):
@@ -130,9 +149,15 @@ class MigrationTests(unittest.TestCase):
                 runner.migrate(db, POLICY, True)
             self.assertEqual(db.writes, [])
 
-    def test_policy_rejects_invalid_name_and_downgrade(self):
-        for rules in [{"bad;sql": {"target": "1.2", "sources": ["1.1"]}},
-                      {"vector": {"target": "0.8.6", "sources": ["0.9.0"]}}]:
+    def test_policy_rejects_invalid_name_and_upgrade_restrictions(self):
+        for rules in [
+            {"bad;sql": {"target": "1.2"}},
+            {"vector": {"target": "0.8.6", "upgradeFrom": ["0.9.0"]}},
+            {"vector": {"target": "0.8.6", "upgradeFrom": ["0.8.2", "0.8.1"]}},
+            {"vector": {"target": "0.8.6", "upgradeFrom": []}},
+            {"vector": {"target": "0.8.6", "sources": ["0.8.2"], "upgradeFrom": ["0.8.2"]}},
+            {"vector": {"target": "0.8.6", "upgrade_from": ["0.8.2"]}},
+        ]:
             policy = copy.deepcopy(POLICY)
             policy["extensions"] = rules
             with self.assertRaises(ValueError):
