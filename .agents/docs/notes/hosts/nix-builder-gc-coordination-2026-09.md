@@ -51,8 +51,11 @@ contract and must not be used during fleet builds.
 ## Admission and recovery
 
 The role defaults `max-jobs = 1` and leaves `cores = 0`, admitting one
-derivation with the builder's effective CPU set. Future builder hosts inherit
-both admission and GC coordination by importing the role.
+derivation with the builder's effective CPU set. It also defaults
+`http-connections = 8`, retaining useful substitute concurrency without letting
+Nix's higher default overwhelm a constrained shared builder or network path.
+Future builder hosts inherit admission, transfer, and GC coordination by
+importing the role.
 
 The controller records only a process-local lease epoch. If the invocation lease
 is lost before a closure crosses the builder-dependency boundary, it reacquires

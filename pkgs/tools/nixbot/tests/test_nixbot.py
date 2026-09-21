@@ -1,9 +1,11 @@
 import json
 import os
+import signal
 import shutil
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -4165,9 +4167,66 @@ EOF_SCRIPT
         self.assertIn("/nix/var/nix", events[2])
         self.assertIn(" nix build ", events[2])
         self.assertNotIn("abird-nix-build-lease", events[2])
-        self.assertIn("--print-out-paths --no-link", events[2])
+        self.assertIn("--print-out-paths --no-link --fallback", events[2])
         self.assertNotIn(" -o ", events[2])
         self.assertEqual(["lease", "cache"], events[3:])
+
+    def test_build_job_interrupt_reaches_supervised_remote_build(self):
+        marker = self.work_dir / "build-started"
+        status = self.work_dir / "build.status"
+        output = self.work_dir / "build.path"
+        runtime = self.work_dir / "runtime"
+        diagnostics = self.work_dir / "diagnostics"
+        body = textwrap.dedent(
+            f"""
+            set -Eeuo pipefail
+            source {self.test_script}
+            init_vars
+            RUNTIME_WORK_ROOT={runtime}
+            RUNTIME_WORK_FALLBACK_ROOT={runtime}-fallback
+            RUNTIME_WORK_DIR={runtime}/run-test
+            NIXBOT_DIAG_DIR={diagnostics}/diag-test
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            FORCE_PREFIX_HOST_LOGS=0
+            trap : INT
+            resolve_build_out_path() {{
+              : >{marker}
+              local captured=""
+              run_supervised_stdout_capture captured "" \
+                bash -c 'trap "" INT; sleep 30'
+            }}
+            set +e
+            run_build_job app {output} {status}
+            rc="$?"
+            set -e
+            exit "$rc"
+            """
+        )
+        env = os.environ.copy()
+        env["NIXBOT_HOST_AGENT"] = str(self.work_dir / "missing-host-agent")
+        env.pop("GITHUB_TOKEN", None)
+        env.pop("GH_TOKEN", None)
+        process = subprocess.Popen(
+            ["bash", "-c", body],
+            cwd=self.repo_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 3
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(marker.exists(), "build worker did not start")
+        os.killpg(process.pid, signal.SIGINT)
+        try:
+            stdout, stderr = process.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            stdout, stderr = process.communicate()
+            self.fail(f"interrupted build worker remained alive: {stdout=} {stderr=}")
+        self.assertEqual(130, process.returncode, stderr)
 
     def test_remote_build_recovery_rejects_changed_output_path(self):
         result = self.run_script(

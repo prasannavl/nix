@@ -127,10 +127,13 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   the interactive formatter.
 - Parallel remote builds prewarm the build-host SSH ControlMaster before fanout
   so per-host builds reuse the same socket instead of racing to create it.
-- Remote builds use `--eval-store auto` with `--store ssh-ng://<build-host>`.
-  Evaluation should stay local while realization happens on the build host;
-  otherwise Nix can spend minutes materializing evaluation inputs through the
-  remote store before the build host has CPU-heavy derivation work.
+- Remote builds use `--eval-store auto`, `--store ssh-ng://<build-host>`, and
+  `--fallback`. Evaluation stays local, realization prefers the selected remote
+  builder, and unavailable substitutes fall back to building instead of
+  terminating the deployment boundary prematurely. Evaluation should stay local
+  while realization happens on the build host; otherwise Nix can spend minutes
+  materializing evaluation inputs through the remote store before the build host
+  has CPU-heavy derivation work.
 - Remote deploy builds default to `--build-host-deploy-mode auto`, resolved per
   target. A target behind `proxyJump` or `proxyCommand` uses `local-copy`
   because operator reachability does not imply that the target can resolve or

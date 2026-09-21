@@ -39,6 +39,7 @@
 in
   assert config.nix.settings.min-free == 0;
   assert config.nix.settings.max-jobs == 1;
+  assert config.nix.settings.http-connections == 8;
   assert !(lib.any (package: lib.hasInfix "abird-nix-build-lease" package.name) config.environment.systemPackages);
   assert !(builtins.any (lib.hasInfix "abird-nix-store-gc.lock") config.systemd.tmpfiles.rules);
   assert lib.hasInfix "flock --exclusive 9" config.systemd.services.nix-gc.script;

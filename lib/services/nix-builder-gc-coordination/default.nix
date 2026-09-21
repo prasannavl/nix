@@ -26,8 +26,12 @@ in {
 
     nix.settings = {
       # The cache builder is a shared failure domain. Admit one derivation at a
-      # time while leaving `cores = 0` to give it the effective CPU set.
+      # time while leaving `cores = 0` to give it the effective CPU set. Cap
+      # substitute concurrency below Nix's default of 25 so large cache
+      # downloads cannot overwhelm the constrained guest/network path, while
+      # retaining useful parallel transfer throughput.
       max-jobs = lib.mkDefault 1;
+      http-connections = lib.mkDefault 8;
       # Nix daemon free-space GC cannot participate in this advisory lock. Keep
       # collection owned by the guarded scheduled and host-agent entrypoints.
       min-free = 0;

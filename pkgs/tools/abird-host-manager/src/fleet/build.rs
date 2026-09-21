@@ -329,6 +329,7 @@ pub fn remote_build_command(nix: &str, drv: &NixStorePath, build: &BuildArgs) ->
     let mut args = Vec::new();
     append_build_prefix(&mut args, build);
     args.push("--no-link".to_owned());
+    args.push("--fallback".to_owned());
     if build.build_logs {
         args.push("-L".to_owned());
     }

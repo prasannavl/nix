@@ -8091,7 +8091,7 @@ run_streamed_host_command() {
 
 run_build_job() {
 	local node="$1" out_file="$2" status_file="$3" log_file="${4:-}"
-	local build_start_epoch="" built_out_path="" duration_file="" duration_secs=""
+	local build_start_epoch="" built_out_path="" capture_file="" duration_file="" duration_secs=""
 	local result_link="" rc="" safe_node=""
 
 	safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")"
@@ -8101,19 +8101,26 @@ run_build_job() {
 	(
 		set +e
 		build_start_epoch="$(date +%s)"
+		capture_file="$(tmp_runtime_mktemp stdout "build-output.${safe_node}.XXXXXX")"
+		: >"${capture_file}"
 		if [ -n "${log_file}" ]; then
-			built_out_path="$(resolve_build_out_path "${node}" "${result_link}" \
-				2> >(tee_host_log_filter "${node}" "${log_file}" build >&2))"
+			resolve_build_out_path "${node}" "${result_link}" \
+				>"${capture_file}" \
+				2> >(tee_host_log_filter "${node}" "${log_file}" build >&2)
 			rc="$?"
-			if [ "${rc}" = "0" ] && [ -n "${built_out_path}" ]; then
-				printf '%s\n' "${built_out_path}" | append_host_log_filter "${node}" "${log_file}" build
-			fi
 		elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-			built_out_path="$(resolve_build_out_path "${node}" "${result_link}" 2> >(host_log_filter "${node}" build >&2))"
+			resolve_build_out_path "${node}" "${result_link}" \
+				>"${capture_file}" \
+				2> >(host_log_filter "${node}" build >&2)
 			rc="$?"
 		else
-			built_out_path="$(resolve_build_out_path "${node}" "${result_link}")"
+			resolve_build_out_path "${node}" "${result_link}" >"${capture_file}"
 			rc="$?"
+		fi
+		built_out_path="$(<"${capture_file}")"
+		rm -f "${capture_file}"
+		if [ "${rc}" = "0" ] && [ -n "${log_file}" ] && [ -n "${built_out_path}" ]; then
+			printf '%s\n' "${built_out_path}" | append_host_log_filter "${node}" "${log_file}" build
 		fi
 		if [ "${rc}" = "0" ]; then
 			printf '%s\n' "${built_out_path}" >"${out_file}"
@@ -12397,6 +12404,7 @@ realize_remote_build_output_guarded() {
 		auto
 		--print-out-paths
 		--no-link
+		--fallback
 	)
 	if [ "${BUILD_LOGS}" -eq 1 ]; then
 		build_cmd+=(-L)

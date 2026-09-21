@@ -205,6 +205,7 @@ fn remote_build_is_unrooted_and_preserves_build_arguments() {
         "/nix/store/abc-system.drv^out"
     );
     assert!(command.args.contains(&"--no-link".to_owned()));
+    assert!(command.args.contains(&"--fallback".to_owned()));
     assert!(!command.args.contains(&"-o".to_owned()));
 }
 

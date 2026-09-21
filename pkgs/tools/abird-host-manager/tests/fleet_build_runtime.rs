@@ -57,6 +57,7 @@ fn command_plan_is_unrooted_and_preserves_nix_arguments() {
             "false",
             "--print-out-paths",
             "--no-link",
+            "--fallback",
             "-L",
             "/nix/store/abc-system.drv^out",
         ]
