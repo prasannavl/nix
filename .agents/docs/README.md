@@ -403,8 +403,8 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Reviews
 
-- `.agents/docs/notes/reviews/ai-selection-runtime-hardening-2026-09.md`:
-  AI remediation and policy-worktree comparison covering the single resolver,
+- `.agents/docs/notes/reviews/ai-selection-runtime-hardening-2026-09.md`: AI
+  remediation and policy-worktree comparison covering the single resolver,
   configured backend membership, causal topology diagnostics, cache isolation,
   pure preset rendering, PrismML correctness, and fail-closed NATS streams.
 - `.agents/docs/notes/reviews/architecture-review-followups.md`: Condensed
