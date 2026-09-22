@@ -42,6 +42,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   and direct `/nix/store` mounts for read-only package content.
 - `.agents/docs/design-patterns/prefer-defaults.md`: Prefer upstream defaults
   for infra and runtime knobs unless there is a demonstrated reason to override.
+- `.agents/docs/design-patterns/repository-module-composition.md`: Canonical
+  repository and stack module registry, selection, validation, package-adapter,
+  and evaluation-cycle boundaries.
 - `.agents/docs/design-patterns/stack-first-environments.md`: Stack-first
   environment, service-registry, package-boundary, and deferred-consumer rules.
 - `.agents/docs/design-patterns/tunnels-and-static-origins.md`: Tunnel edge-IP
@@ -489,8 +492,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 - `.agents/docs/notes/tooling/abird-post-b8a-parity-repeat-2026-09.md`:
   Seven-commit reciprocal Abird audit through `28631f93`, exact reverse-port
-  verification, phase 1 convergence, the reduced 15-path incompatibility
-  surface, and the ordered convergence sequence.
+  verification, completed phases 1, 2, 3, 4, and 6, the explicitly skipped
+  platform-policy abstraction, the reduced 13-path incompatibility surface, and
+  the ordered convergence sequence.
 - `.agents/docs/notes/tooling/abird-post-1b64-port-2026-09.md`: Complete
   33-commit Abird audit through `b8a766ed`, four shared logical ports,
   per-commit dispositions, Pvl adaptations, validation, and final byte/mode

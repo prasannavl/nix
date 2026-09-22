@@ -267,10 +267,10 @@ Implemented in the pvl repo:
 - `--deploy-host`, `NIXBOT_DEPLOY_HOST`, hidden `remote-activate`, and
   `--system-path` were removed from `pkgs/tools/nixbot/nixbot.sh` and Bash
   completion.
-- `hosts/nixbot.nix` now declares `globals.ci.host = "pvl-x2"`,
-  `globals.buildCache.host = "pvl-x2"`,
-  `globals.buildCache.url = "http://pvl-x2:5000"`, and the managed `repoUrl`.
-  The pvl builder URL is explicit so cache verification does not follow local
+- `hosts/nixbot.nix` owns `config.controller = "pvl-x2"`,
+  `config.registries.nix.host = "pvl-x2"`,
+  `config.registries.nix.url = "http://pvl-x2:5000"`, and the managed `repoUrl`.
+  The Pvl builder URL is explicit so cache verification does not follow local
   SSH transport overrides.
 - `pvl-x2` owns signing and cache publishing through
   `nix.settings.secret-key-files` and `services.harmonia`.
@@ -280,9 +280,14 @@ Implemented in the pvl repo:
 - The peer Abird public key material is recorded at
   `data/secrets/globals/nix/builder-abird.pub`; this repo does not own the
   private Abird signing key.
-- `lib/nix.nix` configures all hosts to use the local pvl cache URL
-  `http://pvl-x2:5000` and to trust both the `pvl-1` and `abird-1` public
-  signing keys. The pvl repo intentionally does not configure the peer Abird
+- Root `flake.nix` passes the complete inventory-owned `registries` attrset as
+  `repoRegistry`. Shared `lib/flake/root.nix` projects the `nix` entry and
+  injects only that normalized registry record through `specialArgs`.
+  Byte-identical `lib/nix.nix` consumes its `url`, prepends that local URL, and
+  owns the common `abird-1`, `pvl-1`, nix-community, and Numtide trust catalog.
+  Future registry types can receive their own root-level projections without
+  widening the root flake interface or teaching consumers about the outer
+  inventory shape. The Pvl repo intentionally does not configure the peer Abird
   cache URL.
 - Deploy actions with non-local `--build-host` now require a configured builder
   cache, verify cache visibility from the local orchestrator, make the target
