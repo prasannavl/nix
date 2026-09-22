@@ -16,15 +16,15 @@ in {
           llama-router:
             image: ghcr.io/ggml-org/llama.cpp:server-rocm-v0.4.1
             container_name: llama-router
-            # Two resident workers keep the embedding model co-resident with
-            # a chat model (an /embeddings request no longer LRU-evicts the
-            # chat worker); the poll = 0 presets keep idle residents off the
-            # GPU.
+            # Three resident workers let the embedding model co-reside with
+            # up to two chat models (an /embeddings request no longer
+            # LRU-evicts a chat worker); the poll = 0 presets plus
+            # sleep-idle-seconds keep idle workers off the GPU.
             command:
               - --models-preset
               - /etc/llama-router/models.ini
               - --models-max
-              - "2"
+              - "3"
             ports:
               - "${toString exposedPorts.main.port}:8080"
             volumes:
@@ -54,14 +54,14 @@ in {
           llama-router:
             image: ghcr.io/ggml-org/llama.cpp:server-cuda-v0.4.1
             container_name: llama-router-nvidia
-            # Two resident workers for the same co-residency reason as the
-            # AMD variant; the poll = 0 presets keep idle residents from
-            # busy-polling the GPU.
+            # Three resident workers for the same co-residency reason as the
+            # AMD variant; the poll = 0 presets plus sleep-idle-seconds keep
+            # idle workers from busy-polling the GPU.
             command:
               - --models-preset
               - /etc/llama-router/models.ini
               - --models-max
-              - "2"
+              - "3"
             ports:
               - "${toString exposedPorts.main.port}:8080"
             volumes:

@@ -35,16 +35,22 @@
 
       # Same AMD/NVIDIA pair as Ollama: the ROCm router auto-starts, the
       # CUDA router is warmed by hand. Both share one GGUF cache (module
-      # default /var/lib/pvl/ai/llama-router).
-      llamaRouter.deployments = [
-        {
-          lifecycle = "auto";
-        }
-        {
-          instance = "llama-router-nvidia";
-          lifecycle = "manual";
-        }
-      ];
+      # default /var/lib/pvl/ai/llama-router). idleTimeoutSeconds unloads a
+      # model's weights/KV cache once it goes unused, so a large resident
+      # model is swapped out like Ollama's keep_alive instead of waiting for
+      # a fourth-model LRU eviction.
+      llamaRouter = {
+        idleTimeoutSeconds = 300;
+        deployments = [
+          {
+            lifecycle = "auto";
+          }
+          {
+            instance = "llama-router-nvidia";
+            lifecycle = "manual";
+          }
+        ];
+      };
     };
   };
 }

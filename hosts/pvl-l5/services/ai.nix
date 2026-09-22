@@ -32,18 +32,24 @@
           }
         ];
       };
-      llamaRouter.deployments = [
-        {
-          # AMD/ROCm router, mirroring the Ollama pair: declaratively
-          # stopped, started by hand for GPU sessions.
-          lifecycle = "stopped";
-        }
-        {
-          # NVIDIA/CUDA router on the same shared cache.
-          instance = "llama-router-nvidia";
-          lifecycle = "stopped";
-        }
-      ];
+      llamaRouter = {
+        # Unload a model's weights/KV cache after it goes unused, so a large
+        # resident model is swapped out like Ollama's keep_alive instead of
+        # waiting for a fourth-model LRU eviction.
+        idleTimeoutSeconds = 300;
+        deployments = [
+          {
+            # AMD/ROCm router, mirroring the Ollama pair: declaratively
+            # stopped, started by hand for GPU sessions.
+            lifecycle = "stopped";
+          }
+          {
+            # NVIDIA/CUDA router on the same shared cache.
+            instance = "llama-router-nvidia";
+            lifecycle = "stopped";
+          }
+        ];
+      };
     };
   };
 }
