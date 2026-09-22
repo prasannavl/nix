@@ -23,6 +23,16 @@
     "AI catalog model ${entry.id or "<unknown>"} requires ${backend} to be a non-empty string or an attrset with a non-empty string ref";
       config.ref;
 
+  # Which llama.cpp engine serves an entry. The `llama.runtime` selector is
+  # engine data, not a preset, so it lives beside `ref`/`preset`; omitting it
+  # selects the default runtime (`default`), which is the upstream build.
+  llamaRuntime = entry: let
+    config = backendConfig "llama" entry;
+  in
+    if builtins.isAttrs config && (config ? runtime)
+    then config.runtime
+    else "default";
+
   llamaPresetFor = entry: let
     config = backendConfig "llama" entry;
     configValid = validBackendConfig config;
@@ -48,6 +58,7 @@
     "AI catalog model ${entry.id or "<unknown>"} requires string llama.preset values: ${lib.concatStringsSep ", " invalidValueKeys}"; preset;
 in {
   inherit backendConfig catalog missingKeysFrom normalizeBackend;
+  inherit llamaRuntime;
 
   # Catalog keys in a host selection that do not exist in the catalog.
   missingKeys = missingKeysFrom catalog;

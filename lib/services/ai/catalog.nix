@@ -9,9 +9,22 @@
   #   hf     - the upstream Hugging Face safetensors repo (vLLM/SGLang)
   #   ollama - the Ollama tag served by Ollama backends
   #   llama  - the GGUF reference plus optional llama.cpp router preset
+  #            (llama.runtime selects the engine: the default upstream build
+  #            `default`, or a named fork runtime such as `prism`)
   #   pinned - surfaced as a default-pinned model by Web UI consumers
   # GGUF conversions live in separate repos under different orgs (unsloth,
   # ornith-ai, nomic-ai, ggml-org), so the mapping is declared, not derived.
+  bonsai-2-27b = {
+    id = "bonsai2:27b";
+    hf = "prism-ml/Ternary-Bonsai-2-27B";
+    # Ternary-weight model that only the PrismML llama.cpp fork loads, so it
+    # is pinned to the `prism` runtime and has no Ollama reference.
+    llama = {
+      ref = "prism-ml/Ternary-Bonsai-2-27B-gguf:PTQ1_0";
+      runtime = "prism";
+      preset.jinja = "true";
+    };
+  };
   nomic-embed-text = {
     id = "nomic-embed-text";
     hf = "nomic-ai/nomic-embed-text-v1.5";

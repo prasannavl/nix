@@ -8,6 +8,7 @@
   # builtins.attrNames returns sorted order; the assertion pins that
   # semantic because reconciler order derives from it for full-catalog hosts.
   expectedKeys = [
+    "bonsai-2-27b"
     "gemma4-12b"
     "gemma4-26b"
     "gemma4-31b"
@@ -65,6 +66,13 @@ in
   assert aiLib.missingRefs "ollama" hostEntries == [];
   assert aiLib.missingRefs "llama" hostEntries == [];
   assert aiLib.missingRefs "nonexistent" hostEntries == hostEntries;
+  assert aiLib.llamaRuntime catalog.bonsai-2-27b == "prism";
+  assert aiLib.llamaRuntime catalog.gemma4-e2b == "default";
+  assert aiLib.llamaRuntime {
+    id = "inline";
+    llama = "example/inline-GGUF:Q4_K_M";
+  }
+  == "default";
   assert builtins.all (key: catalog.${key}.llama.preset.jinja == "true") chatKeys;
   assert builtins.isString catalog.nomic-embed-text.llama;
   assert aiLib.backendConfig "ollama" catalog.gemma4-e2b == {ref = "gemma4:e2b";};

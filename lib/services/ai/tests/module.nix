@@ -1,6 +1,7 @@
 {pkgs}: let
   lib = pkgs.lib;
   inherit (lib) mkOption types;
+  aiLib = import ../default.nix {inherit lib;};
 
   exposedPortType = types.submodule {
     options.port = mkOption {type = types.port;};
@@ -105,6 +106,16 @@
     "qwen35-4b"
     "qwen35-9b"
   ];
+  llamaRefs = [
+    "nomic-ai/nomic-embed-text-v1.5-GGUF:Q4_K_M"
+    "unsloth/gemma-4-E2B-it-GGUF:Q4_K_M"
+    "unsloth/gemma-4-E4B-it-GGUF:Q4_K_M"
+    "unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M"
+    "unsloth/Qwen3.5-2B-GGUF:Q4_K_M"
+    "unsloth/Qwen3.5-4B-GGUF:Q4_K_M"
+    "unsloth/Qwen3.5-9B-GGUF:Q4_K_M"
+  ];
+  bonsaiRef = "prism-ml/Ternary-Bonsai-2-27B-gguf:PTQ1_0";
 
   baseInstances = {
     ollama = {
@@ -119,6 +130,10 @@
     llama-router = {
       source = "llama-router";
       exposedPorts.main.port = 11000;
+    };
+    llama-router-prism = {
+      source = "llama-router-prism";
+      exposedPorts.main.port = 13000;
     };
   };
 
@@ -141,7 +156,7 @@
             }
           ];
         };
-        llamaRouter.deployments = [
+        llamaRouter.runtimes.default.deployments = [
           {
             lifecycle = "manual";
           }
@@ -158,9 +173,6 @@
   cfg = eval baseConfig;
   allAssertionsHold = value: builtins.all (assertion: assertion.assertion) value.assertions;
 
-  badKeyCfg = lib.recursiveUpdate baseConfig {
-    services.ai.backends.ollama.models = models ++ ["gemma99-typo"];
-  };
   badRoleCfg = lib.recursiveUpdate baseConfig {
     services.ai.roles.main = "gemma4-26b";
   };
@@ -178,7 +190,7 @@
         };
     };
   crossBackendNameCollisionCfg = lib.recursiveUpdate baseConfig {
-    services.ai.backends.llamaRouter.deployments = [
+    services.ai.backends.llamaRouter.runtimes.default.deployments = [
       {
         instance = "ollama";
         lifecycle = "manual";
@@ -197,38 +209,68 @@
   autoCfg = lib.recursiveUpdate baseConfig {
     services.ai.backends = {
       ollama.deployments = [{instance = "ollama";}];
-      llamaRouter.deployments = [{}];
-    };
-  };
-  backendSpecificCfg = lib.recursiveUpdate baseConfig {
-    services.ai = {
-      catalog = {
-        only-ollama = {
-          id = "only-ollama";
-          ollama = "only-ollama:1";
-        };
-        only-llama = {
-          id = "only-llama";
-          llama = "example/only-llama-GGUF:Q4_K_M";
-        };
-      };
-      models = [];
-      roles = {
-        main = "only-ollama";
-        embedding = null;
-      };
-      backends = {
-        ollama.models = ["only-ollama"];
-        llamaRouter.models = ["only-llama"];
-      };
+      llamaRouter.runtimes.default.deployments = [{}];
     };
   };
   customLlamaCacheCfg = lib.recursiveUpdate baseConfig {
-    services.ai.backends.llamaRouter.cacheDir = "/mnt/models/llama-router";
+    services.ai.backends.llamaRouter.runtimes.default.cacheDir = "/mnt/models/llama-router";
   };
   idleTimeoutCfg = lib.recursiveUpdate baseConfig {
-    services.ai.backends.llamaRouter.idleTimeoutSeconds = 300;
+    services.ai.backends.llamaRouter.runtimes.default.idleTimeoutSeconds = 300;
   };
+  # A model with no backend reference is a selection error: membership is
+  # derived from the catalog schema, so there is nowhere for it to run.
+  unservedCfg = lib.recursiveUpdate baseConfig {
+    services.ai = {
+      catalog = {
+        hf-only = {
+          id = "hf-only";
+          hf = "example/hf-only";
+        };
+      };
+      models = ["hf-only"];
+    };
+  };
+  # A llama reference naming a runtime this host does not deploy is a typo
+  # worth failing on rather than silently dropping.
+  unknownRuntimeCfg = lib.recursiveUpdate baseConfig {
+    services.ai = {
+      catalog = {
+        ghost = {
+          id = "ghost";
+          llama = {
+            ref = "example/ghost-GGUF:Q4_K_M";
+            runtime = "ghost";
+          };
+        };
+      };
+      models = ["ghost"];
+    };
+  };
+  # The fork engine runs side by side with upstream and serves only the
+  # models pinned to its runtime.
+  prismCfg = lib.recursiveUpdate baseConfig {
+    services.ai = {
+      catalog = lib.recursiveUpdate aiLib.catalog {
+        bonsai = {
+          id = "bonsai2:27b";
+          llama = {
+            ref = bonsaiRef;
+            runtime = "prism";
+            preset.jinja = "true";
+          };
+        };
+      };
+      models = models ++ ["bonsai"];
+      backends.llamaRouter.runtimes.prism.deployments = [
+        {
+          instance = "llama-router-prism";
+          lifecycle = "stopped";
+        }
+      ];
+    };
+  };
+  prism = eval prismCfg;
 in
   assert allAssertionsHold cfg;
   assert cfg.services.ai.backends.ollama.urls == ["http://127.0.0.1:11434" "http://127.0.0.1:12434"];
@@ -250,18 +292,10 @@ in
     "qwen3.5:4b"
     "qwen3.5:9b"
   ];
-  assert cfg.services.ai.backends.llamaRouter.portsByName."llama-router" == 11000;
-  assert cfg.services.ai.backends.llamaRouter.requiredModels
-  == [
-    "nomic-ai/nomic-embed-text-v1.5-GGUF:Q4_K_M"
-    "unsloth/gemma-4-E2B-it-GGUF:Q4_K_M"
-    "unsloth/gemma-4-E4B-it-GGUF:Q4_K_M"
-    "unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M"
-    "unsloth/Qwen3.5-2B-GGUF:Q4_K_M"
-    "unsloth/Qwen3.5-4B-GGUF:Q4_K_M"
-    "unsloth/Qwen3.5-9B-GGUF:Q4_K_M"
-  ];
-  assert cfg.services.ai.backends.llamaRouter.modelPresets."nomic-ai/nomic-embed-text-v1.5-GGUF:Q4_K_M"
+  assert cfg.services.ai.backends.llamaRouter.active;
+  assert cfg.services.ai.backends.llamaRouter.runtimesInfo.default.portsByName."llama-router" == 11000;
+  assert cfg.services.ai.backends.llamaRouter.runtimesInfo.default.requiredModels == llamaRefs;
+  assert cfg.services.ai.backends.llamaRouter.runtimesInfo.default.modelPresets."nomic-ai/nomic-embed-text-v1.5-GGUF:Q4_K_M"
   == {
     alias = "nomic-embed-text";
     embeddings = "true";
@@ -300,6 +334,7 @@ in
     "d /var/lib/test/ai/llama-router 0755 test-user test-user -"
   ];
   assert !(builtins.any (rule: lib.hasPrefix "d /var/lib/test-user/ai/reconciler " rule) cfg.systemd.tmpfiles.rules);
+  assert (eval customLlamaCacheCfg).services.ai.backends.llamaRouter.runtimesInfo.default.cacheDir == "/mnt/models/llama-router";
   assert builtins.elem
   "d /mnt/models/llama-router 0755 test-user test-user -"
   (eval customLlamaCacheCfg).systemd.tmpfiles.rules;
@@ -307,17 +342,35 @@ in
     (rule: lib.hasPrefix "d /mnt " rule || lib.hasPrefix "d /mnt/models " rule)
     (eval customLlamaCacheCfg).systemd.tmpfiles.rules);
   assert (eval autoCfg).services.ai.backends.ollama.readyTarget == "special-ollama-ready.target";
-  assert (eval autoCfg).services.ai.backends.llamaRouter.readyTarget == "custom-llama-router-ready.target";
-  assert allAssertionsHold (eval backendSpecificCfg);
-  assert (eval backendSpecificCfg).services.ai.backends.ollama.requiredModels == ["only-ollama:1"];
-  assert (eval backendSpecificCfg).services.ai.backends.llamaRouter.requiredModels
-  == ["example/only-llama-GGUF:Q4_K_M"];
-  assert !(allAssertionsHold (eval badKeyCfg));
+  assert (eval autoCfg).services.ai.backends.llamaRouter.runtimesInfo.default.readyTarget == "custom-llama-router-ready.target";
+  # Fork runtime: separate cache, separate models.ini, separate reconciler.
+  assert allAssertionsHold prism;
+  assert prism.services.ai.backends.llamaRouter.runtimesInfo.prism.requiredModels == [bonsaiRef];
+  assert prism.services.ai.backends.llamaRouter.runtimesInfo.prism.cacheDir == "/var/lib/test/ai/llama-router-prism";
+  assert !(builtins.elem bonsaiRef prism.services.ai.backends.llamaRouter.runtimesInfo.default.requiredModels);
+  assert !(builtins.elem "bonsai2:27b" prism.services.ai.backends.ollama.requiredModels);
+  assert lib.hasInfix "[bonsai2:27b]" prism.services.podman-compose.test.instances.llama-router-prism.files."models.ini".text;
+  assert lib.hasInfix "hf = ${bonsaiRef}" prism.services.podman-compose.test.instances.llama-router-prism.files."models.ini".text;
+  assert !(lib.hasInfix "gemma" prism.services.podman-compose.test.instances.llama-router-prism.files."models.ini".text);
+  assert !(lib.hasInfix "bonsai" prism.services.podman-compose.test.instances.llama-router.files."models.ini".text);
+  assert prism.systemd.user.services ? "test-llama-router-prism-models";
+  assert prism.systemd.user.services ? "test-llama-router-prism-models-load";
+  assert prism.systemd.user.services."test-llama-router-prism-models".environment.MODEL_RECONCILER_STATE_NAME
+  == "llama-router-prism.json";
+  assert !(prism.systemd.user.services."test-llama-router-prism-models".environment ? MODEL_RECONCILER_LEGACY_STATE_FILE);
+  assert builtins.elem
+  "d /var/lib/test/ai/llama-router-prism 0755 test-user test-user -"
+  prism.systemd.tmpfiles.rules;
+  assert builtins.any
+  (lib.hasInfix "restart --no-block test-llama-router-prism-models-load.service")
+  prism.systemd.user.services.custom-llama-router-prism.serviceConfig.ExecStartPost;
   assert !(allAssertionsHold (eval badRoleCfg));
   assert !(allAssertionsHold (eval missingInstanceCfg));
   assert !(allAssertionsHold (eval crossBackendNameCollisionCfg));
   assert !(allAssertionsHold (eval crossBackendPortCollisionCfg));
   assert !(allAssertionsHold (eval missingStackCfg));
+  assert !(allAssertionsHold (eval unservedCfg));
+  assert !(allAssertionsHold (eval unknownRuntimeCfg));
     pkgs.runCommand "ai-module-test" {} ''
       touch $out
     ''
