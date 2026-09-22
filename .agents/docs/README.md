@@ -406,6 +406,14 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/reviews/architecture-review-followups.md`: Condensed
   review findings and the durable refactoring direction after the follow-up
   fixes.
+- `.agents/docs/notes/reviews/last-15-commits-2026-09-22.md`: Fresh review of
+  `7073da89..c2bbf582`, including AI serving admission and projection gaps,
+  Prism updater authentication, catalog validation, and final design direction.
+- `.agents/docs/notes/reviews/last-15-commits-2026-09-22-fresh.md`: Independent
+  second-pass review of `f5a2b566..c2bbf582` that confirms the AI servability,
+  `aiServices`, updater-auth, and catalog-validation gaps and adds the
+  unresolved-port assertion, Prism/`12001` port collision, policy-diagnostic,
+  and documentation-drift findings.
 
 ### Secrets
 
