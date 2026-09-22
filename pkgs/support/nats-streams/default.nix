@@ -59,10 +59,52 @@
       ensure_stream() {
         local stream="$1"
         local subject="$2"
+        local info_json
+        local streams_json
 
-        if ${lib.getExe pkgs.natscli} "''${nats_args[@]}" stream info "$stream" >/dev/null 2>&1; then
-          echo "stream already exists: $stream ($subject)"
-          return 0
+        if ! streams_json="$(${lib.getExe pkgs.natscli} "''${nats_args[@]}" stream ls --json 2>&1)"; then
+          echo "stream listing failed while checking: $stream" >&2
+          printf '%s\n' "$streams_json" >&2
+          echo "refusing to create a stream whose absence was not established" >&2
+          return 1
+        fi
+
+        if ! ${lib.getExe pkgs.jq} -e '
+          . == null or (type == "array" and all(.[]; type == "string"))
+        ' <<<"$streams_json" >/dev/null; then
+          echo "stream listing returned an unexpected JSON shape while checking: $stream" >&2
+          printf '%s\n' "$streams_json" >&2
+          echo "refusing to create a stream whose absence was not established" >&2
+          return 1
+        fi
+
+        if ${lib.getExe pkgs.jq} -e --arg stream "$stream" '(. // []) | index($stream) != null' <<<"$streams_json" >/dev/null; then
+          if ! info_json="$(${lib.getExe pkgs.natscli} "''${nats_args[@]}" stream info "$stream" --json 2>&1)"; then
+            echo "stream info failed after listing: $stream" >&2
+            printf '%s\n' "$info_json" >&2
+            echo "refusing to mutate or recreate a stream with unknown configuration" >&2
+            return 1
+          fi
+
+          if ${lib.getExe pkgs.jq} -e --arg subject "$subject" '
+            .config.subjects == [$subject]
+            and .config.storage == "file"
+            and .config.retention == "workqueue"
+            and .config.max_consumers == 1
+          ' <<<"$info_json" >/dev/null; then
+            echo "stream already converged: $stream ($subject)"
+            return 0
+          fi
+
+          echo "stream configuration drift: $stream" >&2
+          ${lib.getExe pkgs.jq} -c '{
+            subjects: .config.subjects,
+            storage: .config.storage,
+            retention: .config.retention,
+            max_consumers: .config.max_consumers
+          }' <<<"$info_json" >&2
+          echo "refusing to mutate an existing stream; reconcile it explicitly" >&2
+          return 1
         fi
 
         ${lib.getExe pkgs.natscli} "''${nats_args[@]}" stream add "$stream" \

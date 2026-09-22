@@ -66,6 +66,47 @@
   genericNatsStreamsExtension = {
     extraConfig = _service: _cfg: {};
   };
+  fakeNatsCli = pkgs.writeShellApplication {
+    name = "nats";
+    text = ''
+      printf '%s\n' "$*" >>"$FAKE_NATS_TRACE"
+      if [[ "$*" == *"server check connection"* ]]; then
+        exit 0
+      fi
+      if [[ "$*" == *"stream ls"* ]]; then
+        case "''${FAKE_NATS_MODE:-converged}" in
+          absent) printf '%s\n' 'null' ;;
+          converged | drift | info-error) printf '%s\n' '["test-stream"]' ;;
+          lookup-error)
+            echo "nats: error: authorization violation" >&2
+            exit 1
+            ;;
+          malformed-list) printf '%s\n' '{"unexpected":true}' ;;
+        esac
+        exit 0
+      fi
+      if [[ "$*" == *"stream info"* ]]; then
+        case "''${FAKE_NATS_MODE:-converged}" in
+          converged)
+            printf '%s\n' '{"config":{"subjects":["test.subject"],"storage":"file","retention":"workqueue","max_consumers":1}}'
+            ;;
+          drift)
+            printf '%s\n' '{"config":{"subjects":["old.subject"],"storage":"file","retention":"limits","max_consumers":2}}'
+            ;;
+          info-error)
+            echo "nats: error: stream disappeared after listing" >&2
+            exit 1
+            ;;
+        esac
+        exit 0
+      fi
+      if [[ "$*" == *"stream add"* ]]; then
+        exit 0
+      fi
+      exit 1
+    '';
+  };
+  testNatsPkgs = pkgs // {natscli = fakeNatsCli;};
   genericNatsStreams = pkgs.callPackage ../../../pkgs/support/nats-streams/default.nix {
     stack = nativeClientCaDefaultsStack;
   };
@@ -94,6 +135,19 @@
       }
     ];
   };
+  runtimeNatsStreams =
+    (import ../../../pkgs/support/nats-streams/default.nix {
+      pkgs = testNatsPkgs;
+      stack = nativeClientCaDefaultsStack;
+    }).passthru.mkStreamSet {
+      serviceName = "runtime-test-nats-streams";
+      streams = [
+        {
+          stream = "test-stream";
+          subject = "test.subject";
+        }
+      ];
+    };
   genericNatsStreamsModule = genericNatsStreams.passthru.nixosModule;
   firstNatsStreamsModule = firstNatsStreamSet.passthru.nixosModule;
   secondNatsStreamsModule = secondNatsStreamSet.passthru.nixosModule;
@@ -310,6 +364,73 @@ in {
   assert natsStreamSetsSystem.config.user-services.svc.test-nats-streams.package.meta.mainProgram == "test-nats-streams";
   assert natsStreamSetsSystem.config.user-services.svc.other-nats-streams.package.meta.mainProgram == "other-nats-streams";
     pkgs.runCommand "lib-flake-nats-streams-seams-test" {} ''
+      export FAKE_NATS_TRACE="$PWD/nats.trace"
+
+      : >"$FAKE_NATS_TRACE"
+      export FAKE_NATS_MODE=converged
+      ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >converged.log
+      grep -F "stream already converged: test-stream (test.subject)" converged.log
+      if grep -F "stream add" "$FAKE_NATS_TRACE"; then
+        echo "converged stream unexpectedly attempted creation" >&2
+        exit 1
+      fi
+
+      : >"$FAKE_NATS_TRACE"
+      export FAKE_NATS_MODE=absent
+      ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key
+      grep -F "stream add test-stream" "$FAKE_NATS_TRACE"
+
+      : >"$FAKE_NATS_TRACE"
+      export FAKE_NATS_MODE=drift
+      if ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >drift.log 2>&1; then
+        echo "drifted stream unexpectedly converged" >&2
+        exit 1
+      fi
+      grep -F "stream configuration drift: test-stream" drift.log
+      grep -F '"subjects":["old.subject"]' drift.log
+      grep -F "refusing to mutate an existing stream" drift.log
+      if grep -F "stream add" "$FAKE_NATS_TRACE"; then
+        echo "drifted stream unexpectedly attempted creation" >&2
+        exit 1
+      fi
+
+      : >"$FAKE_NATS_TRACE"
+      export FAKE_NATS_MODE=lookup-error
+      if ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >lookup-error.log 2>&1; then
+        echo "failed stream lookup unexpectedly converged" >&2
+        exit 1
+      fi
+      grep -F "stream listing failed while checking: test-stream" lookup-error.log
+      grep -F "refusing to create a stream whose absence was not established" lookup-error.log
+      if grep -F "stream add" "$FAKE_NATS_TRACE"; then
+        echo "failed lookup unexpectedly attempted creation" >&2
+        exit 1
+      fi
+
+      : >"$FAKE_NATS_TRACE"
+      export FAKE_NATS_MODE=info-error
+      if ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >info-error.log 2>&1; then
+        echo "failed stream info unexpectedly converged" >&2
+        exit 1
+      fi
+      grep -F "stream info failed after listing: test-stream" info-error.log
+      grep -F "refusing to mutate or recreate a stream" info-error.log
+      if grep -F "stream add" "$FAKE_NATS_TRACE"; then
+        echo "failed stream info unexpectedly attempted creation" >&2
+        exit 1
+      fi
+
+      : >"$FAKE_NATS_TRACE"
+      export FAKE_NATS_MODE=malformed-list
+      if ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >malformed-list.log 2>&1; then
+        echo "malformed stream listing unexpectedly converged" >&2
+        exit 1
+      fi
+      grep -F "stream listing returned an unexpected JSON shape" malformed-list.log
+      if grep -F "stream add" "$FAKE_NATS_TRACE"; then
+        echo "malformed stream listing unexpectedly attempted creation" >&2
+        exit 1
+      fi
       touch "$out"
     '';
   lib-flake-stack-set = assert stackSet.app.fixture.owned == ["proxy" "web" "worker"];

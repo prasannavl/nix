@@ -87,6 +87,14 @@ rule: add the adapter path to the owning stack in `lib/stacks/modules.nix`. They
 do not require another root-flake argument or another global common-module
 entry.
 
+The generic stream-set ensure unit owns creation, not destructive migration. An
+existing stream must match its declared subject, file storage, work-queue
+retention, and maximum-consumer contract. Drift fails closed with the observed
+configuration so an operator can reconcile data-bearing stream changes
+explicitly. Creation is allowed only after a successful JSON stream listing
+establishes absence; authentication, transport, malformed responses, and other
+lookup failures stop without mutation.
+
 ## Validation
 
 The shared resolver must fail closed:
