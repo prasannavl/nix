@@ -478,6 +478,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/abird-post-b8a-parity-repeat-2026-09.md`:
+  Seven-commit reciprocal Abird audit through `28631f93`, exact reverse-port
+  verification, phase 1 convergence, the reduced 15-path incompatibility
+  surface, and the ordered convergence sequence.
 - `.agents/docs/notes/tooling/abird-post-1b64-port-2026-09.md`: Complete
   33-commit Abird audit through `b8a766ed`, four shared logical ports,
   per-commit dispositions, Pvl adaptations, validation, and final byte/mode
