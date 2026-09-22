@@ -101,11 +101,17 @@
     '';
   prismLlamaCppPackageTest = pkgs.runCommand "prism-llama-cpp-package-test" {} ''
     test -x ${pkgs.prism-llama-cpp-rocm}/llama-server
-    test -x ${pkgs.prism-llama-cpp-rocm}/bin/llama-server
     test -x ${pkgs.prism-llama-cpp-cuda}/llama-server
-    test -x ${pkgs.prism-llama-cpp-cuda}/bin/llama-server
-    test "${pkgs.lib.getExe pkgs.prism-llama-cpp-rocm}" = "${pkgs.prism-llama-cpp-rocm}/bin/llama-server"
-    test "${pkgs.lib.getExe pkgs.prism-llama-cpp-cuda}" = "${pkgs.prism-llama-cpp-cuda}/bin/llama-server"
+    test "${
+      if pkgs.prism-llama-cpp-rocm.meta ? mainProgram
+      then "true"
+      else "false"
+    }" = false
+    test "${
+      if pkgs.prism-llama-cpp-cuda.meta ? mainProgram
+      then "true"
+      else "false"
+    }" = false
     touch "$out"
   '';
   prismLlamaCppUpdaterTest =

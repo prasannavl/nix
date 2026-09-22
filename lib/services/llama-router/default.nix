@@ -2,27 +2,9 @@
   lib,
   pkgs,
 }: let
-  renderModelsPresetIni = {
-    globalPreset ? {},
-    modelPresets ? {},
-    requiredModels,
-  }: let
-    renderPresetSection = name: attrs:
-      "[${name}]\n"
-      + lib.concatStrings (lib.mapAttrsToList (key: value: "${key} = ${value}\n") attrs);
-    presetModels = builtins.filter (model: modelPresets ? ${model}) requiredModels;
-    presetName = model: (modelPresets.${model}.alias or model);
-  in
-    lib.optionalString (globalPreset != {}) ((renderPresetSection "*" globalPreset) + "\n")
-    + lib.concatStrings (
-      map (
-        model:
-          renderPresetSection (presetName model) ({hf = model;} // (modelPresets.${model} or {}))
-      )
-      presetModels
-    );
+  presetLib = import ./presets.nix;
 in {
-  inherit renderModelsPresetIni;
+  inherit (presetLib) renderModelsPresetIni validModelRef validOptionName validOptionValue validOptions validSectionName;
 
   mkModelReconciler = {
     backendServices ? [],
@@ -70,32 +52,22 @@ in {
     dispatchCommand = "${lib.getExe reconcileModels} dispatch ${workerName}.service ${modelArgs}";
     reconcileCommand = "${lib.getExe reconcileModels} load ${modelArgs}";
 
-    # Router models are Hugging Face references ("org/repo" or "org/repo:tag").
-    modelRefPattern = "^[^/ \t]+/[^/ \t]+(:[^/ \t]+)?$";
-    presetKeyPattern = "^[A-Za-z0-9][A-Za-z0-9._-]*$";
-    presetEntries =
-      lib.mapAttrsToList (key: value: {inherit key value;}) globalPreset
-      ++ lib.concatMap (
-        model:
-          lib.mapAttrsToList (key: value: {inherit key value;}) (modelPresets.${model} or {})
-      )
-      requiredModels;
     presetModels = builtins.filter (model: modelPresets ? ${model}) requiredModels;
     presetName = model: (modelPresets.${model}.alias or model);
     # Presets use client-facing aliases as section names. The exact Hugging
     # Face reference therefore remains available to the router's cache API for
     # independent download and deletion without colliding with the preset.
-    modelsPresetIni = renderModelsPresetIni {inherit globalPreset modelPresets requiredModels;};
+    modelsPresetIni = presetLib.renderModelsPresetIni {inherit globalPreset modelPresets requiredModels;};
   in {
     assertions =
       stateBinding.assertions
       ++ [
         {
-          assertion = lib.all (model: lib.match modelRefPattern model != null) requiredModels;
+          assertion = lib.all presetLib.validModelRef requiredModels;
           message = "llama-router required models must be Hugging Face references (org/repo or org/repo:tag)";
         }
         {
-          assertion = lib.all (model: lib.match modelRefPattern model != null) preservedModels;
+          assertion = lib.all presetLib.validModelRef preservedModels;
           message = "llama-router preserved models must be Hugging Face references (org/repo or org/repo:tag)";
         }
         {
@@ -119,16 +91,12 @@ in {
           message = "llama-router model preset aliases must be unique";
         }
         {
-          assertion =
-            builtins.all (
-              entry:
-                builtins.isString entry.value
-                && (builtins.stringLength entry.value) > 0
-                && !lib.hasInfix "\n" entry.value
-                && lib.match presetKeyPattern entry.key != null
-            )
-            presetEntries;
+          assertion = presetLib.validOptions globalPreset && lib.all (model: presetLib.validOptions (modelPresets.${model} or {})) requiredModels;
           message = "llama-router model preset keys must be llama.cpp option names and values non-empty single-line strings";
+        }
+        {
+          assertion = lib.all (model: presetLib.validSectionName (presetName model)) presetModels;
+          message = "llama-router model preset aliases must be non-empty single-line INI section names";
         }
       ];
 

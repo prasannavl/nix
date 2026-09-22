@@ -1,7 +1,7 @@
 {pkgs}: let
   lib = pkgs.lib;
   inherit (lib) mkOption types;
-  aiLib = import ../default.nix {inherit lib;};
+  catalog = import ../catalog.nix;
   projectionLib = import ../projection.nix;
 
   exposedPortType = types.submodule {
@@ -231,11 +231,33 @@
   autoModelsCfg = lib.recursiveUpdate baseConfig {
     services.ai.models = null;
   };
-  autoServable = projectionLib.servableModels {
-    catalog = aiLib.catalog;
-    ollama = true;
-    runtimes.default.deployments = [{}];
+  autoServable =
+    (projectionLib.resolvePolicy {
+      inherit catalog;
+      backends = autoModelsCfg.services.ai.backends;
+    }).models;
+  customProjection = projectionLib.mkProjection {
+    catalog.custom = {
+      id = "custom-model";
+      ollama = "custom/model:1";
+    };
+    models = ["custom"];
+    roles.main = "custom";
+    backends.ollama = {
+      active = true;
+      deployments = [{}];
+      ports = [1];
+      requiredModels = ["derived-must-not-round-trip"];
+    };
   };
+  customProjectionCfg = {
+    services.ai = customProjection.moduleConfig // {stack.name = "test";};
+    services.podman-compose.test = {
+      user = "test-user";
+      instances.ollama = baseInstances.ollama;
+    };
+  };
+  customProjectionEval = eval customProjectionCfg;
   # A model with no backend reference is a selection error: membership is
   # derived from the catalog schema, so there is nowhere for it to run.
   unservedCfg = lib.recursiveUpdate baseConfig {
@@ -401,6 +423,10 @@ in
   assert allAssertionsHold (eval llamaOnlyAutoCfg);
   assert (eval llamaOnlyAutoCfg).services.ai.resolvedModels == ["llama-only"];
   assert (eval llamaOnlyAutoCfg).services.ai.backends.llamaRouter.runtimesInfo.default.requiredModels == ["example/llama-only:Q4"];
+  assert allAssertionsHold customProjectionEval;
+  assert customProjectionEval.services.ai.catalog.custom.id == "custom-model";
+  assert customProjectionEval.services.ai.backends.ollama.requiredModels == ["custom/model:1"];
+  assert customProjectionEval.services.ai.roles.main == "custom";
   assert cfg.services.podman-compose.test.instances.ollama.state == "stopped";
   assert cfg.services.podman-compose.test.instances.ollama-2.autoStart == false;
   assert cfg.services.podman-compose.test.instances.llama-router.files."models.ini".text != "";

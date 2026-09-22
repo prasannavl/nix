@@ -51,6 +51,33 @@
   invalidPresetValue = mkReconciler {
     modelPresets = {"test/model:Q4_K_M" = {alias = 1;};};
   };
+  emptyPresetValue = mkReconciler {
+    modelPresets = {
+      "test/model:Q4_K_M" = {
+        alias = "test:1";
+        threads = "";
+      };
+    };
+  };
+  multilinePresetValue = mkReconciler {
+    modelPresets = {
+      "test/model:Q4_K_M" = {
+        alias = "test:1";
+        threads = "a\nb";
+      };
+    };
+  };
+  invalidPresetKey = mkReconciler {
+    modelPresets = {
+      "test/model:Q4_K_M" = {
+        alias = "test:1";
+        "bad key" = "1";
+      };
+    };
+  };
+  invalidPresetAlias = mkReconciler {
+    modelPresets = {"test/model:Q4_K_M" = {alias = "bad]alias";};};
+  };
   presetIni = mkReconciler {
     globalPreset = {threads = "4";};
     modelPresets = {"test/model:Q4_K_M" = {alias = "test:1";};};
@@ -89,6 +116,14 @@ in
   assert !(builtins.all (entry: entry.assertion) unknownPreset.assertions);
   assert !(builtins.all (entry: entry.assertion) invalidRequiredRef.assertions);
   assert !(builtins.all (entry: entry.assertion) invalidPresetValue.assertions);
+  assert !(builtins.all (entry: entry.assertion) emptyPresetValue.assertions);
+  assert !(builtins.all (entry: entry.assertion) multilinePresetValue.assertions);
+  assert !(builtins.all (entry: entry.assertion) invalidPresetKey.assertions);
+  assert !(builtins.all (entry: entry.assertion) invalidPresetAlias.assertions);
+  assert llamaRouterLib.validModelRef "test/model:Q4_K_M";
+  assert !(llamaRouterLib.validModelRef "not-a-ref");
+  assert llamaRouterLib.validOptions {threads = "4";};
+  assert !(llamaRouterLib.validOptions {threads = "a\nb";});
   assert presetIni.modelsPresetIni == "[*]\nthreads = 4\n\n[test:1]\nalias = test:1\nhf = test/model:Q4_K_M\n";
   assert renderedPresetIni == presetIni.modelsPresetIni;
     pkgs.runCommand "llama-router-model-reconciler-test" {} ''

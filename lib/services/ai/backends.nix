@@ -23,7 +23,7 @@ rec {
     builtins.isAttrs config
     && (config ? ref)
     && builtins.isString config.ref
-    && config.ref != "";
+    && builtins.match "[^ \t\r\n]+" config.ref != null;
 
   # Which llama.cpp engine an entry targets. Missing or malformed llama refs do
   # not target an engine; `default` applies only to a valid llama ref.

@@ -7,7 +7,7 @@
   cfg = config.services.ai;
   inherit (lib) mkIf mkMerge mkOption types;
 
-  aiLib = import ./default.nix {inherit lib;};
+  defaultCatalog = import ./catalog.nix;
   projectionLib = import ./projection.nix;
   catalog = cfg.catalog;
 
@@ -124,6 +124,19 @@
       };
     };
   });
+  llamaRuntimeInfoType = types.submodule {
+    options = {
+      active = mkOption {type = types.bool;};
+      serviceNames = mkOption {type = types.listOf types.str;};
+      urls = mkOption {type = types.listOf types.str;};
+      ports = mkOption {type = types.listOf types.port;};
+      portsByName = mkOption {type = types.attrsOf types.port;};
+      readyTarget = mkOption {type = types.nullOr types.str;};
+      requiredModels = mkOption {type = types.listOf types.str;};
+      modelPresets = mkOption {type = types.attrsOf (types.attrsOf types.str);};
+      cacheDir = mkOption {type = types.nullOr types.str;};
+    };
+  };
 
   ollamaDeployments = cfg.backends.ollama.deployments;
   llamaRuntimes = cfg.backends.llamaRouter.runtimes;
@@ -345,7 +358,7 @@ in {
 
     catalog = mkOption {
       type = types.attrsOf types.attrs;
-      default = aiLib.catalog;
+      default = defaultCatalog;
       description = ''
         Model catalog keyed by stable policy names. Entries require an id and
         declare their backend set through the reference fields they carry
@@ -357,11 +370,12 @@ in {
       type = types.nullOr (types.listOf types.str);
       default = null;
       description = ''
-        Managed catalog keys for this host, in pull order. This is the only
-        selection list; each backend serves exactly the selected models that
-        carry its reference field, and a model carrying no backend reference
-        is a configuration error. null (the default) selects every model
-        servable by the declared backends.
+        Managed catalog keys for this host, in deterministic selection order.
+        Explicit lists preserve caller order; null uses sorted catalog-key
+        order. This is the only selection list; each backend serves exactly the
+        selected models that carry its reference field, and a model carrying no
+        backend reference is a configuration error. null (the default) selects
+        every model servable by the declared backends.
       '';
     };
 
@@ -464,7 +478,7 @@ in {
         readOnly = true;
       };
       runtimesInfo = mkOption {
-        type = types.attrsOf types.attrs;
+        type = types.attrsOf llamaRuntimeInfoType;
         readOnly = true;
         description = ''
           Evaluated per-runtime projections keyed by runtime name: urls, ports,

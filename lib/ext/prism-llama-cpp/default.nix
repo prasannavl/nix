@@ -1,7 +1,6 @@
 {
   fetchurl,
   lib,
-  makeWrapper,
   stdenvNoCC,
   # Release variant: "rocm" or "cuda". Both carry the same llama-server and
   # shared libraries, built against the matching accelerator userspace.
@@ -27,14 +26,10 @@ in
     # a container's /app; no patchelf, no separate library layout.
     sourceRoot = "llama-${version}";
 
-    nativeBuildInputs = [makeWrapper];
-
     installPhase = ''
       runHook preInstall
       mkdir -p $out
       cp -a . $out/
-      makeWrapper "$out/llama-server" "$out/bin/llama-server" \
-        --chdir "$out"
       runHook postInstall
     '';
 
@@ -42,7 +37,6 @@ in
       description = "PrismML llama.cpp fork server (ternary GGUF support), ${variant} build";
       homepage = "https://github.com/${source.owner}/${source.repo}";
       license = [lib.licenses.mit];
-      mainProgram = "llama-server";
       platforms = ["x86_64-linux"];
     };
   }

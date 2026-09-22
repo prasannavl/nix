@@ -1,27 +1,35 @@
 {pkgs}: let
   projectionLib = import ../projection.nix;
   catalog = import ../catalog.nix;
-
   roles = {
     main = "gemma4-26b";
     smallTask = "gemma4-e2b";
     embedding = "nomic-embed-text";
   };
-
-  autoProjection = projectionLib.mkProjection {
-    inherit catalog roles;
-    models = null;
-    backends = {
-      ollama.deployments = [
-        {
-          lifecycle = "auto";
-        }
-      ];
-      llamaRouter.runtimes.default = {
+  backends = {
+    ollama = {
+      active = true;
+      deployments = [{lifecycle = "auto";}];
+      modelsDir = "/models";
+      ports = [11434];
+      requiredModels = ["derived"];
+    };
+    llamaRouter = {
+      active = true;
+      runtimes.default = {
+        active = true;
+        cacheDir = "/cache";
         deployments = [{}];
         idleTimeoutSeconds = 300;
+        modelPresets = {derived = {};};
+        ports = [11000];
+        preservedModels = ["example/preserved:Q4"];
       };
+      runtimesInfo.default.active = true;
     };
+  };
+  autoProjection = projectionLib.mkProjection {
+    inherit backends catalog roles;
     apiServices.ollama = "ollama";
   };
   explicitProjection = projectionLib.mkProjection {
@@ -51,30 +59,20 @@
     catalog = backendShapeCatalog;
     backends.llamaRouter.runtimes.default.deployments = [{}];
   };
-  badRolePolicy = projectionLib.resolvePolicy {
+  noRuntimePolicy = projectionLib.resolvePolicy {
     catalog.only = {
       id = "only";
-      ollama = "only";
+      llama = "example/only:Q4";
     };
     models = ["only"];
-    roles.main = "missing";
-    backends.ollama.deployments = [{}];
   };
   hybridPolicy = projectionLib.resolvePolicy {
-    catalog = {
-      dual = {
-        id = "dual";
-        ollama = "dual";
-        llama = "example/dual:Q4";
-      };
-      prism = {
-        id = "prism";
-        llama = {
-          ref = "example/prism:Q4";
-          runtime = "prism";
-        };
-      };
+    catalog.dual = {
+      id = "dual";
+      ollama = "dual";
+      llama = "example/dual:Q4";
     };
+    models = ["dual"];
     backends = {
       ollama.deployments = [{}];
       llamaRouter.runtimes.prism.deployments = [{}];
@@ -98,6 +96,29 @@
       llamaRouter.runtimes.default.deployments = [{}];
     };
   };
+  invalidDormantPolicy = projectionLib.resolvePolicy {
+    catalog = {
+      selected = {
+        id = "selected";
+        ollama = "selected";
+      };
+      dormant = {
+        id = "dormant";
+        llama = "not-a-hugging-face-reference";
+      };
+    };
+    models = ["selected"];
+    backends.ollama.deployments = [{}];
+  };
+  badRolePolicy = projectionLib.resolvePolicy {
+    catalog.only = {
+      id = "only";
+      ollama = "only";
+    };
+    models = ["only"];
+    roles.main = "missing";
+    backends.ollama.deployments = [{}];
+  };
   malformedRolePolicy = projectionLib.resolvePolicy {
     catalog.only = {
       id = "only";
@@ -107,90 +128,78 @@
     roles.main = {};
     backends.ollama.deployments = [{}];
   };
+  invalidPresetPolicy = preset:
+    projectionLib.resolvePolicy {
+      catalog.only = {
+        id = "only";
+        llama = {
+          ref = "example/only:Q4";
+          inherit preset;
+        };
+      };
+      models = ["only"];
+      backends.llamaRouter.runtimes.default.deployments = [{}];
+    };
   diagnosticCodes = policy: builtins.map (entry: entry.code) policy.diagnostics;
   invalidProjection = value: builtins.tryEval (builtins.deepSeq value true);
 in
-  # servableModels follows the declared backends.
-  assert builtins.length (projectionLib.servableModels {
-    inherit catalog;
-    ollama = true;
-    runtimes = {};
-  })
-  == 15;
-  assert !(builtins.elem "bonsai-2-27b" (projectionLib.servableModels {
-    inherit catalog;
-    ollama = true;
-    runtimes = {};
-  }));
-  assert !(builtins.elem "bonsai-2-27b" (projectionLib.servableModels {
-    inherit catalog;
-    ollama = true;
-    runtimes = {default = {};};
-  }));
-  assert builtins.elem "bonsai-2-27b" (projectionLib.servableModels {
-    inherit catalog;
-    ollama = false;
-    runtimes.prism.deployments = [{}];
-  });
-  # Backend presence requires a valid reference and an actual deployment.
-  assert projectionLib.servableModels {
-    catalog = backendShapeCatalog;
-    ollama = false;
-    runtimes.default.deployments = [{}];
-  }
-  == ["llama-only"];
-  assert projectionLib.servableModels {
-    catalog = backendShapeCatalog;
-    ollama = false;
-    runtimes.default = {};
-  }
-  == [];
-  # Policy partitions by deployed membership. An unused default-runtime
-  # reference must not invalidate a model that Ollama serves.
+  # Backend admission is derived by the resolver, including auto-selection.
+  assert llamaOnlyPolicy.valid;
+  assert llamaOnlyPolicy.models == ["llama-only"];
+  assert llamaOnlyPolicy.runtimes.default.requiredModels == ["example/llama"];
+  assert diagnosticCodes noRuntimePolicy == ["unknown-llama-runtime"];
+  # An Ollama deployment may serve a dual-backend entry even when its llama
+  # runtime is absent on this host.
   assert hybridPolicy.valid;
-  assert hybridPolicy.models == ["dual" "prism"];
   assert hybridPolicy.ollama.requiredModels == ["dual"];
-  assert hybridPolicy.runtimes.prism.requiredModels == ["example/prism:Q4"];
+  assert hybridPolicy.runtimes.prism.requiredModels == [];
+  # Catalog identity admission is global and fail-closed, not selection-scoped.
   assert diagnosticCodes duplicatePolicy
   == [
     "duplicate-model-id"
     "duplicate-ollama-reference"
     "duplicate-llama-reference"
   ];
+  assert diagnosticCodes invalidDormantPolicy == ["invalid-llama-reference"];
+  assert !invalidDormantPolicy.valid;
+  # Presets use the same schema here and in the reconciler renderer.
+  assert diagnosticCodes (invalidPresetPolicy {threads = "";}) == ["invalid-llama-preset"];
+  assert diagnosticCodes (invalidPresetPolicy {threads = "a\nb";}) == ["invalid-llama-preset"];
+  assert diagnosticCodes (invalidPresetPolicy {"bad key" = "1";}) == ["invalid-llama-preset"];
+  assert diagnosticCodes (invalidPresetPolicy {alias = "override";}) == ["invalid-llama-preset"];
+  # Bad roles are diagnostics and safe null defaults, never raw attr errors.
   assert malformedRolePolicy.defaults.main == null;
   assert diagnosticCodes malformedRolePolicy == ["invalid-role"];
-  assert llamaOnlyPolicy.valid;
-  assert llamaOnlyPolicy.models == ["llama-only"];
-  assert llamaOnlyPolicy.runtimes.default.requiredModels == ["example/llama"];
   assert badRolePolicy.defaults.main == null;
   assert diagnosticCodes badRolePolicy == ["invalid-role"];
-  # Ollama and a fork runtime can jointly serve catalog entries without the
-  # entries' unrelated default-runtime references becoming errors.
-  assert builtins.length (projectionLib.servableModels {
-    inherit catalog;
-    ollama = true;
-    runtimes.prism.deployments = [{}];
-  })
-  == 16;
-  assert projectionLib.servableModels {
-    inherit catalog;
-    ollama = false;
-    runtimes = {};
-  }
-  == [];
-  # Explicit selections are used verbatim.
+  # Explicit selections are used verbatim; null selects the deployed set.
   assert explicitProjection.models == ["gemma4-26b" "nomic-embed-text"];
   assert explicitProjection.defaults.main.id == "gemma4:26b";
-  # null models resolves to the servable set for the declared backends.
   assert builtins.length autoProjection.models == 15;
   assert !(builtins.elem "bonsai-2-27b" autoProjection.models);
   assert autoProjection.defaults.smallTask.id == "gemma4:e2b";
   assert autoProjection.valid;
   assert autoProjection.ollama.requiredModels != [];
   assert autoProjection.runtimes.default.requiredModels != [];
-  assert autoProjection.aiServices.models == autoProjection.models;
-  assert autoProjection.aiServices.roles == roles;
-  # Unset roles degrade to null instead of failing evaluation.
+  # The cross-repository handoff is complete and contains declarations only.
+  assert autoProjection.moduleConfig.catalog == catalog;
+  assert autoProjection.moduleConfig.models == autoProjection.models;
+  assert autoProjection.moduleConfig.roles == roles;
+  assert autoProjection.moduleConfig.backends.ollama
+  == {
+    deployments = [{lifecycle = "auto";}];
+    modelsDir = "/models";
+  };
+  assert autoProjection.moduleConfig.backends.llamaRouter.runtimes.default
+  == {
+    cacheDir = "/cache";
+    deployments = [{}];
+    idleTimeoutSeconds = 300;
+    preservedModels = ["example/preserved:Q4"];
+  };
+  assert !(autoProjection.moduleConfig.backends.ollama ? active);
+  assert !(autoProjection.moduleConfig.backends.llamaRouter ? runtimesInfo);
+  # Unset roles degrade to null/empty values rather than failing evaluation.
   assert emptyProjection.valid;
   assert emptyProjection.defaults == {};
   assert emptyProjection.models == [];
@@ -215,17 +224,6 @@ in
     portFor = _: _: 9;
   }).ollama.port
   == 9;
-  # Catalog and role diagnostics are shared by every pure policy projection.
-  assert builtins.elem "invalid-llama-runtime" (diagnosticCodes (projectionLib.mkProjection {
-    catalog.bad = {
-      id = "bad";
-      llama = {
-        ref = "example/bad";
-        runtime = 1;
-      };
-    };
-    models = ["bad"];
-  }));
   assert !(invalidProjection (projectionLib.catalogById {
     first = {
       id = "same";
@@ -239,28 +237,6 @@ in
   assert !(invalidProjection (projectionLib.catalogById {
     missing-hf.id = "missing-hf";
   })).success;
-  assert builtins.elem "invalid-role" (diagnosticCodes (projectionLib.mkProjection {
-    catalog.good = {
-      id = "good";
-      hf = "example/good";
-    };
-    models = ["good"];
-    roles.main = "typo";
-  }));
-  assert builtins.elem "invalid-role" (diagnosticCodes (projectionLib.mkProjection {
-    catalog = {
-      first = {
-        id = "first";
-        hf = "example/first";
-      };
-      second = {
-        id = "second";
-        hf = "example/second";
-      };
-    };
-    models = ["first"];
-    roles.main = "second";
-  }));
     pkgs.runCommand "ai-projection-test" {} ''
       touch $out
     ''
