@@ -99,6 +99,27 @@
       python scripts-support/tests/test_podman_image_updater.py
       touch "$out"
     '';
+  prismLlamaCppPackageTest = pkgs.runCommand "prism-llama-cpp-package-test" {} ''
+    test -x ${pkgs.prism-llama-cpp-rocm}/llama-server
+    test -x ${pkgs.prism-llama-cpp-rocm}/bin/llama-server
+    test -x ${pkgs.prism-llama-cpp-cuda}/llama-server
+    test -x ${pkgs.prism-llama-cpp-cuda}/bin/llama-server
+    test "${pkgs.lib.getExe pkgs.prism-llama-cpp-rocm}" = "${pkgs.prism-llama-cpp-rocm}/bin/llama-server"
+    test "${pkgs.lib.getExe pkgs.prism-llama-cpp-cuda}" = "${pkgs.prism-llama-cpp-cuda}/bin/llama-server"
+    touch "$out"
+  '';
+  prismLlamaCppUpdaterTest =
+    pkgs.runCommand "prism-llama-cpp-updater-test" {
+      nativeBuildInputs = [pkgs.bash pkgs.coreutils pkgs.curl pkgs.jq pkgs.python3];
+    } ''
+      mkdir -p repo/lib/ext/prism-llama-cpp repo/scripts/support/tests repo/tmp
+      cp ${../ext/prism-llama-cpp/update.sh} repo/lib/ext/prism-llama-cpp/update.sh
+      cp ${../../scripts/support/tests/test_prism_llama_cpp_update.py} repo/scripts/support/tests/test_prism_llama_cpp_update.py
+      chmod u+w repo/lib/ext/prism-llama-cpp/update.sh repo/scripts/support/tests/test_prism_llama_cpp_update.py
+      cd repo
+      python -m unittest scripts.support.tests.test_prism_llama_cpp_update
+      touch "$out"
+    '';
   serviceModuleFactory = import ../flake/service-module.nix;
   validTimeoutReadyServiceAttrs = serviceModuleFactory.mkUserTimeoutReadyServiceAttrs 900;
   invalidTimeoutReadyServiceAttrs = builtins.tryEval (serviceModuleFactory.mkUserTimeoutReadyServiceAttrs 0);
@@ -137,6 +158,8 @@ in
     lib-ollama-helper = ollamaTests.helper;
     lib-ollama-module = ollamaTests.module;
     lib-podman-image-updater = podmanImageUpdaterTest;
+    lib-prism-llama-cpp-package = prismLlamaCppPackageTest;
+    lib-prism-llama-cpp-updater = prismLlamaCppUpdaterTest;
     lib-service-module = serviceModuleTest;
     lib-swap-auto = import ./swap-auto.nix {inherit pkgs;};
     lib-podman-compose-helper = podmanComposeTests.helper;

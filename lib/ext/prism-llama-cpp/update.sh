@@ -132,8 +132,26 @@ print_no_update() {
 	echo "Use --force to recompute hashes for the pinned version."
 }
 
+github_api() {
+	local url="$1"
+	local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+	local -a curl_args=(
+		-fsSL
+		--header "Accept: application/vnd.github+json"
+		--header "X-GitHub-Api-Version: 2022-11-28"
+		--user-agent "abird-prism-llama-cpp-updater"
+	)
+
+	if [[ -n "$token" ]]; then
+		[[ "$token" != *[$' \t\r\n']* ]] || die "GITHUB_TOKEN and GH_TOKEN must not contain whitespace"
+		curl_args+=(--header "Authorization: Bearer ${token}")
+	fi
+
+	curl "${curl_args[@]}" "$url"
+}
+
 get_release_metadata() {
-	local latest_url tag
+	local tag
 
 	if [[ -n "$REQUESTED_VERSION" ]]; then
 		RESOLVED_VERSION="${REQUESTED_VERSION#v}"
@@ -144,12 +162,12 @@ get_release_metadata() {
 	# The fork publishes rolling prism-<upstream-build>-<commit> tags without a
 	# comparable version ordering, so take the most recent release carrying the
 	# fork prefix (the GitHub releases list is newest first).
-	latest_url="$(
-		curl -fsSL "https://api.github.com/repos/PrismML-Eng/llama.cpp/releases?per_page=50" |
+	if ! tag="$(
+		github_api "https://api.github.com/repos/PrismML-Eng/llama.cpp/releases?per_page=50" |
 			jq -er '[.[].tag_name | select(startswith("prism-"))][0]'
-	)"
-	tag="$latest_url"
-	[[ -n "$tag" ]] || die "Could not resolve latest PrismML llama.cpp release tag"
+	)"; then
+		die "Could not resolve latest PrismML llama.cpp release tag"
+	fi
 
 	RESOLVED_VERSION="$tag"
 	RELEASE_URL="https://github.com/PrismML-Eng/llama.cpp/releases/tag/${tag}"

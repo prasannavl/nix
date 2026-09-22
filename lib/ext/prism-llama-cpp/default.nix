@@ -1,6 +1,7 @@
 {
   fetchurl,
   lib,
+  makeWrapper,
   stdenvNoCC,
   # Release variant: "rocm" or "cuda". Both carry the same llama-server and
   # shared libraries, built against the matching accelerator userspace.
@@ -26,10 +27,14 @@ in
     # a container's /app; no patchelf, no separate library layout.
     sourceRoot = "llama-${version}";
 
+    nativeBuildInputs = [makeWrapper];
+
     installPhase = ''
       runHook preInstall
       mkdir -p $out
       cp -a . $out/
+      makeWrapper "$out/llama-server" "$out/bin/llama-server" \
+        --chdir "$out"
       runHook postInstall
     '';
 
