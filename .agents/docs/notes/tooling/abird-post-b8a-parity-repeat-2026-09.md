@@ -9,12 +9,13 @@ The previous Pvl audit froze Abird at
 started clean at `ea272d312ace8c802cbce067728039ecdd901d3c`, five local commits
 ahead of `origin/master`.
 
-The reciprocal audit and phase 1 convergence candidate are staged in
+The reciprocal audit and phase 1 convergence were developed in
 `worktrees/abird-post-b8a-parity-20260922` on
 `agent/abird-post-b8a-parity-20260922`. The initial seven-commit window required
-no shared implementation port; phase 1 then converged four shared boundaries. No
-commit, push, deployment, service restart, image pull, database query, or
-migration was performed. Secret-key files were neither listed nor read.
+no shared implementation port; phase 1 then converged four shared boundaries.
+The reviewed units were committed on primary `master` and published. No
+deployment, service restart, image pull, database query, or migration was
+performed. Secret-key files were neither listed nor read.
 
 ## Every source commit
 
@@ -139,3 +140,19 @@ evidence of explicit ownership rather than missed ports.
   scan, targeted formatting, and Markdown lint pass.
 - Repository-wide no-IFD diff lint, targeted Markdown formatting/lint, and
   `git diff --check` pass.
+
+## Publication
+
+The phase 1 units landed on primary `master` as `6e9f32bb`
+(`refactor(kernel): remove stale parameters`), `2fc6cf93`
+(`docs(host-manager): separate topology`), and `bb5df99e`
+(`docs(parity): record phase one convergence`). All commits are signed.
+
+The first pre-push gate exposed a hook-environment bug rather than a source
+failure: Git's repository-selection variables leaked into Rust tests that build
+temporary fixture repositories, so three fixture commits were written into the
+disposable staging branch. The same targeted test binary passed outside the
+hook. Publication retained the authoritative hook but invoked it through a
+one-use wrapper that cleared only `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
+and `GIT_COMMON_DIR`. The staging tree was disposable; primary `master` and the
+unrelated dirty main-worktree note were unaffected.
