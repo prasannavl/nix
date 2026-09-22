@@ -475,8 +475,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   named isolated llama.cpp runtimes (`llama.runtime`), the module-evaluation
   recursion fix, and the PrismML fork external unit
   (`prism-llama-cpp-{rocm,cuda}`) mounted over `/app` for `pvl-a1`'s ternary
-  Bonsai 2 27B `PTQ1_0` engine, and the deferred single-fork-runtime
-  consolidation.
+  Bonsai 2 27B `PTQ1_0` engine, the deferred single-fork-runtime consolidation,
+  and the `pvl-a1` Pi/OpenCode client profiles (Codex unchanged; its
+  developer-message shape is rejected by the Bonsai template).
 - `.agents/docs/notes/services/native-user-graph-legacy-manager-removal-2026-07.md`:
   Records the final removal of the superseded `systemd-user-manager` module,
   checks, documentation, and nixbot compatibility path after native

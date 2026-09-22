@@ -163,6 +163,62 @@ How to do (c) later if desired:
 3. Keep the generic `runtimes` option: it still isolates state/cache if another
    engine is added later.
 
+## Client profiles (Codex, Pi, OpenCode)
+
+Client configuration is mutable user state outside this repo. Bonsai was added
+to the `pvl-a1` clients only: `pvl-l5` has no prism runtime, and the optional
+remote-provider phase (reaching `pvl-a1` ports from another host) was skipped
+because the prism ports are not reachable cross-host. The existing named-port
+convention (`pvl-ai-backend-port-convention-2026-09.md`) is extended with a
+runtime suffix rather than a new port range:
+
+| client   | file                                | new providers (alias `bonsai2:27b`)                         |
+| -------- | ----------------------------------- | ----------------------------------------------------------- |
+| Pi       | `~/.pi/agent/models.json`           | `local-llama-prism` (11001), `local-nv-llama-prism` (12001) |
+| OpenCode | `~/.config/opencode/opencode.jsonc` | `local-llama-prism` (11001), `local-nv-llama-prism` (12001) |
+| Codex    | `~/.codex/*.config.toml`            | none (see below)                                            |
+
+- The Pi providers are cloned from `local-llama` (`api = "openai-completions"`,
+  `supportsDeveloperRole = false`, `supportsReasoningEffort = false`) and the
+  model entry uses `reasoning: true` with
+  `compat.thinkingFormat = "qwen-chat-template"`, matching the `qwen3.5`
+  entries. Bonsai's template accepts `chat_template_kwargs.enable_thinking`, so
+  Pi's `--thinking` works: `off` yields a short answer, `on` streams
+  `reasoning_content`.
+- The OpenCode blocks mirror `local-llama`/`local-nv-llama`
+  (`@ai-sdk/openai-compatible`) with a single `bonsai2:27b` model. OpenCode has
+  no thinking control, so Bonsai reasons by default.
+- Codex is intentionally unchanged. The fork does serve `/v1/responses`, but the
+  Bonsai Jinja template rejects Codex's sequence of developer messages with
+  `Jinja Exception: System message must be at the beginning`, exactly like the
+  Qwen 3.5 entries. Codex therefore still exposes only `gemma4:e2b`/`e4b`.
+
+Backups were written next to the edited files on `pvl-a1`
+(`models.json.bak-bonsai-<ts>`, `opencode.jsonc.bak-bonsai-<ts>`).
+
+### Client validation
+
+- Catalog metadata (`GET :11001/v1/models`): `n_ctx = 109568` (train 262144),
+  `n_params = 26895998464`, text+image input, `PTQ1_0 - 1.75 bpw ternary`.
+- Raw probes on `pvl-a1`: system+user completion, tool call
+  (`get_weather {city: Paris}`), and `enable_thinking` on/off all behave.
+- Pi end-to-end: a headless run with `--thinking off` against
+  `local-llama-prism/bonsai2:27b` returned `READY-PI` (`stop`, 4 output tokens,
+  0 reasoning tokens).
+- OpenCode end-to-end: the model list includes both prism providers, and a run
+  reaches the model and generates. However, a first turn prefills the ~9k-token
+  agent prompt at ~10 tok/s before Bonsai reasons, so a full turn takes minutes
+  on the `pvl-a1` iGPU.
+
+### Caveat: poisoned slot after cancellation
+
+Cancelling a prism generation mid-stream (for example a client timeout) can
+leave the fork `llama-server` emitting an endless `/` repetition loop, even on
+inputs that previously worked.
+`systemctl --user restart
+pvl-llama-router-prism.service` clears it. Re-test
+after a fork update.
+
 ## Residual risks
 
 - The fork is a preview build; its `--models-preset`/`--models-max` surface is
