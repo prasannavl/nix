@@ -467,6 +467,13 @@ Use this index as the canonical map for `.agents/docs/**`.
   policy under `services.ai` (selection, roles, deployments, lifecycle), the
   policy/machine plane split of the host files, the per-host fleet policy, and
   the migration deltas from the hand-wired reconciler bindings.
+- `.agents/docs/notes/services/llama-runtimes-membership-by-ref-prism-2026-09.md`:
+  Records the membership-by-ref catalog API (no per-backend model overrides),
+  named isolated llama.cpp runtimes (`llama.runtime`), the module-evaluation
+  recursion fix, and the PrismML fork external unit
+  (`prism-llama-cpp-{rocm,cuda}`) mounted over `/app` for `pvl-a1`'s ternary
+  Bonsai 2 27B `PTQ1_0` engine, and the deferred single-fork-runtime
+  consolidation.
 - `.agents/docs/notes/services/native-user-graph-legacy-manager-removal-2026-07.md`:
   Records the final removal of the superseded `systemd-user-manager` module,
   checks, documentation, and nixbot compatibility path after native

@@ -82,10 +82,21 @@ manual, stopped, or automatic deployment reconciles its shared store without
 starting sibling deployments. Workers order after all candidate backends, select
 the first reachable API, and exit quickly when every backend is inactive.
 
-Backend-specific model selections may extend or replace the shared selection.
-Catalog entries require only the references used by the backends that select
-them. Deployment instance names, resolved service names, and API ports must be
-globally unique across AI backends.
+`services.ai.models` is the only model selection list. A model joins a backend
+exactly when its catalog entry carries that backend's reference field (`ollama`,
+`llama`), so the catalog schema itself records backend membership and there are
+no per-backend override lists. A selected entry that carries no backend
+reference is a configuration error rather than a silently unserved model.
+Catalog entries therefore require only the references used by the backends that
+serve them.
+
+llama.cpp entries additionally bind to a named engine through `llama.runtime`
+(default `default`, the upstream llama.cpp build, or a fork such as `prism`).
+Each declared runtime owns its own deployments, cache directory, reconciler
+state, and reconciler units, so one engine's cache scan or model set can never
+leak into another engine. An `llama.runtime` that names a runtime the host does
+not declare fails evaluation. Deployment instance names, resolved service names,
+and API ports must be globally unique across all AI backends and runtimes.
 
 ## Closure-safe helper packaging
 
