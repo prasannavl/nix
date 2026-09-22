@@ -52,6 +52,43 @@
       touch "$out"
     '';
   modelReconcilerTest = import ../services/model-reconciler/tests {inherit pkgs;};
+  evalNixConfig = {
+    specialArgs ? {},
+    extraModules ? [],
+  }:
+    import (pkgs.path + "/nixos/lib/eval-config.nix") {
+      system = pkgs.stdenv.hostPlatform.system;
+      inherit pkgs specialArgs;
+      modules = [../nix.nix] ++ extraModules;
+    };
+  repoRegistry = {
+    nix = {
+      host = "test-cache";
+      url = "http://test-cache:5000";
+    };
+    containers = {
+      host = "test-registry";
+      url = "https://registry.example.test";
+    };
+  };
+  nixRepoRegistry = repoRegistry.nix;
+  repoRegistryConfig =
+    (evalNixConfig {
+      specialArgs.repoRegistry = nixRepoRegistry;
+      extraModules = [
+        ({specialArgs, ...}: {
+          environment.etc."repo-registry-test".text = specialArgs.repoRegistry.host;
+        })
+      ];
+    }).config;
+  defaultRepoRegistryConfig = (evalNixConfig {}).config;
+  repoRegistryTest = assert repoRegistry.containers.url == "https://registry.example.test";
+  assert builtins.head repoRegistryConfig.nix.settings.extra-substituters == repoRegistry.nix.url;
+  assert repoRegistryConfig.environment.etc."repo-registry-test".text == repoRegistry.nix.host;
+  assert builtins.length defaultRepoRegistryConfig.nix.settings.extra-substituters == 2;
+    pkgs.runCommand "nix-repo-registry-test" {} ''
+      touch "$out"
+    '';
   ollamaTests = import ../services/ollama/tests {pkgs = pkgs;};
   podmanImageUpdaterTest =
     pkgs.runCommand "podman-image-updater-test" {
@@ -94,6 +131,7 @@ in
     lib-lint-manifest-temp-cleanup = lintManifestTempCleanupTest;
     lib-lint-no-ifd = lintNoIfdTest;
     lib-model-reconciler-wrapper = modelReconcilerTest;
+    lib-nix-repo-registry = repoRegistryTest;
     lib-openssh = import ./openssh.nix {inherit pkgs;};
     lib-ollama-helper = ollamaTests.helper;
     lib-ollama-module = ollamaTests.module;

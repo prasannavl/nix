@@ -21,9 +21,11 @@
       vscodeExt = "vscode-ext";
     };
   },
-  extraCommonModules ? [],
+  repoModules ? {},
+  repoRegistry ? {},
   defaultMachineProfileName ? null,
 }: let
+  nixRepoRegistry = repoRegistry.nix or null;
   machineProfiles = {
     vm = {
       name = "vm";
@@ -130,14 +132,20 @@
 
   packageOutputs = rootLib.outputsFor systems;
 
-  commonModulesFor = flakeProfile:
+  repoModuleComposition = import ./repo-modules.nix {
+    inherit (nixpkgs) lib;
+    inherit repoModules;
+    stackProfiles = effectiveStackProfiles;
+  };
+
+  commonModulesFor = flakeProfile: selectedRepoModules:
     [
       flakeProfile.homeManager.nixosModules.home-manager
       flakeProfile.agenix.nixosModules.default
       {nixpkgs.overlays = flakeProfile.overlays;}
       ../podman-compose
     ]
-    ++ extraCommonModules
+    ++ selectedRepoModules
     ++ [
       rootLib.serviceModule.portCheckModule
       {imports = builtins.attrValues (builtins.removeAttrs rootLib.nixosModules ["default"]);}
@@ -172,12 +180,19 @@
       if machineProfile == null
       then []
       else [machineProfile.module];
+    selectedRepoModules = repoModuleComposition.modulesFor stack;
+    repoModulePkgs = import flakeProfile.nixpkgs {
+      inherit system;
+      overlays = flakeProfile.overlays;
+    };
   in
     flakeProfile.nixpkgs.lib.nixosSystem {
       inherit system;
       specialArgs = {
         inherit flakeProfile flakeProfiles hostName machineProfile machineProfiles system;
         inputs = selectedInputs;
+        inherit repoModulePkgs;
+        repoRegistry = nixRepoRegistry;
         stack = effectiveStack;
         stacks = effectiveStackProfiles;
         servicePlacements = effectiveServicePlacements;
@@ -186,7 +201,7 @@
         phaseProjections = phaseProjection.documents;
       };
       modules =
-        commonModulesFor flakeProfile
+        commonModulesFor flakeProfile selectedRepoModules
         ++ [
           {
             system.configurationRevision = inputs.self.rev or null;
