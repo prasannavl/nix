@@ -1,6 +1,6 @@
 {config, ...}: let
   ai = config.services.ai;
-  cacheDir = ai.backends.llamaRouter.cacheDir;
+  cacheDir = ai.backends.llamaRouter.runtimesInfo.default.cacheDir;
 in {
   # Container definitions only: image, devices, and cache bind. Model pulls,
   # models.ini, lifecycle, and the cache dir are owned by services.ai. Both

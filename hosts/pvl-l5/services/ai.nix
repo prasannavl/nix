@@ -32,7 +32,7 @@
           }
         ];
       };
-      llamaRouter = {
+      llamaRouter.runtimes.default = {
         # Unload a model's weights/KV cache after it goes unused, so a large
         # resident model is swapped out like Ollama's keep_alive instead of
         # waiting for a fourth-model LRU eviction.
