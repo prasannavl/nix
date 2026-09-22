@@ -53,6 +53,9 @@ in {
   # lib/flake/tests/default.nix asserts only the products both repositories
   # carry.
   pvl-flake-isolated = assert outputs.apps.cr.program == "${outputs.packages.codex-wrapper}/bin/cr";
+  assert outputs.packages.nats-streams.meta.mainProgram == "nats-streams";
+  assert builtins.isFunction outputs.packages.nats-streams.passthru.mkStreamSet;
+  assert toString outputs.packages.nats-streams.passthru.nixosModule.__moduleSourcePath == toString ../../../../pkgs/support/nats-streams/default.nix;
     pkgs.runCommand "pvl-flake-isolated-test" {} ''
       touch "$out"
     '';

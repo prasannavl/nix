@@ -63,6 +63,54 @@
     defaultPostgresUrl = "postgresql://postgres@db:5432/app?sslmode=verify-ca";
     defaultNatsUrl = "tls://nats:4222";
   };
+  genericNatsStreamsExtension = {
+    extraConfig = _service: _cfg: {};
+  };
+  genericNatsStreams = pkgs.callPackage ../../../pkgs/support/nats-streams/default.nix {
+    stack = nativeClientCaDefaultsStack;
+  };
+  firstNatsStreamSet = genericNatsStreams.passthru.mkStreamSet {
+    serviceName = "test-nats-streams";
+    clientServiceName = "test-nats-client";
+    envPrefix = "TEST_NATS_STREAMS";
+    packageDescription = "Test NATS stream reconciliation";
+    streams = [
+      {
+        stream = "test-stream";
+        subject = "test.subject";
+      }
+    ];
+    serviceParts = [genericNatsStreamsExtension];
+  };
+  secondNatsStreamSet = genericNatsStreams.passthru.mkStreamSet {
+    serviceName = "other-nats-streams";
+    clientServiceName = "other-nats-client";
+    envPrefix = "OTHER_NATS_STREAMS";
+    packageDescription = "Other NATS stream reconciliation";
+    streams = [
+      {
+        stream = "other-stream";
+        subject = "other.subject";
+      }
+    ];
+  };
+  genericNatsStreamsModule = genericNatsStreams.passthru.nixosModule;
+  firstNatsStreamsModule = firstNatsStreamSet.passthru.nixosModule;
+  secondNatsStreamsModule = secondNatsStreamSet.passthru.nixosModule;
+  natsStreamSetsSystem = import (pkgs.path + "/nixos/lib/eval-config.nix") {
+    inherit pkgs system;
+    modules = [
+      nativeClientCaDefaultsStack.srv.portCheckModule
+      ({lib, ...}: {
+        options.age.secrets = lib.mkOption {
+          type = lib.types.attrsOf lib.types.anything;
+          default = {};
+        };
+      })
+      firstNatsStreamsModule
+      secondNatsStreamsModule
+    ];
+  };
   stackSetProfiles = let
     mkProfile = stackName: extra:
       {
@@ -223,6 +271,44 @@ in {
   lib-flake-service-moves = import ./service-moves.nix {inherit pkgs;};
   lib-flake-nested-rust-package = assert toString nestedRustPackage.sourcePath == toString ../../../pkgs/examples/hello-rust/default.nix;
     pkgs.runCommand "lib-flake-nested-rust-package-test" {} ''
+      touch "$out"
+    '';
+  lib-flake-nats-streams-seams = assert genericNatsStreams.meta.mainProgram == "nats-streams";
+  assert genericNatsStreams.meta.description == "Ensure configured NATS JetStream streams exist";
+  assert genericNatsStreamsModule.__moduleArgs.name == "nats-streams";
+  assert genericNatsStreamsModule.__moduleArgs.envPrefix == "NATS_STREAMS";
+  assert toString genericNatsStreamsModule.__moduleSourcePath == toString ../../../pkgs/support/nats-streams/default.nix;
+  assert firstNatsStreamSet.meta.mainProgram == "test-nats-streams";
+  assert firstNatsStreamSet.meta.description == "Test NATS stream reconciliation";
+  assert builtins.isFunction firstNatsStreamsModule;
+  assert firstNatsStreamSet.passthru.streamSet.serviceName == "test-nats-streams";
+  assert firstNatsStreamSet.passthru.streamSet.clientServiceName == "test-nats-client";
+  assert firstNatsStreamSet.passthru.streamSet.envPrefix == "TEST_NATS_STREAMS";
+  assert firstNatsStreamSet.passthru.streamSet.servicePartCount == 1;
+  assert firstNatsStreamSet.passthru.streamSet.streams
+  == [
+    {
+      stream = "test-stream";
+      subject = "test.subject";
+    }
+  ];
+  assert secondNatsStreamSet.meta.mainProgram == "other-nats-streams";
+  assert secondNatsStreamSet.meta.description == "Other NATS stream reconciliation";
+  assert builtins.isFunction secondNatsStreamsModule;
+  assert secondNatsStreamSet.passthru.streamSet.serviceName == "other-nats-streams";
+  assert secondNatsStreamSet.passthru.streamSet.clientServiceName == "other-nats-client";
+  assert secondNatsStreamSet.passthru.streamSet.envPrefix == "OTHER_NATS_STREAMS";
+  assert secondNatsStreamSet.passthru.streamSet.servicePartCount == 0;
+  assert secondNatsStreamSet.passthru.streamSet.streams
+  == [
+    {
+      stream = "other-stream";
+      subject = "other.subject";
+    }
+  ];
+  assert natsStreamSetsSystem.config.user-services.svc.test-nats-streams.package.meta.mainProgram == "test-nats-streams";
+  assert natsStreamSetsSystem.config.user-services.svc.other-nats-streams.package.meta.mainProgram == "other-nats-streams";
+    pkgs.runCommand "lib-flake-nats-streams-seams-test" {} ''
       touch "$out"
     '';
   lib-flake-stack-set = assert stackSet.app.fixture.owned == ["proxy" "web" "worker"];
