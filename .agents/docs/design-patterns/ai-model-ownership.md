@@ -95,22 +95,34 @@ absent. A reference for an undeployed backend is harmless when another
 configured backend serves the model. A selected entry with no configured
 membership fails evaluation.
 
-One pure `resolvePolicy` function owns admission, role validation, duplicate
-identity checks, and the Ollama/per-runtime partitions. It reads only catalog,
-selection, roles, and declaration-owned deployment lists. The NixOS module maps
-its structured diagnostics to assertions and must not reimplement membership.
-Deployment topology (compose instances, users, service names, and ports) stays
-module-owned because it depends on evaluated compose configuration. The public
-module surface remains typed and narrow: `resolvedModels` plus the existing
-backend/runtime projections; the internal diagnostic record is not a second
-configuration API. Repository-level pure projections may derive an `aiServices`
-input bridge and consumer helpers from the same resolver result; they must not
-reimplement admission.
+One pure `analyzeCatalog` function owns fleet-wide catalog admission, including
+reference and preset schemas plus duplicate identities. One pure `resolvePolicy`
+function consumes that analysis and owns selection, role validation, configured
+membership, and the Ollama/per-runtime partitions. It reads only catalog,
+selection, roles, and declaration-owned deployment lists. The catalog is
+admitted as one policy artifact: a malformed dormant entry is a configuration
+failure even when no current host selects it.
 
-Catalog client IDs must be globally unique. Ollama references are globally
-unique; llama references and aliases are unique within each runtime; selection
-keys are unique; and roles resolve into the admitted selection. Reject these
-ambiguities before constructing `listToAttrs` maps or router presets.
+The NixOS module maps resolver diagnostics to assertions and must not
+reimplement admission. Deployment topology (compose instances, users, service
+names, and ports) stays module-owned because it depends on evaluated compose
+configuration. The public module surface remains typed and narrow:
+`resolvedModels` plus typed backend/runtime projections. The internal diagnostic
+record is not a second configuration API.
+
+Repository-level pure projections may derive consumer helpers from the same
+resolver result. Their `moduleConfig` handoff is the complete replayable
+`services.ai` input: catalog, resolved selection, roles, and declaration-owned
+backend fields. It must exclude evaluated/read-only outputs such as ports,
+service names, activity flags, and runtime projections.
+
+Catalog client IDs must be valid INI section names and globally unique. Ollama
+references are globally unique; llama references and aliases are unique within
+each runtime; selection keys are unique; and roles resolve into the admitted
+selection. Preset option names and values are non-empty single-line strings. The
+resolver and reconciler share one pure preset schema and renderer. Reject all
+ambiguities and malformed values before constructing `listToAttrs` maps or
+router presets.
 
 llama.cpp engines are named and isolated. An entry's `llama.runtime` selects the
 engine: `default` (the upstream llama.cpp build) or a fork such as `prism`. Each

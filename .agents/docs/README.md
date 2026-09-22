@@ -403,6 +403,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Reviews
 
+- `.agents/docs/notes/reviews/ai-policy-contract-consolidation-2026-09.md`:
+  Cross-repository AI policy consolidation: one catalog analyzer and resolver,
+  complete declaration-only `moduleConfig`, shared preset schema, typed runtime
+  outputs, honest Prism container-payload packaging, and exact parity gates.
 - `.agents/docs/notes/reviews/ai-selection-runtime-hardening-2026-09.md`: AI
   remediation and policy-worktree comparison covering the single resolver,
   configured backend membership, causal topology diagnostics, cache isolation,

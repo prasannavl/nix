@@ -24,8 +24,8 @@ membership semantics and fail-closed runtime integrations.
 - Runtimes with deployments must have distinct resolved cache directories.
 - The module consumes the resolver internally and exposes the data-only,
   strongly typed `services.ai.resolvedModels` result instead of a broad
-  `services.ai.projection` attrset. Abird's repository-level `aiServices` and
-  API helpers remain derived outputs of the same resolver.
+  `services.ai.projection` attrset. Abird's repository-level declaration-only
+  `moduleConfig` and API helpers remain derived outputs of the same resolver.
 - Unresolved deployment ports are `null` and omitted from endpoint/collision
   projections, so missing instances produce their causal errors rather than a
   fake duplicate-port error on a sentinel value.
@@ -34,8 +34,8 @@ membership semantics and fail-closed runtime integrations.
 - Existing NATS streams fail closed on subject, storage, retention, or consumer
   drift. Only a successful JSON stream listing that establishes absence
   authorizes creation; other lookup failures stop without mutation. PrismML
-  packages expose a valid `bin/llama-server`, and their updater uses the
-  process-local GitHub token bridge.
+  packages expose only their intact `/app` container payload, not a misleading
+  host executable; their updater uses the process-local GitHub token bridge.
 
 ## Validation
 

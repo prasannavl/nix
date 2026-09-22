@@ -33,6 +33,8 @@ reconciler arguments, lifecycle (`auto`, `manual` → `autoStart = false`,
   evaluation.
 - `roles` are keys into the same selection; roles pointing outside the selection
   fail evaluation (null defaults, hosts opt in).
+- Catalog admission is fleet-wide. A malformed unselected entry fails the policy
+  rather than remaining latent until a future host selects it.
 - A backend activates only when its `deployments` list is non-empty. Catalog
   references record capability; configured membership requires a valid reference
   and a deployment, plus the matching runtime deployment for llama.cpp. Each
