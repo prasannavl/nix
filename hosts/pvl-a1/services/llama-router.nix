@@ -15,8 +15,8 @@ in {
   # but bind-mounts the PrismML fork over /app, so its llama-server and
   # ggml libraries are the fork build; its cache is separate, so the default
   # router never scans (or tries to load) ternary GGUFs it cannot read. Prism
-  # ports sit one above their default-engine counterpart so the pairs stay
-  # adjacent (11000/11001 ROCm, 12000/12001 CUDA).
+  # uses the adjacent 11001/12001 pair; these declared service ports take
+  # precedence over mutable client forwarding state.
   services.podman-compose.pvl.instances = {
     # AMD/ROCm variant, auto-started like the Ollama pair's AMD side.
     llama-router = rec {

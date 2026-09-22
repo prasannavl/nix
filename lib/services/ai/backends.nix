@@ -15,7 +15,9 @@ rec {
     else value;
 
   backendConfig = backend: entry:
-    normalizeBackend (entry.${backend} or null);
+    if builtins.isAttrs entry
+    then normalizeBackend (entry.${backend} or null)
+    else null;
 
   validBackendConfig = config:
     builtins.isAttrs config
@@ -23,13 +25,46 @@ rec {
     && builtins.isString config.ref
     && config.ref != "";
 
-  # Which llama.cpp engine serves an entry. `llama.runtime` is engine data, not
-  # a preset, so it lives beside `ref`/`preset`; omitting it selects the
-  # `default` runtime (the upstream build).
+  # Which llama.cpp engine an entry targets. Missing or malformed llama refs do
+  # not target an engine; `default` applies only to a valid llama ref.
   llamaRuntime = entry: let
     config = backendConfig "llama" entry;
   in
-    if builtins.isAttrs config && (config ? runtime)
+    if !validBackendConfig config
+    then null
+    else if !(config ? runtime)
+    then "default"
+    else if builtins.isString config.runtime && config.runtime != ""
     then config.runtime
-    else "default";
+    else null;
+
+  validLlamaRuntime = entry: let
+    config = backendConfig "llama" entry;
+  in
+    !validBackendConfig config
+    || !(config ? runtime)
+    || (builtins.isString config.runtime && config.runtime != "");
+
+  runtimeConfigured = runtimes: runtime:
+    runtime
+    != null
+    && (runtimes ? ${runtime})
+    && ((runtimes.${runtime}.deployments or []) != []);
+
+  # Backend membership is a host capability, not raw catalog shape. A model is
+  # configured only when it has a valid reference and the matching backend has
+  # at least one deployment.
+  configuredBackends = {
+    entry,
+    ollama ? false,
+    runtimes ? {},
+  }: let
+    runtime = llamaRuntime entry;
+  in {
+    ollama = ollama && validBackendConfig (backendConfig "ollama" entry);
+    llamaRuntime =
+      if runtimeConfigured runtimes runtime
+      then runtime
+      else null;
+  };
 }

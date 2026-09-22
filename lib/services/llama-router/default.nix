@@ -1,7 +1,29 @@
 {
   lib,
   pkgs,
-}: {
+}: let
+  renderModelsPresetIni = {
+    globalPreset ? {},
+    modelPresets ? {},
+    requiredModels,
+  }: let
+    renderPresetSection = name: attrs:
+      "[${name}]\n"
+      + lib.concatStrings (lib.mapAttrsToList (key: value: "${key} = ${value}\n") attrs);
+    presetModels = builtins.filter (model: modelPresets ? ${model}) requiredModels;
+    presetName = model: (modelPresets.${model}.alias or model);
+  in
+    lib.optionalString (globalPreset != {}) ((renderPresetSection "*" globalPreset) + "\n")
+    + lib.concatStrings (
+      map (
+        model:
+          renderPresetSection (presetName model) ({hf = model;} // (modelPresets.${model} or {}))
+      )
+      presetModels
+    );
+in {
+  inherit renderModelsPresetIni;
+
   mkModelReconciler = {
     backendServices ? [],
     conditionUser ? null,
@@ -58,23 +80,12 @@
           lib.mapAttrsToList (key: value: {inherit key value;}) (modelPresets.${model} or {})
       )
       requiredModels;
-    renderPresetSection = name: attrs:
-      "[${name}]\n"
-      + lib.concatStrings (lib.mapAttrsToList (key: value: "${key} = ${value}\n") attrs);
     presetModels = builtins.filter (model: modelPresets ? ${model}) requiredModels;
     presetName = model: (modelPresets.${model}.alias or model);
     # Presets use client-facing aliases as section names. The exact Hugging
     # Face reference therefore remains available to the router's cache API for
     # independent download and deletion without colliding with the preset.
-    modelsPresetIni =
-      lib.optionalString (globalPreset != {}) ((renderPresetSection "*" globalPreset) + "\n")
-      + lib.concatStrings (
-        map (
-          model:
-            renderPresetSection (presetName model) ({hf = model;} // (modelPresets.${model} or {}))
-        )
-        presetModels
-      );
+    modelsPresetIni = renderModelsPresetIni {inherit globalPreset modelPresets requiredModels;};
   in {
     assertions =
       stateBinding.assertions

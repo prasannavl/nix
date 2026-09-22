@@ -82,21 +82,59 @@ manual, stopped, or automatic deployment reconciles its shared store without
 starting sibling deployments. Workers order after all candidate backends, select
 the first reachable API, and exit quickly when every backend is inactive.
 
-`services.ai.models` is the only model selection list. A model joins a backend
-exactly when its catalog entry carries that backend's reference field (`ollama`,
-`llama`), so the catalog schema itself records backend membership and there are
-no per-backend override lists. A selected entry that carries no backend
-reference is a configuration error rather than a silently unserved model.
-Catalog entries therefore require only the references used by the backends that
-serve them.
+`services.ai.models` is the only model selection list. Catalog references record
+backend capability; configured membership additionally requires a non-empty
+deployment list for that backend. A llama.cpp reference also requires its
+normalized runtime to have a deployment. There are no per-backend override
+lists.
 
-llama.cpp entries additionally bind to a named engine through `llama.runtime`
-(default `default`, the upstream llama.cpp build, or a fork such as `prism`).
-Each declared runtime owns its own deployments, cache directory, reconciler
-state, and reconciler units, so one engine's cache scan or model set can never
-leak into another engine. An `llama.runtime` that names a runtime the host does
-not declare fails evaluation. Deployment instance names, resolved service names,
-and API ports must be globally unique across all AI backends and runtimes.
+`models = null` selects every entry with at least one configured membership. An
+explicit selection is checked against the same predicate, so a syntactically
+valid reference cannot become silently unserved when its backend or runtime is
+absent. A reference for an undeployed backend is harmless when another
+configured backend serves the model. A selected entry with no configured
+membership fails evaluation.
+
+One pure `resolvePolicy` function owns admission, role validation, duplicate
+identity checks, and the Ollama/per-runtime partitions. It reads only catalog,
+selection, roles, and declaration-owned deployment lists. The NixOS module maps
+its structured diagnostics to assertions and must not reimplement membership.
+Deployment topology (compose instances, users, service names, and ports) stays
+module-owned because it depends on evaluated compose configuration. The public
+module surface remains typed and narrow: `resolvedModels` plus the existing
+backend/runtime projections; the internal diagnostic record is not a second
+configuration API. Repository-level pure projections may derive an `aiServices`
+input bridge and consumer helpers from the same resolver result; they must not
+reimplement admission.
+
+Catalog client IDs must be globally unique. Ollama references are globally
+unique; llama references and aliases are unique within each runtime; selection
+keys are unique; and roles resolve into the admitted selection. Reject these
+ambiguities before constructing `listToAttrs` maps or router presets.
+
+llama.cpp engines are named and isolated. An entry's `llama.runtime` selects the
+engine: `default` (the upstream llama.cpp build) or a fork such as `prism`. Each
+configured runtime under `backends.llamaRouter.runtimes.<name>` owns its own
+deployments, cache directory, reconciler state file, reconciler units,
+`preservedModels`, and `idleTimeoutSeconds`, so one engine's cache scan or model
+set can never leak into another engine. The resolved cache directory must be
+unique across runtimes with deployments; deployments of one runtime may share
+that runtime's cache. The read-only `backends.llamaRouter.runtimesInfo.<name>`
+projection exposes each runtime's resolved `urls`, `ports`, `portsByName`,
+`serviceNames`, `readyTarget`, `requiredModels`, `modelPresets`, `cacheDir`, and
+`active`.
+
+`idleTimeoutSeconds` (default `null`) is emitted as the models.ini `[*]`
+`sleep-idle-seconds` key for that runtime, so llama.cpp releases a model's
+resident weights and KV cache after the idle window instead of holding them
+until LRU eviction; the shared `[*]` section also reaches cache-scanned ad-hoc
+models.
+
+Deployment instance names, resolved service names, API ports, and configured
+runtime cache directories must be globally unique across AI backends and
+runtimes. An unresolved deployment port is `null`, is omitted from endpoint
+projections and collision checks, and is reported by the specific missing-port
+or missing-instance assertion rather than a synthetic sentinel collision.
 
 ## Closure-safe helper packaging
 

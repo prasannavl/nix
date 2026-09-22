@@ -136,14 +136,14 @@ Two upstream facts make it wire cleanly into the reconciler:
   model, including cache-scanned ad-hoc entries.
 
 The module uses the second path:
-`services.ai.backends.llamaRouter.idleTimeoutSeconds` (`nullOr ints.positive`,
-default `null` = previous behavior) is emitted as `[*] sleep-idle-seconds = <n>`
-in the generated `models.ini`. `pvl-a1` and `pvl-l5` set `300` seconds, matching
-Ollama's default keep-alive, so a large model no longer stays resident behind a
-follow-up request; it sleeps after the idle window and the next request reloads
-it. `--models-max 3` allows embedding plus up to two chat models to co-reside
-while active, but idle workers release memory instead of waiting for a
-fourth-model LRU eviction.
+`services.ai.backends.llamaRouter.runtimes.<name>.idleTimeoutSeconds`
+(`nullOr ints.positive`, default `null` = previous behavior) is emitted as
+`[*] sleep-idle-seconds = <n>` in the generated `models.ini`. `pvl-a1` and
+`pvl-l5` set `300` seconds, matching Ollama's default keep-alive, so a large
+model no longer stays resident behind a follow-up request; it sleeps after the
+idle window and the next request reloads it. `--models-max 3` allows embedding
+plus up to two chat models to co-reside while active, but idle workers release
+memory instead of waiting for a fourth-model LRU eviction.
 
 Validated on `pvl-l5`: the generated `models.ini` renders the `[*]` section, the
 rendered host config evaluates with `idleTimeoutSeconds = 300`, and a one-off
@@ -195,10 +195,10 @@ set in time.
 `http://127.0.0.1:11000` and `http://127.0.0.1:12000`. A manually started router
 therefore reconciles while the declaratively stopped state skips cleanly without
 starting either backend. The cache directory is a host tmpfiles rule
-(`/var/lib/pvl/llama-router/cache`, `0755 pvl pvl`) like the shared Ollama
-models directory, and the staged `models.ini` is a bind-mounted recreate-class
-file, so model-list changes recreate the container and re-trigger the dispatcher
-via the instance config hash.
+(`/var/lib/pvl/ai/llama-router`, `0755 pvl pvl`) like the shared Ollama models
+directory, and the staged `models.ini` is a bind-mounted recreate-class file, so
+model-list changes recreate the container and re-trigger the dispatcher via the
+instance config hash.
 
 Open WebUI still points only at the two Ollama ports; wiring it to the llama.cpp
 router endpoints is a deliberate follow-up, not part of this change.

@@ -55,6 +55,11 @@
     globalPreset = {threads = "4";};
     modelPresets = {"test/model:Q4_K_M" = {alias = "test:1";};};
   };
+  renderedPresetIni = llamaRouterLib.renderModelsPresetIni {
+    globalPreset = {threads = "4";};
+    modelPresets = {"test/model:Q4_K_M" = {alias = "test:1";};};
+    requiredModels = ["test/model:Q4_K_M"];
+  };
   dispatcher = baseline.systemd.user.services."test-llama-router-models";
   worker = baseline.systemd.user.services."test-llama-router-models-load";
   preservationDispatcher = preservation.systemd.user.services."test-llama-router-models";
@@ -85,6 +90,7 @@ in
   assert !(builtins.all (entry: entry.assertion) invalidRequiredRef.assertions);
   assert !(builtins.all (entry: entry.assertion) invalidPresetValue.assertions);
   assert presetIni.modelsPresetIni == "[*]\nthreads = 4\n\n[test:1]\nalias = test:1\nhf = test/model:Q4_K_M\n";
+  assert renderedPresetIni == presetIni.modelsPresetIni;
     pkgs.runCommand "llama-router-model-reconciler-test" {} ''
       touch "$out"
     ''

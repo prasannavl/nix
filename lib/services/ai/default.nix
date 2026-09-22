@@ -1,7 +1,7 @@
 {lib}: let
   catalog = import ./catalog.nix;
   core = import ./backends.nix;
-  inherit (core) backendConfig missingKeysFrom normalizeBackend validBackendConfig llamaRuntime;
+  inherit (core) backendConfig configuredBackends missingKeysFrom normalizeBackend validBackendConfig llamaRuntime;
 
   backendRef = backend: entry: let
     config = backendConfig backend entry;
@@ -35,7 +35,7 @@
     "AI catalog model ${entry.id or "<unknown>"} requires string llama.preset values: ${lib.concatStringsSep ", " invalidValueKeys}"; preset;
 in {
   inherit backendConfig catalog missingKeysFrom normalizeBackend;
-  inherit llamaRuntime;
+  inherit configuredBackends llamaRuntime;
 
   # Catalog keys in a host selection that do not exist in the catalog.
   missingKeys = missingKeysFrom catalog;
@@ -58,20 +58,27 @@ in {
   # Every preset also sets poll = "0": the server default of 50 busy-polls
   # the GPU while waiting for work, so resident models read as constant GPU
   # usage even when idle.
-  llamaPresets = embeddingId: entries:
-    builtins.listToAttrs (builtins.map (entry: {
-        name = backendRef "llama" entry;
-        value =
-          {
-            alias = entry.id;
-            poll = "0";
-          }
-          // llamaPresetFor entry
-          // (
-            if embeddingId != null && entry.id == embeddingId
-            then {embeddings = "true";}
-            else {}
-          );
-      })
-      entries);
+  llamaPresets = embeddingId: entries: let
+    refs = builtins.map (backendRef "llama") entries;
+    aliases = builtins.map (entry: entry.id) entries;
+  in
+    assert lib.assertMsg (lib.unique refs == refs)
+    "AI catalog llama references must be unique within a runtime";
+    assert lib.assertMsg (lib.unique aliases == aliases)
+    "AI catalog llama aliases must be unique within a runtime";
+      builtins.listToAttrs (builtins.map (entry: {
+          name = backendRef "llama" entry;
+          value =
+            {
+              alias = entry.id;
+              poll = "0";
+            }
+            // llamaPresetFor entry
+            // (
+              if embeddingId != null && entry.id == embeddingId
+              then {embeddings = "true";}
+              else {}
+            );
+        })
+        entries);
 }

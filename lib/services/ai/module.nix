@@ -11,17 +11,23 @@
   projectionLib = import ./projection.nix;
   catalog = cfg.catalog;
 
-  # services.ai.models defaults to null: every model servable by the declared
-  # backends. An explicit list is used verbatim.
-  resolvedModels =
-    if cfg.models != null
-    then cfg.models
-    else
-      projectionLib.servableModels {
-        catalog = cfg.catalog;
-        ollama = cfg.backends.ollama.deployments != [];
-        runtimes = cfg.backends.llamaRouter.runtimes;
-      };
+  # Feed only declaration-owned capability fields to the pure resolver.
+  # Evaluated backend outputs are deliberately excluded, avoiding a module
+  # fixed point between policy admission and rendered runtime projections.
+  policyBackends = {
+    ollama.deployments = cfg.backends.ollama.deployments;
+    llamaRouter.runtimes =
+      builtins.mapAttrs
+      (_: runtime: {deployments = runtime.deployments;})
+      cfg.backends.llamaRouter.runtimes;
+  };
+  policy = projectionLib.resolvePolicy {
+    inherit catalog;
+    models = cfg.models;
+    roles = cfg.roles;
+    backends = policyBackends;
+  };
+  resolvedModels = policy.models;
 
   stackName = cfg.stack.name;
   stackReady = stackName != null;
@@ -124,6 +130,7 @@
   llamaRuntimeNames = builtins.attrNames llamaRuntimes;
   llamaRuntimeCfg = runtime: llamaRuntimes.${runtime};
   runtimeDeployments = runtime: (llamaRuntimeCfg runtime).deployments;
+  configuredLlamaRuntimeNames = builtins.filter (runtime: runtimeDeployments runtime != []) llamaRuntimeNames;
   # Resolved per-runtime cache dir. The option default is null so option
   # evaluation never reads config; the effective path is derived here.
   resolvedCacheDir = runtime: let
@@ -133,54 +140,21 @@
     then cacheDir
     else defaultLlamaCacheDirFor runtime;
 
-  # services.ai.models is the single selection list. A model joins a backend
-  # exactly when it carries that backend's reference field, so the catalog
-  # schema itself records the backend set; there are no per-backend overrides.
-  selectedEntries = builtins.map (key: let
-    entry = catalog.${key} or null;
-  in
-    if builtins.isAttrs entry && (entry ? id) && builtins.isString entry.id
-    then entry
-    else {
-      id = key;
-      missing = true;
-    })
-  resolvedModels;
-  unknownKeys = aiLib.missingKeysFrom catalog resolvedModels;
-  invalidCatalogKeys = builtins.filter (key: let
-    entry = catalog.${key} or null;
-  in
-    entry != null && (!(builtins.isAttrs entry) || !(entry ? id) || !(builtins.isString entry.id)))
-  resolvedModels;
-  selectionValid = unknownKeys == [] && invalidCatalogKeys == [];
-  hasBackend = backend: entry: aiLib.missingRefs backend [entry] == [];
-  selectedFor = backend: builtins.filter (hasBackend backend) selectedEntries;
-  ollamaSelected = selectedFor "ollama";
-  llamaSelected = selectedFor "llama";
-  unserved =
-    if selectionValid
-    then builtins.filter (entry: !(hasBackend "ollama" entry) && !(hasBackend "llama" entry)) selectedEntries
-    else [];
-  unknownLlamaRuntime =
-    if selectionValid && llamaRuntimeNames != []
-    then builtins.filter (entry: !(builtins.elem (aiLib.llamaRuntime entry) llamaRuntimeNames)) llamaSelected
-    else [];
-
   # A backend only emits anything once the stack identity is known and the
   # selection is fully resolvable; otherwise the assertions below report the
   # misconfiguration instead of crashing the evaluation.
   ollamaActive =
     stackReady
-    && ollamaDeployments != []
-    && selectionValid
+    && policy.valid
+    && policy.ollama.active
     && ollamaProjection.user != null;
   # Which runtimes emit a reconciler/models.ini. Deployment presence only:
   # reading the compose projection here would make the models.ini assignment
   # (which feeds those instances) depend on itself.
   runtimeEnabled = runtime:
     stackReady
-    && runtimeDeployments runtime != []
-    && selectionValid;
+    && policy.valid
+    && policy.runtimes.${runtime}.active;
   activeLlamaRuntimes = builtins.filter runtimeEnabled llamaRuntimeNames;
   llamaActiveFor = runtime: runtimeEnabled runtime && (runtimeProjection runtime).user != null;
   activeRuntimeBindings = builtins.map llamaBinding (builtins.filter llamaActiveFor activeLlamaRuntimes);
@@ -221,12 +195,17 @@
   deploymentPort = backend: deployment:
     if deploymentPortResolved backend deployment
     then (instanceConfig backend deployment).exposedPorts.${deploymentPortName backend deployment}.port
-    else 1;
+    else null;
 
   backendProjections = backend: deployments: let
     names = builtins.map (depInstance backend) deployments;
     autos = builtins.filter (deployment: deployment.lifecycle == "auto") deployments;
     users = lib.unique (builtins.map (deploymentUser backend) deployments);
+    resolvedPorts = builtins.filter (entry: entry.port != null) (builtins.map (deployment: {
+        name = depInstance backend deployment;
+        port = deploymentPort backend deployment;
+      })
+      deployments);
   in {
     inherit names autos;
     user =
@@ -234,13 +213,13 @@
       then builtins.head users
       else null;
     serviceNames = builtins.map (deployment: "${deploymentServiceName backend deployment}.service") deployments;
-    urls = builtins.map (deployment: "http://127.0.0.1:${toString (deploymentPort backend deployment)}") deployments;
-    ports = builtins.map (deploymentPort backend) deployments;
-    portsByName = builtins.listToAttrs (builtins.map (deployment: {
-        name = depInstance backend deployment;
-        value = deploymentPort backend deployment;
+    urls = builtins.map (entry: "http://127.0.0.1:${toString entry.port}") resolvedPorts;
+    ports = builtins.map (entry: entry.port) resolvedPorts;
+    portsByName = builtins.listToAttrs (builtins.map (entry: {
+        inherit (entry) name;
+        value = entry.port;
       })
-      deployments);
+      resolvedPorts);
     readyTarget =
       if autos == []
       then null
@@ -250,23 +229,9 @@
   ollamaProjection = backendProjections "ollama" ollamaDeployments;
   runtimeProjection = runtime: backendProjections "llamaRouter" (runtimeDeployments runtime);
 
-  embeddingId =
-    if cfg.roles.embedding == null
-    then null
-    else (catalog.${cfg.roles.embedding} or {id = null;}).id;
-  ollamaRequired =
-    if selectionValid
-    then aiLib.projectModels "ollama" ollamaSelected
-    else [];
-  runtimeSelected = runtime: builtins.filter (entry: aiLib.llamaRuntime entry == runtime) llamaSelected;
-  runtimeRequired = runtime:
-    if selectionValid
-    then aiLib.projectModels "llama" (runtimeSelected runtime)
-    else [];
-  runtimeModelPresets = runtime:
-    if selectionValid
-    then aiLib.llamaPresets embeddingId (runtimeSelected runtime)
-    else {};
+  ollamaRequired = policy.ollama.requiredModels;
+  runtimeRequired = runtime: policy.runtimes.${runtime}.requiredModels;
+  runtimeModelPresets = runtime: policy.runtimes.${runtime}.modelPresets;
   # Router-wide preset defaults (the models.ini [*] section). llama.cpp
   # cascades these onto every model child, including cache-scanned entries,
   # so idle sleep applies to managed and ad-hoc models alike.
@@ -301,6 +266,13 @@
 
   ollamaReconciler = import ../ollama {inherit lib pkgs;};
   llamaReconciler = import ../llama-router {inherit lib pkgs;};
+
+  runtimeModelsPresetIni = runtime:
+    llamaReconciler.renderModelsPresetIni {
+      globalPreset = runtimeGlobalPreset runtime;
+      modelPresets = runtimeModelPresets runtime;
+      requiredModels = runtimeRequired runtime;
+    };
 
   ollamaBinding = ollamaReconciler.mkModelReconciler {
     backendServices = ollamaProjection.serviceNames;
@@ -411,14 +383,12 @@ in {
       };
     };
 
-    projection = mkOption {
-      type = types.attrs;
+    resolvedModels = mkOption {
+      type = types.listOf types.str;
       readOnly = true;
       description = ''
-        Derived generic projection of the resolved policy: catalog, roles,
-        defaults, models, the registry API map, and the resolved aiServices
-        policy. Service- and consumer-specific views stay in the repository
-        layer.
+        Effective managed catalog keys after resolving the nullable models
+        selection against configured backend deployments.
       '';
     };
 
@@ -508,12 +478,7 @@ in {
   config = mkMerge [
     {
       services.ai = {
-        projection = projectionLib.mkProjection {
-          catalog = cfg.catalog;
-          models = resolvedModels;
-          roles = cfg.roles;
-          backends = cfg.backends;
-        };
+        resolvedModels = resolvedModels;
         backends.ollama = {
           active = ollamaDeployments != [];
           serviceNames = ollamaProjection.serviceNames;
@@ -549,19 +514,19 @@ in {
     # paths before config is fixed; only values read the runtime list.
     (mkIf ollamaActive ollamaBinding)
     (mkIf
-      (stackReady && selectionValid)
+      (stackReady && policy.valid)
       {
         systemd.user.services = lib.mkMerge (builtins.map (binding: binding.systemd.user.services) activeRuntimeBindings);
         systemd.user.targets = lib.mkMerge (builtins.map (binding: binding.systemd.user.targets) activeRuntimeBindings);
         assertions = builtins.concatLists (builtins.map (binding: binding.assertions) activeRuntimeBindings);
       })
     (mkIf
-      (stackReady && selectionValid)
+      (stackReady && policy.valid)
       {
         services.podman-compose.${stackName}.instances = builtins.listToAttrs (builtins.concatMap (runtime:
           builtins.map (deployment: {
             name = depInstance "llamaRouter" deployment;
-            value.files."models.ini".text = (llamaBinding runtime).modelsPresetIni;
+            value.files."models.ini".text = runtimeModelsPresetIni runtime;
           })
           (runtimeDeployments runtime))
         activeLlamaRuntimes);
@@ -622,8 +587,6 @@ in {
     # Eval-time invariants.
     {
       assertions = let
-        roleKeys = builtins.filter (role: cfg.roles.${role} != null) ["main" "smallTask" "embedding"];
-        badRoles = builtins.filter (role: !builtins.elem cfg.roles.${role} resolvedModels) roleKeys;
         anyBackends = ollamaDeployments != [] || builtins.any (runtime: runtimeDeployments runtime != []) llamaRuntimeNames;
         deploymentNames = builtins.map ({
           backend,
@@ -632,13 +595,13 @@ in {
         }:
           depInstance backend deployment)
         allDeployments;
-        deploymentPorts = builtins.map ({
+        deploymentPorts = builtins.filter (port: port != null) (builtins.map ({
           backend,
           deployment,
           ...
         }:
           deploymentPort backend deployment)
-        allDeployments;
+        allDeployments);
         deploymentServiceNames = builtins.map ({
           backend,
           deployment,
@@ -646,36 +609,32 @@ in {
         }:
           deploymentServiceName backend deployment)
         allDeployments;
+        configuredCacheAssignments =
+          builtins.map
+          (runtime: {
+            inherit runtime;
+            cacheDir = resolvedCacheDir runtime;
+          })
+          configuredLlamaRuntimeNames;
+        resolvedCacheAssignments = builtins.filter (assignment: assignment.cacheDir != null) configuredCacheAssignments;
+        configuredCacheDirs = builtins.map (assignment: assignment.cacheDir) resolvedCacheAssignments;
+        renderedCacheAssignments = builtins.map (assignment: "${assignment.runtime}=${assignment.cacheDir}") resolvedCacheAssignments;
         instanceDefined = backend: deployment:
           stackReady
           && composeStack.instances ? ${depInstance backend deployment}
           && ((instanceConfig backend deployment).source or null) != null;
         backendUsersValid = projection: projection.user != null;
       in
-        [
+        builtins.map
+        (entry: {
+          assertion = false;
+          inherit (entry) message;
+        })
+        policy.diagnostics
+        ++ [
           {
             assertion = !anyBackends || stackReady;
             message = "services.ai: backends are enabled but services.ai.stack.name is not set (configure it in the stack's common host profile).";
-          }
-          {
-            assertion = unknownKeys == [];
-            message = "services.ai: unknown catalog keys: ${lib.concatStringsSep ", " unknownKeys}";
-          }
-          {
-            assertion = invalidCatalogKeys == [];
-            message = "services.ai.catalog: selected entries require a string id: ${lib.concatStringsSep ", " invalidCatalogKeys}";
-          }
-          {
-            assertion = unserved == [];
-            message = "services.ai: selected models declare no backend reference: ${lib.concatStringsSep ", " (builtins.map (entry: entry.id) unserved)}";
-          }
-          {
-            assertion = unknownLlamaRuntime == [];
-            message = "services.ai: selected models reference undeclared llama runtimes: ${lib.concatStringsSep ", " (builtins.map (entry: "${entry.id}=${aiLib.llamaRuntime entry}") unknownLlamaRuntime)}";
-          }
-          {
-            assertion = badRoles == [];
-            message = "services.ai.roles: keys outside the managed model selection: ${lib.concatStringsSep ", " (builtins.map (role: "${role}=${cfg.roles.${role}}") badRoles)}";
           }
           {
             assertion = builtins.length (lib.unique deploymentNames) == builtins.length deploymentNames;
@@ -688,6 +647,10 @@ in {
           {
             assertion = builtins.length (lib.unique deploymentPorts) == builtins.length deploymentPorts;
             message = "services.ai: deployment API ports must be unique across backends and runtimes.";
+          }
+          {
+            assertion = builtins.length (lib.unique configuredCacheDirs) == builtins.length configuredCacheDirs;
+            message = "services.ai: configured llama runtimes must use distinct cache directories: ${lib.concatStringsSep ", " renderedCacheAssignments}";
           }
           {
             assertion = ollamaDeployments == [] || backendUsersValid ollamaProjection;

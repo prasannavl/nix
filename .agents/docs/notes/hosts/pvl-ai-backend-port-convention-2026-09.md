@@ -15,10 +15,11 @@ with Podman Compose's publication of `11435:11434` on all host addresses.
 The dual-backend hosts now use a backend-family convention instead of adjacent
 ports:
 
-| Backend          | Local/ROCm |  NVIDIA |
-| ---------------- | ---------: | ------: |
-| Ollama           |    `11434` | `12434` |
-| llama.cpp router |    `11000` | `12000` |
+| Backend/runtime          | Local/ROCm |  NVIDIA |
+| ------------------------ | ---------: | ------: |
+| Ollama                   |    `11434` | `12434` |
+| llama.cpp router/default |    `11000` | `12000` |
+| llama.cpp router/PrismML |    `11001` | `12001` |
 
 The convention is identical on `pvl-a1` and `pvl-l5`. `pvl-x2` keeps its only
 Ollama deployment on the native `11434` and has no alternate NVIDIA or llama.cpp
@@ -79,11 +80,13 @@ needed by Podman.
 Incident recovery removed only the persisted same-port entry and recycled the
 shared VS Code tunnel utility process which owned the listener. Once the router
 claimed local `12000`, the active VS Code session restored the user forward as
-remote `12000` to local `12001`, and persisted that non-conflicting mapping. The
-recovery did not change global VS Code forwarding settings, the backend port
-convention, or the editor process. Routine recovery should use the VS Code Ports
-view to remove or remap the manual forward; direct editing of VS Code's state
-database was a surgical incident action, not a normal operating procedure.
+remote `12000` to local `12001`. That resolved the default-router collision but
+claimed the declared manual Prism/CUDA port, so it was not a generally
+non-conflicting mapping. The declarative `11001`/`12001` Prism pair is retained
+because mutable Pi and OpenCode providers consume it; the VS Code forward must
+be removed or remapped before starting Prism/CUDA. Routine recovery should use
+the VS Code Ports view; direct editing of VS Code's state database was a
+surgical incident action, not a normal operating procedure.
 
 Do not manually pin a remote model service to the same local port on a client
 which may also run that backend locally. After releasing the tunnel,

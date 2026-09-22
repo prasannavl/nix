@@ -28,10 +28,14 @@ reconciler arguments, lifecycle (`auto`, `manual` → `autoStart = false`,
 
 ## Contract
 
-- `services.ai.models` is a list of catalog keys; unknown keys fail evaluation.
+- `services.ai.models` is a nullable list of catalog keys; null selects every
+  model with at least one configured backend deployment, and unknown keys fail
+  evaluation.
 - `roles` are keys into the same selection; roles pointing outside the selection
   fail evaluation (null defaults, hosts opt in).
-- A backend activates only when its `deployments` list is non-empty. Each
+- A backend activates only when its `deployments` list is non-empty. Catalog
+  references record capability; configured membership requires a valid reference
+  and a deployment, plus the matching runtime deployment for llama.cpp. Each
   deployment must have a matching host-declared `podman-compose` instance (the
   module asserts `source != null`); the module never declares compose sources.
 - Pulls run through the running backend's API, so the shared Ollama models dir
@@ -42,9 +46,9 @@ reconciler arguments, lifecycle (`auto`, `manual` → `autoStart = false`,
   hosts run an AMD and an NVIDIA variant side by side (mirroring
   `ollama`/`ollama-nvidia`), with the reconciler probing the deployment URLs in
   order and using the first reachable one.
-- Emissions are gated: a backend with an incomplete selection (a chosen model
-  missing the backend's reference field, e.g. no `llama` entry) or a missing
-  instance produces assertions, not half-wired units.
+- Emissions are gated: a selected model with no configured backend deployment or
+  a deployment with a missing instance produces assertions, not half-wired
+  units. Runtimes with deployments must resolve to distinct cache directories.
 - The catalog is the extension path for new backends (e.g. `vllm`/`sglang` via
   the `hf` field): add the reference field, then mirror the `backends.*` wiring.
 

@@ -173,6 +173,8 @@
 
   cfg = eval baseConfig;
   allAssertionsHold = value: builtins.all (assertion: assertion.assertion) value.assertions;
+  failureMessages = value:
+    builtins.map (assertion: assertion.message) (builtins.filter (assertion: !assertion.assertion) value.assertions);
 
   badRoleCfg = lib.recursiveUpdate baseConfig {
     services.ai.roles.main = "gemma4-26b";
@@ -190,6 +192,12 @@
             };
         };
     };
+  missingInstancesCfg = lib.recursiveUpdate baseConfig {
+    services.ai.backends.llamaRouter.runtimes.default.deployments = [
+      {instance = "missing-a";}
+      {instance = "missing-b";}
+    ];
+  };
   crossBackendNameCollisionCfg = lib.recursiveUpdate baseConfig {
     services.ai.backends.llamaRouter.runtimes.default.deployments = [
       {
@@ -226,7 +234,7 @@
   autoServable = projectionLib.servableModels {
     catalog = aiLib.catalog;
     ollama = true;
-    runtimes = {default = {};};
+    runtimes.default.deployments = [{}];
   };
   # A model with no backend reference is a selection error: membership is
   # derived from the catalog schema, so there is nowhere for it to run.
@@ -241,8 +249,8 @@
       models = ["hf-only"];
     };
   };
-  # A llama reference naming a runtime this host does not deploy is a typo
-  # worth failing on rather than silently dropping.
+  # A model with no configured backend deployment is rejected even when its
+  # catalog entry carries a syntactically valid backend reference.
   unknownRuntimeCfg = lib.recursiveUpdate baseConfig {
     services.ai = {
       catalog = {
@@ -257,21 +265,36 @@
       models = ["ghost"];
     };
   };
+  llamaOnlyAutoCfg = {
+    services.ai = {
+      stack.name = "test";
+      catalog = {
+        ollama-only = {
+          id = "ollama-only";
+          ollama = "ollama-only";
+        };
+        hf-only = {
+          id = "hf-only";
+          hf = "example/hf-only";
+        };
+        llama-only = {
+          id = "llama-only";
+          llama = "example/llama-only:Q4";
+        };
+      };
+      models = null;
+      backends.llamaRouter.runtimes.default.deployments = [{}];
+    };
+    services.podman-compose.test = {
+      user = "test-user";
+      instances.llama-router = baseInstances.llama-router;
+    };
+  };
   # The fork engine runs side by side with upstream and serves only the
   # models pinned to its runtime.
   prismCfg = lib.recursiveUpdate baseConfig {
     services.ai = {
-      catalog = lib.recursiveUpdate aiLib.catalog {
-        bonsai = {
-          id = "bonsai2:27b";
-          llama = {
-            ref = bonsaiRef;
-            runtime = "prism";
-            preset.jinja = "true";
-          };
-        };
-      };
-      models = models ++ ["bonsai"];
+      models = models ++ ["bonsai-2-27b"];
       backends.llamaRouter.runtimes.prism.deployments = [
         {
           instance = "llama-router-prism";
@@ -281,6 +304,60 @@
     };
   };
   prism = eval prismCfg;
+  autoPrismCfg = lib.recursiveUpdate prismCfg {
+    services.ai = {
+      models = null;
+      backends.llamaRouter.runtimes.default.deployments = [];
+    };
+  };
+  zeroDeploymentAutoCfg = lib.recursiveUpdate baseConfig {
+    services.ai = {
+      models = null;
+      roles.embedding = null;
+      backends = {
+        ollama.deployments = [];
+        llamaRouter.runtimes.default.deployments = [];
+      };
+    };
+  };
+  ollamaOnlyOnLlamaCfg = lib.recursiveUpdate baseConfig {
+    services.ai = {
+      catalog.only-ollama = {
+        id = "only-ollama";
+        ollama = "only-ollama:1";
+      };
+      models = ["only-ollama"];
+      roles.embedding = null;
+      backends.ollama.deployments = [];
+    };
+  };
+  invalidRuntimeTypeCfg = lib.recursiveUpdate baseConfig {
+    services.ai = {
+      catalog.bad-runtime = {
+        id = "bad-runtime";
+        llama = {
+          ref = "example/bad-runtime";
+          runtime = 1;
+        };
+      };
+      models = ["bad-runtime"];
+      roles.embedding = null;
+    };
+  };
+  duplicateCacheCfg = lib.recursiveUpdate prismCfg {
+    services.ai.backends.llamaRouter.runtimes = {
+      default.cacheDir = "/var/lib/test/shared-cache";
+      prism.cacheDir = "/var/lib/test/shared-cache";
+    };
+  };
+  mixedRuntimeUsersCfg = lib.recursiveUpdate baseConfig {
+    services.ai.backends.llamaRouter.runtimes.default.deployments = [
+      {}
+      {instance = "llama-router-prism";}
+    ];
+    services.podman-compose.test.instances.llama-router-prism.user = "other-user";
+  };
+  mixedRuntimeUsers = eval mixedRuntimeUsersCfg;
 in
   assert allAssertionsHold cfg;
   assert cfg.services.ai.backends.ollama.urls == ["http://127.0.0.1:11434" "http://127.0.0.1:12434"];
@@ -311,16 +388,19 @@ in
     embeddings = "true";
     poll = "0";
   };
-  # Projection: generic catalog/role views exposed by the shared module.
-  assert cfg.services.ai.projection.models == models;
-  assert cfg.services.ai.projection.defaults.embedding.id == "nomic-embed-text";
-  assert cfg.services.ai.projection.roles.embedding == "nomic-embed-text";
-  assert builtins.length (builtins.attrNames cfg.services.ai.projection.catalog) == builtins.length (builtins.attrNames aiLib.catalog);
+  assert cfg.services.ai.resolvedModels == models;
   # models = null keeps the option null but resolves the servable selection.
   assert allAssertionsHold (eval autoModelsCfg);
   assert (eval autoModelsCfg).services.ai.models == null;
-  assert (eval autoModelsCfg).services.ai.projection.models == autoServable;
+  assert (eval autoModelsCfg).services.ai.resolvedModels == autoServable;
   assert !(builtins.elem "bonsai-2-27b" autoServable);
+  assert allAssertionsHold (eval autoPrismCfg);
+  assert builtins.length (eval autoPrismCfg).services.ai.resolvedModels == 16;
+  assert allAssertionsHold (eval zeroDeploymentAutoCfg);
+  assert (eval zeroDeploymentAutoCfg).services.ai.resolvedModels == [];
+  assert allAssertionsHold (eval llamaOnlyAutoCfg);
+  assert (eval llamaOnlyAutoCfg).services.ai.resolvedModels == ["llama-only"];
+  assert (eval llamaOnlyAutoCfg).services.ai.backends.llamaRouter.runtimesInfo.default.requiredModels == ["example/llama-only:Q4"];
   assert cfg.services.podman-compose.test.instances.ollama.state == "stopped";
   assert cfg.services.podman-compose.test.instances.ollama-2.autoStart == false;
   assert cfg.services.podman-compose.test.instances.llama-router.files."models.ini".text != "";
@@ -386,11 +466,28 @@ in
   prism.systemd.user.services.custom-llama-router-prism.serviceConfig.ExecStartPost;
   assert !(allAssertionsHold (eval badRoleCfg));
   assert !(allAssertionsHold (eval missingInstanceCfg));
+  assert failureMessages (eval missingInstancesCfg)
+  == [
+    "services.ai.backends.llamaRouter: deployment missing-a has no matching podman-compose instance."
+    "services.ai.backends.llamaRouter: deployment missing-b has no matching podman-compose instance."
+  ];
   assert !(allAssertionsHold (eval crossBackendNameCollisionCfg));
   assert !(allAssertionsHold (eval crossBackendPortCollisionCfg));
   assert !(allAssertionsHold (eval missingStackCfg));
   assert !(allAssertionsHold (eval unservedCfg));
   assert !(allAssertionsHold (eval unknownRuntimeCfg));
+  assert !(allAssertionsHold (eval ollamaOnlyOnLlamaCfg));
+  assert !(allAssertionsHold (eval invalidRuntimeTypeCfg));
+  assert failureMessages (eval duplicateCacheCfg)
+  == [
+    "services.ai: configured llama runtimes must use distinct cache directories: default=/var/lib/test/shared-cache, prism=/var/lib/test/shared-cache"
+  ];
+  assert failureMessages mixedRuntimeUsers
+  == [
+    "services.ai.backends.llamaRouter.runtimes.default: deployments must resolve to one systemd user."
+  ];
+  assert mixedRuntimeUsers.services.podman-compose.test.instances.llama-router.files."models.ini".text != "";
+  assert mixedRuntimeUsers.services.podman-compose.test.instances.llama-router-prism.files."models.ini".text != "";
     pkgs.runCommand "ai-module-test" {} ''
       touch $out
     ''

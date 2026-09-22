@@ -110,8 +110,9 @@ would close a second cycle.
 - `runtimes.prism`: `llama-router-prism` auto (ROCm, `11001`) +
   `llama-router-prism-nvidia` manual (CUDA, `12001`),
   `idleTimeoutSeconds = 300`; both mount the fork over `/app` and use a separate
-  cache, so the default engine never scans ternary GGUFs. Prism ports sit one
-  above their default-engine counterpart (`+1`) instead of opening a new range.
+  cache, so the default engine never scans ternary GGUFs. The ports are a
+  declared service contract also consumed by the mutable Pi and OpenCode Prism
+  providers; transient client forwards must yield to them.
 - `models` adds `bonsai-2-27b`.
 
 `pvl-l5` uses `runtimes.default` only (no prism runtime, no Bonsai); `pvl-x2` is

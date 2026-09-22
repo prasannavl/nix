@@ -51,6 +51,28 @@
       }
     ])
     true);
+  duplicateRef = builtins.tryEval (builtins.deepSeq (aiLib.llamaPresets null [
+      {
+        id = "first";
+        llama = "example/shared:Q4";
+      }
+      {
+        id = "second";
+        llama = "example/shared:Q4";
+      }
+    ])
+    true);
+  duplicateAlias = builtins.tryEval (builtins.deepSeq (aiLib.llamaPresets null [
+      {
+        id = "duplicate";
+        llama = "example/first:Q4";
+      }
+      {
+        id = "duplicate";
+        llama = "example/second:Q4";
+      }
+    ])
+    true);
 in
   assert allKeys == expectedKeys;
   assert builtins.all (
@@ -73,9 +95,47 @@ in
     llama = "example/inline-GGUF:Q4_K_M";
   }
   == "default";
+  assert aiLib.llamaRuntime {
+    id = "ollama-only";
+    ollama = "ollama-only:1";
+  }
+  == null;
+  assert aiLib.llamaRuntime {
+    id = "invalid-runtime";
+    llama = {
+      ref = "example/invalid-runtime";
+      runtime = 1;
+    };
+  }
+  == null;
+  assert aiLib.configuredBackends {
+    entry = {
+      id = "both";
+      llama = "example/both";
+      ollama = "both:1";
+    };
+    ollama = true;
+    runtimes.default.deployments = [{}];
+  }
+  == {
+    llamaRuntime = "default";
+    ollama = true;
+  };
+  assert aiLib.configuredBackends {
+    entry = {
+      id = "not-deployed";
+      llama = "example/not-deployed";
+    };
+    runtimes.default = {};
+  }
+  == {
+    llamaRuntime = null;
+    ollama = false;
+  };
   assert builtins.all (key: catalog.${key}.llama.preset.jinja == "true") chatKeys;
   assert builtins.isString catalog.nomic-embed-text.llama;
   assert aiLib.backendConfig "ollama" catalog.gemma4-e2b == {ref = "gemma4:e2b";};
+  assert aiLib.backendConfig "ollama" "invalid-entry" == null;
   assert aiLib.backendConfig "llama" catalog.gemma4-e2b
   == {
     ref = "unsloth/gemma-4-E2B-it-GGUF:Q4_K_M";
@@ -136,6 +196,8 @@ in
     poll = "0";
   };
   assert !protectedOverride.success;
+  assert !duplicateRef.success;
+  assert !duplicateAlias.success;
   assert builtins.length (builtins.attrNames presetsWithEmbedding) == builtins.length hostEntries;
   assert builtins.length (builtins.attrNames presetsWithoutEmbedding) == builtins.length hostEntries;
     pkgs.runCommand "ai-lib-test" {} ''
