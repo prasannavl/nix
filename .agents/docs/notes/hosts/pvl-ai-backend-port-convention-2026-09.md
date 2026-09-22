@@ -65,3 +65,66 @@ The source change does not deploy or restart any backend. After deployment,
 clear the failed user unit and start `pvl-ollama-nvidia.service`; then verify
 the `12434` listener and its `/api/tags` response before treating the runtime
 collision as resolved.
+
+## 2026-09-22 llama.cpp NVIDIA collision
+
+`pvl-llama-router-nvidia.service` later failed on `pvl-a1` for the same class of
+socket conflict, but the saved VS Code state made the source unambiguous. The
+Remote SSH connection to `pvl-l5` contained a `User Forwarded` tunnel from
+remote `12000` to local `12000`. Nearby saved tunnels were marked
+`Auto Forwarded` and had been remapped when their preferred local ports were
+unavailable. The manually pinned tunnel instead claimed the exact local port
+needed by Podman.
+
+Incident recovery removed only the persisted same-port entry and recycled the
+shared VS Code tunnel utility process which owned the listener. Once the router
+claimed local `12000`, the active VS Code session restored the user forward as
+remote `12000` to local `12001`, and persisted that non-conflicting mapping. The
+recovery did not change global VS Code forwarding settings, the backend port
+convention, or the editor process. Routine recovery should use the VS Code Ports
+view to remove or remap the manual forward; direct editing of VS Code's state
+database was a surgical incident action, not a normal operating procedure.
+
+Do not manually pin a remote model service to the same local port on a client
+which may also run that backend locally. After releasing the tunnel,
+`pvl-llama-router-nvidia.service` became active, Compose published
+`0.0.0.0:12000->8080`, `/v1/models` returned 14 entries, and a request loaded
+`/app/llama-server` on the RTX 4060 with 4416 MiB of GPU memory. The repaired
+`/var/lib/pvl/ai` ownership hierarchy was already correct and was unrelated to
+this failure.
+
+## Manual llama.cpp client profiles
+
+The mutable client configuration on `pvl-a1` and `pvl-l5` now follows the
+backend-first naming convention:
+
+| Profile/provider | Endpoint                    |
+| ---------------- | --------------------------- |
+| `local-llama`    | `http://localhost:11000/v1` |
+| `local-nv-llama` | `http://localhost:12000/v1` |
+
+Codex owns the two named `~/.codex/<name>.config.toml` profiles plus a shared
+`~/.codex/local-llama-catalog.json`; the main `~/.codex/config.toml` remains
+untouched. Pi carries the same provider names in `~/.pi/agent/models.json`, and
+OpenCode carries them in `~/.config/opencode/opencode.jsonc`. `pvl-x2` remains
+unchanged because it has no llama.cpp deployment. Future backend profiles should
+retain the same suffix convention, for example `local-sgl` and `local-vllm`.
+
+Pi and OpenCode expose the seven-model `pvl-a1`/`pvl-l5` host selection through
+both llama.cpp providers. Their existing local and local-NVIDIA Ollama menus
+were converged to that selection at the same time; OpenCode's NVIDIA Ollama URL
+was normalized to its `/v1` endpoint. The llama.cpp embedding alias is
+`nomic-embed-text`, while Ollama reports the same logical model as
+`nomic-embed-text:latest`.
+
+Codex uses the Responses API and currently exposes only `gemma4:e2b` and
+`gemma4:e4b` through its llama.cpp catalog, with E2B as the default. The current
+Qwen 3.5 embedded Jinja templates reject Codex's sequence of developer messages
+with `System message must be at the beginning`; Pi and OpenCode use compatible
+Chat Completions payloads and retain the Qwen entries. Live validation proved
+Codex Responses plus an `exec_command` tool call, Pi Chat Completions, and
+OpenCode Chat Completions on port `11000`, and all three clients on the NVIDIA
+router at `12000`.
+
+These files remain manually maintained user state. The shared Nix model catalog
+does not project client files, by design for this phase.
