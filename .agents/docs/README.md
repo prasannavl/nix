@@ -458,8 +458,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/services/llama-router-model-reconciler-2026-09.md`:
   Records the llama.cpp router-mode backend on `pvl-l5` port `11436`, the shared
   reconciler lib with Hugging Face reference semantics, staged single-sourced
-  preset INI, filesystem cache retirement, and load-failure tolerance for cached
-  weights.
+  preset INI, filesystem cache retirement, load-failure tolerance for cached
+  weights, the later `idleTimeoutSeconds` idle-sleep option that gives llama.cpp
+  router workers Ollama-style `keep_alive` eviction, and why `--models-max`
+  cannot be made VRAM-aware upstream.
 - `.agents/docs/notes/services/ai-model-service-2026-09.md`: Records the
   byte-shared `lib/services/ai` module and catalog that centralizes AI model
   policy under `services.ai` (selection, roles, deployments, lifecycle), the

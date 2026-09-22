@@ -98,20 +98,95 @@ Policy, in force since:
   resource-limit recovery semantics unchanged.
 - Every generated preset sets `poll = "0"`: the server default of 50 busy-polls
   the backend while waiting for work.
-- The laptop variants (`pvl-a1`, `pvl-l5`) pass `--models-max 2` so the
-  embedding model stays co-resident with a chat model (a router-side
-  `/embeddings` request no longer LRU-evicts the chat worker); a third
+- The laptop variants (`pvl-a1`, `pvl-l5`) pass `--models-max 3` so the
+  embedding model stays co-resident with up to two chat models (a router-side
+  `/embeddings` request no longer LRU-evicts a chat worker); a fourth
   distinct-model request still goes through LRU eviction. `abird-srv` keeps the
   upstream default of 4.
 
-Trade-off: this llama.cpp revision has no idle TTL (no Ollama `keep_alive`
-equivalent), so resident models hold memory until a different-model request
-evicts them via LRU, and the first request after boot pays the load (seconds,
-like Ollama cold). With `--models-max 2` the common steady state is embedding
+Trade-off: with idle sleep disabled a resident model holds memory until a
+different-model request evicts it via LRU, and the first request after boot pays
+the load (seconds, like Ollama cold). With `--models-max 3` the common steady
+state is embedding + one or two chat models resident, so the multi-resident idle
+cost under `poll = "0"` should be verified after deploy; the original complaint
+scenario (all required models force-loaded at boot) cannot recur with the lazy
+reconcile.
 
-- chat resident, so the two-resident idle cost under `poll = "0"` should be
-  verified after deploy; the original complaint scenario (all required models
-  force-loaded at boot) cannot recur with the lazy reconcile.
+## Idle sleep: keep_alive parity (2026-09-22)
+
+Correction to the trade-off above: the pinned image
+(`server-{rocm,cuda}-v0.4.1`, revision `b29c606e`) **does** ship an idle TTL.
+`llama-server` accepts `--sleep-idle-seconds SECONDS` (default `-1` = disabled);
+after that many seconds without an incoming task the child worker calls
+`destroy()`, dropping the model weights and KV cache (including GPU memory)
+while keeping the model listed as `sleeping`, and the next request reloads it on
+demand. This is the Ollama `keep_alive` equivalent the earlier section said was
+missing.
+
+Two upstream facts make it wire cleanly into the reconciler:
+
+- `server-models.cpp::unset_reserved_args` strips only router-owned keys
+  (host/port/api-key/models-dir/models-max/models-preset/models-autoload, plus
+  model identity) before spawning a child; `--sleep-idle-seconds` is left
+  intact, so the router's own flag would be inherited by every child via
+  `base_preset`.
+- `load_from_ini` stores the `[*]` section as the global preset and
+  `load_models()` cascades it onto cached, `--models-dir`, and custom presets
+  before overlaying router CLI args. A `[*]` key therefore applies to every
+  model, including cache-scanned ad-hoc entries.
+
+The module uses the second path:
+`services.ai.backends.llamaRouter.idleTimeoutSeconds` (`nullOr ints.positive`,
+default `null` = previous behavior) is emitted as `[*] sleep-idle-seconds = <n>`
+in the generated `models.ini`. `pvl-a1` and `pvl-l5` set `300` seconds, matching
+Ollama's default keep-alive, so a large model no longer stays resident behind a
+follow-up request; it sleeps after the idle window and the next request reloads
+it. `--models-max 3` allows embedding plus up to two chat models to co-reside
+while active, but idle workers release memory instead of waiting for a
+fourth-model LRU eviction.
+
+Validated on `pvl-l5`: the generated `models.ini` renders the `[*]` section, the
+rendered host config evaluates with `idleTimeoutSeconds = 300`, and a one-off
+`server-rocm-v0.4.1` container loaded the generated preset with no "option not
+recognized" error (`Loaded 7 custom model presets`). The `lib-ai-module` and
+`lib-llama-router-module` checks pass.
+
+## VRAM-aware `models-max` is not supported (2026-09-22)
+
+Follow-up question: can `--models-max` apply only when GPU VRAM is exhausted,
+loading as many models as fit instead of a fixed count? Not with upstream
+llama.cpp. The router scheduler (`server_lru_sched` in `server-models.cpp`) is
+purely count-based: `has_capacity()` is
+`models_max <= 0 || count_running() <
+models_max`, `pick_victim()` returns the
+least-recently-used ready-or-sleeping model, and no scheduler path queries
+device free/total memory. The same code on upstream `master` is unchanged, so
+bumping the image would not add it.
+
+Relevant knobs at this revision:
+
+- `--models-max 0` = unlimited count. `tick()` then returns early, so the router
+  performs **no** LRU eviction at all; a model that cannot fit is not made room
+  for.
+- `--fit on` (default), `--fit-target MiB`, `--fit-ctx N`: load-time adjustment
+  of _unset_ args (`n-gpu-layers`, `ctx`) so a single model fits currently free
+  device memory. This uses whatever VRAM is free, but the fallback is partial/
+  CPU offload, not evicting a resident model. Setting `n-gpu-layers` explicitly
+  disables fit for that model.
+- `--sleep-idle-seconds` (previous section): idle release.
+
+So the closest native approximation to "load until VRAM is full, evict only
+then" is `--models-max 0` + default `--fit on` + `--sleep-idle-seconds N`:
+models keep loading and each fits the remaining VRAM, but excess models degrade
+to CPU offload instead of evicting an idle GPU-resident model, and resident
+count (and system-RAM use) can grow until idle sleep reclaims it. A true
+memory-aware LRU would need either an upstream scheduler change or an external
+controller that polls free VRAM (`rocm-smi`/`nvidia-smi`) and calls
+`POST /models/unload` for the LRU idle model before the next load. That API does
+not guard against busy models, so such a controller must track `req_count`/
+status itself. `--models-max 3` plus idle sleep is the adopted middle ground:
+more concurrency with bounded LRU eviction, and idle sleep bounds the resident
+set in time.
 
 ## Host mapping
 
