@@ -86,6 +86,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   Pi installation and `lib/ext/pi` update ownership, declarative extension
   resources, mutable-state boundaries, Pi Web CLI installation, and Pi 0.85.1
   compatibility requirement.
+- `.agents/docs/notes/apps/pi-model-context-windows-2026-09.md`: Records Pi's
+  128k `contextWindow` default for custom-provider models, the `ollama-cloud`
+  `discoverModels` + `modelOverrides` setup (Ollama's `/v1/models` carries no
+  context metadata), and the `pi --list-models` verification step.
 
 ### Hosts
 
