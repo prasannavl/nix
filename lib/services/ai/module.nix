@@ -168,6 +168,15 @@
       )
       llamaSelected
     else {};
+  # Router-wide preset defaults (the models.ini [*] section). llama.cpp
+  # cascades these onto every model child, including cache-scanned entries,
+  # so idle sleep applies to managed and ad-hoc models alike.
+  llamaGlobalPreset =
+    if cfg.backends.llamaRouter.idleTimeoutSeconds == null
+    then {}
+    else {
+      sleep-idle-seconds = toString cfg.backends.llamaRouter.idleTimeoutSeconds;
+    };
 
   backendProjections = backend: deployments: let
     names = builtins.map (depInstance backend) deployments;
@@ -224,6 +233,7 @@
   llamaBinding = llamaReconciler.mkModelReconciler {
     backendServices = llamaProjection.serviceNames;
     conditionUser = llamaProjection.user;
+    globalPreset = llamaGlobalPreset;
     managedTarget = "${lib.strings.sanitizeDerivationName llamaProjection.user}-managed";
     modelPresets = llamaModelPresets;
     name = "${stackName}-llama-router-models";
@@ -376,6 +386,18 @@ in {
         type = types.nullOr types.str;
         default = defaultLlamaCacheDir;
         description = "Download cache for GGUF model files.";
+      };
+      idleTimeoutSeconds = mkOption {
+        type = types.nullOr types.ints.positive;
+        default = null;
+        description = ''
+          Seconds of continuous model idleness after which a llama.cpp router
+          worker releases its resident model and KV cache
+          (llama.cpp --sleep-idle-seconds). The next request reloads the
+          model on demand, matching Ollama's idle eviction. Emitted as the
+          models.ini [*] section so it reaches managed and cache-scanned
+          models alike. null keeps models resident until LRU eviction.
+        '';
       };
       preservedModels = mkOption {
         type = types.listOf types.str;

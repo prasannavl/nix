@@ -226,6 +226,9 @@
   customLlamaCacheCfg = lib.recursiveUpdate baseConfig {
     services.ai.backends.llamaRouter.cacheDir = "/mnt/models/llama-router";
   };
+  idleTimeoutCfg = lib.recursiveUpdate baseConfig {
+    services.ai.backends.llamaRouter.idleTimeoutSeconds = 300;
+  };
 in
   assert allAssertionsHold cfg;
   assert cfg.services.ai.backends.ollama.urls == ["http://127.0.0.1:11434" "http://127.0.0.1:12434"];
@@ -267,6 +270,10 @@ in
   assert cfg.services.podman-compose.test.instances.ollama.state == "stopped";
   assert cfg.services.podman-compose.test.instances.ollama-2.autoStart == false;
   assert cfg.services.podman-compose.test.instances.llama-router.files."models.ini".text != "";
+  # Idle sleep is opt-in: the default emits no [*] section, so models stay
+  # resident until LRU eviction (pre-existing behavior).
+  assert !(lib.hasInfix "sleep-idle-seconds" cfg.services.podman-compose.test.instances.llama-router.files."models.ini".text);
+  assert lib.hasInfix "[*]\nsleep-idle-seconds = 300\n" (eval idleTimeoutCfg).services.podman-compose.test.instances.llama-router.files."models.ini".text;
   assert builtins.any
   (lib.hasInfix "restart --no-block test-ollama-models-pull.service")
   cfg.systemd.user.services.special-ollama.serviceConfig.ExecStartPost;
