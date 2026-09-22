@@ -25,6 +25,10 @@
       nvidiaCustomForKernel = kernelPackages:
         final.callPackage ../lib/ext/nvidia {inherit kernelPackages;};
       nvidia-custom = final.nvidiaCustomForKernel final.linuxPackages;
+      # PrismML llama.cpp fork (ternary GGUF support). Bind-mount either
+      # variant over a router container's /app to swap the engine in place.
+      prism-llama-cpp-rocm = final.callPackage ../lib/ext/prism-llama-cpp {variant = "rocm";};
+      prism-llama-cpp-cuda = final.callPackage ../lib/ext/prism-llama-cpp {variant = "cuda";};
     }
   )
 ]
