@@ -307,6 +307,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   Compose-shaped native Quadlet backend, build-time compiler, lifecycle and
   staging ownership, provider handoff, runtime health, and no-IFD validation
   boundaries.
+- `.agents/docs/notes/lib/pvl-quadlet-host-migration-blockers-2026-09.md`:
+  Records that Pvl's three stacks are deliberately pinned to Compose and the
+  current five-shape blocker inventory (GPU `deploy`, `network_mode`, signal
+  reload, `extends`, and named volumes) for a future approved Quadlet host
+  migration.
 - `.agents/docs/notes/lib/shared-helper-recovery-tests-2026-06.md`: Records the
   shared Abird helper-fix port for LXC boot profile alignment, Podman Compose
   stack timeout inheritance, Stalwart stable-ID recovery, and helper regression
@@ -495,6 +500,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/abird-post-28631f93-audit-2026-09.md`: Shared
+  convergence audit of the twelve-commit range through `857ac6eb`, per-commit
+  statuses, the generic NATS/repository-module/AI/PrismML units, and byte/mode
+  parity (541 common, 527 exact, 14 explained, no port required).
 - `.agents/docs/notes/tooling/abird-post-b8a-parity-repeat-2026-09.md`:
   Seven-commit reciprocal Abird audit through `28631f93`, exact reverse-port
   verification, completed phases 1, 2, 3, 4, and 6, the explicitly skipped
