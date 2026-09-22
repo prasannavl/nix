@@ -118,6 +118,7 @@ in
   {
     lib-ai-lib = aiTests.lib;
     lib-ai-module = aiTests.module;
+    lib-ai-projection = aiTests.projection;
     lib-incus-helper = incusTests.helper;
     lib-incus-module = incusTests.module;
     lib-forgejo-helper = forgejoTests.helper;

@@ -2,6 +2,7 @@
   lib = pkgs.lib;
   inherit (lib) mkOption types;
   aiLib = import ../default.nix {inherit lib;};
+  projectionLib = import ../projection.nix;
 
   exposedPortType = types.submodule {
     options.port = mkOption {type = types.port;};
@@ -218,6 +219,15 @@
   idleTimeoutCfg = lib.recursiveUpdate baseConfig {
     services.ai.backends.llamaRouter.runtimes.default.idleTimeoutSeconds = 300;
   };
+  # models = null selects every model servable by the declared backends.
+  autoModelsCfg = lib.recursiveUpdate baseConfig {
+    services.ai.models = null;
+  };
+  autoServable = projectionLib.servableModels {
+    catalog = aiLib.catalog;
+    ollama = true;
+    runtimes = {default = {};};
+  };
   # A model with no backend reference is a selection error: membership is
   # derived from the catalog schema, so there is nowhere for it to run.
   unservedCfg = lib.recursiveUpdate baseConfig {
@@ -301,6 +311,16 @@ in
     embeddings = "true";
     poll = "0";
   };
+  # Projection: generic catalog/role views exposed by the shared module.
+  assert cfg.services.ai.projection.models == models;
+  assert cfg.services.ai.projection.defaults.embedding.id == "nomic-embed-text";
+  assert cfg.services.ai.projection.roles.embedding == "nomic-embed-text";
+  assert builtins.length (builtins.attrNames cfg.services.ai.projection.catalog) == builtins.length (builtins.attrNames aiLib.catalog);
+  # models = null keeps the option null but resolves the servable selection.
+  assert allAssertionsHold (eval autoModelsCfg);
+  assert (eval autoModelsCfg).services.ai.models == null;
+  assert (eval autoModelsCfg).services.ai.projection.models == autoServable;
+  assert !(builtins.elem "bonsai-2-27b" autoServable);
   assert cfg.services.podman-compose.test.instances.ollama.state == "stopped";
   assert cfg.services.podman-compose.test.instances.ollama-2.autoStart == false;
   assert cfg.services.podman-compose.test.instances.llama-router.files."models.ini".text != "";

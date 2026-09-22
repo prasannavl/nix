@@ -1,37 +1,14 @@
 {lib}: let
   catalog = import ./catalog.nix;
-  missingKeysFrom = sourceCatalog: models:
-    builtins.filter (model: !(sourceCatalog ? ${model})) models;
+  core = import ./backends.nix;
+  inherit (core) backendConfig missingKeysFrom normalizeBackend validBackendConfig llamaRuntime;
 
-  # A reference string is shorthand for the expanded backend configuration.
-  # Normalize at this boundary so every projection consumes one shape.
-  normalizeBackend = value:
-    if builtins.isString value
-    then {ref = value;}
-    else value;
-  backendConfig = backend: entry:
-    normalizeBackend (entry.${backend} or null);
-  validBackendConfig = config:
-    builtins.isAttrs config
-    && (config ? ref)
-    && builtins.isString config.ref
-    && config.ref != "";
   backendRef = backend: entry: let
     config = backendConfig backend entry;
   in
     assert lib.assertMsg (validBackendConfig config)
     "AI catalog model ${entry.id or "<unknown>"} requires ${backend} to be a non-empty string or an attrset with a non-empty string ref";
       config.ref;
-
-  # Which llama.cpp engine serves an entry. The `llama.runtime` selector is
-  # engine data, not a preset, so it lives beside `ref`/`preset`; omitting it
-  # selects the default runtime (`default`), which is the upstream build.
-  llamaRuntime = entry: let
-    config = backendConfig "llama" entry;
-  in
-    if builtins.isAttrs config && (config ? runtime)
-    then config.runtime
-    else "default";
 
   llamaPresetFor = entry: let
     config = backendConfig "llama" entry;

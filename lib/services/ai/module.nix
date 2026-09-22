@@ -8,7 +8,20 @@
   inherit (lib) mkIf mkMerge mkOption types;
 
   aiLib = import ./default.nix {inherit lib;};
+  projectionLib = import ./projection.nix;
   catalog = cfg.catalog;
+
+  # services.ai.models defaults to null: every model servable by the declared
+  # backends. An explicit list is used verbatim.
+  resolvedModels =
+    if cfg.models != null
+    then cfg.models
+    else
+      projectionLib.servableModels {
+        catalog = cfg.catalog;
+        ollama = cfg.backends.ollama.deployments != [];
+        runtimes = cfg.backends.llamaRouter.runtimes;
+      };
 
   stackName = cfg.stack.name;
   stackReady = stackName != null;
@@ -132,13 +145,13 @@
       id = key;
       missing = true;
     })
-  cfg.models;
-  unknownKeys = aiLib.missingKeysFrom catalog cfg.models;
+  resolvedModels;
+  unknownKeys = aiLib.missingKeysFrom catalog resolvedModels;
   invalidCatalogKeys = builtins.filter (key: let
     entry = catalog.${key} or null;
   in
     entry != null && (!(builtins.isAttrs entry) || !(entry ? id) || !(builtins.isString entry.id)))
-  cfg.models;
+  resolvedModels;
   selectionValid = unknownKeys == [] && invalidCatalogKeys == [];
   hasBackend = backend: entry: aiLib.missingRefs backend [entry] == [];
   selectedFor = backend: builtins.filter (hasBackend backend) selectedEntries;
@@ -369,13 +382,14 @@ in {
     };
 
     models = mkOption {
-      type = types.listOf types.str;
-      default = [];
+      type = types.nullOr (types.listOf types.str);
+      default = null;
       description = ''
         Managed catalog keys for this host, in pull order. This is the only
         selection list; each backend serves exactly the selected models that
         carry its reference field, and a model carrying no backend reference
-        is a configuration error.
+        is a configuration error. null (the default) selects every model
+        servable by the declared backends.
       '';
     };
 
@@ -395,6 +409,17 @@ in {
         default = null;
         description = "Catalog key of the embedding model; llama.cpp router presets flag it for embedding requests.";
       };
+    };
+
+    projection = mkOption {
+      type = types.attrs;
+      readOnly = true;
+      description = ''
+        Derived generic projection of the resolved policy: catalog, roles,
+        defaults, models, the registry API map, and the resolved aiServices
+        policy. Service- and consumer-specific views stay in the repository
+        layer.
+      '';
     };
 
     backends.ollama = {
@@ -483,6 +508,12 @@ in {
   config = mkMerge [
     {
       services.ai = {
+        projection = projectionLib.mkProjection {
+          catalog = cfg.catalog;
+          models = resolvedModels;
+          roles = cfg.roles;
+          backends = cfg.backends;
+        };
         backends.ollama = {
           active = ollamaDeployments != [];
           serviceNames = ollamaProjection.serviceNames;
@@ -592,7 +623,7 @@ in {
     {
       assertions = let
         roleKeys = builtins.filter (role: cfg.roles.${role} != null) ["main" "smallTask" "embedding"];
-        badRoles = builtins.filter (role: !builtins.elem cfg.roles.${role} cfg.models) roleKeys;
+        badRoles = builtins.filter (role: !builtins.elem cfg.roles.${role} resolvedModels) roleKeys;
         anyBackends = ollamaDeployments != [] || builtins.any (runtime: runtimeDeployments runtime != []) llamaRuntimeNames;
         deploymentNames = builtins.map ({
           backend,
