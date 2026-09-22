@@ -55,13 +55,33 @@ ambiguous. GitHub Actions mode uses groups and annotations without ANSI color.
 Machine-readable list/version/command results remain on stdout; progress and
 diagnostics remain on stderr.
 
+## Pvl repository boundary
+
+Pvl's evaluated inventory assigns both the controller and transfer-broker
+capabilities to `pvl-x2`. Concrete host names, groups, builders, registries, and
+routes remain inventory-owned and must not be embedded in the shared package
+README.
+
+Pvl keeps the placement and move inputs disabled by default because it has no
+service migration capsule or multi-role placement topology. The shared
+evaluator, admission check, and manager implementation are present, but
+authoring a move requires Pvl-owned schema-2 placement state, a move directory,
+and an eligible service migration contract. Consequently, the generic move and
+cutover examples document the package contract rather than a currently
+authorized Pvl operation.
+
+This boundary is independent of the Nixbot-engine cutover: the packaged
+`nixbot`, NixOS module, workflows, move-command deployment adapter, and
+repository wrapper remain on Bash until a separate reviewed cutover.
+
 ## Parity and validation
 
-Frozen Abird accounts for all 272 current legacy characterization tests in its
-source-owned parity ledger. Pvl carries the same 272 shared runtime tests plus
-one Pvl inventory identity test. It omits only the generic source assertion that
-mechanically reads Abird's `.agents/plans/**/TEST-DISPOSITION.md`, because that
-repository-specific plan ledger is absent here.
+Both repositories carry the same 272 shared runtime characterization tests. Pvl
+adds one inventory identity test. Abird separately adds one repository identity
+test that mechanically checks its source-owned
+`.agents/plans/**/TEST-DISPOSITION.md` parity ledger. Keeping that assertion in
+an Abird-only sibling leaves the shared test module byte-identical without
+weakening the ledger gate.
 
 The September 22 shared parity port added current-generation admission for
 normal deployment and rollback, GitHub-token projection into Nix, build effects

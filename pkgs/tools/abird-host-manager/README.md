@@ -111,7 +111,7 @@ provides those fields. Warm seed therefore remains observable while the source
 continues serving traffic:
 
 ```text
-Warm seed zulip-tearoff-20260826
+Warm seed service-move-20260826
 
 ✓ Validate endpoints, resources, routes, and job policy  0.8s
 ● Copy live source data to held target  Copying · rsync · 63% · 18 GiB / 29 GiB · 112 MiB/s · 1m 37s left · 84,201/132,440 entries
@@ -157,12 +157,6 @@ compatibility path under `data/phase-projections/`. New logical service moves do
 not write JSON phase projections. The compatibility adapter remains digest
 strict and must not reinterpret an old transaction as a Nix-native move.
 
-Pvl keeps the placement and move inputs disabled by default because it has no
-service migration capsule or multi-role placement topology. The shared
-evaluator, admission check, and manager implementation are present, but
-authoring a move requires Pvl-owned schema-2 placement state, a move directory,
-and an eligible service migration contract.
-
 Publication and deployment reconciliation have deliberately different Git
 capabilities. Operator phase decisions may publish through their ephemeral
 forwarded SSH agent. Deployment reconciliation only consumes a projection that
@@ -184,24 +178,24 @@ credential mechanism is not the gate. Read-only inspection, `--dry`, and
 The normal move has four commands:
 
 ```console
-abird-host-manager service move zulip \
-  --from abird-gondor-corp --to abird-gondor-zulip \
-  --id zulip-tearoff-20260820
-abird-host-manager transaction prepare zulip-tearoff-20260820
-abird-host-manager transaction run zulip-tearoff-20260820
-abird-host-manager transaction close zulip-tearoff-20260820
+abird-host-manager service move mail \
+  --from source --to target \
+  --id mail-move-20260820
+abird-host-manager transaction prepare mail-move-20260820
+abird-host-manager transaction run mail-move-20260820
+abird-host-manager transaction close mail-move-20260820
 ```
 
 To keep the entire lifecycle in the invoking checkout with local commits and no
 push, add global `--local` to every invocation:
 
 ```console
-abird-host-manager --local service move zulip \
-  --from abird-gondor-corp --to abird-gondor-zulip \
-  --id zulip-tearoff-20260820
-abird-host-manager --local transaction prepare zulip-tearoff-20260820
-abird-host-manager --local transaction run zulip-tearoff-20260820
-abird-host-manager --local transaction close zulip-tearoff-20260820
+abird-host-manager --local service move mail \
+  --from source --to target \
+  --id mail-move-20260820
+abird-host-manager --local transaction prepare mail-move-20260820
+abird-host-manager --local transaction run mail-move-20260820
+abird-host-manager --local transaction close mail-move-20260820
 ```
 
 The checkout must be on the configured projection branch and clean before each
@@ -245,10 +239,10 @@ Standalone holds are minimal phase projections, not a separate runtime-only
 mechanism:
 
 ```console
-abird-host-manager resource hold set abird-gondor-zulip service:abird-zulip \
-  --id zulip-maintenance-20260821
-abird-host-manager resource hold clear abird-gondor-zulip service:abird-zulip \
-  --id zulip-maintenance-20260821
+abird-host-manager resource hold set target service:mail \
+  --id mail-maintenance-20260821
+abird-host-manager resource hold clear target service:mail \
+  --id mail-maintenance-20260821
 ```
 
 Both commands publish desired state first. `--skip-runtime` defers the exact
@@ -341,7 +335,7 @@ from the repository root or any directory below it, the manager discovers the
 root and uses `hosts/nixbot.nix` automatically:
 
 ```console
-abird-host-manager host list --group abird-gondor
+abird-host-manager host list --group production
 ```
 
 `--config`/`ABIRD_HOST_MANAGER_CONFIG` always takes precedence. This keeps the
@@ -370,15 +364,14 @@ It maps Nixbot targets, users, nested proxy hops, groups, resource IDs, and
 deployment identities without a generated mirror file. Proxy hops are resolved
 from inventory to concrete OpenSSH commands, with an explicit null OpenSSH
 configuration and global trust store, so they do not depend on ambient aliases
-or credentials. The repository config names controller and transfer-broker
-capabilities independently; both currently resolve to `pvl-x2`, but workflow and
-deploy routes use only the controller while data movement uses only the transfer
-broker. For moves, the adapter also derives the target's existing parent as its
-provisioning endpoint, endpoint deployments for target setup, and the stack's
-shared proxy role for cutover and rollback. An explicit JSON policy is therefore
-optional and is reserved for standalone or unusual infrastructure whose
-controller, routes, or polling policy cannot be inferred safely. The repository
-inventory uses the following capability shape:
+or credentials. Repository config names controller and transfer-broker
+capabilities independently; workflow and deploy routes use only the controller,
+while data movement uses only the transfer broker. For moves, the adapter also
+derives the target's existing parent as its provisioning endpoint, endpoint
+deployments for target setup, and the stack's shared proxy role for cutover and
+rollback. An explicit JSON policy is therefore optional and is reserved for
+standalone or unusual infrastructure whose controller, routes, or polling policy
+cannot be inferred safely. Repository inventory uses this capability shape:
 
 ```nix
 config = {
@@ -412,23 +405,23 @@ cache semantics. A bounded compatibility reader accepts the former `ci.host` and
   },
   "hosts": {
     "source": {
-      "address": "10.10.30.60",
-      "user": "pvl",
+      "address": "192.0.2.10",
+      "user": "operator",
       "proxy_jump": "bastion",
       "nixbot_deploy": { "host": "source-real" },
       "agent_prefix": ["/run/wrappers/bin/sudo", "-n"],
       "broker_ssh_args": []
     },
     "target": {
-      "address": "10.10.30.62",
-      "user": "pvl",
+      "address": "192.0.2.20",
+      "user": "operator",
       "nixbot_deploy": { "host": "target-real" },
       "agent_prefix": ["/run/wrappers/bin/sudo", "-n"],
       "broker_ssh_args": []
     },
     "bastion": {
       "address": "bastion.example.test",
-      "user": "pvl",
+      "user": "operator",
       "proxy_command": "cloudflared access ssh --hostname %h"
     },
     "controller": {
@@ -449,7 +442,7 @@ cache semantics. A bounded compatibility reader accepts the former `ci.host` and
       "kind": "nixbot_deploy",
       "nixbot_deploy": {
         "host": "proxy",
-        "nix_config": "proxy-zulip-target"
+        "nix_config": "proxy-target"
       }
     },
     "deploy-rollback": {
@@ -518,14 +511,14 @@ job submission is an internal orchestration protocol. Operators use
 ```console
 abird-host-manager --config /etc/abird-host-manager.json host list
 abird-host-manager --config /etc/abird-host-manager.json host list \
-  --group abird --hosts 'all,-*dev*'
+  --group production --hosts 'all,-*dev*'
 abird-host-manager --config /etc/abird-host-manager.json host show target
 abird-host-manager --config /etc/abird-host-manager.json host logs target --since today --output text
 abird-host-manager --config /etc/abird-host-manager.json host logs target --since today -f --output json
 abird-host-manager --config /etc/abird-host-manager.json host ssh target
 abird-host-manager --config /etc/abird-host-manager.json host exec target -- uname -a
 abird-host-manager --config /etc/abird-host-manager.json host reboot \
-  --group abird --hosts 'all,-*dev*' --jobs 8 --dry-run
+  --group production --hosts 'all,-*dev*' --jobs 8 --dry-run
 abird-host-manager --config /etc/abird-host-manager.json host gc \
   --hosts target --delete-older-than 7d --execute
 abird-host-manager --config /etc/abird-host-manager.json host gc \
@@ -537,33 +530,33 @@ abird-host-manager --config /etc/abird-host-manager.json host drain target \
 abird-host-manager --config /etc/abird-host-manager.json host activate target \
   --owner maintenance-20260801 --execute
 abird-host-manager --config /etc/abird-host-manager.json host holds target
-abird-host-manager service status zulip
-abird-host-manager service logs zulip --output text
-abird-host-manager service logs zulip -f --output json
-abird-host-manager --config /etc/abird-host-manager.json service status zulip --host target
-abird-host-manager --config /etc/abird-host-manager.json service restart zulip \
+abird-host-manager service status mail
+abird-host-manager service logs mail --output text
+abird-host-manager service logs mail -f --output json
+abird-host-manager --config /etc/abird-host-manager.json service status mail --host target
+abird-host-manager --config /etc/abird-host-manager.json service restart mail \
   --host target --execute
-abird-host-manager --config /etc/abird-host-manager.json unit status target abird-zulip.service
-abird-host-manager --config /etc/abird-host-manager.json unit logs target abird-zulip.service -f
-abird-host-manager --config /etc/abird-host-manager.json unit restart target abird-zulip.service \
-  --scope user --user abird --execute
-abird-host-manager --config /etc/abird-host-manager.json resource describe target service:abird-zulip
-abird-host-manager --config /etc/abird-host-manager.json resource logs target service:abird-zulip
-abird-host-manager --config /etc/abird-host-manager.json resource logs target service:abird-zulip -f
+abird-host-manager --config /etc/abird-host-manager.json unit status target mail.service
+abird-host-manager --config /etc/abird-host-manager.json unit logs target mail.service -f
+abird-host-manager --config /etc/abird-host-manager.json unit restart target mail.service \
+  --scope user --user service --execute
+abird-host-manager --config /etc/abird-host-manager.json resource describe target service:mail
+abird-host-manager --config /etc/abird-host-manager.json resource logs target service:mail
+abird-host-manager --config /etc/abird-host-manager.json resource logs target service:mail -f
 abird-host-manager --config /etc/abird-host-manager.json resource hold show \
-  target service:abird-zulip
+  target service:mail
 abird-host-manager --config /etc/abird-host-manager.json resource hold acquire \
-  target service:abird-zulip \
+  target service:mail \
   --owner move-20260801 --execute
 
-abird-host-manager service move zulip mail \
+abird-host-manager service move mail calendar \
   --from source --to target --dry-run
-abird-host-manager service move zulip mail \
+abird-host-manager service move mail calendar \
   --from source --to target --execute
 abird-host-manager --config /etc/abird-host-manager.json \
   host move --from old-corp --to new-corp --dry-run
 abird-host-manager --config /etc/abird-host-manager.json \
-  instance move abird-zulip --from-controller old-controller \
+  instance move app-instance --from-controller old-controller \
   --to-controller new-controller --from-project old-project \
   --to-project new-project --execute
 
@@ -571,8 +564,8 @@ abird-host-manager transaction create --spec ./multi-host-move.json --dry-run
 abird-host-manager transaction create --spec ./multi-host-move.json --execute
 
 abird-host-manager --repo-root "$PWD" host create incus example \
-  --stack abird --incus-parent abird-nest \
-  --incus-ipv4 10.10.100.210 --group abird --dry-run
+  --stack production --incus-parent virtualization-host \
+  --incus-ipv4 192.0.2.210 --group production --dry-run
 abird-host-manager --repo-root "$PWD" host build example --execute
 abird-host-manager --repo-root "$PWD" host create physical physical-example \
   --disk /dev/disk/by-id/nvme-example --boot-mode efi \
@@ -593,24 +586,24 @@ abird-host-manager transaction resume TRANSACTION_ID \
   --supersede-failed-job
 abird-host-manager transaction show TRANSACTION_ID
 
-abird-host-manager service wipe abird-zulip \
-  --host abird-gondor-zulip --id reset-zulip-target --dry-run
-abird-host-manager service wipe abird-zulip \
-  --host abird-gondor-zulip --id reset-zulip-target \
+abird-host-manager service wipe mail \
+  --host target --id reset-mail-target --dry-run
+abird-host-manager service wipe mail \
+  --host target --id reset-mail-target \
   --owner EXISTING_MIGRATION_ID --execute
-abird-host-manager resource wipe abird-gondor-zulip service:abird-zulip \
-  --id reset-zulip-target --execute
+abird-host-manager resource wipe target service:mail \
+  --id reset-mail-target --execute
 
 abird-host-manager --config /etc/abird-host-manager.json \
-  backup create resource service:abird-zulip --from source --to source \
+  backup create resource service:mail --from source --to source \
   --id backup-20260801 --execute
 
 abird-host-manager --config /etc/abird-host-manager.json \
-  backup create service abird-zulip --from source --to backup-host \
-  --to /srv/backups/abird-zulip --id backup-20260801 --execute
+  backup create service mail --from source --to backup-host \
+  --to /srv/backups/mail --id backup-20260801 --execute
 
 sudo -n abird-host-manager --config /etc/abird-host-manager.json \
-  backup create host source --to /srv/backups/abird-corp \
+  backup create host source --to /srv/backups/source \
   --id backup-20260801 --execute
 
 abird-host-manager backup create --spec ./heterogeneous-backup.json --execute
@@ -659,10 +652,10 @@ the only stack declaring the service, or the unique `env = "prod"` candidate
 when development or platform stacks declare it too. Ambiguous repositories fail
 closed and require `--stack`. It then resolves the selected stack's active
 endpoint and requires that host's evaluated agent declaration to identify
-exactly one canonical resource (for example, `service:abird-zulip`). Grouped
-units and user ownership remain agent metadata. `--host` bypasses placement
-while still resolving the declared resource when a repository is available. Raw
-systemd operations are deliberately separate under `unit <verb> HOST UNIT`; this
+exactly one canonical resource (for example, `service:mail`). Grouped units and
+user ownership remain agent metadata. `--host` bypasses placement while still
+resolving the declared resource when a repository is available. Raw systemd
+operations are deliberately separate under `unit <verb> HOST UNIT`; this
 standalone surface cannot be confused with a logical service lookup.
 
 `service wipe` and `resource wipe` are destructive, metadata-owned reset
