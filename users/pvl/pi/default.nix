@@ -2,7 +2,9 @@
   nixos = {...}: {};
 
   home = {pkgs, ...}: let
-    piModelsDiscovery = pkgs.callPackage ../../../lib/ext/pi/pi-models-discovery {};
+    piModelsDiscovery = pkgs.callPackage ../../../lib/ext/pi/pi-models-discovery {
+      i18nDefaultLocale = "en-US";
+    };
     piSessionManager = pkgs.callPackage ../../../lib/ext/pi/pi-session-manager {};
     piSubagents = pkgs.callPackage ../../../lib/ext/pi/pi-subagents {};
     piTps = pkgs.callPackage ../../../lib/ext/pi/pi-tps {};
