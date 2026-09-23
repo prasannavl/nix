@@ -4,9 +4,9 @@
     package = "pi-models-discovery";
     owner = "maplezzk";
     repo = "pi-extensions";
-    version = "1.3.1";
-    rev = "8ec1ea0790ea338b4905d9fecae599fae9e2a4c7";
-    srcHash = "sha256-AuA4bQAyfxqtW+fdxC38E9dkueCnsaOtj2YAHTbIG5o=";
+    version = "1.4.0";
+    rev = "7a5c96be138158a5cf6413ac819509eff12b1ccd";
+    srcHash = "sha256-+6gLKUV78RpEqDT/4GmlsJEJVaEKi6+XZNShZ4DjeHY=";
   };
 
   pi-session-manager = {
@@ -42,9 +42,9 @@
     package = "@agegr/pi-web";
     owner = "agegr";
     repo = "pi-web";
-    version = "0.9.1";
-    srcHash = "sha256-JRINZkuuU3u453EH+aL+UOK/9dzk46yKadxYAy6d6JM=";
-    releaseHash = "sha256-fuuFKezb58lO2P1t3yHIkHPnBe8D8es6TTsqOy7UL7w=";
-    npmDepsHash = "sha256-309IHTP/YC0OU8Z4SNUBksRbVFCUAhKsQjl3ef3d034=";
+    version = "0.9.3";
+    srcHash = "sha256-JHCsrwZ13dbnsIoYiDiy9BCBaPM0BOvDE7hW5WJxa8g=";
+    releaseHash = "sha256-EhoxOwmEIsN3G6MQImZbCSJM4QBnnzKzNV+gmuIUkN0=";
+    npmDepsHash = "sha256-8HJ2S5soReHvwXEKg31sd7iTKYQKbzMb/UpDRe/sR2E=";
   };
 }
