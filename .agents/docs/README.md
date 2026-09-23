@@ -511,6 +511,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   policy under `services.ai` (selection, roles, deployments, lifecycle), the
   policy/machine plane split of the host files, the per-host fleet policy, and
   the migration deltas from the hand-wired reconciler bindings.
+- `.agents/docs/notes/services/ai-consumer-endpoint-regression-2026-09.md`:
+  Records the `mkConsumers` regression where output endpoint descriptors dropped
+  an omitted host despite the shared test expecting `defaultHost`, the fix, and
+  the resulting Abird parity gap where Pvl leads `abird/master` on
+  `lib/services/ai/projection.nix`.
 - `.agents/docs/notes/services/llama-runtimes-membership-by-ref-prism-2026-09.md`:
   Records the membership-by-ref catalog API (no per-backend model overrides),
   named isolated llama.cpp runtimes (`llama.runtime`), the module-evaluation
