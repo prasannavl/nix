@@ -12,23 +12,36 @@
       "qwen35-2b"
       "qwen35-4b"
       "qwen35-9b"
+      # Ternary preview served by the PrismML fork runtime below.
+      "bonsai-2-27b"
     ];
     roles.embedding = "nomic-embed-text";
 
+    # Deployment order is significant: consumer endpoint lists (Open WebUI,
+    # LibreChat) are built in this order, so keep ROCm, NVIDIA, CPU with CPU
+    # last. `ports`/`urls` projections preserve it.
     backends = {
       ollama = {
-        # Shared model store, mounted read-write by both Ollama containers:
-        # reconciler pulls run through either instance's API and land here.
+        # Shared model store, mounted read-write by every Ollama container:
+        # reconciler pulls run through whichever instance's API, and blobs
+        # land here once.
         modelsDir = "/var/lib/pvl/ollama-models";
         deployments = [
           {
-            instance = "ollama";
-            # Declaratively stopped; started by hand for GPU sessions.
+            # AMD/ROCm; declaratively stopped, started by hand for GPU
+            # sessions.
+            instance = "ollama-rocm";
             lifecycle = "stopped";
           }
           {
             instance = "ollama-nvidia";
             lifecycle = "stopped";
+          }
+          {
+            # CPU + Vulkan fallback; never auto-started, survives if started
+            # by hand.
+            instance = "ollama-cpu";
+            lifecycle = "manual";
           }
         ];
       };
@@ -39,13 +52,36 @@
         idleTimeoutSeconds = 300;
         deployments = [
           {
-            # AMD/ROCm router, mirroring the Ollama pair: declaratively
+            # AMD/ROCm router, mirroring the Ollama set: declaratively
             # stopped, started by hand for GPU sessions.
+            instance = "llama-rocm";
             lifecycle = "stopped";
           }
           {
             # NVIDIA/CUDA router on the same shared cache.
-            instance = "llama-router-nvidia";
+            instance = "llama-nvidia";
+            lifecycle = "stopped";
+          }
+          {
+            # CPU router on the same shared cache; on-demand only.
+            instance = "llama-cpu";
+            lifecycle = "manual";
+          }
+        ];
+      };
+
+      # PrismML fork engine for the ternary Bonsai models. Separate cache and
+      # reconciler so the default (upstream) runtime never scans or loads the
+      # ternary GGUFs. Declaratively stopped like the other l5 GPU backends.
+      llamaRouter.runtimes.prism = {
+        idleTimeoutSeconds = 300;
+        deployments = [
+          {
+            instance = "llama-prism-rocm";
+            lifecycle = "stopped";
+          }
+          {
+            instance = "llama-prism-nvidia";
             lifecycle = "stopped";
           }
         ];

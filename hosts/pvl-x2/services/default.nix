@@ -9,6 +9,7 @@
     ./immich
     ./jellyfin
     ./kavita
+    ./llama-router.nix
     ./media.nix
     ./memos
     ./navidrome

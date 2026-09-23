@@ -10,23 +10,56 @@ in {
   # Container definitions only: image, devices, and cache bind. Model pulls,
   # models.ini, lifecycle, and cache dirs are owned by services.ai.
   #
-  # Two engines run side by side. The `default` pair uses stock ggml-org
-  # images and shares one GGUF cache. The `prism` pair uses the same images
-  # but bind-mounts the PrismML fork over /app, so its llama-server and
-  # ggml libraries are the fork build; its cache is separate, so the default
-  # router never scans (or tries to load) ternary GGUFs it cannot read. Prism
-  # uses the adjacent 11001/12001 pair; these declared service ports take
-  # precedence over mutable client forwarding state.
+  # Device-class naming: `llama-<device>` for the upstream engine and
+  # `llama-prism-<device>` for the PrismML fork. Ports follow
+  # `deviceBase + runtimeSlot`: CPU 11000, ROCm 12000, NVIDIA 13000, with the
+  # prism runtime one slot higher.
+  #
+  # The default set uses stock ggml-org images and shares one GGUF cache. The
+  # prism deployments use the same images but bind-mount the PrismML fork over
+  # /app, so its llama-server and ggml libraries are the fork build; its cache
+  # is separate, so the default runtime never scans (or tries to load) ternary
+  # GGUFs it cannot read.
   services.podman-compose.pvl.instances = {
-    # AMD/ROCm variant, auto-started like the Ollama pair's AMD side.
-    llama-router = rec {
+    # CPU-only variant; stock CPU image, no accelerator. Two resident workers
+    # cover the embedding model plus one chat model without holding three CPU
+    # model sets in system RAM.
+    llama-cpu = rec {
       exposedPorts.main.port = 11000;
 
       source = ''
         services:
-          llama-router:
+          llama-cpu:
+            image: ghcr.io/ggml-org/llama.cpp:server-v0.4.1
+            container_name: llama-cpu
+            command:
+              - --models-preset
+              - /etc/llama-router/models.ini
+              - --models-max
+              - "2"
+            ports:
+              - "${toString exposedPorts.main.port}:8080"
+            volumes:
+              - ./models.ini:/etc/llama-router/models.ini:ro
+              - ${defaultCache}:/cache
+            environment:
+              - LLAMA_CACHE=/cache
+      '';
+
+      # GGUF downloads run in the model reconciler; this covers cold image and
+      # container startup.
+      serviceOverrides.serviceConfig.TimeoutStartSec = "10min";
+    };
+
+    # AMD/ROCm variant, auto-started like the Ollama set's ROCm side.
+    llama-rocm = rec {
+      exposedPorts.main.port = 12000;
+
+      source = ''
+        services:
+          llama-rocm:
             image: ghcr.io/ggml-org/llama.cpp:server-rocm-v0.4.1
-            container_name: llama-router
+            container_name: llama-rocm
             # Three resident workers let the embedding model co-reside with
             # up to two chat models (an /embeddings request no longer
             # LRU-evicts a chat worker); the poll = 0 presets plus
@@ -51,22 +84,20 @@ in {
               - keep-groups
       '';
 
-      # GGUF downloads run in pvl-llama-router-models; this covers cold image
-      # and container startup.
       serviceOverrides.serviceConfig.TimeoutStartSec = "10min";
     };
 
     # NVIDIA/CUDA variant; same models.ini, same shared cache.
-    llama-router-nvidia = rec {
-      exposedPorts.main.port = 12000;
+    llama-nvidia = rec {
+      exposedPorts.main.port = 13000;
 
       source = ''
         services:
-          llama-router:
+          llama-nvidia:
             image: ghcr.io/ggml-org/llama.cpp:server-cuda-v0.4.1
-            container_name: llama-router-nvidia
+            container_name: llama-nvidia
             # Three resident workers for the same co-residency reason as the
-            # AMD variant; the poll = 0 presets plus sleep-idle-seconds keep
+            # ROCm variant; the poll = 0 presets plus sleep-idle-seconds keep
             # idle workers from busy-polling the GPU.
             command:
               - --models-preset
@@ -93,17 +124,17 @@ in {
       '';
     };
 
-    # PrismML fork, ROCm/CUDA pair. The fork directory (llama-server plus its
+    # PrismML fork, ROCm variant. The fork directory (llama-server plus its
     # shared libraries, RUNPATH $ORIGIN) is mounted over /app; the container's
-    # ROCm 7.2.1 / CUDA 12.8 userspace is an exact match for the builds.
-    llama-router-prism = rec {
-      exposedPorts.main.port = 11001;
+    # ROCm userspace is an exact match for the build.
+    llama-prism-rocm = rec {
+      exposedPorts.main.port = 12001;
 
       source = ''
         services:
-          llama-router-prism:
+          llama-prism-rocm:
             image: ghcr.io/ggml-org/llama.cpp:server-rocm-v0.4.1
-            container_name: llama-router-prism
+            container_name: llama-prism-rocm
             # Fork engine for ternary Bonsai; same worker model as the
             # default engine.
             command:
@@ -131,14 +162,15 @@ in {
       serviceOverrides.serviceConfig.TimeoutStartSec = "10min";
     };
 
-    llama-router-prism-nvidia = rec {
-      exposedPorts.main.port = 12001;
+    # PrismML fork, CUDA variant.
+    llama-prism-nvidia = rec {
+      exposedPorts.main.port = 13001;
 
       source = ''
         services:
-          llama-router-prism:
+          llama-prism-nvidia:
             image: ghcr.io/ggml-org/llama.cpp:server-cuda-v0.4.1
-            container_name: llama-router-prism-nvidia
+            container_name: llama-prism-nvidia
             command:
               - --models-preset
               - /etc/llama-router/models.ini

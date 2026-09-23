@@ -129,16 +129,6 @@
       preset.jinja = "true";
     };
   };
-  qwen36-35b-a3b = {
-    id = "qwen3.6:35b-a3b";
-    hf = "Qwen/Qwen3.6-35B-A3B";
-    ollama = "qwen3.6:35b-a3b";
-    llama = {
-      ref = "unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M";
-      preset.jinja = "true";
-    };
-    pinned = true;
-  };
   gpt-oss-20b = {
     id = "gpt-oss:20b";
     hf = "openai/gpt-oss-20b";

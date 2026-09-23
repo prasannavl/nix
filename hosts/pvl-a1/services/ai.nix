@@ -16,42 +16,55 @@
       "qwen35-9b"
       # Ternary preview: PTQ1_0 GGUFs need the PrismML llama.cpp fork, so
       # this entry pins llama.runtime = "prism" and is served only by the
-      # prism router pair below.
+      # prism runtime below.
       "bonsai-2-27b"
     ];
     roles.embedding = "nomic-embed-text";
 
+    # Deployment order is significant: consumer endpoint lists (Open WebUI,
+    # LibreChat) are built in this order, so keep ROCm, NVIDIA, CPU with CPU
+    # last. `ports`/`urls` projections preserve it.
     backends = {
       ollama = {
-        # Shared model store, mounted read-write by both Ollama containers:
-        # reconciler pulls run through either instance's API and land here.
+        # Shared model store, mounted read-write by every Ollama container:
+        # reconciler pulls run through whichever instance's API, and blobs
+        # land here once.
         modelsDir = "/var/lib/pvl/ollama-models";
         deployments = [
           {
-            instance = "ollama";
+            instance = "ollama-rocm";
             lifecycle = "auto";
           }
           {
-            # Warmed by hand; the reconciler keeps its models current.
             instance = "ollama-nvidia";
+            lifecycle = "manual";
+          }
+          {
+            # CPU + Vulkan fallback; warmed by hand.
+            instance = "ollama-cpu";
             lifecycle = "manual";
           }
         ];
       };
 
-      # Same AMD/NVIDIA pair as Ollama: the ROCm router auto-starts, the
-      # CUDA router is warmed by hand. idleTimeoutSeconds unloads a model's
-      # weights/KV cache once it goes unused, so a large resident model is
-      # swapped out like Ollama's keep_alive instead of waiting for a
+      # Device-class llama.cpp deployments. The ROCm variant auto-starts; the
+      # NVIDIA and CPU variants are warmed by hand. idleTimeoutSeconds unloads
+      # a model's weights/KV cache once it goes unused, so a large resident
+      # model is swapped out like Ollama's keep_alive instead of waiting for a
       # fourth-model LRU eviction.
       llamaRouter.runtimes.default = {
         idleTimeoutSeconds = 300;
         deployments = [
           {
+            instance = "llama-rocm";
             lifecycle = "auto";
           }
           {
-            instance = "llama-router-nvidia";
+            instance = "llama-nvidia";
+            lifecycle = "manual";
+          }
+          {
+            instance = "llama-cpu";
             lifecycle = "manual";
           }
         ];
@@ -64,11 +77,11 @@
         idleTimeoutSeconds = 300;
         deployments = [
           {
-            instance = "llama-router-prism";
+            instance = "llama-prism-rocm";
             lifecycle = "auto";
           }
           {
-            instance = "llama-router-prism-nvidia";
+            instance = "llama-prism-nvidia";
             lifecycle = "manual";
           }
         ];

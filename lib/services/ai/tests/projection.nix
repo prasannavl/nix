@@ -175,7 +175,7 @@ in
   # Explicit selections are used verbatim; null selects the deployed set.
   assert explicitProjection.models == ["gemma4-26b" "nomic-embed-text"];
   assert explicitProjection.defaults.main.id == "gemma4:26b";
-  assert builtins.length autoProjection.models == 15;
+  assert builtins.length autoProjection.models == 14;
   assert !(builtins.elem "bonsai-2-27b" autoProjection.models);
   assert autoProjection.defaults.smallTask.id == "gemma4:e2b";
   assert autoProjection.valid;

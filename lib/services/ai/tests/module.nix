@@ -417,7 +417,7 @@ in
   assert (eval autoModelsCfg).services.ai.resolvedModels == autoServable;
   assert !(builtins.elem "bonsai-2-27b" autoServable);
   assert allAssertionsHold (eval autoPrismCfg);
-  assert builtins.length (eval autoPrismCfg).services.ai.resolvedModels == 16;
+  assert builtins.length (eval autoPrismCfg).services.ai.resolvedModels == 15;
   assert allAssertionsHold (eval zeroDeploymentAutoCfg);
   assert (eval zeroDeploymentAutoCfg).services.ai.resolvedModels == [];
   assert allAssertionsHold (eval llamaOnlyAutoCfg);

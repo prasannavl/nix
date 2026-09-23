@@ -17,7 +17,6 @@
     "qwen35-2b"
     "qwen35-4b"
     "qwen35-9b"
-    "qwen36-35b-a3b"
     "qwen38-27b"
   ];
   chatKeys = builtins.filter (key: key != "nomic-embed-text") allKeys;
