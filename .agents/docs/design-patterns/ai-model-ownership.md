@@ -149,9 +149,10 @@ descriptors that are either a `{ host; port; }` pair or a fully resolved
 `{ url; }`, and returns the consumer view per backend (`ollama`, `llama`):
 ordered `endpoints`, native `urls`, OpenAI `openaiUrls`, required `default` /
 `openaiDefault` primaries, and `byDevice` / `openaiByDevice` list lookups keyed
-by device class; llama.cpp also carries `apiKeys`. A missing primary throws one
-clear message instead of yielding a null URL, so consumers never guard or
-coerce. The NixOS module exposes the view as
+by device class; llama.cpp also carries `apiKeys`. Output endpoint descriptors
+normalize an omitted host to `defaultHost`, while a fully resolved URL remains
+URL-owned. A missing primary throws one clear message instead of yielding a null
+URL, so consumers never guard or coerce. The NixOS module exposes the view as
 `services.ai.consumersFor
 defaultHost`, while a repository whose addresses live
 elsewhere (for example a service registry) calls `mkConsumers` directly with its

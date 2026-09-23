@@ -389,7 +389,15 @@ in rec {
       then throw "AI consumers: no ${backend} endpoint is deployed on this host"
       else builtins.head urls;
     build = backend: endpoints: let
-      resolved = builtins.map (endpoint: endpoint // {url = resolveUrl endpoint;}) endpoints;
+      resolved = builtins.map (endpoint:
+        endpoint
+        // (
+          if (endpoint.url or null) != null
+          then {}
+          else {host = endpoint.host or defaultHost;}
+        )
+        // {url = resolveUrl endpoint;})
+      endpoints;
       urls = builtins.map (endpoint: endpoint.url) resolved;
       openaiUrls = builtins.map (url: "${url}/v1") urls;
       # Device lookup is a list per class, so several endpoints of one class are
