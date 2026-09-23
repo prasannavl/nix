@@ -13,6 +13,23 @@ Explicit `--version` requests remain authoritative. Automatic and report-only
 runs use the production branch entry for Linux x86_64 and fail without changing
 the target when that entry cannot be parsed.
 
+## Markdown source extraction on 2026-09-23
+
+NVIDIA's Unix driver archive HTML no longer contains the release data. The page
+now ships empty `p.PB`/`p.NFB` placeholders that client-side JavaScript fills
+from the `gfwsl.geforce.com/services_toolkit` Ajax driver service, so the
+previous `<strong>`-delimited HTML scrape stopped matching and every automatic
+run failed with `Could not parse the latest Linux x86_64 production branch`.
+
+AEM also publishes the same page as `text/markdown` at
+`https://www.nvidia.com/en-us/drivers/unix.md`. The updater consumes that
+representation, scopes to the `Linux x86_64` section header (tolerating the
+`x86\_64` escaping), and extracts the version from the
+`Latest Production Branch Version: [VERSION](...)` link. This keeps the
+production-branch semantics while dropping the JavaScript/HTML dependency. The
+parser deliberately consumes all input instead of exiting early so `curl` never
+sees a `SIGPIPE` under `set -o pipefail`.
+
 ## Manual rollback on 2026-09-07
 
 The repository pin was deliberately moved from `595.99.02` back to `595.91.07`
