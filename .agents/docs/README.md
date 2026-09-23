@@ -90,6 +90,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   128k `contextWindow` default for custom-provider models, the `ollama-cloud`
   `discoverModels` + `modelOverrides` setup (Ollama's `/v1/models` carries no
   context metadata), and the `pi --list-models` verification step.
+- `.agents/docs/notes/apps/pi-subagents-npm-fetcher-v2-2026-09.md`: Records why
+  `lib/ext/pi/pi-subagents` needs `npmDepsFetcherVersion = 2` to avoid the
+  `ENOTCACHED` npm dependency-cache failure during pinned updates.
 
 ### Hosts
 

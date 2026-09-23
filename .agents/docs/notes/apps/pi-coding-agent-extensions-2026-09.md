@@ -100,10 +100,13 @@ The local `pi-tps` derivation pins upstream version 1.0.1. That release still
 imports the old `@mariozechner` Pi package names, so its Nix build performs the
 narrow import rename to the current `@earendil-works` names.
 
-The local `pi-subagents` derivation pins upstream version 0.67.0 and builds its
-npm runtime dependency closure in Nix. The release requires Pi 0.80 or newer and
-specifically supports Pi 0.85.1, so the Pvl Pi module installs
-`pkgs.unstable.pi-coding-agent` instead of the older stable package.
+The local `pi-subagents` derivation pins upstream version 0.71.0 and builds its
+npm runtime dependency closure in Nix. It sets `npmDepsFetcherVersion = 2` to
+avoid the `ENOTCACHED` dependency-cache failure; see
+`.agents/docs/notes/apps/pi-subagents-npm-fetcher-v2-2026-09.md`. The release
+requires Pi 0.80 or newer and specifically supports Pi 0.85.1, so the Pvl Pi
+module installs `pkgs.unstable.pi-coding-agent` instead of the older stable
+package.
 
 The local `pi-models-discovery` derivation pins version 1.2.0 at the
 npm-published monorepo commit. It installs the matching `pi-extensions-i18n`

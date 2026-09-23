@@ -13,6 +13,7 @@ in
       hash = source.srcHash;
     };
 
+    npmDepsFetcherVersion = 2;
     inherit (source) npmDepsHash;
 
     dontNpmBuild = true;
