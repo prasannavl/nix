@@ -408,7 +408,7 @@ ollama-cpu = rec {
 };
 ```
 
-3. Update the host policy, pinning `instance` explicitly now that the canonical
+1. Update the host policy, pinning `instance` explicitly now that the canonical
    `ollama` name is gone:
    - `hosts/pvl-a1/services/ai.nix`: rename the Ollama deployment instances to
      `ollama-rocm` / `ollama-nvidia`, and add
