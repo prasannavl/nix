@@ -70,8 +70,10 @@
       immich = [(subDomain "photos")];
       jellyfin = [(subDomain "jellyfin")];
       kavita = [(subDomain "books")];
+      librechat = [(subDomain "librechat")];
       memos = [(subDomain "memos-x")];
       navidrome = [(subDomain "navidrome")];
+      opendesign = [(subDomain "design")];
       open-webui = [(subDomain "chat")];
       paperless = [(subDomain "paperless")];
       portainer = [(subDomain "portainer")];
@@ -112,6 +114,10 @@
           domain = "kavita";
           ports.http.port = 5002;
         };
+        librechat = {
+          domain = "librechat";
+          ports.http.port = 18094;
+        };
         memos = {
           domain = "memos";
           ports.http.port = 5230;
@@ -122,6 +128,10 @@
         };
         nginx.ports.http.port = 10800;
         ollama.ports.main.port = 11434;
+        opendesign = {
+          domain = "opendesign";
+          ports.http.port = 18096;
+        };
         open-webui = {
           domain = "open-webui";
           ports.http.port = 4000;

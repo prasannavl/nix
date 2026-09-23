@@ -1,0 +1,366 @@
+diff --git a/apps/web/src/state/config.ts b/apps/web/src/state/config.ts
+index d23e855..799682e 100644
+--- a/apps/web/src/state/config.ts
++++ b/apps/web/src/state/config.ts
+@@ -22,8 +22,10 @@
+   DEFAULT_SUCCESS_SOUND_ID,
+ } from '../utils/notifications';
+ import { randomUUID } from '../utils/uuid';
++import { MANAGED_BYOK_PROVIDER } from './managed-byok-provider';
+
+ const STORAGE_KEY = 'open-design:config';
++const MANAGED_PROVIDER_STORAGE_KEY = 'abird:open-design:managed-provider';
+ const CONFIG_MIGRATION_VERSION = 3;
+ // Accent values that were the SHIPPED DEFAULT in an earlier build and were
+ // persisted verbatim into every install's config. None of them is offered in
+@@ -140,6 +142,15 @@
+ // presets and are reconciled with the live account catalogue before automatic
+ // selection. They are not a replacement for provider model discovery.
+ export const KNOWN_PROVIDERS: KnownProvider[] = [
++  ...(MANAGED_BYOK_PROVIDER
++    ? [{
++        label: MANAGED_BYOK_PROVIDER.label,
++        protocol: MANAGED_BYOK_PROVIDER.protocol,
++        baseUrl: MANAGED_BYOK_PROVIDER.baseUrl,
++        preferredModels: [MANAGED_BYOK_PROVIDER.model],
++        requiresApiKey: MANAGED_BYOK_PROVIDER.requiresApiKey,
++      }]
++    : []),
+   {
+     label: 'Anthropic (Claude)',
+     protocol: 'anthropic',
+@@ -507,6 +518,13 @@
+ }
+
+ const BYOK_PROVIDER_PRESET_SPECS = [
++  ...(MANAGED_BYOK_PROVIDER
++    ? [{
++        id: MANAGED_BYOK_PROVIDER.id,
++        title: MANAGED_BYOK_PROVIDER.title,
++        providerLabel: MANAGED_BYOK_PROVIDER.label,
++      }]
++    : []),
+   { id: 'anthropic', title: 'Anthropic', providerLabel: 'Anthropic (Claude)' },
+   { id: 'openai', title: 'OpenAI', providerLabel: 'OpenAI' },
+   { id: 'atlascloud', title: 'Atlas Cloud', providerLabel: 'Atlas Cloud' },
+@@ -660,16 +678,145 @@
+   return true;
+ }
+
++interface ManagedProviderMarker {
++  revision: string;
++  selection: {
++    protocol: ApiProtocol;
++    baseUrl: string;
++    model: string;
++  };
++}
++
++function readManagedProviderMarker(): ManagedProviderMarker | null {
++  try {
++    const raw = localStorage.getItem(MANAGED_PROVIDER_STORAGE_KEY);
++    if (!raw) return null;
++    const parsed = JSON.parse(raw) as Partial<ManagedProviderMarker>;
++    if (
++      typeof parsed.revision !== 'string' ||
++      !parsed.selection ||
++      typeof parsed.selection.protocol !== 'string' ||
++      typeof parsed.selection.baseUrl !== 'string' ||
++      typeof parsed.selection.model !== 'string'
++    ) {
++      return null;
++    }
++    return parsed as ManagedProviderMarker;
++  } catch {
++    return null;
++  }
++}
++
++function managedSelectionMatches(
++  config: AppConfig,
++  selection: ManagedProviderMarker['selection'],
++): boolean {
++  return config.mode === 'api'
++    && config.apiProtocol === selection.protocol
++    && config.baseUrl === selection.baseUrl
++    && config.model === selection.model;
++}
++
++function currentApiConfig(config: AppConfig): ApiProtocolConfig {
++  return {
++    apiKey: config.apiKey,
++    baseUrl: config.baseUrl,
++    model: config.model,
++    apiVersion: config.apiVersion ?? '',
++    apiProviderBaseUrl: config.apiProviderBaseUrl ?? null,
++    byokImageModel: config.byokImageModel ?? '',
++    byokVideoModel: config.byokVideoModel ?? '',
++    byokSpeechModel: config.byokSpeechModel ?? '',
++    byokSpeechVoice: config.byokSpeechVoice ?? '',
++  };
++}
++
++function providerDraftKey(config: AppConfig): string {
++  const protocol = config.apiProtocol ?? 'anthropic';
++  return `${protocol}:${config.apiProviderBaseUrl ?? `custom:${config.baseUrl}`}`;
++}
++
++function applyManagedByokProvider(
++  config: AppConfig,
++  force = false,
++): { config: AppConfig; changed: boolean } {
++  const managed = MANAGED_BYOK_PROVIDER;
++  if (!managed) return { config, changed: false };
++
++  const marker = readManagedProviderMarker();
++  const selection = {
++    protocol: managed.protocol,
++    baseUrl: managed.baseUrl,
++    model: managed.model,
++  };
++  const shouldApply = force
++    || marker === null
++    || (
++      marker.revision !== managed.revision
++      && managedSelectionMatches(config, marker.selection)
++    );
++
++  try {
++    localStorage.setItem(
++      MANAGED_PROVIDER_STORAGE_KEY,
++      JSON.stringify({ revision: managed.revision, selection }),
++    );
++  } catch {
++    // The managed default still applies for this session when storage is unavailable.
++  }
++
++  if (!shouldApply) return { config, changed: false };
++
++  const priorDrafts = config.mode === 'api'
++    ? {
++        ...(config.byokProviderConfigDrafts ?? {}),
++        [providerDraftKey(config)]: {
++          apiConfig: currentApiConfig(config),
++          maxTokens: config.maxTokens,
++        },
++      }
++    : config.byokProviderConfigDrafts;
++  const managedApiConfig: ApiProtocolConfig = {
++    apiKey: managed.apiKey,
++    baseUrl: managed.baseUrl,
++    model: managed.model,
++    apiVersion: '',
++    apiProviderBaseUrl: managed.baseUrl,
++  };
++
++  return {
++    changed: true,
++    config: {
++      ...config,
++      mode: 'api',
++      apiKey: managed.apiKey,
++      baseUrl: managed.baseUrl,
++      model: managed.model,
++      apiProtocol: managed.protocol,
++      apiVersion: '',
++      apiProviderBaseUrl: managed.baseUrl,
++      apiProtocolConfigs: {
++        ...(config.apiProtocolConfigs ?? {}),
++        [managed.protocol]: managedApiConfig,
++      },
++      byokProviderConfigDrafts: priorDrafts,
++      byokPendingProviderKey: undefined,
++    },
++  };
++}
++
+ export function loadConfig(): AppConfig {
+   try {
+     const raw = localStorage.getItem(STORAGE_KEY);
+     if (!raw) {
+-      return {
++      const fresh = applyManagedByokProvider({
+         ...DEFAULT_CONFIG,
+         pet: normalizePet(DEFAULT_PET),
+         notifications: normalizeNotifications(DEFAULT_NOTIFICATIONS),
+         orbit: normalizeOrbit(DEFAULT_ORBIT),
+-      };
++      }, true);
++      if (fresh.changed) saveConfig(fresh.config);
++      return fresh.config;
+     }
+     const parsed = JSON.parse(raw) as Partial<AppConfig>;
+     // Strip daemon-owned privacy fields if a stale localStorage payload
+@@ -785,6 +932,11 @@
+       merged.baseUrl = resolveFixedOriginBaseUrl(merged.apiProtocol, merged.baseUrl);
+     }
+
++    const managed = applyManagedByokProvider(merged);
++    if (managed.changed) {
++      Object.assign(merged, managed.config);
++      migratedConfig = true;
++    }
+     if (migratedConfig || downgradedUnsupportedChatProtocol) {
+       // Best-effort re-persist of the migrated / downgraded config. A localStorage
+       // write failure here (quota exceeded, private-mode storage disabled) must not
+@@ -799,12 +951,14 @@
+
+     return merged;
+   } catch {
+-    return {
++    const fresh = applyManagedByokProvider({
+       ...DEFAULT_CONFIG,
+       pet: normalizePet(DEFAULT_PET),
+       notifications: normalizeNotifications(DEFAULT_NOTIFICATIONS),
+       orbit: normalizeOrbit(DEFAULT_ORBIT),
+-    };
++    }, true);
++    if (fresh.changed) saveConfig(fresh.config);
++    return fresh.config;
+   }
+ }
+
+diff --git a/apps/web/tests/state/managed-byok-provider.test.ts b/apps/web/tests/state/managed-byok-provider.test.ts
+new file mode 100644
+index 0000000..6b23455
+--- /dev/null
++++ b/apps/web/tests/state/managed-byok-provider.test.ts
+@@ -0,0 +1,138 @@
++// @vitest-environment jsdom
++
++import { beforeEach, describe, expect, it } from 'vitest';
++import { MANAGED_BYOK_PROVIDER } from '../../src/state/managed-byok-provider';
++import {
++  BYOK_PROVIDER_PRESETS,
++  KNOWN_PROVIDERS,
++  loadConfig,
++  saveConfig,
++} from '../../src/state/config';
++import type { AppConfig } from '../../src/types';
++
++const managed = MANAGED_BYOK_PROVIDER;
++const describeManaged = managed ? describe : describe.skip;
++const markerKey = 'abird:open-design:managed-provider';
++
++function providerConfig(overrides: Partial<AppConfig> = {}): AppConfig {
++  return {
++    mode: 'api',
++    apiKey: 'personal-key',
++    baseUrl: 'https://ollama.com',
++    model: 'cloud-model',
++    apiProtocol: 'ollama',
++    apiVersion: '',
++    apiProtocolConfigs: {},
++    apiProviderBaseUrl: 'https://ollama.com',
++    agentId: null,
++    skillId: null,
++    designSystemId: null,
++    onboardingCompleted: true,
++    projectLocations: [],
++    defaultProjectLocationId: 'default',
++    ...overrides,
++  };
++}
++
++describeManaged('managed BYOK provider', () => {
++  beforeEach(() => localStorage.clear());
++
++  it('is the reproducible default for a fresh browser', () => {
++    const config = loadConfig();
++
++    expect(config).toMatchObject({
++      mode: 'api',
++      apiKey: managed?.apiKey,
++      baseUrl: managed?.baseUrl,
++      model: managed?.model,
++      apiProtocol: managed?.protocol,
++      apiProviderBaseUrl: managed?.baseUrl,
++    });
++    expect(KNOWN_PROVIDERS[0]).toMatchObject({
++      label: managed?.label,
++      baseUrl: managed?.baseUrl,
++      requiresApiKey: managed?.requiresApiKey,
++    });
++    expect(BYOK_PROVIDER_PRESETS[0]).toMatchObject({
++      id: managed?.id,
++      title: managed?.title,
++    });
++  });
++
++  it('moves an unversioned browser once and preserves its cloud draft', () => {
++    saveConfig(providerConfig());
++
++    const config = loadConfig();
++
++    expect(config.baseUrl).toBe(managed?.baseUrl);
++    expect(config.model).toBe(managed?.model);
++    expect(
++      config.byokProviderConfigDrafts?.['ollama:https://ollama.com']?.apiConfig,
++    ).toMatchObject({
++      apiKey: 'personal-key',
++      baseUrl: 'https://ollama.com',
++      model: 'cloud-model',
++    });
++  });
++
++  it('preserves a later per-user OpenAI selection', () => {
++    loadConfig();
++    const userConfig = providerConfig({
++      apiProtocol: 'openai',
++      apiProviderBaseUrl: 'https://api.openai.com/v1',
++      baseUrl: 'https://api.openai.com/v1',
++      model: 'gpt-user-choice',
++    });
++    saveConfig(userConfig);
++
++    expect(loadConfig()).toMatchObject({
++      apiKey: 'personal-key',
++      apiProtocol: 'openai',
++      baseUrl: 'https://api.openai.com/v1',
++      model: 'gpt-user-choice',
++    });
++  });
++
++  it('advances only a browser still on the previous managed selection', () => {
++    const previous = {
++      protocol: managed?.protocol ?? 'ollama',
++      baseUrl: 'http://previous.internal:11434',
++      model: 'previous-model',
++    };
++    localStorage.setItem(markerKey, JSON.stringify({
++      revision: 'previous-revision',
++      selection: previous,
++    }));
++    saveConfig(providerConfig({
++      apiKey: managed?.apiKey ?? '',
++      apiProtocol: previous.protocol,
++      apiProviderBaseUrl: previous.baseUrl,
++      baseUrl: previous.baseUrl,
++      model: previous.model,
++    }));
++
++    expect(loadConfig()).toMatchObject({
++      apiProtocol: managed?.protocol,
++      baseUrl: managed?.baseUrl,
++      model: managed?.model,
++    });
++  });
++
++  it('does not advance an explicit user selection on a new revision', () => {
++    localStorage.setItem(markerKey, JSON.stringify({
++      revision: 'previous-revision',
++      selection: {
++        protocol: managed?.protocol,
++        baseUrl: 'http://previous.internal:11434',
++        model: 'previous-model',
++      },
++    }));
++    saveConfig(providerConfig());
++
++    expect(loadConfig()).toMatchObject({
++      apiKey: 'personal-key',
++      baseUrl: 'https://ollama.com',
++      model: 'cloud-model',
++    });
++  });
++});

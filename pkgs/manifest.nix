@@ -33,6 +33,7 @@
     z-push = ./ext/z-push/default.nix;
     awl = ./ext/awl/default.nix;
     mirofish = ./ext/mirofish/default.nix;
+    opendesign = ./ext/opendesign/default.nix;
     example-hello-go = {
       path = ./examples/hello-go/default.nix;
       rootApp = true;

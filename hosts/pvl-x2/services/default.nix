@@ -9,12 +9,14 @@
     ./immich
     ./jellyfin
     ./kavita
+    ./librechat.nix
     ./llama-router.nix
     ./media.nix
     ./memos
     ./navidrome
     ./nginx.nix
     ./ollama
+    ./opendesign.nix
     ./openwebui
     ./paperless
     ./portainer
