@@ -18,7 +18,7 @@ expect the descriptor to normalize an omitted host to `defaultHost` as
 `{host = "default"; port; url;}`. The `url` value was already correct, so only
 the descriptor shape diverged and `lib-ai-projection` failed on `master`:
 
-```
+```text
 error: attribute names of attribute set '{ port = 3; url = "http://default:3"; }'
        differs from attribute set '{ host = "default"; port = 3; url = "http://default:3"; }'
 ```
