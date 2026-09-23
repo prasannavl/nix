@@ -462,7 +462,7 @@ in
   # A llama-only host reads its own consumer view; the absent Ollama primary is
   # lazy and throws only when a consumer actually requires it.
   assert ((eval llamaOnlyAutoCfg).services.ai.consumersFor "h").llama.urls == ["http://h:11000"];
-  assert !(builtins.tryEval (((eval llamaOnlyAutoCfg).services.ai.consumersFor "h").ollama.default)).success;
+  assert !(builtins.tryEval ((eval llamaOnlyAutoCfg).services.ai.consumersFor "h").ollama.default).success;
   assert cfg.services.ai.backends.ollama.urls == ["http://127.0.0.1:11434" "http://127.0.0.1:12434"];
   assert cfg.services.ai.backends.ollama.ports == [11434 12434];
   assert cfg.services.ai.backends.ollama.portsByName
