@@ -1,22 +1,22 @@
 {
   vscode = {
     kind = "vscode-stable";
-    version = "1.138.0";
-    rev = "7debcd0e2acdea1c52de81bf9ee1620444407dda";
+    version = "1.139.0";
+    rev = "2242ebbb54efeeb0129e08e919e7e8d43033cd83";
     srcNames = {
-      x86_64-linux = "code-stable-x64-1789458585.tar.gz";
-      aarch64-linux = "code-stable-arm64-1789458511.tar.gz";
+      x86_64-linux = "code-stable-x64-1790091292.tar.gz";
+      aarch64-linux = "code-stable-arm64-1790091310.tar.gz";
       aarch64-darwin = "VSCode-darwin-arm64.zip";
     };
     srcHashes = {
-      x86_64-linux = "sha256-WfsPiOqy/i46BTrAIOGPyytcET0lXkHILSYwK2ddWAw=";
-      aarch64-linux = "sha256-vwGtsZGav1pVa0nl1ShEBEDMmodft7S/el78q54ah7g=";
-      aarch64-darwin = "sha256-zLcZMK+TIUyu5ERU5OQfQXSFdzMYaZd/Ahmy/V5OYBY=";
+      x86_64-linux = "sha256-7xhGHRTWWCVZF+qXjNzLIFdveXr42fYGLmrFr6n17FE=";
+      aarch64-linux = "sha256-eo38FipnBHjU1pnmfFoBcv+i+LI+QuRgJqMqRUb1fJo=";
+      aarch64-darwin = "sha256-aMCpDydd77bWx5NwP0Wj67u4P61IiWiXLCxsfqD1JrY=";
     };
     serverHashes = {
-      x86_64-linux = "sha256-92ZHZZLNn4denn5m5IPbp+lmG3lNjbylZiSRJtNSUyQ=";
-      aarch64-linux = "sha256-ou12JUSS3jJAu96dW+IA6jtcEUPhDgYiCK645nQV/Ro=";
-      aarch64-darwin = "sha256-Mrfooj7ECXe5XcppKMPD/YVKayFo4VDloRhdTFiuPpQ=";
+      x86_64-linux = "sha256-PBn/HVMPX9GLJwj4A/Iz3gTIFI6tQeJbednkvQHRonw=";
+      aarch64-linux = "sha256-+UzuqfogW0qz86k6EIGJsxzzHWdveg0jj0R4ny//MZ4=";
+      aarch64-darwin = "sha256-OmuiZ7OLpkD1m0d1zUmw96Mwd5fD2nvlmHzWMBVnrwU=";
     };
   };
 }
