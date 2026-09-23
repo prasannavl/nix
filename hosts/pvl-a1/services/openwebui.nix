@@ -17,9 +17,9 @@ in {
           ports:
             - "${toString exposedPorts.http.port}:8080"
           environment:
-            - OLLAMA_BASE_URLS=${join consumers.ollamaUrls}
-            - OPENAI_API_BASE_URLS=${join consumers.openaiUrls}
-            - OPENAI_API_KEYS=${join consumers.openaiApiKeys}
+            - OLLAMA_BASE_URLS=${join consumers.ollama.urls}
+            - OPENAI_API_BASE_URLS=${join consumers.llama.openaiUrls}
+            - OPENAI_API_KEYS=${join consumers.llama.apiKeys}
           volumes:
             - ./open-webui_data:/app/backend/data
     '';

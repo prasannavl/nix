@@ -10,14 +10,41 @@
   librechatEnvFile = "${librechatDataDir}/librechat.env";
   librechatUrl = registry.urlPublicFor "librechat";
   containerHost = "host.containers.internal";
-  # Ollama OpenAI-compatible endpoint as seen from inside the container. The
-  # ROCm deployment is the auto-started primary on pvl-x2.
-  ollamaPort = ai.backends.ollama.portsByName."ollama-rocm";
-  ollamaBaseUrl = "http://${containerHost}:${toString ollamaPort}";
-  # llama.cpp router deployments expose an OpenAI-compatible /v1.
-  llamaPortsByName = ai.backends.llamaRouter.runtimesInfo.default.portsByName or {};
-  llamaRocmPort = llamaPortsByName."llama-rocm" or null;
-  llamaCpuPort = llamaPortsByName."llama-cpu" or null;
+  # Every Ollama/llama.cpp endpoint for this host, from the shared consumer
+  # projection: `default` is the primary Ollama, `openaiDefault` its `/v1`.
+  consumers = ai.consumersFor containerHost;
+  deviceLabels = {
+    rocm = "ROCm";
+    nvidia = "NVIDIA";
+    cpu = "CPU";
+  };
+  deviceLabel = device: deviceLabels.${device} or "llama.cpp";
+  # One custom-endpoint shape, reused for the primary Ollama endpoint and each
+  # configured llama.cpp device class; `librechatConfig` is rendered to YAML.
+  customEndpoint = name: baseURL: {
+    inherit name baseURL;
+    apiKey = "ollama";
+    models = {
+      default = chatModelIds;
+      fetch = true;
+    };
+    titleConvo = true;
+    titleModel = "current_model";
+    summarize = false;
+    summaryModel = "current_model";
+    modelDisplayLabel = name;
+  };
+  librechatConfig = {
+    version = "1.2.8";
+    endpoints.custom =
+      [(customEndpoint "Pvl Ollama" consumers.ollama.openaiDefault)]
+      ++ builtins.map
+      (endpoint:
+        customEndpoint
+        "Pvl llama.cpp ${deviceLabel endpoint.device}"
+        "${endpoint.url}/v1")
+      consumers.llama.endpoints;
+  };
   ollamaNoProxy = "localhost,127.0.0.1,::1,mongodb,meilisearch,${containerHost}";
   embeddingKey = ai.roles.embedding;
   # Only models the Ollama endpoint can actually serve: entries with an
@@ -153,44 +180,7 @@ in {
     files."librechat.yaml" =
       {
         mode = "0640";
-        text = ''
-          version: 1.2.8
-          endpoints:
-            custom:
-              - name: "Pvl Ollama"
-                apiKey: "ollama"
-                baseURL: "${ollamaBaseUrl}/v1"
-                models:
-                  default: ${builtins.toJSON chatModelIds}
-                  fetch: true
-                titleConvo: true
-                titleModel: "current_model"
-                summarize: false
-                summaryModel: "current_model"
-                modelDisplayLabel: "Pvl Ollama"
-              - name: "Pvl llama.cpp ROCm"
-                apiKey: "ollama"
-                baseURL: "http://${containerHost}:${toString llamaRocmPort}/v1"
-                models:
-                  default: ${builtins.toJSON chatModelIds}
-                  fetch: true
-                titleConvo: true
-                titleModel: "current_model"
-                summarize: false
-                summaryModel: "current_model"
-                modelDisplayLabel: "Pvl llama.cpp ROCm"
-              - name: "Pvl llama.cpp CPU"
-                apiKey: "ollama"
-                baseURL: "http://${containerHost}:${toString llamaCpuPort}/v1"
-                models:
-                  default: ${builtins.toJSON chatModelIds}
-                  fetch: true
-                titleConvo: true
-                titleModel: "current_model"
-                summarize: false
-                summaryModel: "current_model"
-                modelDisplayLabel: "Pvl llama.cpp CPU"
-        '';
+        source = (pkgs.formats.yaml {}).generate "librechat.yaml" librechatConfig;
       }
       // containerOwner;
 

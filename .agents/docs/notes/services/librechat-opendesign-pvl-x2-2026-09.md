@@ -81,10 +81,14 @@ the CPU fallback is always last:
 - **OpenDesign** (`pvl-x2`): only one `managedByokProvider` is supported by the
   package, so it stays on the Ollama endpoint; it cannot list multiple backends.
 
-The lists come from `config.services.ai.consumersFor host`, a shared pure
-projection in `lib/services/ai` that formats each backend's already-ordered
-`ports` into `ollamaUrls`, `openaiUrls`, and `openaiApiKeys`. Consumers only
-join the lists; the ordering (and CPU-last contract) lives in the projection.
+The lists come from `config.services.ai.consumersFor defaultHost`, a shared pure
+projection in `lib/services/ai` returning a per-backend view (`ollama`,
+`llama`): ordered `endpoints`, native `urls`, OpenAI `openaiUrls`, `default` /
+`openaiDefault` primaries, and `byDevice` / `openaiByDevice` lookups. Open WebUI
+joins `ollama.urls` / `llama.openaiUrls` / `llama.apiKeys`; LibreChat generates
+one custom endpoint per `llama.endpoints` entry and uses `ollama.openaiDefault`;
+OpenDesign uses `ollama.default` (guarded). The ordering (and CPU-last contract)
+lives in the projection.
 
 ## Exposure
 
@@ -110,6 +114,15 @@ Symptom pattern to remember: a compose `*-verify.service` failure with an
 `*-ready.target` inactive and a healthy-looking main service usually means the
 main container exited right after start. Check `podman ps -a` and the app
 container logs, not just the unit status.
+
+## Config rendering
+
+`hosts/pvl-x2/services/librechat.nix` builds `endpoints.custom` from one
+`customEndpoint` shape — the primary Ollama endpoint plus one per
+`consumers.llama.endpoints` device class — and renders it with
+`(pkgs.formats.yaml {}).generate`, the same idiom as `lib/incus`. This replaced
+a hand-indented YAML string, so the config is declarative and the mounted
+artifact stays canonical block YAML.
 
 ## Validation
 

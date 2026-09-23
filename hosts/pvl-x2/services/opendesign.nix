@@ -8,8 +8,8 @@
   ai = config.services.ai;
   opendesignDataDir = "/var/lib/pvl/opendesign";
   opendesignUrl = registry.urlPublicFor "opendesign";
-  ollamaPort = ai.backends.ollama.portsByName."ollama-rocm";
-  ollamaUpstreamUrl = "http://host.containers.internal:${toString ollamaPort}";
+  consumers = ai.consumersFor "host.containers.internal";
+  ollamaUpstreamUrl = consumers.ollama.default;
   ollamaLoopbackUrl = "http://127.0.0.1:11434";
   ollamaNoProxy = "localhost,127.0.0.1,::1,host.containers.internal";
   modelKey =
