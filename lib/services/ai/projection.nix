@@ -358,19 +358,63 @@ in rec {
   in
     builtins.map (model: model.id) (builtins.filter (model: model.pinned or false) (builtins.attrValues catalog));
 
-  # Consumer-facing endpoint lists. Callers pass the backend `ports`
-  # projections, which already follow the host's deployment device order
-  # (ROCm, NVIDIA, CPU), so the CPU fallback stays last. `host` is how the
-  # consumer resolves the backends (containers use host.containers.internal).
+  # Consumer-facing endpoint view: the single source of truth for consumers.
+  # Endpoints are ordered descriptors `{ host?; port; instance?; device?; }`; an
+  # endpoint without `host` uses `defaultHost`. Each backend (`ollama`, `llama`)
+  # yields ordered `endpoints`, native `urls` and OpenAI `openaiUrls`, a
+  # `default` / `openaiDefault` primary, and `byDevice` / `openaiByDevice`
+  # lookups keyed by device class (`rocm`/`nvidia`/`cpu`). llama.cpp also
+  # carries `apiKeys`.
   mkConsumers = {
-    host ? "127.0.0.1",
-    ollamaPorts ? [],
-    llamaPorts ? [],
+    defaultHost ? "127.0.0.1",
+    ollamaEndpoints ? [],
+    llamaEndpoints ? [],
     openaiApiKey ? "ollama",
-  }: {
-    ollamaUrls = builtins.map (port: "http://${host}:${toString port}") ollamaPorts;
-    openaiUrls = builtins.map (port: "http://${host}:${toString port}/v1") llamaPorts;
-    openaiApiKeys = builtins.map (_: openaiApiKey) llamaPorts;
+  }: let
+    # Endpoints are either fully resolved (`url`) or a `host`/`port` pair; an
+    # absent `host` uses `defaultHost`.
+    resolveUrl = endpoint:
+      if (endpoint.url or null) != null
+      then endpoint.url
+      else "http://${
+        if (endpoint.host or null) == null
+        then defaultHost
+        else endpoint.host
+      }:${toString endpoint.port}";
+    # The primary is required: a consumer that reaches for it must have the
+    # backend deployed. Fail with one clear message instead of a null URL, so
+    # no consumer ever guards or coerces a missing endpoint.
+    primary = backend: urls:
+      if urls == []
+      then throw "AI consumers: no ${backend} endpoint is deployed on this host"
+      else builtins.head urls;
+    build = backend: endpoints: let
+      resolved = builtins.map (endpoint: endpoint // {url = resolveUrl endpoint;}) endpoints;
+      urls = builtins.map (endpoint: endpoint.url) resolved;
+      openaiUrls = builtins.map (url: "${url}/v1") urls;
+      # Device lookup is a list per class, so several endpoints of one class are
+      # preserved instead of silently collapsed.
+      byDeviceOf = valueOf:
+        builtins.mapAttrs
+        (_: entries: builtins.map valueOf entries)
+        (builtins.groupBy
+          (endpoint: endpoint.device)
+          (builtins.filter (endpoint: (endpoint.device or null) != null) resolved));
+    in {
+      endpoints = resolved;
+      inherit urls openaiUrls;
+      byDevice = byDeviceOf (endpoint: endpoint.url);
+      openaiByDevice = byDeviceOf (endpoint: "${endpoint.url}/v1");
+      default = primary backend urls;
+      openaiDefault = primary "${backend} (OpenAI)" openaiUrls;
+    };
+  in {
+    ollama = build "ollama" ollamaEndpoints;
+    llama =
+      (build "llama.cpp" llamaEndpoints)
+      // {
+        apiKeys = builtins.map (_: openaiApiKey) llamaEndpoints;
+      };
   };
 
   # Project a stack service registry into per-service HTTP API records.

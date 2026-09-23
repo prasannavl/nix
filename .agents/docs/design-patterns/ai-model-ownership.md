@@ -133,14 +133,30 @@ set can never leak into another engine. The resolved cache directory must be
 unique across runtimes with deployments; deployments of one runtime may share
 that runtime's cache. The read-only `backends.llamaRouter.runtimesInfo.<name>`
 projection exposes each runtime's resolved `urls`, `ports`, `portsByName`,
-`serviceNames`, `readyTarget`, `requiredModels`, `modelPresets`, `cacheDir`, and
-`active`.
+`endpoints`, `serviceNames`, `readyTarget`, `requiredModels`, `modelPresets`,
+`cacheDir`, and `active`.
 
 `idleTimeoutSeconds` (default `null`) is emitted as the models.ini `[*]`
 `sleep-idle-seconds` key for that runtime, so llama.cpp releases a model's
 resident weights and KV cache after the idle window instead of holding them
 until LRU eviction; the shared `[*]` section also reaches cache-scanned ad-hoc
 models.
+
+Consumer addressing is separate from topology. Each deployment may set an
+optional `host`; the backend projections expose ordered `endpoints` descriptors
+(`instance`, `device`, `port`, `host`). The pure `mkConsumers` accepts
+descriptors that are either a `{ host; port; }` pair or a fully resolved
+`{ url; }`, and returns the consumer view per backend (`ollama`, `llama`):
+ordered `endpoints`, native `urls`, OpenAI `openaiUrls`, required `default` /
+`openaiDefault` primaries, and `byDevice` / `openaiByDevice` list lookups keyed
+by device class; llama.cpp also carries `apiKeys`. A missing primary throws one
+clear message instead of yielding a null URL, so consumers never guard or
+coerce. The NixOS module exposes the view as
+`services.ai.consumersFor
+defaultHost`, while a repository whose addresses live
+elsewhere (for example a service registry) calls `mkConsumers` directly with its
+own descriptors — abird derives them from `mkApi` so there is a single address
+source.
 
 Deployment instance names, resolved service names, API ports, and configured
 runtime cache directories must be globally unique across AI backends and

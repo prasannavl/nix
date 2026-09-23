@@ -380,8 +380,89 @@
     services.podman-compose.test.instances.llama-router-prism.user = "other-user";
   };
   mixedRuntimeUsers = eval mixedRuntimeUsersCfg;
+  deviceCfg = {
+    services.ai = {
+      stack.name = "test";
+      inherit models;
+      roles.embedding = "nomic-embed-text";
+      backends = {
+        ollama.deployments = [
+          {
+            instance = "ollama-rocm";
+            lifecycle = "manual";
+          }
+          {
+            instance = "ollama-cpu";
+            lifecycle = "manual";
+          }
+        ];
+        llamaRouter.runtimes.default.deployments = [
+          {
+            instance = "llama-nvidia";
+            lifecycle = "manual";
+          }
+        ];
+      };
+    };
+    services.podman-compose.test = {
+      user = "test-user";
+      instances = {
+        ollama-rocm = {
+          source = "ollama-rocm";
+          exposedPorts.main.port = 12434;
+        };
+        ollama-cpu = {
+          source = "ollama-cpu";
+          exposedPorts.main.port = 11434;
+        };
+        llama-nvidia = {
+          source = "llama-nvidia";
+          exposedPorts.main.port = 13000;
+        };
+      };
+    };
+  };
+  device = eval deviceCfg;
 in
   assert allAssertionsHold cfg;
+  # Consumer view is the single source of truth: ordered URLs, primaries,
+  # OpenAI variants, and device lookup derived from the instance name.
+  assert (device.services.ai.consumersFor "h").ollama.urls == ["http://h:12434" "http://h:11434"];
+  assert (device.services.ai.consumersFor "h").ollama.byDevice
+  == {
+    rocm = ["http://h:12434"];
+    cpu = ["http://h:11434"];
+  };
+  assert (device.services.ai.consumersFor "h").ollama.openaiByDevice.rocm == ["http://h:12434/v1"];
+  assert (device.services.ai.consumersFor "h").llama.openaiByDevice.nvidia == ["http://h:13000/v1"];
+  assert device.services.ai.backends.ollama.endpoints
+  == [
+    {
+      instance = "ollama-rocm";
+      port = 12434;
+      host = null;
+      device = "rocm";
+    }
+    {
+      instance = "ollama-cpu";
+      port = 11434;
+      host = null;
+      device = "cpu";
+    }
+  ];
+  assert device.services.ai.backends.llamaRouter.runtimesInfo.default.endpoints
+  == [
+    {
+      instance = "llama-nvidia";
+      port = 13000;
+      host = null;
+      device = "nvidia";
+    }
+  ];
+  # A llama-only host reads its own consumer view; the absent Ollama primary is
+  # lazy and throws only when a consumer actually requires it.
+  assert ((eval llamaOnlyAutoCfg).services.ai.consumersFor "h").llama.urls == ["http://h:11000"];
+  assert !(builtins.tryEval (((eval llamaOnlyAutoCfg).services.ai.consumersFor "h").ollama.default)).success;
   assert cfg.services.ai.backends.ollama.urls == ["http://127.0.0.1:11434" "http://127.0.0.1:12434"];
   assert cfg.services.ai.backends.ollama.ports == [11434 12434];
   assert cfg.services.ai.backends.ollama.portsByName

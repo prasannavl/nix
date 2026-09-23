@@ -237,6 +237,82 @@ in
   assert !(invalidProjection (projectionLib.catalogById {
     missing-hf.id = "missing-hf";
   })).success;
+  # Consumers: `host` per endpoint overrides the default host, so one backend
+  # can span hosts; order is preserved and native/OpenAI primaries are exposed.
+  assert projectionLib.mkConsumers {
+    defaultHost = "default";
+    ollamaEndpoints = [
+      {port = 1;}
+      {
+        port = 2;
+        host = "remote";
+      }
+    ];
+    llamaEndpoints = [{port = 3;}];
+  }
+  == {
+    ollama = {
+      endpoints = [
+        {
+          port = 1;
+          host = "default";
+          url = "http://default:1";
+        }
+        {
+          port = 2;
+          host = "remote";
+          url = "http://remote:2";
+        }
+      ];
+      urls = ["http://default:1" "http://remote:2"];
+      openaiUrls = ["http://default:1/v1" "http://remote:2/v1"];
+      default = "http://default:1";
+      openaiDefault = "http://default:1/v1";
+      byDevice = {};
+      openaiByDevice = {};
+    };
+    llama = {
+      endpoints = [
+        {
+          port = 3;
+          host = "default";
+          url = "http://default:3";
+        }
+      ];
+      urls = ["http://default:3"];
+      openaiUrls = ["http://default:3/v1"];
+      apiKeys = ["ollama"];
+      default = "http://default:3";
+      openaiDefault = "http://default:3/v1";
+      byDevice = {};
+      openaiByDevice = {};
+    };
+  };
+  # Device lookup is the single source for single-endpoint consumers.
+  assert (projectionLib.mkConsumers {
+    ollamaEndpoints = [
+      {
+        device = "rocm";
+        port = 1;
+      }
+      {
+        device = "cpu";
+        port = 2;
+      }
+    ];
+  }).ollama.openaiByDevice
+  == {
+    rocm = ["http://127.0.0.1:1/v1"];
+    cpu = ["http://127.0.0.1:2/v1"];
+  };
+  # A required primary with no deployed endpoint fails with one clear message.
+  assert !(builtins.tryEval (projectionLib.mkConsumers {}).ollama.default).success;
+  # Endpoints may be fully resolved URLs (registry-driven consumers).
+  assert (projectionLib.mkConsumers {
+    ollamaEndpoints = [{url = "http://registry:11434";}];
+    llamaEndpoints = [{url = "http://registry:11436";}];
+  }).llama.openaiDefault
+  == "http://registry:11436/v1";
     pkgs.runCommand "ai-projection-test" {} ''
       touch $out
     ''

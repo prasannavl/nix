@@ -79,6 +79,84 @@
           stopped: declaratively stopped; the stack keeps it down.
         '';
       };
+      host = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Reachable host/address for this deployment as seen by consumers.
+          null uses the consumer default host passed to
+          `services.ai.consumersFor`. Set it when a deployment lives on a
+          different host from its backend's other deployments.
+        '';
+      };
+    };
+  };
+
+  # Ordered consumer-facing endpoint descriptor: the resolved instance, its
+  # API port, and an optional host override (`null` = consumer default host).
+  endpointType = types.submodule {
+    options = {
+      instance = mkOption {type = types.str;};
+      port = mkOption {type = types.port;};
+      host = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      device = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+    };
+  };
+
+  # Device class from the deployment instance name (e.g. `llama-rocm`).
+  deviceFor = instance:
+    if lib.hasSuffix "-rocm" instance
+    then "rocm"
+    else if lib.hasSuffix "-nvidia" instance
+    then "nvidia"
+    else if lib.hasSuffix "-cpu" instance
+    then "cpu"
+    else null;
+
+  consumerEndpointType = types.submodule {
+    options = {
+      instance = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      device = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      host = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      port = mkOption {
+        type = types.nullOr types.port;
+        default = null;
+      };
+      url = mkOption {type = types.str;};
+    };
+  };
+  consumerBackendOptions = {
+    endpoints = mkOption {type = types.listOf consumerEndpointType;};
+    urls = mkOption {type = types.listOf types.str;};
+    openaiUrls = mkOption {type = types.listOf types.str;};
+    default = mkOption {type = types.str;};
+    openaiDefault = mkOption {type = types.str;};
+    byDevice = mkOption {type = types.attrsOf (types.listOf types.str);};
+    openaiByDevice = mkOption {type = types.attrsOf (types.listOf types.str);};
+  };
+  consumerBackendType = types.submodule {options = consumerBackendOptions;};
+  consumerLlamaType = types.submodule {
+    options = consumerBackendOptions // {apiKeys = mkOption {type = types.listOf types.str;};};
+  };
+  consumerType = types.submodule {
+    options = {
+      ollama = mkOption {type = consumerBackendType;};
+      llama = mkOption {type = consumerLlamaType;};
     };
   };
 
@@ -131,6 +209,7 @@
       urls = mkOption {type = types.listOf types.str;};
       ports = mkOption {type = types.listOf types.port;};
       portsByName = mkOption {type = types.attrsOf types.port;};
+      endpoints = mkOption {type = types.listOf endpointType;};
       readyTarget = mkOption {type = types.nullOr types.str;};
       requiredModels = mkOption {type = types.listOf types.str;};
       modelPresets = mkOption {type = types.attrsOf (types.attrsOf types.str);};
@@ -214,9 +293,10 @@
     names = builtins.map (depInstance backend) deployments;
     autos = builtins.filter (deployment: deployment.lifecycle == "auto") deployments;
     users = lib.unique (builtins.map (deploymentUser backend) deployments);
-    resolvedPorts = builtins.filter (entry: entry.port != null) (builtins.map (deployment: {
+    resolvedEndpoints = builtins.filter (entry: entry.port != null) (builtins.map (deployment: {
         name = depInstance backend deployment;
         port = deploymentPort backend deployment;
+        host = deployment.host;
       })
       deployments);
   in {
@@ -226,13 +306,22 @@
       then builtins.head users
       else null;
     serviceNames = builtins.map (deployment: "${deploymentServiceName backend deployment}.service") deployments;
-    urls = builtins.map (entry: "http://127.0.0.1:${toString entry.port}") resolvedPorts;
-    ports = builtins.map (entry: entry.port) resolvedPorts;
+    urls = builtins.map (entry: "http://127.0.0.1:${toString entry.port}") resolvedEndpoints;
+    ports = builtins.map (entry: entry.port) resolvedEndpoints;
     portsByName = builtins.listToAttrs (builtins.map (entry: {
         inherit (entry) name;
         value = entry.port;
       })
-      resolvedPorts);
+      resolvedEndpoints);
+    # Ordered consumer descriptors; `host` is null unless the deployment
+    # overrides it, and `device` is derived from the instance name.
+    endpoints =
+      builtins.map (entry: {
+        instance = entry.name;
+        device = deviceFor entry.name;
+        inherit (entry) port host;
+      })
+      resolvedEndpoints;
     readyTarget =
       if autos == []
       then null
@@ -407,19 +496,15 @@ in {
     };
 
     consumersFor = mkOption {
-      type = types.functionTo (types.submodule {
-        options = {
-          ollamaUrls = mkOption {type = types.listOf types.str;};
-          openaiUrls = mkOption {type = types.listOf types.str;};
-          openaiApiKeys = mkOption {type = types.listOf types.str;};
-        };
-      });
+      type = types.functionTo consumerType;
       readOnly = true;
       description = ''
-        Pure function of a consumer hostname returning ordered endpoint lists:
-        `ollamaUrls` (native API) and `openaiUrls` / `openaiApiKeys`
-        (llama.cpp OpenAI `/v1`). The order follows each backend's deployment
-        device order, so the CPU fallback is last.
+        Pure function of a consumer hostname (the default host for endpoints
+        without their own `host`) returning the consumer view: per backend
+        (`ollama`, `llama`) ordered `endpoints`, `urls`, a `default` primary
+        URL, and `byDevice`; llama.cpp also carries `apiKeys`. The order
+        follows each backend's deployment device order, so the CPU fallback is
+        last.
       '';
     };
 
@@ -468,6 +553,10 @@ in {
         type = types.attrsOf types.port;
         readOnly = true;
       };
+      endpoints = mkOption {
+        type = types.listOf endpointType;
+        readOnly = true;
+      };
       readyTarget = mkOption {
         type = types.nullOr types.str;
         readOnly = true;
@@ -499,8 +588,8 @@ in {
         readOnly = true;
         description = ''
           Evaluated per-runtime projections keyed by runtime name: urls, ports,
-          portsByName, serviceNames, readyTarget, requiredModels, modelPresets,
-          cacheDir, and active.
+          portsByName, endpoints, serviceNames, readyTarget, requiredModels,
+          modelPresets, cacheDir, and active.
         '';
       };
     };
@@ -510,13 +599,13 @@ in {
     {
       services.ai = {
         resolvedModels = resolvedModels;
-        consumersFor = host:
+        consumersFor = defaultHost:
           projectionLib.mkConsumers {
-            inherit host;
-            ollamaPorts = ollamaProjection.ports;
-            llamaPorts =
+            inherit defaultHost;
+            ollamaEndpoints = ollamaProjection.endpoints;
+            llamaEndpoints =
               if cfg.backends.llamaRouter.runtimes ? default
-              then (runtimeProjection "default").ports
+              then (runtimeProjection "default").endpoints
               else [];
           };
         backends.ollama = {
@@ -525,6 +614,7 @@ in {
           urls = ollamaProjection.urls;
           ports = ollamaProjection.ports;
           portsByName = ollamaProjection.portsByName;
+          endpoints = ollamaProjection.endpoints;
           readyTarget = ollamaProjection.readyTarget;
           requiredModels = ollamaRequired;
         };
@@ -538,6 +628,7 @@ in {
             urls = projection.urls;
             ports = projection.ports;
             portsByName = projection.portsByName;
+            endpoints = projection.endpoints;
             readyTarget = projection.readyTarget;
             requiredModels = runtimeRequired runtime;
             modelPresets = runtimeModelPresets runtime;
