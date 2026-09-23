@@ -56,17 +56,28 @@ reconciler arguments, lifecycle (`auto`, `manual` → `autoStart = false`,
 
 ## Fleet policy (pvl)
 
-- `pvl-l5`: 7 models, four stopped deployments across two backends — `ollama`
-  (11434, ROCm) and `ollama-nvidia` (12434, CUDA), started by hand for GPU
-  sessions; `llama-router` (11000, ROCm) and `llama-router-nvidia` (12000, CUDA)
-  the same way. Shared models dir `/var/lib/pvl/ollama-models`; shared GGUF
-  cache `/var/lib/pvl/ai/llama-router`.
-- `pvl-a1`: same 7 models; `ollama` (11434, auto), `ollama-nvidia` (12434,
-  manual), and the same llama.cpp pair with the ROCm router auto-started
-  (`llama-router`, 11000) and the CUDA router warmed by hand
-  (`llama-router-nvidia`, 12000).
-- `pvl-x2`: 14 models (full catalog minus `gemma4-12b`); `ollama` (11434, auto);
-  keeps `qwen3.6:27b` retired. AMD-only host — no llama.cpp deployments.
+Device-class port scheme (current, 2026-09-22): CPU/Vulkan `11xxx`, ROCm
+`12xxx`, NVIDIA `13xxx`, with llama.cpp PrismML one slot higher. See
+`.agents/docs/notes/hosts/pvl-ai-backend-port-convention-2026-09.md`.
+
+- `pvl-l5`: 8 models (the a1 set plus ternary `bonsai-2-27b`). Ollama
+  `ollama-cpu` (11434, manual), `ollama-rocm` (12434, stopped), `ollama-nvidia`
+  (13434, stopped); llama.cpp `llama-cpu` (11000, manual), `llama-rocm` (12000,
+  stopped), `llama-nvidia` (13000, stopped); PrismML `llama-prism-rocm` (12001,
+  stopped), `llama-prism-nvidia` (13001, stopped). Shared models dir
+  `/var/lib/pvl/ollama-models`; shared GGUF caches
+  `/var/lib/pvl/ai/llama-router` and `/var/lib/pvl/ai/llama-router-prism`.
+- `pvl-a1`: 8 models (the same set). Ollama `ollama-cpu` (11434, manual),
+  `ollama-rocm` (12434, auto), `ollama-nvidia` (13434, manual); llama.cpp
+  `llama-cpu` (11000, manual), `llama-rocm` (12000, auto), `llama-nvidia`
+  (13000, manual); PrismML `llama-prism-rocm` (12001, auto),
+  `llama-prism-nvidia` (13001, manual).
+- `pvl-x2`: 14 models (full catalog minus `gemma4-12b`; `qwen36-35b-a3b` retired
+  fleet-wide 2026-09-23). Ollama `ollama-rocm` (12434, auto, the primary backing
+  Open WebUI) and `ollama-cpu` (Vulkan, 11434, manual fallback); llama.cpp
+  `llama-rocm` (12000, manual) and `llama-cpu` (11000, manual), PrismML
+  `llama-prism-rocm` (12001, manual). AMD-only, so no NVIDIA class and no
+  `llama-nvidia`/`llama-prism-nvidia`.
 
 ## Migration deltas (evaluated against the pre-change baseline)
 
@@ -114,3 +125,19 @@ hierarchy without duplicate ownership declarations. An explicit custom cache
 path receives only its leaf rule; the module does not take ownership of an
 operator-selected mount hierarchy. Reapplying tmpfiles corrects an existing
 root-owned `ai` parent and creates the missing leaf in the same run.
+
+## Model retirement: `qwen36-35b-a3b`
+
+2026-09-23: `qwen36-35b-a3b` (`qwen3.6:35b-a3b`) is retired fleet-wide. It was
+selected only by `pvl-x2`. The catalog entry and the `pvl-x2` selection are
+removed; the shared Ollama reconciler's `retire_unrequired_owned_models` deletes
+any owned-but-unrequired model on the next reconcile, so no separate
+`retiredModels` list is needed.
+
+Retirement context: the 2026-09-23 dirty-staged `pvl-x2` deploy stalled pulling
+this tag and the reconcile worker hit its own 1-hour `TimeoutStart`, so the pull
+never completed and the model was never registered as an owned model. An orphan
+`sha256-d372de8e…-partial` blob (~21 GB, plus 22 chunk sidecars) was left in
+`/var/lib/pvl/ollama-models/blobs/` on `pvl-x2`; the reconciler would not remove
+it because it is not an owned model. It was deleted manually on 2026-09-23
+(models store 101 G → 82 G; no installed manifest referenced the digest).

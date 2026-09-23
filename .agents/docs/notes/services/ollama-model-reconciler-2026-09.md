@@ -1,5 +1,9 @@
 # Shared Ollama Model Reconciler, 2026-09
 
+> Ports and unit names below reflect the pre-2026-09-22 layout. The current
+> device-class scheme and instance names are in
+> `.agents/docs/notes/hosts/pvl-ai-backend-port-convention-2026-09.md`.
+
 ## Decision
 
 Pvl hosts use `lib/services/ollama.mkModelReconciler` instead of defining local

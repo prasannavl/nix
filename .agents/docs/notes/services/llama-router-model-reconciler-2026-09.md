@@ -2,9 +2,12 @@
 
 ## Decision
 
-`pvl-l5` runs llama.cpp's router mode as a Podman Compose pair next to the
-Ollama pair: the local/ROCm variant publishes host port `11000`, and the
-NVIDIA/CUDA variant publishes `12000`. Declarative model reconciliation uses
+`pvl-l5` runs llama.cpp's router mode as a Podman Compose device-class set next
+to the Ollama set: CPU `llama-cpu` (`11000`), ROCm `llama-rocm` (`12000`), and
+NVIDIA `llama-nvidia` (`13000`), all sharing one GGUF cache and one reconciler.
+The current port and naming scheme is device-class first; see
+`.agents/docs/notes/hosts/pvl-ai-backend-port-convention-2026-09.md`.
+Declarative model reconciliation uses
 `lib/services/llama-router.mkModelReconciler`, which mirrors the shared Ollama
 reconciler: a retained dispatcher attached to `pvl-managed.target` and an
 asynchronous `pvl-llama-router-models-load.service` worker with a 3600-second

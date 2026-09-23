@@ -417,6 +417,15 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/reviews/last-15-commits-2026-09-22.md`: Fresh review of
   `7073da89..c2bbf582`, including AI serving admission and projection gaps,
   Prism updater authentication, catalog validation, and final design direction.
+- `.agents/docs/notes/reviews/ai-hardening-fix-validation-2026-09-22.md`:
+  Independent validation of `8f5d63f3..2f8954a4`, confirming the prior review
+  findings are fixed and recording the remaining `aiServices` catalog omission,
+  incomplete preset validation, whole-catalog fatality, and legacy-helper
+  duplication.
+- `.agents/docs/notes/reviews/both-repos-ai-consolidation-validation-2026-09-22.md`:
+  Fresh validation of the Pvl and Abird policy-consolidation updates: shared
+  content/mode parity, `moduleConfig` round-trip, all-host assertions, and the
+  Prism payload rationale, with remaining minor observations.
 - `.agents/docs/notes/reviews/last-15-commits-2026-09-22-fresh.md`: Independent
   second-pass review of `f5a2b566..c2bbf582` that confirms the AI servability,
   `aiServices`, updater-auth, and catalog-validation gaps and adds the
@@ -441,6 +450,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/services/ipv6-fail2ban-helper-2026-06.md`: Records the
   generic fail2ban helper, IPv6 exact-to-/64 escalation policy, nginx prefix
   guardrail, and host opt-in scope for `pvl-x2`, `pvl-a1`, and `pvl-l5`.
+- `.agents/docs/notes/services/librechat-opendesign-pvl-x2-2026-09.md`: Records
+  the LibreChat and OpenDesign services on `pvl-x2` ported from abird, including
+  local auth, LAN/tailnet-only exposure, the Ollama + llama.cpp consumer
+  endpoint lists, and the ported `pkgs/ext/opendesign` package.
 - `.agents/docs/notes/services/podman-compose-rollback-stale-containers-2026-06.md`:
   Rootless Podman compose rollback incident where stale "Up" container metadata
   hid a dead compose dependency behind healthy unit state.
@@ -785,6 +798,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ## Plans
 
+- `.agents/docs/plans/ai-backend-port-scheme-2026-09.md`: Design plan for a
+  device-class AI backend port scheme (CPU/ROCm/NVIDIA), the llama.cpp CPU
+  deployment and instance renames on `pvl-a1` and `pvl-l5`, and reserved ports
+  and integration boundaries for vLLM and SGLang.
 - `.agents/docs/plans/nixbot-target-local-rollback-supervisor-2026-06.md`:
   Design plan for a target-local rollback runner that preserves rollback
   semantics after SSH transport loss during activation.
