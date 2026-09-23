@@ -18,7 +18,7 @@ in {
       source = ''
         services:
           ollama-cpu:
-            image: docker.io/ollama/ollama:0.34.2
+            image: docker.io/ollama/ollama:0.34.3
             container_name: ollama-cpu
             ports:
               - "${toString exposedPorts.main.port}:11434"
@@ -51,7 +51,7 @@ in {
       source = ''
         services:
           ollama-rocm:
-            image: docker.io/ollama/ollama:0.34.2-rocm
+            image: docker.io/ollama/ollama:0.34.3-rocm
             container_name: ollama-rocm
             ports:
               - "${toString exposedPorts.main.port}:11434"
