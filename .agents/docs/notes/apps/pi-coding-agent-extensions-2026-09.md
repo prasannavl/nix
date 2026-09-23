@@ -65,14 +65,34 @@ containing directory user-owned and links only the upstream code, locale,
 manifest, and dependency children into it. Its `models.json` and
 `models.json.discovery-bak` files also remain writable.
 
-The other extension trees and companion resources are immutable Nix-store links.
-The package build resolves the subagent skill's relative documentation links to
-the pinned package documentation so they remain valid from the global skill
-symlinks. Pi's settings, authentication, extension runtime configuration,
+The remaining extension files and companion resources are immutable Nix-store
+links. The package build resolves the subagent skill's relative documentation
+links to the pinned package documentation so they remain valid from the global
+skill symlinks. Pi's settings, authentication, extension runtime configuration,
 sessions, profiles, agents, and generated run state remain writable and
 user-owned. `pi-session-manager` can rename and delete those user-owned sessions
 through its interactive, confirmation-gated UI; Home Manager does not manage the
 session files.
+
+`pi-extensions-i18n` persists its locale at
+`$PI_CODING_AGENT_DIR/extensions/pi-extensions-i18n/config.json`, inside the
+read-only Nix-store tree, so the in-app `/config:language` save fails with
+`EROFS`. Rather than making the tree writable, `lib/ext/pi/pi-models-discovery`
+patches the vendored copy's `DEFAULT_LOCALE_PREFERENCE` to the
+`i18nDefaultLocale` build argument, which the Pvl Pi module sets to `en-US`.
+`pi-models-discovery` imports the same vendored copy, so both it and the locale
+command use the pinned default. The `substituteInPlace` guard fails the build if
+a package update moves that declaration. Because the default is pinned in the
+package, the in-app switcher is not used: change the locale by editing
+`i18nDefaultLocale`.
+
+Audit of the other managed extensions: none write inside their store tree.
+`pi-models-discovery` writes `models.json` plus `cache.json` under the
+user-owned `pi-models-discovery` directory, `pi-tps` writes
+`~/.pi/agent/pi-tps.json`, `pi-session-manager` mutates user-owned session
+files, and `pi-subagents` writes to user-owned paths such as
+`~/.pi/agent/extensions/subagent/config.json`, agent definitions, missions, and
+run state. Only `pi-extensions-i18n` needed the locale workaround.
 
 ## Packaging and compatibility
 

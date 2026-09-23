@@ -84,8 +84,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   native `computer.node` module.
 - `.agents/docs/notes/apps/pi-coding-agent-extensions-2026-09.md`: Records the
   Pi installation and `lib/ext/pi` update ownership, declarative extension
-  resources, mutable-state boundaries, Pi Web CLI installation, and Pi 0.85.1
-  compatibility requirement.
+  resources, mutable-state boundaries, the packaged i18n locale default, Pi Web
+  CLI installation, and Pi 0.85.1 compatibility requirement.
 - `.agents/docs/notes/apps/pi-model-context-windows-2026-09.md`: Records Pi's
   128k `contextWindow` default for custom-provider models, the `ollama-cloud`
   `discoverModels` + `modelOverrides` setup (Ollama's `/v1/models` carries no
