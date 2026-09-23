@@ -45,46 +45,48 @@
           }
         ];
       };
-      llamaRouter.runtimes.default = {
-        # Unload a model's weights/KV cache after it goes unused, so a large
-        # resident model is swapped out like Ollama's keep_alive instead of
-        # waiting for a fourth-model LRU eviction.
-        idleTimeoutSeconds = 300;
-        deployments = [
-          {
-            # AMD/ROCm router, mirroring the Ollama set: declaratively
-            # stopped, started by hand for GPU sessions.
-            instance = "llama-rocm";
-            lifecycle = "stopped";
-          }
-          {
-            # NVIDIA/CUDA router on the same shared cache.
-            instance = "llama-nvidia";
-            lifecycle = "stopped";
-          }
-          {
-            # CPU router on the same shared cache; on-demand only.
-            instance = "llama-cpu";
-            lifecycle = "manual";
-          }
-        ];
-      };
+      llamaRouter.runtimes = {
+        default = {
+          # Unload a model's weights/KV cache after it goes unused, so a large
+          # resident model is swapped out like Ollama's keep_alive instead of
+          # waiting for a fourth-model LRU eviction.
+          idleTimeoutSeconds = 300;
+          deployments = [
+            {
+              # AMD/ROCm router, mirroring the Ollama set: declaratively
+              # stopped, started by hand for GPU sessions.
+              instance = "llama-rocm";
+              lifecycle = "stopped";
+            }
+            {
+              # NVIDIA/CUDA router on the same shared cache.
+              instance = "llama-nvidia";
+              lifecycle = "stopped";
+            }
+            {
+              # CPU router on the same shared cache; on-demand only.
+              instance = "llama-cpu";
+              lifecycle = "manual";
+            }
+          ];
+        };
 
-      # PrismML fork engine for the ternary Bonsai models. Separate cache and
-      # reconciler so the default (upstream) runtime never scans or loads the
-      # ternary GGUFs. Declaratively stopped like the other l5 GPU backends.
-      llamaRouter.runtimes.prism = {
-        idleTimeoutSeconds = 300;
-        deployments = [
-          {
-            instance = "llama-prism-rocm";
-            lifecycle = "stopped";
-          }
-          {
-            instance = "llama-prism-nvidia";
-            lifecycle = "stopped";
-          }
-        ];
+        # PrismML fork engine for the ternary Bonsai models. Separate cache and
+        # reconciler so the default (upstream) runtime never scans or loads the
+        # ternary GGUFs. Declaratively stopped like the other l5 GPU backends.
+        prism = {
+          idleTimeoutSeconds = 300;
+          deployments = [
+            {
+              instance = "llama-prism-rocm";
+              lifecycle = "stopped";
+            }
+            {
+              instance = "llama-prism-nvidia";
+              lifecycle = "stopped";
+            }
+          ];
+        };
       };
     };
   };

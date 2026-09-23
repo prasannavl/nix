@@ -27,52 +27,56 @@
     # Deployment order is significant: consumer endpoint lists (Open WebUI,
     # LibreChat) are built in this order, so keep ROCm, CPU with CPU last
     # (pvl-x2 has no NVIDIA class). `ports`/`urls` projections preserve it.
-    backends.ollama = {
-      # Shared model store, mounted read-write by both Ollama containers.
-      modelsDir = "/var/lib/pvl/ollama-models";
-      deployments = [
-        {
-          # AMD/ROCm; primary and auto-started. Backs Open WebUI and the
-          # `x2-rocm` provider.
-          instance = "ollama-rocm";
-          lifecycle = "auto";
-        }
-        {
-          # CPU + Vulkan fallback; warmed by hand and backing the `x2`
-          # provider on demand.
-          instance = "ollama-cpu";
-          lifecycle = "manual";
-        }
-      ];
-    };
+    backends = {
+      ollama = {
+        # Shared model store, mounted read-write by both Ollama containers.
+        modelsDir = "/var/lib/pvl/ollama-models";
+        deployments = [
+          {
+            # AMD/ROCm; primary and auto-started. Backs Open WebUI and the
+            # `x2-rocm` provider.
+            instance = "ollama-rocm";
+            lifecycle = "auto";
+          }
+          {
+            # CPU + Vulkan fallback; warmed by hand and backing the `x2`
+            # provider on demand.
+            instance = "ollama-cpu";
+            lifecycle = "manual";
+          }
+        ];
+      };
 
-    # `pvl-x2` is AMD-only, so the llama.cpp backend has CPU and ROCm device
-    # classes only. Both are on-demand (`manual`), so a host boot does not
-    # pull the GGUF selection until an operator starts a deployment.
-    backends.llamaRouter.runtimes.default = {
-      idleTimeoutSeconds = 300;
-      deployments = [
-        {
-          instance = "llama-rocm";
-          lifecycle = "manual";
-        }
-        {
-          instance = "llama-cpu";
-          lifecycle = "manual";
-        }
-      ];
-    };
+      # `pvl-x2` is AMD-only, so the llama.cpp backend has CPU and ROCm device
+      # classes only. Both are on-demand (`manual`), so a host boot does not
+      # pull the GGUF selection until an operator starts a deployment.
+      llamaRouter.runtimes = {
+        default = {
+          idleTimeoutSeconds = 300;
+          deployments = [
+            {
+              instance = "llama-rocm";
+              lifecycle = "manual";
+            }
+            {
+              instance = "llama-cpu";
+              lifecycle = "manual";
+            }
+          ];
+        };
 
-    # PrismML fork engine for the ternary Bonsai model; separate cache and
-    # reconciler so the upstream runtime never scans ternary GGUFs.
-    backends.llamaRouter.runtimes.prism = {
-      idleTimeoutSeconds = 300;
-      deployments = [
-        {
-          instance = "llama-prism-rocm";
-          lifecycle = "manual";
-        }
-      ];
+        # PrismML fork engine for the ternary Bonsai model; separate cache and
+        # reconciler so the upstream runtime never scans ternary GGUFs.
+        prism = {
+          idleTimeoutSeconds = 300;
+          deployments = [
+            {
+              instance = "llama-prism-rocm";
+              lifecycle = "manual";
+            }
+          ];
+        };
+      };
     };
   };
 }

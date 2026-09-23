@@ -52,39 +52,41 @@
       # a model's weights/KV cache once it goes unused, so a large resident
       # model is swapped out like Ollama's keep_alive instead of waiting for a
       # fourth-model LRU eviction.
-      llamaRouter.runtimes.default = {
-        idleTimeoutSeconds = 300;
-        deployments = [
-          {
-            instance = "llama-rocm";
-            lifecycle = "auto";
-          }
-          {
-            instance = "llama-nvidia";
-            lifecycle = "manual";
-          }
-          {
-            instance = "llama-cpu";
-            lifecycle = "manual";
-          }
-        ];
-      };
+      llamaRouter.runtimes = {
+        default = {
+          idleTimeoutSeconds = 300;
+          deployments = [
+            {
+              instance = "llama-rocm";
+              lifecycle = "auto";
+            }
+            {
+              instance = "llama-nvidia";
+              lifecycle = "manual";
+            }
+            {
+              instance = "llama-cpu";
+              lifecycle = "manual";
+            }
+          ];
+        };
 
-      # PrismML fork engine for the ternary Bonsai models. Separate cache and
-      # reconciler so the default (upstream) router never sees (or tries to
-      # load) these GGUFs.
-      llamaRouter.runtimes.prism = {
-        idleTimeoutSeconds = 300;
-        deployments = [
-          {
-            instance = "llama-prism-rocm";
-            lifecycle = "auto";
-          }
-          {
-            instance = "llama-prism-nvidia";
-            lifecycle = "manual";
-          }
-        ];
+        # PrismML fork engine for the ternary Bonsai models. Separate cache and
+        # reconciler so the default (upstream) router never sees (or tries to
+        # load) these GGUFs.
+        prism = {
+          idleTimeoutSeconds = 300;
+          deployments = [
+            {
+              instance = "llama-prism-rocm";
+              lifecycle = "auto";
+            }
+            {
+              instance = "llama-prism-nvidia";
+              lifecycle = "manual";
+            }
+          ];
+        };
       };
     };
   };
