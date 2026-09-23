@@ -358,6 +358,21 @@ in rec {
   in
     builtins.map (model: model.id) (builtins.filter (model: model.pinned or false) (builtins.attrValues catalog));
 
+  # Consumer-facing endpoint lists. Callers pass the backend `ports`
+  # projections, which already follow the host's deployment device order
+  # (ROCm, NVIDIA, CPU), so the CPU fallback stays last. `host` is how the
+  # consumer resolves the backends (containers use host.containers.internal).
+  mkConsumers = {
+    host ? "127.0.0.1",
+    ollamaPorts ? [],
+    llamaPorts ? [],
+    openaiApiKey ? "ollama",
+  }: {
+    ollamaUrls = builtins.map (port: "http://${host}:${toString port}") ollamaPorts;
+    openaiUrls = builtins.map (port: "http://${host}:${toString port}/v1") llamaPorts;
+    openaiApiKeys = builtins.map (_: openaiApiKey) llamaPorts;
+  };
+
   # Project a stack service registry into per-service HTTP API records.
   mkServiceApis = {
     registry,

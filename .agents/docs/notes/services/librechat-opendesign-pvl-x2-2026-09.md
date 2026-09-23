@@ -81,10 +81,10 @@ the CPU fallback is always last:
 - **OpenDesign** (`pvl-x2`): only one `managedByokProvider` is supported by the
   package, so it stays on the Ollama endpoint; it cannot list multiple backends.
 
-The lists are built directly from each backend's `ports` projection, which
-preserves the `services/ai.nix` deployment order (ROCm, NVIDIA, CPU). The order
-contract is documented at the top of `backends` in each host's `ai.nix`; no
-per-consumer device ranking is needed.
+The lists come from `config.services.ai.consumersFor host`, a shared pure
+projection in `lib/services/ai` that formats each backend's already-ordered
+`ports` into `ollamaUrls`, `openaiUrls`, and `openaiApiKeys`. Consumers only
+join the lists; the ordering (and CPU-last contract) lives in the projection.
 
 ## Exposure
 

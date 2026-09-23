@@ -406,6 +406,23 @@ in {
       '';
     };
 
+    consumersFor = mkOption {
+      type = types.functionTo (types.submodule {
+        options = {
+          ollamaUrls = mkOption {type = types.listOf types.str;};
+          openaiUrls = mkOption {type = types.listOf types.str;};
+          openaiApiKeys = mkOption {type = types.listOf types.str;};
+        };
+      });
+      readOnly = true;
+      description = ''
+        Pure function of a consumer hostname returning ordered endpoint lists:
+        `ollamaUrls` (native API) and `openaiUrls` / `openaiApiKeys`
+        (llama.cpp OpenAI `/v1`). The order follows each backend's deployment
+        device order, so the CPU fallback is last.
+      '';
+    };
+
     backends.ollama = {
       deployments = mkOption {
         type = types.listOf deploymentType;
@@ -493,6 +510,15 @@ in {
     {
       services.ai = {
         resolvedModels = resolvedModels;
+        consumersFor = host:
+          projectionLib.mkConsumers {
+            inherit host;
+            ollamaPorts = ollamaProjection.ports;
+            llamaPorts =
+              if cfg.backends.llamaRouter.runtimes ? default
+              then (runtimeProjection "default").ports
+              else [];
+          };
         backends.ollama = {
           active = ollamaDeployments != [];
           serviceNames = ollamaProjection.serviceNames;
