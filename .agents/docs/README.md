@@ -478,6 +478,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/services/ipv6-fail2ban-helper-2026-06.md`: Records the
   generic fail2ban helper, IPv6 exact-to-/64 escalation policy, nginx prefix
   guardrail, and host opt-in scope for `pvl-x2`, `pvl-a1`, and `pvl-l5`.
+- `.agents/docs/notes/services/pi-web-tailscale-2026-09.md`: Records the
+  `lib/services/pi-web` systemd module, the pvl-l5 tailnet-scoped firewall
+  exposure, the `PI_WEB_ALLOWED_HOSTS` requirement, and the manual-process
+  handoff.
 - `.agents/docs/notes/services/librechat-opendesign-pvl-x2-2026-09.md`: Records
   the LibreChat and OpenDesign services on `pvl-x2` ported from abird, including
   local auth, LAN/tailnet-only exposure, the Ollama + llama.cpp consumer
