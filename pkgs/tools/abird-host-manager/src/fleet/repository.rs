@@ -15,6 +15,8 @@ use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 
+use crate::programs::clear_git_repository_environment;
+
 pub const SSH_ARGV_PREFIX: &str = "__nixbot_argv64";
 
 fn shell_quote(value: &str) -> String {
@@ -186,6 +188,7 @@ impl CommandRunner for ProcessCommandRunner {
         let mut command = Command::new(&request.program);
         command.args(&request.args);
         command.envs(request.environment.iter().cloned());
+        clear_git_repository_environment(&mut command);
         if let Some(current_dir) = &request.current_dir {
             command.current_dir(current_dir);
         }
@@ -707,6 +710,7 @@ pub struct CiTriggerRequest {
     pub clean_mode: CiCleanMode,
     pub group: Option<String>,
     pub hosts: Option<CiHostSelection>,
+    pub required_hosts: Vec<String>,
     pub nix_config: Option<String>,
     pub log_format: CiLogFormat,
     pub dry_run: bool,
@@ -770,6 +774,15 @@ pub fn plan_ci_trigger(request: &CiTriggerRequest) -> Result<CiTriggerPlan> {
             }
         } else if request.group.is_none() {
             bail!("non-clean CI trigger requires a host or group selection");
+        }
+        if !request.required_hosts.is_empty() {
+            for host in &request.required_hosts {
+                super::inventory::validate_host_name(host)?;
+            }
+            argv.extend([
+                "--require-hosts".to_owned(),
+                request.required_hosts.join(","),
+            ]);
         }
         if let Some(nix_config) = request.nix_config.as_deref() {
             require_nonempty(nix_config, "CI trigger Nix configuration")?;

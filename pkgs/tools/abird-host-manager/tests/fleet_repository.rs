@@ -43,6 +43,27 @@ fn manager() -> RepositoryManager<ProcessCommandRunner> {
 }
 
 #[test]
+fn process_command_runner_removes_git_checkout_selectors() {
+    let selectors = ["GIT_DIR", "GIT_WORK_TREE"];
+    let request = CommandRequest::new("env").environment(
+        selectors
+            .iter()
+            .map(|name| (OsString::from(name), OsString::from("inherited-selector"))),
+    );
+    let output = ProcessCommandRunner.run(&request).unwrap();
+    assert!(output.succeeded());
+    let environment = String::from_utf8(output.stdout).unwrap();
+    for selector in selectors {
+        assert!(
+            !environment
+                .lines()
+                .any(|line| line.starts_with(&format!("{selector}="))),
+            "{selector} reached the child process"
+        );
+    }
+}
+
+#[test]
 fn repository_ssh_endpoint_parsing_matches_supported_git_url_shapes() {
     assert_eq!(
         ssh_repository_endpoint("ssh://git@git.example:2222/team/repo.git").unwrap(),
@@ -385,6 +406,7 @@ fn deploy_trigger() -> CiTriggerRequest {
         clean_mode: CiCleanMode::Auto,
         group: Some("prod".to_owned()),
         hosts: None,
+        required_hosts: Vec::new(),
         nix_config: Some("app-system".to_owned()),
         log_format: CiLogFormat::Plain,
         dry_run: true,
@@ -479,6 +501,7 @@ fn ci_trigger_plans_only_the_remote_contract_and_exact_patch_stdin() {
         clean_mode: CiCleanMode::All,
         group: None,
         hosts: None,
+        required_hosts: Vec::new(),
         nix_config: None,
         log_format: CiLogFormat::Auto,
         dry_run: false,
@@ -516,4 +539,21 @@ fn installed_rust_binary_remains_authoritative_inside_checked_out_worktree() {
     assert!(
         plan_installed_execution(&installed, Path::new("/run/nixbot/../nixbot/repo"), &[]).is_err()
     );
+}
+
+#[test]
+fn ci_dispatch_preserves_exact_required_hosts_and_rejects_patterns() {
+    let mut request = deploy_trigger();
+    request.required_hosts = vec!["app".to_owned(), "db".to_owned()];
+    let plan = plan_ci_trigger(&request).unwrap();
+    let forwarded = decode_argv(&plan.encoded_argv).unwrap();
+    assert!(
+        forwarded
+            .windows(2)
+            .any(|pair| pair == ["--require-hosts", "app,db"])
+    );
+    for host in ["", "-app", "app-*", "app;id"] {
+        request.required_hosts = vec![host.to_owned()];
+        assert!(plan_ci_trigger(&request).is_err(), "{host}");
+    }
 }

@@ -672,3 +672,136 @@ fn invocation_identity_is_stable_without_creating_builder_paths() {
     assert_eq!(first.to_string().len(), 32);
     assert_ne!(first, InvocationId::derive("run", 1234, 43));
 }
+
+#[test]
+fn required_host_cli_accepts_exact_lists_and_rejects_unsafe_shapes() {
+    for arguments in [
+        vec![
+            "deploy",
+            "--host",
+            "app-a",
+            "--require-hosts",
+            "app-a,parent",
+        ],
+        vec![
+            "fleet",
+            "deploy",
+            "--host=app-a",
+            "--require-hosts=app-a parent",
+        ],
+    ] {
+        let invocation = Invocation::parse_canonical(arguments).unwrap();
+        assert_eq!(invocation.options.required_hosts, ["app-a", "parent"]);
+    }
+    for value in ["", " , ", "app-*", "-app-a", "app_a", "app-a;id"] {
+        assert!(
+            Invocation::parse_legacy(["deploy", "--require-hosts", value]).is_err(),
+            "{value}"
+        );
+    }
+    Invocation::parse_legacy(["deploy", "--require-hosts", "app-a", "--ci-trigger"]).unwrap();
+
+    let repeated = Invocation::parse_legacy([
+        "deploy",
+        "--require-hosts",
+        "app-a,parent",
+        "--require-hosts",
+        "database",
+    ])
+    .unwrap();
+    assert_eq!(
+        repeated.options.required_hosts,
+        ["app-a", "parent", "database"]
+    );
+}
+
+#[test]
+fn default_control_plane_remains_together_before_controller_consumers() {
+    let mut inventory = control_plane_inventory();
+    inventory.hosts.insert(
+        "consumer".to_owned(),
+        Host {
+            deps: vec!["controller".to_owned()],
+            ..Host::default()
+        },
+    );
+    let selected = select(
+        &inventory,
+        &SelectionOptions {
+            hosts: Some("controller,consumer,registry".to_owned()),
+            ..SelectionOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(selected.ordered, ["controller", "registry", "consumer"]);
+    assert_eq!(
+        selected.levels,
+        [
+            vec!["controller".to_owned()],
+            vec!["registry".to_owned()],
+            vec!["consumer".to_owned()]
+        ]
+    );
+}
+
+#[test]
+fn required_hosts_validate_expanded_selection_after_exclusions_and_skip() {
+    let inventory = inventory();
+    let options = SelectionOptions {
+        hosts: Some("app-a".to_owned()),
+        required_hosts: vec![
+            "app-a".to_owned(),
+            "parent".to_owned(),
+            "excluded-dep".to_owned(),
+        ],
+        ..SelectionOptions::default()
+    };
+    let selected = select(&inventory, &options).unwrap();
+    assert_eq!(selected.direct, ["app-a"]);
+    assert!(selected.ordered.contains(&"parent".to_owned()));
+    assert!(selected.ordered.contains(&"excluded-dep".to_owned()));
+    for (options, expected) in [
+        (
+            SelectionOptions {
+                hosts: Some("app-a,-parent".to_owned()),
+                required_hosts: vec!["parent".to_owned()],
+                ..SelectionOptions::default()
+            },
+            "does not cover required hosts: parent",
+        ),
+        (
+            SelectionOptions {
+                groups: vec!["minimal".to_owned()],
+                hosts: Some("app-a".to_owned()),
+                required_hosts: vec!["excluded-dep".to_owned()],
+                ..SelectionOptions::default()
+            },
+            "does not cover required hosts: excluded-dep",
+        ),
+        (
+            SelectionOptions {
+                hosts: Some("all".to_owned()),
+                required_hosts: vec!["retired".to_owned()],
+                ..SelectionOptions::default()
+            },
+            "does not cover required hosts: retired",
+        ),
+        (
+            SelectionOptions {
+                required_hosts: vec!["missing".to_owned()],
+                ..SelectionOptions::default()
+            },
+            "unknown required deployment host: missing",
+        ),
+        (
+            SelectionOptions {
+                required_hosts: vec!["app-*".to_owned()],
+                ..SelectionOptions::default()
+            },
+            "host name must",
+        ),
+    ] {
+        let error = select(&inventory, &options).unwrap_err().to_string();
+        assert!(error.contains(expected), "{error}");
+    }
+}

@@ -95,12 +95,12 @@
       # Repository composition manifest: every repository-specific fact about
       # the shared flake library is declared here and injected as arguments
       # (see .agents/docs/design-patterns/shared-test-areas.md).
+      repositoryConfig = import ./config;
+      repositoryInventory = import ./hosts/nixbot.nix;
       repoChecksFn = import ./lib/flake/repo-checks.nix;
-      repoModules = import ./lib/stacks/modules.nix;
-      repoRegistry = (import ./hosts/nixbot.nix).config.registries;
       # The full table is required: this assignment replaces the shared
-      # default wholesale, so omitting an entry drops it from the profile.
-      flakeProfileInputNames.default = {
+      # default wholesale, so omitting an entry drops it from the input set.
+      inputSetInputNames.default = {
         nixpkgs = "nixpkgs";
         homeManager = "home-manager";
         agenix = "agenix";

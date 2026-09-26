@@ -44,7 +44,7 @@ laziness).
     nixpkgs = {lib = pkgs.lib;};
     flake-utils = fakeFlakeUtils;
     overlays = [];
-    stackProfiles = {};
+    stacks = {};
     repoChecksFn = import ../../repo-checks.nix;
   };
   outputs = flakeLib.withPkgs pkgs;

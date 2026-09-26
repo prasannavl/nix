@@ -870,6 +870,71 @@ mod tests {
     }
 
     #[test]
+    fn schema_three_agent_status_classifies_bound_and_unbound_generations() {
+        let bound = serde_json::json!({
+            "ok":true,"operation":"agent_status",
+            "result":{
+                "status_schema_version":3,"configuration_revision":"revision",
+                "deferred_resources":{"count":1,"resources":[{
+                    "resource":"service:zulip","state":"active",
+                    "transaction_id":"move--item-001","projection_id":"move",
+                    "reason":"held","generation":4,"isolated":true
+                }]}
+            }
+        });
+        for broken in ["none", "revision", "transaction", "projection", "isolation"] {
+            let mut wire = bound.clone();
+            match broken {
+                "revision" => {
+                    wire["result"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("configuration_revision");
+                }
+                "transaction" => {
+                    wire["result"]["deferred_resources"]["resources"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("transaction_id");
+                }
+                "projection" => {
+                    wire["result"]["deferred_resources"]["resources"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("projection_id");
+                }
+                "isolation" => {
+                    wire["result"]["deferred_resources"]["resources"][0]["isolated"] =
+                        serde_json::json!(false);
+                }
+                _ => {}
+            }
+            let mut input = encoded("hold-absent", &[]);
+            input.push_str(&encoded("status-response", &[&wire.to_string()]));
+            let report = classify_observation(
+                &parse_observation(&input).unwrap(),
+                &BaselineTimerUnits::default(),
+            )
+            .unwrap();
+            if broken == "none" {
+                assert!(matches!(report.decision, HealthDecision::Healthy { .. }));
+                assert!(
+                    report
+                        .details
+                        .iter()
+                        .any(|detail| detail
+                            .contains("resource=service:zulip outcome=deferred-held"))
+                );
+            } else {
+                assert!(
+                    matches!(report.decision, HealthDecision::StructuralFailure { .. }),
+                    "{broken}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn system_failure_ignore_matches_exact_unit_names() {
         let ignored = "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service";
         let similar = "systemd-backlight@backlight:nvidia_wmi_ec_backlight-similar.service";

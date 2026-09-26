@@ -1,103 +1,74 @@
 {
   lib,
-  file ? null,
+  stacks,
   document ? null,
 }: let
-  fail = message: throw "invalid canonical service placements: ${message}";
-  require = condition: message:
-    if condition
-    then true
-    else fail message;
-  requireOnly = allowed: value: context: let
-    unknown = builtins.filter (name: !builtins.elem name allowed) (builtins.attrNames value);
-  in
-    require (unknown == []) "${context} has unknown fields: ${lib.concatStringsSep ", " unknown}";
-  loadFile = path:
-    if builtins.match ".*\\.json" (toString path) != null
-    then builtins.fromJSON (builtins.readFile path)
-    else import path;
+  validation = import ../validation;
+  inherit (validation) isName;
+  inherit (validation.mk "invalid canonical service placements") require requireOnly;
+  inherit (import ./service-stack.nix) applyServiceRoleOverrides isServiceStack;
   loaded =
     if document != null
     then document
-    else if file != null && builtins.pathExists file
-    then loadFile file
     else {
-      schema_version = 1;
-      closeouts = {};
-      controller_reconcile_exclusions = [];
+      schema_version = 3;
       placements = {};
     };
-  validatePlacement = scope: service: placement:
+  validatePlacement = scope: stack: service: placement: let
+    serviceSpec = stack.serviceRegistry.services.${service} or null;
+    role = placement.role or null;
+    migration =
+      if serviceSpec == null
+      then null
+      else serviceSpec.migration or null;
+    validMigration =
+      migration
+      != null
+      && (
+        builtins.isAttrs migration
+        && (migration.kind or null) == "stateful"
+        && builtins.isList (migration.eligibleRoles or null)
+        && builtins.length migration.eligibleRoles >= 2
+        && builtins.length migration.eligibleRoles == builtins.length (lib.unique migration.eligibleRoles)
+        && lib.all (candidate: builtins.isString candidate && builtins.hasAttr candidate stack.serviceRegistry.roles) migration.eligibleRoles
+      );
+  in
     assert require (builtins.isAttrs placement) "placement ${scope}:${service} must be an object";
-      if validatedSchemaVersion == 1
-      then
-        assert requireOnly ["host" "host_resource" "projection_sha256" "transaction_id"] placement "placement ${scope}:${service}";
-        assert require (builtins.isString placement.host && placement.host != "") "placement ${scope}:${service} host must be non-empty";
-        assert require (builtins.isString placement.host_resource && builtins.match "host:.+" placement.host_resource != null) "placement ${scope}:${service} host_resource must be canonical";
-        assert require (builtins.isString placement.transaction_id && placement.transaction_id != "") "placement ${scope}:${service} transaction_id must be non-empty";
-        assert require (builtins.isString placement.projection_sha256 && builtins.match "[0-9a-f]{64}" placement.projection_sha256 != null) "placement ${scope}:${service} projection_sha256 must be lowercase SHA-256"; placement
-      else
-        assert requireOnly ["role"] placement "placement ${scope}:${service}";
-        assert require (builtins.isString placement.role && placement.role != "") "placement ${scope}:${service} role must be non-empty"; placement;
-  validateScope = scope: services:
-    assert require (builtins.isString scope && scope != "") "placement scope must be non-empty";
-    assert require (builtins.isAttrs services) "placement scope ${scope} must contain an attribute set";
-      builtins.mapAttrs (validatePlacement scope) services;
-  validateCloseout = transaction: closeout:
-    assert require (builtins.isString transaction && transaction != "") "closeout transaction must be non-empty";
-    assert require (builtins.isAttrs closeout) "closeout ${transaction} must be an object";
-    assert requireOnly ["affected_hosts" "controller_reconcile" "decision" "projection_sha256"] closeout "closeout ${transaction}";
-    assert require (builtins.isList closeout.affected_hosts && closeout.affected_hosts != [] && lib.all (host: builtins.isString host && host != "") closeout.affected_hosts) "closeout ${transaction} affected_hosts must be a non-empty string list";
-    assert require (builtins.length closeout.affected_hosts == builtins.length (lib.unique closeout.affected_hosts)) "closeout ${transaction} affected_hosts must be unique";
-    assert require (builtins.isBool (closeout.controller_reconcile or true)) "closeout ${transaction} controller_reconcile must be Boolean";
-    assert require (builtins.elem closeout.decision ["complete" "rollback"]) "closeout ${transaction} decision is unsupported";
-    assert require (builtins.isString closeout.projection_sha256 && builtins.match "[0-9a-f]{64}" closeout.projection_sha256 != null) "closeout ${transaction} projection_sha256 must be lowercase SHA-256";
-      closeout // {controller_reconcile = closeout.controller_reconcile or true;};
-  validatedSchemaVersion = assert require (builtins.isAttrs loaded) "document must be an object";
-    loaded.schema_version or null;
-  validated = assert require (builtins.elem validatedSchemaVersion [1 2]) "schema_version must be 1 or 2";
-  assert requireOnly ["schema_version" "closeouts" "controller_reconcile_exclusions" "placements"] loaded "document";
-  assert require (builtins.isAttrs loaded.closeouts) "closeouts must be an attribute set";
-  assert require (builtins.isList (loaded.controller_reconcile_exclusions or [])) "controller_reconcile_exclusions must be a list";
-  assert require (lib.all (projection: builtins.isString projection && projection != "") (loaded.controller_reconcile_exclusions or [])) "controller_reconcile_exclusions must contain non-empty strings";
-  assert require (builtins.length (loaded.controller_reconcile_exclusions or []) == builtins.length (lib.unique (loaded.controller_reconcile_exclusions or []))) "controller_reconcile_exclusions must be unique";
-  assert require (builtins.isAttrs loaded.placements) "placements must be an attribute set";
-    loaded
-    // {
-      closeouts = builtins.mapAttrs validateCloseout loaded.closeouts;
-      controller_reconcile_exclusions = loaded.controller_reconcile_exclusions or [];
-      placements = builtins.mapAttrs validateScope loaded.placements;
+    assert requireOnly ["role"] placement "placement ${scope}:${service}";
+    assert require (isName service) "placement ${scope}:${service} service must be a safe repository component";
+    assert require (serviceSpec != null) "placement ${scope}:${service} does not select a declared service";
+    assert require (builtins.isString role && role != "" && builtins.hasAttr role stack.serviceRegistry.roles) "placement ${scope}:${service} role does not select a stack role";
+    assert require validMigration "placement ${scope}:${service} has an invalid migration contract";
+    assert require (builtins.elem role migration.eligibleRoles) "placement ${scope}:${service} role ${role} is outside its migration contract"; {
+      inherit role;
     };
-  roleForHostResource = stack: hostResource: let
-    matches =
-      builtins.filter
-      (role: "host:${stack.serviceRegistry.roles.${role}.host}" == hostResource)
-      (builtins.attrNames stack.serviceRegistry.roles);
+  validateScope = scope: services: let
+    stack = stacks.${scope} or null;
   in
-    if builtins.length matches == 1
-    then builtins.head matches
-    else fail "host resource ${hostResource} does not select exactly one stack role";
-in rec {
-  document = validated;
-
-  serviceRoleOverridesFor = scope: stack:
-    builtins.mapAttrs
-    (_service: placement:
-      placement.role or (roleForHostResource stack placement.host_resource))
-    (validated.placements.${scope} or {});
-
+    assert require (builtins.isString scope && scope != "") "placement scope must be non-empty";
+    assert require (isServiceStack stack) "placement scope ${scope} does not select a service stack";
+    assert require (builtins.isAttrs services) "placement scope ${scope} must contain an attribute set";
+      builtins.mapAttrs (validatePlacement scope stack) services;
+  validatedEnvelope = assert require (builtins.isAttrs loaded) "document must be an object";
+  assert require ((loaded.schema_version or null) == 3) "schema_version must be 3";
+  assert requireOnly ["schema_version" "placements"] loaded "document";
+  assert require (builtins.isAttrs loaded.placements) "placements must be an attribute set"; loaded;
+  validated =
+    validatedEnvelope
+    // {
+      placements = builtins.mapAttrs validateScope validatedEnvelope.placements;
+    };
+  serviceRoleOverridesFor = scope:
+    builtins.mapAttrs (_service: placement: placement.role) (validated.placements.${scope} or {});
   applyToStack = scope: stack: let
-    overrides = serviceRoleOverridesFor scope stack;
-    placed = stack.withServiceRoles overrides;
+    overrides = serviceRoleOverridesFor scope;
   in
-    if overrides == {}
-    then stack
-    else
-      placed
-      // lib.optionalAttrs (stack ? placements) {
-        placements = builtins.mapAttrs (_: placement: placement.withServiceRoles overrides) stack.placements;
-      };
-
-  applyToStacks = stacks:
-    builtins.mapAttrs (scope: stack: applyToStack scope stack) stacks;
-}
+    applyServiceRoleOverrides stack overrides;
+  result = {
+    document = validated;
+    applyToStacks = candidateStacks:
+      assert require (lib.all (scope: builtins.hasAttr scope candidateStacks) (builtins.attrNames validated.placements)) "candidate stacks omit a placement scope";
+        builtins.mapAttrs (scope: stack: applyToStack scope stack) candidateStacks;
+  };
+in
+  builtins.deepSeq validated result

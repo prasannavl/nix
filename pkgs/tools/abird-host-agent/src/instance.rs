@@ -939,19 +939,13 @@ fn default_true() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::{self, File};
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
+    use std::fs;
 
     use super::*;
+    use crate::test_support::write_executable;
 
     fn write_program(path: &std::path::Path, script: &str) {
-        let mut file = File::create(path).unwrap();
-        file.write_all(format!("#!/bin/sh\n{script}\n").as_bytes())
-            .unwrap();
-        file.sync_all().unwrap();
-        drop(file);
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable(path, format!("#!/bin/sh\n{script}\n")).unwrap();
     }
 
     fn request(program: PathBuf, phase: InstanceMigrationPhase) -> InstanceMigrationRequest {

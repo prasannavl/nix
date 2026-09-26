@@ -26,10 +26,9 @@ in
     version = "0.1.0";
     projectDir = "pkgs/tools/abird-host-manager";
     deps = ["pkgs/tools/abird-host-agent"];
-    nativeCheckInputs = [pkgs.gitMinimal pkgs.jq];
-    # Several tests execute freshly published fixture programs. Serial execution
-    # avoids overlay-backed Nix sandboxes spuriously returning ETXTBSY.
-    testCargoArgs = ["-p" "abird-host-manager" "--" "--test-threads=1"];
+    nativeCheckInputs = [pkgs.bash pkgs.coreutils pkgs.gitMinimal pkgs.jq pkgs.util-linux];
+    # Executable fixtures are published by an isolated writer process so the
+    # ordinary parallel Cargo test schedule is safe from ETXTBSY races.
     enableDevShell = true;
     extraPassthru = {fleetRuntimeInputs = fleetRuntimeInputs;};
     buildAttrs = {

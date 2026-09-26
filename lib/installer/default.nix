@@ -1,6 +1,5 @@
 {
   mkNixosSystem,
-  stacks,
   hosts,
   ...
 }: let
@@ -38,7 +37,6 @@
       system = "x86_64-linux";
       hostName = "installer-${installerName}";
       machineProfile = null;
-      stack = stacks.all;
       modules = [
         (import ./module.nix {
           installerName = installerName;

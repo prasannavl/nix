@@ -80,6 +80,7 @@ pub struct Options {
     pub sha: Option<String>,
     pub host: Option<String>,
     pub hosts: Option<String>,
+    pub required_hosts: Vec<String>,
     pub groups: Vec<String>,
     pub nix_config: Option<String>,
     pub goal: ActivationGoal,
@@ -138,6 +139,7 @@ impl Default for Options {
             sha: None,
             host: None,
             hosts: None,
+            required_hosts: Vec::new(),
             groups: Vec::new(),
             nix_config: None,
             goal: ActivationGoal::Switch,
@@ -504,6 +506,16 @@ fn parse_options(
                 options.hosts = Some(value()?);
                 options.host = None;
                 hosts_from_flag = true;
+            }
+            "--require-hosts" => {
+                let hosts = split_values(&value()?);
+                if hosts.is_empty() {
+                    bail!("--require-hosts cannot be empty");
+                }
+                for host in &hosts {
+                    validate_host_name(host)?;
+                }
+                options.required_hosts.extend(hosts);
             }
             "--group" => {
                 if !group_from_flag {

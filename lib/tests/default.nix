@@ -58,7 +58,15 @@
   }:
     import (pkgs.path + "/nixos/lib/eval-config.nix") {
       system = pkgs.stdenv.hostPlatform.system;
-      inherit pkgs specialArgs;
+      inherit pkgs;
+      specialArgs =
+        {
+          repository.nix = {
+            substituters = [];
+            trustedPublicKeys = [];
+          };
+        }
+        // specialArgs;
       modules = [../nix.nix] ++ extraModules;
     };
   repoRegistry = {
@@ -71,20 +79,28 @@
       url = "https://registry.example.test";
     };
   };
-  nixRepoRegistry = repoRegistry.nix;
+  repositoryNix = {
+    substituters = [repoRegistry.nix.url];
+    trustedPublicKeys = [
+      "test-cache-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+    ];
+  };
   repoRegistryConfig =
     (evalNixConfig {
-      specialArgs.repoRegistry = nixRepoRegistry;
+      specialArgs.repository.nix = repositoryNix;
       extraModules = [
-        ({specialArgs, ...}: {
-          environment.etc."repo-registry-test".text = specialArgs.repoRegistry.host;
+        ({repository, ...}: {
+          environment.etc."repo-registry-test".text = builtins.toJSON repository.nix;
         })
       ];
     }).config;
   defaultRepoRegistryConfig = (evalNixConfig {}).config;
   repoRegistryTest = assert repoRegistry.containers.url == "https://registry.example.test";
   assert builtins.head repoRegistryConfig.nix.settings.extra-substituters == repoRegistry.nix.url;
-  assert repoRegistryConfig.environment.etc."repo-registry-test".text == repoRegistry.nix.host;
+  assert builtins.fromJSON repoRegistryConfig.environment.etc."repo-registry-test".text == repositoryNix;
+  assert builtins.head repoRegistryConfig.nix.settings.extra-trusted-public-keys == builtins.head repositoryNix.trustedPublicKeys;
+  assert builtins.length repoRegistryConfig.nix.settings.extra-trusted-public-keys == 3;
   assert builtins.length defaultRepoRegistryConfig.nix.settings.extra-substituters == 2;
     pkgs.runCommand "nix-repo-registry-test" {} ''
       touch "$out"

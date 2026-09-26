@@ -19,3 +19,6 @@ pub mod sha256;
 pub mod state;
 pub mod transfer;
 pub mod wipe;
+
+#[cfg(test)]
+pub(crate) mod test_support;

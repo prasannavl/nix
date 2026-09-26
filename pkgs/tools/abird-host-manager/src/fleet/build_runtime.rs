@@ -8,6 +8,7 @@ use super::build::{
     BuildArgs, CommandAttempt, CommandExecutor, CommandSpec, CommandStatus, NixStorePath,
     RemoteBuildOutput, RetryExecution, RetryPolicy, execute_with_retry, remote_build_command,
 };
+use super::build_lease::{LeaseEpoch, LeaseObservation};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoteBuildTools {
@@ -128,4 +129,47 @@ pub fn execute_remote_command(
     retry_policy: RetryPolicy,
 ) -> RetryExecution {
     execute_with_retry(executor, command, retry_policy)
+}
+
+/// Effects used while retaining one remote realization across lease epochs.
+pub trait ProtectedBuilder {
+    fn ensure_lease(&mut self) -> Result<LeaseObservation>;
+    fn realize(&mut self) -> Result<NixStorePath>;
+    fn verify_closure(&mut self, closure: &NixStorePath) -> Result<bool>;
+}
+
+pub fn realize_protected(
+    builder: &mut impl ProtectedBuilder,
+    attempts: usize,
+) -> Result<(NixStorePath, LeaseEpoch)> {
+    let mut pending: Option<NixStorePath> = None;
+    for _ in 0..attempts {
+        let before = builder.ensure_lease()?;
+        let closure = if let Some(expected) = &pending
+            && builder.verify_closure(expected)?
+        {
+            expected.clone()
+        } else {
+            let realized = builder.realize()?;
+            if let Some(expected) = &pending
+                && realized != *expected
+            {
+                bail!(
+                    "recovered remote build produced {}, expected {}",
+                    realized.as_str(),
+                    expected.as_str()
+                );
+            }
+            pending = Some(realized.clone());
+            realized
+        };
+        let after = builder.ensure_lease()?;
+        // Verification and realization both need continuous protection. A
+        // replacement epoch invalidates evidence, but never the first output
+        // identity already selected for this build.
+        if after.epoch == before.epoch {
+            return Ok((closure, after.epoch));
+        }
+    }
+    bail!("builder lease changed repeatedly while realizing closure")
 }

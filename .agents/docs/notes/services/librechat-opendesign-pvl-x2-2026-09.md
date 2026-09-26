@@ -12,7 +12,7 @@
 Both follow the pvl host-service pattern: they read their port and domain from
 `stack.serviceRegistry` (`registry.portFor`, `registry.domains`,
 `registry.urlPublicFor`), declare `exposedPorts.http.nginxHostNames`, and use
-the registry entries added to `lib/stacks/pvl-registry.nix`.
+the registry entries now owned by `config/pvl/registry.nix`.
 
 ## Adaptations from abird
 

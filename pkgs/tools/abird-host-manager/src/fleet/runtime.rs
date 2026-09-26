@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
 
-use crate::programs::nix::Nix;
+use crate::programs::{clear_git_repository_environment, nix::Nix};
 
 use super::ci_runtime::{
     AgeOrFileCredentialMaterializer, CiConnectionInput, CiPrograms, CiRequestInput,
@@ -54,7 +54,7 @@ Canonical surface:
   abird-host-manager fleet repo sync
   abird-host-manager fleet tofu <tofu-args...>
 
-Selection: --group, --host, --hosts, --nix-config, --sha, --control-plane-first
+Selection: --group, --host, --hosts, --require-hosts, --nix-config, --sha, --control-plane-first
 Build: --build-host, --build-host-deploy-mode, --build-cache-url,
        --build-cache-host, --build-plan-jobs, --build-jobs, --build-logs
 Deploy: --goal, --deploy-jobs, --deploy-jobs-per-domain, --verify-jobs,
@@ -631,7 +631,9 @@ fn reexec_from_workspace(
     if runtime.repo_reexec_arguments.is_empty() {
         bail!("--use-repo-script requires the invoking binary to preserve its arguments");
     }
-    let status = Command::new(&runtime.nix_program)
+    let mut command = Command::new(&runtime.nix_program);
+    clear_git_repository_environment(&mut command);
+    let status = command
         .args(["run", runtime.repo_reexec_installable.as_str(), "--"])
         .args(&runtime.repo_reexec_arguments)
         .current_dir(workspace)
@@ -660,7 +662,9 @@ fn repository_lock(git_program: &Path, root: &Path, timeout_seconds: u64) -> Res
 }
 
 fn repository_lock_path(git_program: &Path, root: &Path) -> PathBuf {
-    let common = Command::new(git_program)
+    let mut command = Command::new(git_program);
+    clear_git_repository_environment(&mut command);
+    let common = command
         .args(["-C"])
         .arg(root)
         .args(["rev-parse", "--git-common-dir"])
@@ -759,7 +763,9 @@ fn combine_action_cleanup<T>(
 }
 
 fn repository_root(git: &Path, current: &Path) -> Result<PathBuf> {
-    let output = Command::new(git)
+    let mut command = Command::new(git);
+    clear_git_repository_environment(&mut command);
+    let output = command
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(current)
         .output()
@@ -932,8 +938,18 @@ pub fn load_inventory_at(
     let overlay = (!invocation.options.no_override)
         .then(|| overlay_path(&config))
         .filter(|path| path.is_file());
+    let repository = find_repository_root(
+        config
+            .parent()
+            .context("fleet inventory path has no parent directory")?,
+    )?;
+    let repository_config_dir = repository.join("config");
+    let repository_config = repository_config_dir
+        .join("default.nix")
+        .is_file()
+        .then_some(repository_config_dir.as_path());
     let value = Nix::new(&runtime.nix_program)?
-        .eval_file_with_overlay_json(&config, overlay.as_deref())
+        .eval_inventory_file_with_overlay_json(&config, overlay.as_deref(), repository_config)
         .with_context(|| format!("evaluate fleet inventory {}", config.display()))?;
     let mut inventory: Inventory = serde_json::from_value(value)
         .with_context(|| format!("decode fleet inventory {}", config.display()))?;
@@ -949,11 +965,6 @@ pub fn load_inventory_at(
     {
         bail!("config.deployDepsKey must be a non-empty flake attribute path");
     }
-    let repository = find_repository_root(
-        config
-            .parent()
-            .context("fleet inventory path has no parent directory")?,
-    )?;
     let dependencies = Nix::new(&runtime.nix_program)?
         .eval_installable_json(&repository, &format!(".#{key}"))
         .with_context(|| format!("evaluate deploy dependency attribute {key}"))?;
@@ -1006,6 +1017,7 @@ fn select_inventory(inventory: &Inventory, invocation: &Invocation) -> Result<Se
             groups,
             host: invocation.options.host.clone(),
             hosts,
+            required_hosts: invocation.options.required_hosts.clone(),
             control_plane_first: invocation.options.control_plane_first,
             deploy_jobs_per_domain,
         },

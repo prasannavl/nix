@@ -48,7 +48,7 @@ Usage:
   nixbot repo sync
   nixbot --list-hosts [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--control-plane-first]
   nixbot --list-groups [--config <path>] [--no-override]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--nix-config <name>] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--restart-managed] [--bootstrap] [--control-plane-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--require-hosts "host1,host2"] [--nix-config <name>] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--restart-managed] [--bootstrap] [--control-plane-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot --clean[=auto|all] [--dry] [--ci-trigger] [ci/auth/config options]
   nixbot tofu <tofu-args...>
 
@@ -85,6 +85,7 @@ Workflow Selection Options:
   --hosts          Host selectors (comma/space-separated; exact names, globs,
                    -exclusions, or `all`). With --group, filters the group hosts;
                    default: config.defaultHosts or all)
+  --require-hosts  Exact hosts that must remain in the fully resolved selection
   --nix-config     Build one NixOS configuration for the single positively
                    selected connection host; exclusions remain connection-only
   --sha            Commit to check out before running
@@ -534,11 +535,28 @@ configure_github_nix_access_token() {
 }
 
 init_vars() {
+	# Repository-sensitive commands must resolve the checkout selected by Nixbot,
+	# not an inherited Git plumbing context. Keep this list aligned with the
+	# native manager's GIT_REPOSITORY_ENVIRONMENT.
+	unset \
+		GIT_ALTERNATE_OBJECT_DIRECTORIES \
+		GIT_COMMON_DIR \
+		GIT_DIR \
+		GIT_GRAFT_FILE \
+		GIT_IMPLICIT_WORK_TREE \
+		GIT_INDEX_FILE \
+		GIT_NAMESPACE \
+		GIT_OBJECT_DIRECTORY \
+		GIT_PREFIX \
+		GIT_SHALLOW_FILE \
+		GIT_WORK_TREE
+
 	HOST=""
 	HOST_FROM_FLAG=0
 	HOSTS_FROM_FLAG=0
 	HOSTS_RAW="${NIXBOT_HOSTS:-all}"
 	HOSTS_EXPLICIT=0
+	REQUIRED_HOSTS_RAW=""
 	[ -z "${NIXBOT_HOSTS+x}" ] || HOSTS_EXPLICIT=1
 	NIXBOT_NIX_CONFIG="${NIXBOT_NIX_CONFIG:-}"
 	NIXBOT_NIX_CONFIG_HOST=""
@@ -1330,6 +1348,8 @@ decode_ssh_command_args() {
 ##### Argument Parsing #####
 
 parse_args() {
+	local normalized_required_hosts=""
+
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 		--list-hosts)
@@ -1357,6 +1377,13 @@ parse_args() {
 			HOSTS_RAW="${OPTVAL}"
 			HOSTS_FROM_FLAG=1
 			HOSTS_EXPLICIT=1
+			shift "${OPTSHIFT}"
+			;;
+		--require-hosts | --require-hosts=*)
+			take_optval "$@"
+			normalized_required_hosts="$(emit_normalized_hosts "${OPTVAL}" | paste -sd, -)"
+			[ -n "${normalized_required_hosts}" ] || die "--require-hosts cannot be empty"
+			REQUIRED_HOSTS_RAW="$(emit_normalized_hosts "${REQUIRED_HOSTS_RAW},${normalized_required_hosts}" | paste -sd, -)"
 			shift "${OPTSHIFT}"
 			;;
 		--nix-config | --nix-config=*)
@@ -1937,8 +1964,10 @@ reject_generation_admission() {
 }
 
 admission_programs=()
+uses_current_dispatcher=0
 if [ -f "${current_generation_preflight}" ] && [ -x "${current_generation_preflight}" ]; then
 	admission_programs=("${current_generation_preflight}")
+	uses_current_dispatcher=1
 else
 	# A broken registered interface must never downgrade to legacy admission.
 	# Incoming-only registration is permitted on a first normal deployment;
@@ -2002,17 +2031,46 @@ else
 fi
 
 for admission_program in "${admission_programs[@]}"; do
-	echo "[generation-admission] mode=${admission_mode} validating ${system_path} against durable host-agent state" >&2
-	if "${admission_program}" "${system_path}" "${goal}" "${admission_mode}"; then
+	if admission_output="$(ABIRD_HOST_AGENT_GENERATION_PREFLIGHT_OUTPUT=quiet "${admission_program}" "${system_path}" "${goal}" "${admission_mode}")"; then
 		:
 	else
 		admission_rc="$?"
+		if [ -n "${admission_output}" ]; then
+			printf '%s\n' "${admission_output}" >&2
+		fi
 		reject_generation_admission "validator rejected ${system_path}" "${admission_rc}"
 	fi
 done
+if [ "${#admission_programs[@]}" -gt 0 ]; then
+	echo "[generation-admission] mode=${admission_mode} admitted ${system_path}" >&2
+fi
 export ABIRD_HOST_AGENT_GENERATION_ADMISSION_MODE="${admission_mode}"
 
-NIXOS_INSTALL_BOOTLOADER=0 "${system_path}/bin/switch-to-configuration" "${goal}"
+legacy_target_current_system=""
+if [ "${uses_current_dispatcher}" -eq 1 ] && [ "${admission_mode}" = rollback ]; then
+	target_generation_preflight="${system_path}/sw/bin/abird-host-agent-generation-preflight"
+	target_generation_registry="${system_path}/etc/abird-host-agent/generation-admission-registry.json"
+	if ! { [ -e "${target_generation_preflight}" ] || [ -L "${target_generation_preflight}" ]; } &&
+		! { [ -e "${target_generation_registry}" ] || [ -L "${target_generation_registry}" ]; }; then
+		# The current dispatcher has already validated this pre-registry target's
+		# complete authority in rollback mode. Let its legacy placement check
+		# compare the target contract with itself so an older schema cannot reject
+		# the already-admitted rollback. Every other target pre-switch check still
+		# runs normally.
+		legacy_target_current_system="${system_path}"
+		echo "[rollback-admission] current dispatcher admitted pre-registry target; preserving target checks with its placement baseline" >&2
+	fi
+fi
+
+if [ -n "${legacy_target_current_system}" ]; then
+	ABIRD_HOST_AGENT_CURRENT_SYSTEM="${legacy_target_current_system}" \
+		NIXOS_INSTALL_BOOTLOADER=0 "${system_path}/bin/switch-to-configuration" "${goal}"
+else
+	(
+		unset ABIRD_HOST_AGENT_CURRENT_SYSTEM
+		NIXOS_INSTALL_BOOTLOADER=0 "${system_path}/bin/switch-to-configuration" "${goal}"
+	)
+fi
 
 if [ "${persist_profile}" -eq 1 ]; then
 	if [ ! -f "${system_path}/nixos-version" ]; then
@@ -3376,6 +3434,9 @@ run_ci_trigger() {
 				remote_args+=(--hosts "${trigger_hosts}")
 			fi
 		fi
+		if [ -n "${REQUIRED_HOSTS_RAW}" ]; then
+			remote_args+=(--require-hosts "${REQUIRED_HOSTS_RAW}")
+		fi
 		if [ -n "${NIXBOT_NIX_CONFIG}" ]; then
 			remote_args+=(--nix-config "${NIXBOT_NIX_CONFIG}")
 		fi
@@ -3752,26 +3813,55 @@ apply_configured_deploy_dependencies_json() {
 	merge_deploy_dependencies_json "${config_json}" "${dependencies_json}"
 }
 
+nix_string_literal() {
+	local value="$1"
+
+	jq -Rn --arg value "${value}" '$value'
+}
+
+deploy_config_function_arguments() {
+	local config_path="$1" repository_root="" repository_config="" repository_config_literal=""
+
+	repository_root="$(git -C "$(dirname "${config_path}")" rev-parse --show-toplevel 2>/dev/null || true)"
+	repository_config="${repository_root%/}/config"
+	if [ -z "${repository_root}" ] || [ ! -f "${repository_config}/default.nix" ]; then
+		printf '{}\n'
+		return
+	fi
+
+	repository_config_literal="$(nix_string_literal "${repository_config}")"
+	printf '{ stacks = (import (builtins.toPath %s)).stacks; }\n' "${repository_config_literal}"
+}
+
 load_deploy_config_json() {
 	local path="$1" override_path="${2-${NIXBOT_CONFIG_OVERRIDE_PATH:-}}"
-	local resolved_path="" resolved_override_path="" expr="" output=""
+	local resolved_path="" resolved_override_path="" function_arguments="" apply_expr="" expr="" output=""
+	local resolved_path_literal="" resolved_override_path_literal=""
 
 	resolved_path="$(resolve_config_path "${path}")"
 	[ -f "${resolved_path}" ] || die "Deploy config not found: ${path} (resolved: ${resolved_path})"
+	function_arguments="$(deploy_config_function_arguments "${resolved_path}")"
+	apply_expr="inventory: if builtins.isFunction inventory then inventory ${function_arguments} else inventory"
 	if [ -z "${override_path}" ] || [ ! -f "${override_path}" ]; then
-		run_supervised_stdout_capture output "" nix eval --json --file "${resolved_path}" || return "$?"
+		run_supervised_stdout_capture output "" nix eval --json --file "${resolved_path}" --apply "${apply_expr}" || return "$?"
 		apply_configured_deploy_dependencies_json "${output}" "${resolved_path}"
 		return
 	fi
 
 	resolved_override_path="$(resolve_config_path "${override_path}")"
+	resolved_path_literal="$(nix_string_literal "${resolved_path}")"
+	resolved_override_path_literal="$(nix_string_literal "${resolved_override_path}")"
 	# The sibling override is a partial attrset layered over the selected config:
 	# nested attrsets merge recursively, while scalar/list values replace the
 	# base value.
 	expr="
 let
-  recursiveUpdate = lhs: rhs:
-    lhs
+	resolveInventory = inventory:
+	  if builtins.isFunction inventory
+	  then inventory ${function_arguments}
+	  else inventory;
+	recursiveUpdate = lhs: rhs:
+	  lhs
     // rhs
     // builtins.mapAttrs (
       name: rhsValue:
@@ -3783,7 +3873,9 @@ let
           else rhsValue
     ) rhs;
 in
-  recursiveUpdate (import ${resolved_path}) (import ${resolved_override_path})
+	  recursiveUpdate
+	    (resolveInventory (import (builtins.toPath ${resolved_path_literal})))
+	    (resolveInventory (import (builtins.toPath ${resolved_override_path_literal})))
 "
 	run_supervised_stdout_capture output "" nix eval --impure --json --expr "${expr}" || return "$?"
 	apply_configured_deploy_dependencies_json "${output}" "${resolved_path}"
@@ -4980,6 +5072,33 @@ resolve_selected_hosts_json() {
 	order_selected_hosts_json "${selected_json}" "${all_hosts_json}"
 }
 
+validate_required_host_coverage() {
+	local selected_json="$1" all_hosts_json="$2" host="" required_json="" missing_json=""
+	local -a required_hosts=()
+
+	[ -n "${REQUIRED_HOSTS_RAW}" ] || return 0
+	while IFS= read -r host; do
+		[ -n "${host}" ] || continue
+		valid_host_name "${host}" || {
+			echo "Required deployment host is not an exact valid host name: ${host}" >&2
+			return 1
+		}
+		required_hosts+=("${host}")
+	done < <(emit_normalized_hosts "${REQUIRED_HOSTS_RAW}")
+	[ "${#required_hosts[@]}" -gt 0 ] || {
+		echo "--require-hosts cannot be empty" >&2
+		return 1
+	}
+	required_json="$(bash_args_to_json_array "${required_hosts[@]}")"
+	validate_selected_hosts "${required_json}" "${all_hosts_json}" || return "$?"
+	selected_json="$(filter_runnable_hosts_json "${selected_json}")" || return "$?"
+	missing_json="$(jq -cn --argjson required "${required_json}" --argjson selected "${selected_json}" '$required - $selected')"
+	if [ "$(jq 'length' <<<"${missing_json}")" -ne 0 ]; then
+		echo "Resolved deployment selection does not cover required hosts: $(jq -r 'join(", ")' <<<"${missing_json}")" >&2
+		return 1
+	fi
+}
+
 prepare_run_context() {
 	local -n prc_selected_json_out_ref="$1"
 	local config_json="" all_hosts_json=""
@@ -4996,6 +5115,7 @@ prepare_run_context() {
 	if ! prc_selected_json_out_ref="$(resolve_selected_hosts_json "${all_hosts_json}")"; then
 		exit 1
 	fi
+	validate_required_host_coverage "${prc_selected_json_out_ref}" "${all_hosts_json}" || exit 1
 }
 
 emit_annotated_selected_hosts() {
@@ -9890,7 +10010,13 @@ _remote_health_check_held_user_units() {
 }
 
 _remote_health_check_deferred_resources() {
+	local host="${1:-}"
 	local agent="${NIXBOT_HOST_AGENT:-/run/current-system/sw/bin/abird-host-agent}" output=""
+
+	if [[ ! "${host}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]]; then
+		echo "[health-check] deferred-resource evidence requires an exact Nixbot host identity" >&2
+		return 1
+	fi
 
 	[ -x "${agent}" ] || return 0
 	if ! output="$("${agent}" --json status)"; then
@@ -9906,29 +10032,68 @@ _remote_health_check_deferred_resources() {
 		return 1
 	fi
 	# Generations predating granular deferral cannot have produced deferral
-	# evidence. Keep rolling deployment compatible, but require the complete
-	# contract as soon as the agent advertises status schema version 2.
+	# evidence. Keep rolling deployment compatible, but require the base deferral
+	# contract as soon as the agent advertises status schema version 2. Schema
+	# version 3 additionally requires resource state and binds the status and each
+	# deferral to its deployed configuration and immutable transaction identity.
 	if ! jq -e '.result | has("status_schema_version")' >/dev/null <<<"${output}"; then
 		return 0
 	fi
 	if ! jq -e '
-		.result.status_schema_version == 2
+		.result.status_schema_version as $status_schema_version
+		| ($status_schema_version == 2 or $status_schema_version == 3)
+		and (if $status_schema_version == 3
+		     then (.result.configuration_revision | type == "string")
+		          and (.result.configuration_revision | length > 0)
+		     else true
+		     end)
 		and (.result.deferred_resources.count | type == "number")
 		and (.result.deferred_resources.resources | type == "array")
 		and .result.deferred_resources.count == (.result.deferred_resources.resources | length)
+		and ((.result.deferred_resources.resources | map(.resource) | unique | length)
+		     == (.result.deferred_resources.resources | length))
 		and all(.result.deferred_resources.resources[];
 			(.resource | type == "string")
-			and (.reason | type == "string")
-			and (.generation | type == "number")
-			and .isolated == true)
+			and (if $status_schema_version == 3
+			     then (.state | type == "string")
+			          and (.transaction_id | type == "string")
+			          and (.transaction_id | length > 0)
+			          and (.projection_id | type == "string")
+			          and (.projection_id | length > 0)
+			     else true
+			     end)
+				and (.reason | type == "string")
+				and (.generation | type == "number")
+				and (.generation >= 0)
+				and (.generation == (.generation | floor))
+				and ((has("detail") | not) or .detail == null or (.detail | type == "string"))
+				and .isolated == true)
 	' >/dev/null <<<"${output}"; then
 		echo "[health-check] invalid or unsafe deferred host-agent resource response" >&2
 		return 1
 	fi
-	jq -r '
+	jq -c --arg host "${host}" '
+		.result.status_schema_version as $status_schema_version
+		|
 		.result.deferred_resources.resources[]
-		| [.resource, .reason, (.generation | tostring)]
-		| @tsv
+		| {
+			schema_version: 1,
+			operation: "host_agent_generation_evidence",
+			result: ({
+				kind: "resource-deferred",
+				domain: "desired-resource-state",
+				host: $host,
+				transaction_id: (if $status_schema_version == 3 then .transaction_id else null end),
+				projection_id: (if $status_schema_version == 3 then .projection_id else null end),
+				resource: .resource,
+				status: "deferred-held",
+				state: .state,
+				generation: .generation,
+				reason: .reason,
+				detail: .detail,
+				isolated: .isolated
+			} | with_entries(select(.value != null)))
+		}
 	' <<<"${output}" | sort -u
 }
 
@@ -10902,7 +11067,7 @@ phase_dir_item_duration_file() {
 }
 
 _remote_post_switch_user_health_check_once() {
-	local ignored_failed_system_units="${1:-}"
+	local ignored_failed_system_units="${1:-}" node="${2:-}"
 	local units="" unit="" user="" uid="" home="" runtime_dir="" bus=""
 	local held_user_units="" held_units="" held_unit="" held_state=""
 	local deferred_resources=""
@@ -10929,7 +11094,7 @@ _remote_post_switch_user_health_check_once() {
 		echo "[health-check] FAILED — durable hold state is unavailable" >&2
 		return 1
 	fi
-	if ! deferred_resources="$(_remote_health_check_deferred_resources)"; then
+	if ! deferred_resources="$(_remote_health_check_deferred_resources "${node}")"; then
 		echo "[health-check] FAILED — deferred resource isolation is unavailable" >&2
 		return 3
 	fi
@@ -11199,9 +11364,9 @@ EOF_HC_UNITS
 	fi
 	if [ -n "${deferred_resources}" ]; then
 		echo "[health-check] host generation deployed with safely deferred held resources:" >&2
-		while IFS=$'\t' read -r resource reason generation; do
-			[ -n "${resource}" ] || continue
-			echo "resource=${resource} outcome=deferred-held reason=${reason} generation=${generation}" >&2
+		while IFS= read -r evidence; do
+			[ -n "${evidence}" ] || continue
+			echo "[host-agent-generation-evidence] ${evidence}" >&2
 		done <<<"${deferred_resources}"
 	fi
 	if [ -n "${held_failure_output}" ]; then
@@ -11269,7 +11434,7 @@ _remote_health_check_starting_timeout_seconds() {
 }
 
 _remote_post_switch_user_health_check() {
-	local ignored_failed_system_units="${1:-}"
+	local ignored_failed_system_units="${1:-}" node="${2:-}"
 	local timeout_seconds="" poll_seconds=5 start_epoch="" now_epoch="" rc=0
 	local NIXBOT_HEALTH_BASELINE_TIMER_UNITS=""
 
@@ -11281,7 +11446,7 @@ _remote_post_switch_user_health_check() {
 	fi
 
 	while :; do
-		if _remote_post_switch_user_health_check_once "${ignored_failed_system_units}"; then
+		if _remote_post_switch_user_health_check_once "${ignored_failed_system_units}" "${node}"; then
 			return 0
 		else
 			rc="$?"
@@ -11405,10 +11570,10 @@ _remote_health_check_rootless_mutations() {
 }
 
 build_post_switch_health_check_cmd() {
-	local ignored_failed_system_units="${1:-}" invoke_cmd=""
+	local ignored_failed_system_units="${1:-}" node="${2:-}" invoke_cmd=""
 
-	printf -v invoke_cmd '_remote_post_switch_user_health_check %q' \
-		"${ignored_failed_system_units}"
+	printf -v invoke_cmd '_remote_post_switch_user_health_check %q %q' \
+		"${ignored_failed_system_units}" "${node}"
 	emit_remote_function_command \
 		"${invoke_cmd}" \
 		_remote_health_check_filter_failed_units \
@@ -11455,7 +11620,7 @@ run_post_switch_health_check() {
 	fi
 
 	ignored_failed_system_units="$(health_check_ignored_failed_system_units_for "${node}")"
-	health_check_cmd="$(build_post_switch_health_check_cmd "${ignored_failed_system_units}")"
+	health_check_cmd="$(build_post_switch_health_check_cmd "${ignored_failed_system_units}" "${node}")"
 	run_with_prefixed_combined_output \
 		health \
 		"${node}" \

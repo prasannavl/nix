@@ -853,9 +853,31 @@ impl MoveProjector {
         // generation and lineage.
         let generation = previous.map_or(1, |previous| previous.generation + 1);
         let activation_requirement = match activation_kind {
+            Some(kind)
+                if phase == MovePhase::Cutover
+                    || phase == MovePhase::RolledBack
+                        && previous_phase == Some(MovePhase::RolledBack) =>
+            {
+                let inherited = previous
+                    .and_then(|projection| projection.activation_requirement.clone())
+                    .context("activation phase has no preceding authorization epoch")?;
+                if inherited.kind != kind {
+                    bail!(
+                        "activation phase expected {kind:?} authority, found {:?}",
+                        inherited.kind
+                    );
+                }
+                Some(inherited)
+            }
             Some(kind) => Some(ActivationRequirement {
                 kind: kind.to_owned(),
-                requirement_sha256: activation_requirement(&spec.id, &intent_sha256, kind)?,
+                requirement_sha256: activation_requirement(
+                    &spec.id,
+                    &intent_sha256,
+                    kind,
+                    generation,
+                    previous.map(|projection| projection.projection_sha256.as_str()),
+                )?,
             }),
             None => None,
         };
@@ -1268,9 +1290,13 @@ fn activation_requirement(
     transaction_id: &str,
     intent_sha256: &str,
     purpose: &str,
+    generation: u64,
+    previous_projection_sha256: Option<&str>,
 ) -> Result<String> {
     canonical_sha256(&json!({
+        "generation": generation,
         "intent_sha256": intent_sha256,
+        "previous_projection_sha256": previous_projection_sha256,
         "purpose": purpose,
         "projection_kind": "move",
         "schema_version": PHASE_PROJECTION_SCHEMA_VERSION,
@@ -1380,6 +1406,7 @@ mod tests {
         )
         .unwrap();
         spec.declarative_scope = Some("abird".to_owned());
+        spec.repository_owner = Some("abird".to_owned());
         spec
     }
 
@@ -1541,6 +1568,17 @@ mod tests {
         .unwrap();
         assert_eq!(prepared_again.generation, cutover.generation + 1);
         assert_eq!(prepared_again.phase, "prepared");
+        assert_eq!(
+            cutover.activation_requirement, prepared.activation_requirement,
+            "cutover must inherit the exact prepared authorization epoch"
+        );
+        assert_ne!(
+            prepared_again.activation_requirement, prepared.activation_requirement,
+            "a new prepare epoch must invalidate earlier activation authority"
+        );
+        let receipt = ActivationReceipt::derive(&prepared, &json!({"authorized": true})).unwrap();
+        receipt.validate_for(&cutover).unwrap();
+        assert!(receipt.validate_for(&prepared_again).is_err());
     }
 
     #[test]
@@ -1582,6 +1620,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(retry.generation, cutover.generation + 1);
+        assert_eq!(
+            retry.activation_requirement, cutover.activation_requirement,
+            "same authorization epoch must survive target activation retries"
+        );
         assert_eq!(
             retry.resources[1].endpoint.activation_job_id.as_deref(),
             Some("move-zulip--item-001-cutover-activate-target-attempt-1")

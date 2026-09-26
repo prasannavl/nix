@@ -35,7 +35,7 @@
     nixpkgs = {lib = pkgs.lib;};
     flake-utils = fakeFlakeUtils;
     overlays = [];
-    stackProfiles = {};
+    stacks = {};
   };
   manifest = import ../../../pkgs/manifest.nix;
   outputs = flakeLib.withPkgs pkgs;
@@ -165,8 +165,8 @@
       secondNatsStreamsModule
     ];
   };
-  stackSetProfiles = let
-    mkProfile = stackName: extra:
+  stackDefinitions = let
+    mkStackDefinition = stackName: extra:
       {
         inherit stackName;
         env = "test";
@@ -197,13 +197,13 @@
       }
       // extra;
   in {
-    platform = mkProfile "platform" {
+    platform = mkStackDefinition "platform" {
       instances = {
         proxy = {};
         db = {};
       };
     };
-    app = mkProfile "app" {
+    app = mkStackDefinition "app" {
       dnsRouteDomains = ["~app.test"];
       instances = {
         proxy = {};
@@ -218,10 +218,10 @@
       dependencies.db.stack = "platform";
     };
   };
-  stackSetRegistryFor = profile: {
+  registryForDefinition = definition: {
     roles = {
       proxy = {
-        host = "${profile.stackName}-proxy";
+        host = "${definition.stackName}-proxy";
         octet = 10;
       };
       web = {
@@ -243,19 +243,19 @@
       db.database.ports.main.port = 5432;
     };
     domains = {
-      apex = [profile.domain];
+      apex = [definition.domain];
       omitted = ["omitted.example.test"];
     };
     tunnelDomains = [];
     limits = {};
   };
-  stackSet = import ../stack-set.nix {
-    profiles = stackSetProfiles;
-    registryFor = stackSetRegistryFor;
+  stackSet = import ../stack/build-set.nix {
+    definitions = stackDefinitions;
+    registryFor = registryForDefinition;
     mkRegistryArgs = {
       constructor,
       domains,
-      profile,
+      definition,
       registry,
       roles,
       services,
@@ -263,7 +263,7 @@
     }: {
       inherit constructor domains roles services tunnelDomains;
       inherit
-        (profile)
+        (definition)
         activeEndpointGroup
         domain
         enableExternalConnectors
@@ -273,7 +273,7 @@
         stackName
         tunnels
         ;
-      dnsRouteDomains = profile.dnsRouteDomains or ["~${profile.internalDomain}"];
+      dnsRouteDomains = definition.dnsRouteDomains or ["~${definition.internalDomain}"];
       secretNamespace = "test";
       org = "test";
       limits = registry.limits;
@@ -323,7 +323,11 @@ in {
   lib-flake-repo-modules = import ./repo-modules.nix {inherit pkgs;};
   lib-flake-service-client-endpoints = import ./service-client-endpoints.nix {inherit pkgs;};
   lib-flake-service-placements = import ./service-placements.nix {inherit pkgs;};
+  lib-flake-runtime-projection-closeouts = import ./runtime-projection-closeouts.nix {inherit pkgs;};
   lib-flake-service-moves = import ./service-moves.nix {inherit pkgs;};
+  lib-flake-projection-domain-fold = import ./projection-domain-fold.nix {inherit pkgs;};
+  lib-flake-repository-fold = import ./repository-fold.nix {inherit pkgs;};
+  lib-flake-configuration-family = import ./configuration-family.nix {inherit pkgs;};
   lib-flake-nested-rust-package = assert toString nestedRustPackage.sourcePath == toString ../../../pkgs/examples/hello-rust/default.nix;
     pkgs.runCommand "lib-flake-nested-rust-package-test" {} ''
       touch "$out"
@@ -455,7 +459,7 @@ in {
   assert stackSet.app.serviceRegistry.roleForService "app" == "web";
   assert remappedAppStack.serviceRegistry.roleForService "app" == "proxy";
   assert remappedAppStack.serviceRegistry.upstreamForService "app" "http" == "10.10.10.10:8080";
-    pkgs.runCommand "lib-flake-stack-set-test" {} ''
+    pkgs.runCommand "lib-flake-stack-build-set-test" {} ''
       touch "$out"
     '';
   lib-flake-isolated = assert flakeLib.stacks == {};

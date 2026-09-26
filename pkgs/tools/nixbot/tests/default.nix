@@ -10,6 +10,7 @@
         pkgs.gawk
         pkgs.git
         pkgs.gnused
+        pkgs.inetutils
         pkgs.jq
         pkgs.python3
         pkgs.procps

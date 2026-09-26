@@ -125,6 +125,25 @@
   phaseProjection = import ../phase-projection.nix {
     inherit (pkgs) lib;
     documents = [projection];
+    scopeStacks = {demo = stack;};
+  };
+  unknownScopeProjection = canonicalize (unsignedProjection
+    // {
+      effects = map (effect: effect // {scope = "unknown";}) unsignedProjection.effects;
+    });
+  unknownScopePhaseProjection = import ../phase-projection.nix {
+    inherit (pkgs) lib;
+    documents = [unknownScopeProjection];
+    scopeStacks = {demo = stack;};
+  };
+  deferredUnknownScopePhaseProjection = import ../phase-projection.nix {
+    inherit (pkgs) lib;
+    documents = [unknownScopeProjection];
+  };
+  nonServiceScopePhaseProjection = import ../phase-projection.nix {
+    inherit (pkgs) lib;
+    documents = [projection];
+    scopeStacks.demo = {stackName = "demo";};
   };
   unknownFieldProjection = projection // {unexpected = true;};
   invalidPhaseProjection = import ../phase-projection.nix {
@@ -165,14 +184,30 @@
     documents = [reversedProjection];
   };
   placement = {
-    withServiceRoles = overrides: placement // {appliedOverrides = overrides;};
+    infrastructure.marker = "placement";
+    serviceRegistry.services.app.role = "source";
+    topology.marker = "placement";
+    withServiceRoles = overrides:
+      placement
+      // {
+        appliedOverrides = overrides;
+        serviceRegistry.services.app.role = overrides.app or "source";
+      };
   };
   stack = {
+    infrastructure.marker = "canonical";
+    topology.marker = "canonical";
     serviceRegistry.roles = {
       source.host = "demo-source";
       target.host = "demo-target";
     };
-    withServiceRoles = overrides: stack // {appliedOverrides = overrides;};
+    serviceRegistry.services = {};
+    withServiceRoles = overrides:
+      stack
+      // {
+        appliedOverrides = overrides;
+        serviceRegistry.services.app.role = overrides.app or "source";
+      };
     placements = {
       primary = placement;
       secondary = placement;
@@ -184,11 +219,20 @@ in
   assert phaseProjection.runtimeHosts == ["source" "target" "proxy"];
   assert (builtins.head unheldPhaseProjection.documents).phase == "unheld";
   assert !(builtins.tryEval (builtins.deepSeq invalidPhaseProjection.documents true)).success;
+  assert !(builtins.tryEval (builtins.deepSeq unknownScopePhaseProjection.documents true)).success;
+  assert !(builtins.tryEval (builtins.deepSeq nonServiceScopePhaseProjection.documents true)).success;
+  assert !(builtins.tryEval (builtins.deepSeq (deferredUnknownScopePhaseProjection.applyToStacks {demo = stack;}) true)).success;
   assert pkgs.lib.all (invalid: !(builtins.tryEval (builtins.deepSeq invalid.documents true)).success) invalidDocuments;
   assert builtins.length reversedPhaseProjection.documents == 1;
   assert projected.demo.appliedOverrides == {app = "target";};
-  assert projected.demo.placements.primary.appliedOverrides == {app = "target";};
-  assert projected.demo.placements.secondary.appliedOverrides == {app = "target";};
+  assert projected.demo.infrastructure.marker == "canonical";
+  assert projected.demo.topology.marker == "canonical";
+  assert projected.demo.serviceRegistry.services.app.role == "target";
+  assert !(projected.demo.placements.primary ? appliedOverrides);
+  assert !(projected.demo.placements.secondary ? appliedOverrides);
+  assert projected.demo.placements.primary.serviceRegistry.services.app.role == "source";
+  assert projected.demo.placements.primary.infrastructure.marker == "placement";
+  assert projected.demo.placements.primary.topology.marker == "placement";
     pkgs.runCommand "phase-projection-flake-test" {} ''
       touch "$out"
     ''

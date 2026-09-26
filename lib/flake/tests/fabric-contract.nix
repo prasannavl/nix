@@ -47,14 +47,14 @@
         };
     }
   ));
-  minimalProfiles.app = {
+  minimalDefinitions.app = {
     stackName = "app";
     activeEndpointGroup = "live";
     network.subnetId = 1;
     instances.app = {};
     endpointGroups.live = {};
   };
-  minimalRegistryFor = _profile: {
+  minimalRegistryFor = _definition: {
     roles.app = {
       host = "app";
       octet = 20;
@@ -67,10 +67,10 @@
         ipv4 = "10.20";
         ipv6 = "fd42:20:20";
       };
-      profiles.app =
-        minimalProfiles.app
+      definitions.app =
+        minimalDefinitions.app
         // {
-          network = minimalProfiles.app.network // {members.exclude = ["missing"];};
+          network = minimalDefinitions.app.network // {members.exclude = ["missing"];};
         };
       registryFor = minimalRegistryFor;
     }).contract.validation;
@@ -81,11 +81,11 @@
         ipv4 = "10.20";
         ipv6 = "fd42:20:20";
       };
-      profiles =
-        minimalProfiles
+      definitions =
+        minimalDefinitions
         // {
           copy =
-            minimalProfiles.app
+            minimalDefinitions.app
             // {
               stackName = "copy";
               network = {
@@ -103,7 +103,7 @@
         ipv4 = "10.999";
         ipv6 = "fd42:20:20";
       };
-      profiles = minimalProfiles;
+      definitions = minimalDefinitions;
       registryFor = minimalRegistryFor;
     }).contract.validation;
   invalidAccessPort = builtins.tryEval (mkContract (
@@ -119,7 +119,7 @@
       ];
     }
   ));
-  profiles = {
+  definitions = {
     app = {
       stackName = "app";
       activeEndpointGroup = "live";
@@ -172,8 +172,8 @@
       ipv4 = "10.20";
       ipv6 = "fd42:20:20";
     };
-    inherit profiles;
-    registryFor = _profile: {
+    inherit definitions;
+    registryFor = _definition: {
       roles =
         (minimalRegistryFor {}).roles
         // {
@@ -185,19 +185,19 @@
     };
   };
   contract = fabricStack.contract;
-  endpoints = fabricStack.endpointGroupsFor profiles.app;
+  endpoints = fabricStack.endpointGroupsFor definitions.app;
   dependency = fabricStack.resolveDependencyEndpoint {
     declaration = {
       stack = "app";
       endpointGroup = "cold";
     };
     name = "app";
-    profile = profiles.app;
+    definition = definitions.app;
   };
   projection = fabricStack.mkProjection {
     dependencyRoles = {};
     ownedRoles.app = {host = "app";};
-    profile = profiles.app;
+    definition = definitions.app;
   };
 in
   assert builtins.all (value: value) (builtins.attrValues contract.validation);

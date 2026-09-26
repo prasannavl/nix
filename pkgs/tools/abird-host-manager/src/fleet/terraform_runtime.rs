@@ -13,6 +13,8 @@ use std::process::Command;
 
 use tempfile::{Builder as TempBuilder, TempDir};
 
+use crate::programs::clear_git_repository_environment;
+
 use super::terraform::{
     AutomaticTfvars, BackendValues, ChangeDecision, ChangeGateInput, DiffObservation,
     EnvironmentDeclaration, EnvironmentRequirement, ProcessCommand, ProjectContext,
@@ -545,10 +547,9 @@ pub struct SystemGitChangeSource {
 
 impl SystemGitChangeSource {
     fn output(&self, repo_root: &Path, args: &[&str]) -> io::Result<std::process::Output> {
-        Command::new(&self.git_program)
-            .args(args)
-            .current_dir(repo_root)
-            .output()
+        let mut command = Command::new(&self.git_program);
+        clear_git_repository_environment(&mut command);
+        command.args(args).current_dir(repo_root).output()
     }
 
     fn verify(&self, repo_root: &Path, reference: &str) -> Option<String> {

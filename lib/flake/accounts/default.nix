@@ -5,8 +5,8 @@
   rawUserdata ? import ../../../users/userdata.nix,
   rawGroupData ? import ../../../users/groupdata.nix,
 }: let
-  userDataLib = import ./user-data-lib.nix;
-  inherit (userDataLib) unique userFilter;
+  accountLib = import ./lib.nix;
+  inherit (accountLib) unique userFilter;
 
   normalizeList = value:
     if value == null
@@ -39,7 +39,7 @@
 
   sortStrings = builtins.sort (a: b: a < b);
 
-  enabled = details: details.enabled or true;
+  isEnabled = details: details.enabled or true;
 
   stackEnabled = details:
     includeAllStacks || !(details ? stacks) || hasValue stackName (normalizeList details.stacks);
@@ -55,7 +55,7 @@
 
   normalizeUser = userId: details: let
     username = usernameFor userId details;
-    userEnabled = enabled details;
+    userEnabled = isEnabled details;
     userStackEnabled = stackEnabled details;
     userMailEnabled = userEnabled && (details.email or true);
     aliases = normalizeList (details.aliases or []);
@@ -110,10 +110,7 @@
   activeStackBaseUserRecords = userFilter {isActive = true;} baseUsers;
   activeStackUserIds = builtins.attrNames activeStackBaseUserRecords;
 
-  stackBaseUserRecords = filterAttrs (_: details: details.stackEnabled) baseUsers;
-  stackUserIds = builtins.attrNames stackBaseUserRecords;
-
-  disabledUserRecords = filterAttrs (_: details: !(enabled details)) baseUsers;
+  disabledUserRecords = filterAttrs (_: details: !(isEnabled details)) baseUsers;
   disabledUserIds = builtins.attrNames disabledUserRecords;
 
   loadGroupData =
@@ -121,7 +118,7 @@
     then
       rawGroupData {
         users = baseUsers;
-        userLib = userDataLib;
+        accountsLib = accountLib;
       }
     else rawGroupData;
 
@@ -130,7 +127,7 @@
     unknownUsers = builtins.filter (userId: !(builtins.hasAttr userId baseUsers)) groupUsers;
   in
     if unknownUsers != []
-    then builtins.throw "groupData group ${groupId} references unknown users: ${builtins.concatStringsSep ", " unknownUsers}"
+    then builtins.throw "account group ${groupId} references unknown users: ${builtins.concatStringsSep ", " unknownUsers}"
     else
       details
       // {
@@ -142,27 +139,25 @@
       };
 
   allGroupData = builtins.mapAttrs normalizeGroup loadGroupData;
-  groupData = filterAttrs (_: details: details.stackEnabled) allGroupData;
+  groups = filterAttrs (_: details: details.stackEnabled) allGroupData;
 
-  groupNames = sortStrings (builtins.attrNames groupData);
+  groupNames = sortStrings (builtins.attrNames groups);
 
   groupNamesForUser = userId:
-    builtins.filter (groupName: hasValue userId groupData.${groupName}.users) groupNames;
+    builtins.filter (groupName: hasValue userId groups.${groupName}.users) groupNames;
 
   users = builtins.mapAttrs (userId: details: details // {groups = groupNamesForUser userId;}) baseUsers;
 
   activeStackUserRecords = filterAttrs (_: details: details.enabled && details.stackEnabled) users;
-  stackUserRecords = filterAttrs (_: details: details.stackEnabled) users;
-
   groupNamesForUserIds = userIds:
     builtins.filter (
       groupName:
-        builtins.any (userId: hasValue userId groupData.${groupName}.users) userIds
+        builtins.any (userId: hasValue userId groups.${groupName}.users) userIds
     )
     groupNames;
 
   userIdsInGroup = groupName:
-    groupData.${groupName}.users or [];
+    groups.${groupName}.users or [];
 
   groupMembers = builtins.listToAttrs (map (groupName: {
       name = groupName;
@@ -170,20 +165,21 @@
     })
     groupNames);
 
-  mkNixosConfig = {
+  nixosModule = {
     lib,
     pkgs,
+    ...
   }: let
     disabledLoginShell = "${pkgs.shadow}/bin/nologin";
     disabledUsernames = map (userId: disabledUserRecords.${userId}.username) disabledUserIds;
   in {
-    disabledGroups =
+    users.groups =
       builtins.mapAttrs (_: details: {
         gid = lib.mkDefault details.uid;
       })
       disabledUserRecords;
 
-    disabledUsers =
+    users.users =
       builtins.mapAttrs (_: details: {
         uid = lib.mkDefault details.uid;
         group = lib.mkDefault details.username;
@@ -196,7 +192,7 @@
       })
       disabledUserRecords;
 
-    disabledActivationScripts = builtins.listToAttrs (map (username: {
+    system.activationScripts = builtins.listToAttrs (map (username: {
         name = "terminate-disabled-${username}";
         value = ''
           if command -v loginctl >/dev/null 2>&1; then
@@ -208,15 +204,14 @@
       disabledUsernames);
   };
 in {
-  userData = users;
-  inherit groupData users;
+  inherit groups nixosModule users;
 
-  lib =
-    userDataLib
+  helpers =
+    accountLib
     // {
       inherit
         ciSshKeysFor
-        enabled
+        isEnabled
         sshKeysFor
         ;
     };
@@ -226,23 +221,18 @@ in {
     activeIds = activeStackUserIds;
     disabled = disabledUserRecords;
     disabledIds = disabledUserIds;
-    stack = stackUserRecords;
-    stackIds = stackUserIds;
   };
 
   groupSets = {
     names = groupNames;
-    definitions = groupData;
     members = groupMembers;
     namesForUserIds = groupNamesForUserIds;
     userIdsIn = userIdsInGroup;
-    hasAnyGroup = userDataLib.userHasAnyGroup;
-    hasGroup = userDataLib.userHasGroup;
+    hasAnyGroup = accountLib.userHasAnyGroup;
+    hasGroup = accountLib.userHasGroup;
   };
 
   meta = {
-    inherit defaultMailDomain rawUserdata stackName;
+    inherit defaultMailDomain includeAllStacks stackName;
   };
-
-  nixosConfig = mkNixosConfig;
 }

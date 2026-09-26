@@ -1,8 +1,11 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+#[path = "../src/test_support.rs"]
+mod test_support;
+use test_support::write_executable;
 
 fn run(command: &mut Command) -> String {
     let output = command.output().unwrap();
@@ -43,14 +46,14 @@ fn compatibility_build_runs_the_native_evaluate_and_build_pipeline() {
     git(&repository, &["commit", "-qm", "fixture"]);
 
     let nix = tools.join("nix");
-    fs::write(
+    write_executable(
         &nix,
         r#"#!/bin/sh
 set -eu
 printf 'argv=%s env=%s\n' "$*" "${NIX_SSHOPTS:-}" >> "$NATIVE_FLEET_NIX_LOG"
 case "$*" in
-  *'.#nixbot.deployDependencies') printf '{}\n' ;;
-  *'--file '*'hosts.nix')
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*)
     printf '%s\n' '{"hosts":{"app":{"target":"127.0.0.1","groups":["all"]}},"config":{}}'
     ;;
   *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
@@ -61,7 +64,6 @@ esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&nix, fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
         .current_dir(&repository)
@@ -75,6 +77,10 @@ esac
             "--build-host",
             "local",
         ])
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_NIX_LOG", &log)
         .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
@@ -126,6 +132,10 @@ esac
             "--verbose",
             "--prefix-host-logs",
         ])
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_NIX_LOG", &log)
         .env(
@@ -167,6 +177,10 @@ esac
             "--log-format",
             "github-actions",
         ])
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_NIX_LOG", &log)
         .env(
@@ -217,21 +231,20 @@ fn use_repo_script_reexecutes_the_rust_app_from_the_exact_worktree() {
     git(&repository, &["commit", "-qm", "fixture"]);
 
     let nix = tools.join("nix");
-    fs::write(
+    write_executable(
         &nix,
         r#"#!/bin/sh
 set -eu
 printf 'cwd=%s argv=%s\n' "$PWD" "$*" >> "$NATIVE_FLEET_NIX_LOG"
 case "$*" in
-  *'.#nixbot.deployDependencies') printf '{}\n' ;;
-  *'--file '*'hosts.nix') printf '%s\n' '{"hosts":{"app":{"groups":["all"]}},"config":{}}' ;;
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*) printf '%s\n' '{"hosts":{"app":{"groups":["all"]}},"config":{}}' ;;
   'run .#nixbot -- build '*) exit 0 ;;
   *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
 esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&nix, fs::Permissions::from_mode(0o755)).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
         .current_dir(&repository)
         .args([
@@ -243,6 +256,10 @@ esac
             "--no-override",
             "--use-repo-script",
         ])
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_NIX_LOG", &log)
         .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
@@ -290,13 +307,13 @@ fn interrupt_stops_a_running_build_process_group_and_preserves_exit_status() {
     git(&repository, &["commit", "-qm", "fixture"]);
 
     let nix = tools.join("nix");
-    fs::write(
+    write_executable(
         &nix,
         r#"#!/bin/sh
 set -eu
 case "$*" in
-  *'.#nixbot.deployDependencies') printf '{}\n' ;;
-  *'--file '*'hosts.nix') printf '%s\n' '{"hosts":{"app":{"groups":["all"]}},"config":{}}' ;;
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*) printf '%s\n' '{"hosts":{"app":{"groups":["all"]}},"config":{}}' ;;
   *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
   *'.#nixbot.plans.app.drvPath') printf '%s\n' '/nix/store/aaaaaaaa-system.drv' ;;
   'build '*) sleep 30 ;;
@@ -305,7 +322,6 @@ esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&nix, fs::Permissions::from_mode(0o755)).unwrap();
     let started = Instant::now();
     let child = Command::new(env!("CARGO_BIN_EXE_nixbot"))
         .current_dir(&repository)
@@ -370,13 +386,13 @@ fn parallel_build_failure_keeps_the_host_label() {
     git(&repository, &["commit", "-qm", "fixture"]);
 
     let nix = tools.join("nix");
-    fs::write(
+    write_executable(
         &nix,
         r#"#!/bin/sh
 set -eu
 case "$*" in
-  *'.#nixbot.deployDependencies') printf '{}\n' ;;
-  *'--file '*'hosts.nix')
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*)
     printf '%s\n' '{"hosts":{"app":{"groups":["all"]},"db":{"groups":["all"]}},"config":{}}'
     ;;
   *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app","db"]' ;;
@@ -389,7 +405,6 @@ esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&nix, fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
         .current_dir(&repository)
@@ -402,6 +417,10 @@ esac
             "--build-host=local",
             "--build-jobs=2",
         ])
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NIXBOT_BUILD_PLAN_CACHE", "0")
         .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
@@ -444,14 +463,14 @@ fn dry_deploy_builds_the_plan_without_contacting_deploy_targets() {
     git(&repository, &["commit", "-qm", "fixture"]);
 
     let nix = tools.join("nix");
-    fs::write(
+    write_executable(
         &nix,
         r#"#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$NATIVE_FLEET_NIX_LOG"
 case "$*" in
-  *'.#nixbot.deployDependencies') printf '{}\n' ;;
-  *'--file '*'hosts.nix') printf '%s\n' '{"hosts":{"app":{}},"config":{}}' ;;
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*) printf '%s\n' '{"hosts":{"app":{}},"config":{}}' ;;
   *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
   *'.#nixbot.plans.app.drvPath') printf '%s\n' '/nix/store/aaaaaaaa-system.drv' ;;
   build*'/nix/store/aaaaaaaa-system.drv^out'*) printf '%s\n' '/nix/store/bbbbbbbb-system' ;;
@@ -460,10 +479,8 @@ esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&nix, fs::Permissions::from_mode(0o755)).unwrap();
     let ssh = tools.join("ssh");
-    fs::write(&ssh, "#!/bin/sh\necho unexpected-ssh >&2\nexit 99\n").unwrap();
-    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(&ssh, "#!/bin/sh\necho unexpected-ssh >&2\nexit 99\n").unwrap();
 
     let path = format!(
         "{}:{}",
@@ -482,6 +499,10 @@ esac
             "--dry",
         ])
         .env("PATH", path)
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_NIX_LOG", &log)
         .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
@@ -529,14 +550,14 @@ fn remote_build_holds_gc_lease_and_returns_verified_closure_to_local_store() {
     git(&repository, &["commit", "-qm", "fixture"]);
 
     let nix = tools.join("nix");
-    fs::write(
+    write_executable(
         &nix,
         r#"#!/bin/sh
 set -eu
 printf 'argv=%s env=%s\n' "$*" "${NIX_SSHOPTS:-}" >> "$NATIVE_FLEET_NIX_LOG"
 case "$*" in
-  *'.#nixbot.deployDependencies') printf '{}\n' ;;
-  *'--file '*'hosts.nix')
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*)
     printf '%s\n' '{"hosts":{"app":{},"builder":{"target":"builder.invalid","knownHosts":"builder.invalid ssh-ed25519 AAAA"}},"config":{}}'
     ;;
   *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
@@ -547,9 +568,8 @@ esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&nix, fs::Permissions::from_mode(0o755)).unwrap();
     let ssh = tools.join("ssh");
-    fs::write(
+    write_executable(
         &ssh,
         r#"#!/bin/sh
 set -eu
@@ -575,7 +595,6 @@ esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!(
         "{}:{}",
         tools.display(),
@@ -594,6 +613,10 @@ esac
             "builder",
         ])
         .env("PATH", &path)
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_NIX_LOG", &nix_log)
         .env("NATIVE_FLEET_SSH_LOG", &ssh_log)
@@ -658,13 +681,13 @@ fn forced_bootstrap_streams_keys_and_keeps_deploy_on_the_operator_route() {
     git(&repository, &["commit", "-qm", "fixture"]);
 
     let nix = tools.join("nix");
-    fs::write(
+    write_executable(
         &nix,
         r#"#!/bin/sh
 set -eu
 case "$*" in
-  *'.#nixbot.deployDependencies') printf '{}\n' ;;
-  *'--file '*'hosts.nix')
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*)
     printf '%s\n' '{"hosts":{"app":{"target":"host.invalid","knownHosts":"host.invalid ssh-ed25519 AAAA"}},"config":{}}'
     ;;
   *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
@@ -675,16 +698,14 @@ esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&nix, fs::Permissions::from_mode(0o755)).unwrap();
     let ssh_keygen = tools.join("ssh-keygen");
-    fs::write(
+    write_executable(
         &ssh_keygen,
         "#!/bin/sh\nset -eu\nprintf '%s\\n' 'ssh-ed25519 PUBLIC-FIXTURE'\n",
     )
     .unwrap();
-    fs::set_permissions(&ssh_keygen, fs::Permissions::from_mode(0o755)).unwrap();
     let ssh = tools.join("ssh");
-    fs::write(
+    write_executable(
         &ssh,
         r#"#!/bin/sh
 set -eu
@@ -700,7 +721,6 @@ fi
 "#,
     )
     .unwrap();
-    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!(
         "{}:{}",
         tools.display(),
@@ -724,6 +744,10 @@ fi
             operator.to_str().unwrap(),
         ])
         .env("PATH", path)
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_SSH_LOG", &ssh_log)
         .env("NATIVE_FLEET_SSH_COUNT", &ssh_count)
@@ -785,13 +809,13 @@ fn automatic_transport_uses_forced_command_evidence_before_operator_fallback() {
     git(&repository, &["commit", "-qm", "fixture"]);
 
     let nix = tools.join("nix");
-    fs::write(
+    write_executable(
         &nix,
         r#"#!/bin/sh
 set -eu
 case "$*" in
-  *'.#nixbot.deployDependencies') printf '{}\n' ;;
-  *'--file '*'hosts.nix')
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*)
     printf '%s\n' '{"hosts":{"app":{"target":"host.invalid","knownHosts":"host.invalid ssh-ed25519 AAAA"}},"config":{}}'
     ;;
   *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
@@ -802,9 +826,8 @@ esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&nix, fs::Permissions::from_mode(0o755)).unwrap();
     let ssh = tools.join("ssh");
-    fs::write(
+    write_executable(
         &ssh,
         r#"#!/bin/sh
 set -eu
@@ -818,7 +841,6 @@ esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!(
         "{}:{}",
         tools.display(),
@@ -841,6 +863,10 @@ esac
             operator.to_str().unwrap(),
         ])
         .env("PATH", path)
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_SSH_LOG", &ssh_log)
         .env("NIXBOT_TRANSPORT_RETRY_ATTEMPTS", "1")
@@ -907,14 +933,14 @@ fn failed_trimmed_route_retries_the_complete_configured_proxy_chain() {
         r#"{{"hosts":{{"relay":{{"target":"relay.invalid","user":"{current_user}","knownHosts":"relay.invalid ssh-ed25519 AAAA"}},"app":{{"target":"app.invalid","user":"root","proxyJump":"relay","knownHosts":"app.invalid ssh-ed25519 AAAA","groups":["all"]}}}},"config":{{}}}}"#
     );
     let nix = tools.join("nix");
-    fs::write(
+    write_executable(
         &nix,
         format!(
             r#"#!/bin/sh
 set -eu
 case "$*" in
-  *'.#nixbot.deployDependencies') printf '{{}}\n' ;;
-  *'--file '*'hosts.nix') printf '%s\n' '{}';;
+  *'.#nixbot.deployDependencies'*) printf '{{}}\n' ;;
+  *'--file '*'hosts.nix'*) printf '%s\n' '{}';;
   *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app","relay"]' ;;
   *'.#nixbot.plans.app.drvPath') printf '%s\n' '/nix/store/aaaaaaaa-system.drv' ;;
   'build '*) printf '%s\n' '/nix/store/aaaaaaaa-system' ;;
@@ -925,9 +951,8 @@ esac
         ),
     )
     .unwrap();
-    fs::set_permissions(&nix, fs::Permissions::from_mode(0o755)).unwrap();
     let ssh = tools.join("ssh");
-    fs::write(
+    write_executable(
         &ssh,
         r#"#!/bin/sh
 set -eu
@@ -949,7 +974,6 @@ exit 1
 "#,
     )
     .unwrap();
-    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!(
         "{}:{}",
         tools.display(),
@@ -968,6 +992,10 @@ exit 1
             "local",
         ])
         .env("PATH", path)
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_SSH_LOG", &ssh_log)
         .env("NATIVE_FLEET_SSH_COUNT", &ssh_count)
@@ -1034,14 +1062,14 @@ fn local_relay_preserves_primary_target_failure_instead_of_using_operator_fallba
     git(&repository, &["commit", "-qm", "fixture"]);
 
     let nix = tools.join("nix");
-    fs::write(
+    write_executable(
         &nix,
         r#"#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$NATIVE_FLEET_NIX_LOG"
 case "$*" in
-  *'.#nixbot.deployDependencies') printf '{}\n' ;;
-  *'--file '*'hosts.nix')
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*)
     printf '%s\n' '{"hosts":{"app":{"target":"app.invalid","user":"root","operatorUser":"operator","knownHosts":"app.invalid ssh-ed25519 AAAA","groups":["all"]},"builder":{"target":"builder.invalid","knownHosts":"builder.invalid ssh-ed25519 AAAA"}},"config":{}}'
     ;;
   *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
@@ -1052,9 +1080,8 @@ esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&nix, fs::Permissions::from_mode(0o755)).unwrap();
     let ssh = tools.join("ssh");
-    fs::write(
+    write_executable(
         &ssh,
         r#"#!/bin/sh
 set -eu
@@ -1085,7 +1112,6 @@ esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!(
         "{}:{}",
         tools.display(),
@@ -1188,26 +1214,24 @@ fn terraform_phase_uses_native_secret_safe_planner_and_executor() {
     git(&repository, &["commit", "-qm", "fixture"]);
 
     let nix = tools.join("nix");
-    fs::write(
+    write_executable(
         &nix,
         r#"#!/bin/sh
 set -eu
 case "$*" in
-  *'.#nixbot.deployDependencies') printf '{}\n' ;;
-  *'--file '*'hosts.nix') printf '%s\n' '{"hosts":{"app":{}},"config":{}}' ;;
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*) printf '%s\n' '{"hosts":{"app":{}},"config":{}}' ;;
   *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
 esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&nix, fs::Permissions::from_mode(0o755)).unwrap();
     let tofu = tools.join("tofu");
-    fs::write(
+    write_executable(
         &tofu,
         "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$NATIVE_FLEET_TOFU_LOG\"\n",
     )
     .unwrap();
-    fs::set_permissions(&tofu, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!(
         "{}:{}",
         tools.display(),
@@ -1215,15 +1239,12 @@ esac
     );
     let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
         .current_dir(&repository)
-        .args([
-            "tf-dns",
-            "--config",
-            "hosts.nix",
-            "--no-override",
-            "--dry",
-            "--skip-global-lock",
-        ])
+        .args(["tf-dns", "--config", "hosts.nix", "--no-override", "--dry"])
         .env("PATH", path)
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_TOFU_LOG", &tofu_log)
         .env("R2_ACCOUNT_ID", "account")
@@ -1258,4 +1279,331 @@ esac
     );
     assert!(!visible_output.contains("backend-secret-value"));
     assert!(!visible_output.contains("provider-token-value"));
+}
+
+#[test]
+fn required_host_coverage_is_checked_before_native_build_or_host_effects() {
+    let temporary = tempfile::tempdir().unwrap();
+    let repository = temporary.path().join("repository");
+    let tools = temporary.path().join("tools");
+    let log = temporary.path().join("effects.log");
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&tools).unwrap();
+    fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
+    fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    git(&repository, &["config", "user.name", "Fleet Test"]);
+    git(
+        &repository,
+        &["config", "user.email", "fleet@example.invalid"],
+    );
+    git(&repository, &["config", "commit.gpgsign", "false"]);
+    git(&repository, &["add", "."]);
+    git(&repository, &["commit", "-qm", "fixture"]);
+    let nix = tools.join("nix");
+    write_executable(&nix, r#"#!/bin/sh
+set -eu
+printf 'nix:%s\n' "$*" >> "$NATIVE_FLEET_EFFECTS_LOG"
+case "$*" in
+  *'.#custom.deployDependencies'*) printf '%s\n' '{"app":["db"]}' ;;
+  *'--file '*'hosts.nix'*) printf '%s\n' '{"hosts":{"app":{},"db":{},"worker":{}},"config":{"deployDepsKey":"custom.deployDependencies"}}' ;;
+  *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app","db","worker"]' ;;
+  *'.#nixbot.plans.app.drvPath'|*'.#nixbot.plans.db.drvPath') printf '%s\n' '/nix/store/aaaaaaaa-system.drv' ;;
+  'build --print-out-paths /nix/store/aaaaaaaa-system.drv^out') printf '%s\n' '/nix/store/bbbbbbbb-system' ;;
+  *) echo "unexpected effect: $*" >&2; exit 91 ;;
+esac
+"#).unwrap();
+    let ssh = tools.join("ssh");
+    write_executable(
+        &ssh,
+        "#!/bin/sh\nprintf 'ssh:%s\\n' \"$*\" >> \"$NATIVE_FLEET_EFFECTS_LOG\"\nexit 99\n",
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        tools.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    for (selectors, required, dry, succeeds) in [
+        ("app", "app,db", true, true),
+        ("app,-db", "app,db", false, false),
+        ("app", "worker", false, false),
+        ("app", "missing", false, false),
+    ] {
+        fs::write(&log, "").unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_nixbot"));
+        command.current_dir(&repository).args([
+            "deploy",
+            "--hosts",
+            selectors,
+            "--require-hosts",
+            required,
+            "--config",
+            "hosts.nix",
+            "--no-override",
+        ]);
+        if dry {
+            command.arg("--dry");
+        }
+        let output = command
+            .env("PATH", &path)
+            .env(
+                "NIXBOT_HOST_LOCAL_LOCK_PATH",
+                temporary.path().join("host-local.lock.d"),
+            )
+            .env("ABIRD_HOST_MANAGER_NIX", &nix)
+            .env("NATIVE_FLEET_EFFECTS_LOG", &log)
+            .env("NIXBOT_BUILD_PLAN_CACHE", "0")
+            .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
+            .env(
+                "NIXBOT_RUNTIME_FALLBACK_ROOT",
+                temporary.path().join("fallback"),
+            )
+            .env(
+                "NIXBOT_DIAG_KEEP_ROOT",
+                temporary.path().join("diagnostics"),
+            )
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.success(),
+            succeeds,
+            "{selectors}, {required}: {stderr}"
+        );
+        let effects = fs::read_to_string(&log).unwrap();
+        assert!(effects.contains(".#custom.deployDependencies"), "{effects}");
+        assert!(
+            !effects.contains(".#nixbot.deployDependencies"),
+            "{effects}"
+        );
+        assert!(!effects.contains("ssh:"), "{effects}");
+        if !succeeds {
+            assert!(
+                !effects.lines().any(|line| line.starts_with("nix:build ")),
+                "{effects}"
+            );
+            assert!(!effects.contains("nixbot.plans"), "{effects}");
+            assert!(
+                stderr.contains("required") || stderr.contains("Required"),
+                "{stderr}"
+            );
+        } else {
+            assert!(
+                effects.lines().any(|line| line.starts_with("nix:build ")),
+                "{effects}"
+            );
+            assert!(stderr.contains("2 hosts"), "{stderr}");
+        }
+    }
+}
+
+#[test]
+fn native_health_uses_inventory_policy_instead_of_ssh_alias() {
+    use base64::Engine as _;
+
+    let system_failures = [
+        "first.service loaded failed failed first system failure",
+        "second.service loaded failed failed second system failure",
+    ];
+    for (policy_present, user_failure, expected_success) in [
+        (true, false, true),
+        (false, false, false),
+        (true, true, false),
+    ] {
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path().join("repository");
+        let tools = temporary.path().join("tools");
+        let log = temporary.path().join("effects.log");
+        let health = temporary.path().join("health.records");
+        fs::create_dir_all(&repository).unwrap();
+        fs::create_dir_all(&tools).unwrap();
+        fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
+        fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+        run(Command::new("git").args(["init", "-q"]).arg(&repository));
+        git(&repository, &["config", "user.name", "Fleet Test"]);
+        git(
+            &repository,
+            &["config", "user.email", "fleet@example.invalid"],
+        );
+        git(&repository, &["config", "commit.gpgsign", "false"]);
+        git(&repository, &["add", "."]);
+        git(&repository, &["commit", "-qm", "fixture"]);
+
+        let mut inventory = serde_json::json!({
+            "hosts": {"app": {
+                "target": "ssh-alias.invalid",
+                "knownHosts": "ssh-alias.invalid ssh-ed25519 AAAA",
+                "groups": ["all"]
+            }},
+            "config": {}
+        });
+        if policy_present {
+            inventory["hosts"]["app"]["healthCheck"] = serde_json::json!({
+                "ignore": ["first.service", "second.service"]
+            });
+        }
+        // Only the inventory key owns policy. No host entry matches the SSH
+        // hostname, so alias lookup/defaulting cannot satisfy the healthy case.
+        let inventory_file = temporary.path().join("inventory.json");
+        fs::write(&inventory_file, inventory.to_string()).unwrap();
+        let emit =
+            |kind: &str, fields: &[&str]| {
+                format!(
+                    "{}\n",
+                    std::iter::once(kind.to_owned())
+                        .chain(fields.iter().map(|field| {
+                            base64::engine::general_purpose::STANDARD.encode(field)
+                        }))
+                        .collect::<Vec<_>>()
+                        .join("\t")
+                )
+            };
+        let mut records = emit("hold-absent", &[]) + &emit("status-absent", &[]);
+        for failure in &system_failures {
+            records.push_str(&emit("system-failed", &[failure]));
+        }
+        if user_failure {
+            records.push_str(&emit("user", &["app", "1000", "active", "ok", "ok"]));
+            records.push_str(&emit(
+                "user-failed",
+                &[
+                    "app",
+                    "first.service loaded failed failed same-name user failure",
+                ],
+            ));
+        }
+        fs::write(&health, records).unwrap();
+
+        let scripts = [
+            (
+                "nix",
+                r#"#!/bin/sh
+set -eu
+printf 'nix:%s\n' "$*" >> "$NATIVE_HEALTH_LOG"
+case "$*" in
+  '--version') printf 'nix (Nix) fixture\n' ;;
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*) cat "$NATIVE_HEALTH_INVENTORY" ;;
+  *'.#nixbot.plans --apply builtins.attrNames') printf '["app"]\n' ;;
+  *'.#nixbot.plans.app.drvPath') printf '/nix/store/aaaaaaaa-nixos-system-app.drv\n' ;;
+  *'.#nixosConfigurations.app.config.boot.isContainer') printf 'true\n' ;;
+  'build '*) printf '/nix/store/aaaaaaaa-nixos-system-app\n' ;;
+  'copy '*) exit 0 ;;
+  *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
+esac
+"#,
+            ),
+            (
+                "ssh",
+                r#"#!/bin/sh
+set -eu
+printf 'ssh:%s\n' "$*" >> "$NATIVE_HEALTH_LOG"
+payload=$(cat)
+decoded=$(printf '%s\n' "$payload" | {
+  framed=0
+  while IFS= read -r line; do
+    case "$line" in
+      "done <<'NIXBOT_ARGV'") framed=1 ;;
+      NIXBOT_ARGV) framed=0 ;;
+      *)
+        if [ "$framed" = 1 ]; then
+          printf '%s' "$line" | base64 -d
+          printf '\n'
+        fi
+        ;;
+    esac
+  done
+})
+case "$* $decoded" in
+  *'healthcheck_unit()'*)
+    printf 'health-collected\n' >> "$NATIVE_HEALTH_LOG"
+    cat "$NATIVE_HEALTH_RECORDS"
+    ;;
+  *) exit 0 ;;
+esac
+"#,
+            ),
+        ];
+        for (name, script) in scripts {
+            let path = tools.join(name);
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+            write_executable(
+                &path,
+                script.replacen("#!/bin/sh", &format!("#!{shell}"), 1),
+            )
+            .unwrap();
+        }
+        let path = format!(
+            "{}:{}",
+            tools.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_abird-host-manager"))
+            .current_dir(&repository)
+            .args([
+                "fleet",
+                "deploy",
+                "--host",
+                "app",
+                "--config",
+                "hosts.nix",
+                "--no-override",
+                "--build-host",
+                "local",
+                "--no-rollback",
+                "--force",
+                "--verbose",
+            ])
+            .env("PATH", path)
+            .env("ABIRD_HOST_MANAGER_NIX", tools.join("nix"))
+            .env("NATIVE_HEALTH_LOG", &log)
+            .env("NATIVE_HEALTH_INVENTORY", &inventory_file)
+            .env("NATIVE_HEALTH_RECORDS", &health)
+            .env("NIXBOT_BUILD_PLAN_CACHE", "0")
+            .env("NIXBOT_LOCAL_SELF_TARGET", "off")
+            .env(
+                "NIXBOT_HOST_LOCAL_LOCK_PATH",
+                temporary.path().join("host-local.lock.d"),
+            )
+            .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
+            .env(
+                "NIXBOT_RUNTIME_FALLBACK_ROOT",
+                temporary.path().join("fallback"),
+            )
+            .env(
+                "NIXBOT_DIAG_KEEP_ROOT",
+                temporary.path().join("diagnostics"),
+            )
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.success(),
+            expected_success,
+            "policy={policy_present} user_failure={user_failure}: {stderr}"
+        );
+        let effects = fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            effects
+                .lines()
+                .filter(|line| *line == "health-collected")
+                .count(),
+            1,
+            "{effects}"
+        );
+        assert!(effects.contains("root@ssh-alias.invalid"), "{effects}");
+        if !policy_present {
+            for failure in &system_failures {
+                assert!(stderr.contains(failure), "{stderr}");
+            }
+        }
+        if user_failure {
+            assert!(stderr.contains("same-name user failure"), "{stderr}");
+            assert!(
+                stderr.contains("post-switch service health failed"),
+                "{stderr}"
+            );
+        }
+    }
 }

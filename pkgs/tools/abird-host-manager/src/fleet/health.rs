@@ -325,7 +325,15 @@ pub fn validate_durable_holds(
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DeferredResource {
     pub resource: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projection_id: Option<String>,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     pub generation: u64,
     pub isolated: bool,
 }
@@ -339,6 +347,8 @@ pub struct DeferredResourceSet {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentStatusResult {
     pub status_schema_version: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configuration_revision: Option<String>,
     pub deferred_resources: Option<DeferredResourceSet>,
 }
 
@@ -349,8 +359,10 @@ pub struct AgentStatusResponse {
     pub result: AgentStatusResult,
 }
 
-/// Validate and normalize schema-v2 deferred resources. Missing agents and
-/// pre-schema responses are compatible legacy states.
+/// Validate schema-v2/v3 deferred resources without weakening legacy isolation.
+/// Schema v3 binds status to a configuration and each deferral to its immutable
+/// transaction/projection identity. Missing agents and pre-schema responses
+/// remain compatible legacy states.
 pub fn validate_deferred_resources(
     response: Option<&AgentStatusResponse>,
 ) -> Result<Vec<DeferredResource>, HealthValidationError> {
@@ -364,13 +376,45 @@ pub fn validate_deferred_resources(
     let Some(version) = response.result.status_schema_version else {
         return Ok(Vec::new());
     };
-    if version != 2 {
+    if !matches!(version, 2 | 3) {
+        return Err(HealthValidationError::InvalidDeferredResourceResponse);
+    }
+    if version == 3
+        && response
+            .result
+            .configuration_revision
+            .as_deref()
+            .is_none_or(|value| value.is_empty())
+    {
         return Err(HealthValidationError::InvalidDeferredResourceResponse);
     }
     let Some(resources) = &response.result.deferred_resources else {
         return Err(HealthValidationError::InvalidDeferredResourceResponse);
     };
     if resources.count != resources.resources.len() {
+        return Err(HealthValidationError::InvalidDeferredResourceResponse);
+    }
+    let unique_resources = resources
+        .resources
+        .iter()
+        .map(|resource| resource.resource.as_str())
+        .collect::<BTreeSet<_>>();
+    if unique_resources.len() != resources.resources.len() {
+        return Err(HealthValidationError::InvalidDeferredResourceResponse);
+    }
+    if version == 3
+        && resources.resources.iter().any(|resource| {
+            resource.state.is_none()
+                || resource
+                    .transaction_id
+                    .as_deref()
+                    .is_none_or(|value| value.is_empty())
+                || resource
+                    .projection_id
+                    .as_deref()
+                    .is_none_or(|value| value.is_empty())
+        })
+    {
         return Err(HealthValidationError::InvalidDeferredResourceResponse);
     }
     if resources
@@ -389,7 +433,6 @@ pub fn validate_deferred_resources(
             right.generation,
         ))
     });
-    resources.dedup();
     Ok(resources)
 }
 

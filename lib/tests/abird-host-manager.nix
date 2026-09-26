@@ -44,7 +44,7 @@
           projection_sha256 = builtins.concatStringsSep "" (lib.replicate 64 "c");
         }
       ];
-      servicePlacements = {
+      runtimeProjectionCloseouts = {
         controller_reconcile_exclusions = ["move-local"];
         closeouts = {
           move-zulip = {

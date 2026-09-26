@@ -1,4 +1,4 @@
-import ./pvl-registry.nix {
+import ../registry.nix {
   stackName = "pvl";
   env = "prod";
   domain = "p7log.com";

@@ -528,10 +528,13 @@ pub struct TransactionSpec {
     /// Stable declarative namespace for projection effects, when applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declarative_scope: Option<String>,
+    /// Repository family that owns manager-written Nix documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_owner: Option<String>,
     pub items: Vec<MoveItem>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub consistency_groups: Vec<ConsistencyGroup>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub activation_waves: Vec<ActivationWave>,
 }
 
@@ -546,6 +549,7 @@ impl TransactionSpec {
             schema_version: TRANSACTION_SPEC_SCHEMA_VERSION,
             id: transaction_id(caller_id)?,
             declarative_scope: None,
+            repository_owner: None,
             items,
             consistency_groups,
             activation_waves,
@@ -564,6 +568,12 @@ impl TransactionSpec {
         validate_workflow_id(&self.id)?;
         if let Some(scope) = &self.declarative_scope {
             validate_name("declarative scope", scope)?;
+        }
+        if let Some(owner) = &self.repository_owner {
+            validate_name("repository owner", owner)?;
+        }
+        if self.declarative_scope.is_some() != self.repository_owner.is_some() {
+            bail!("declarative scope and repository owner must be specified together");
         }
         if self.items.is_empty() {
             bail!("transaction spec must contain at least one move item");
@@ -1296,6 +1306,7 @@ mod tests {
             schema_version: TRANSACTION_SPEC_SCHEMA_VERSION,
             id: "move-test".to_owned(),
             declarative_scope: None,
+            repository_owner: None,
             items,
             consistency_groups: Vec::new(),
             activation_waves: Vec::new(),
@@ -1360,6 +1371,20 @@ mod tests {
             .unwrap()
             .insert("unknown".to_owned(), serde_json::Value::Bool(true));
         assert!(serde_json::from_value::<TransactionSpec>(value).is_err());
+    }
+
+    #[test]
+    fn native_move_identity_serializes_empty_coordination_sets_explicitly() {
+        let value = serde_json::to_value(transaction(vec![service_move(
+            "zulip",
+            "zulip",
+            "corp",
+            "zulip-new",
+        )]))
+        .unwrap();
+
+        assert_eq!(value["consistency_groups"], serde_json::json!([]));
+        assert_eq!(value["activation_waves"], serde_json::json!([]));
     }
 
     #[test]

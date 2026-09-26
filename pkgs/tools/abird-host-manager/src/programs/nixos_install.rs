@@ -48,11 +48,11 @@ impl NixosInstall {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     use tempfile::tempdir;
 
     use super::*;
+    use crate::test_support::write_executable;
 
     #[test]
     fn installs_the_exact_prebuilt_system_without_reevaluating_a_flake() {
@@ -60,12 +60,11 @@ mod tests {
         let log = temporary.path().join("argv");
         let privilege = temporary.path().join("privilege");
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
-        fs::write(
+        write_executable(
             &privilege,
             format!("#!{shell}\nprintf '%s\\n' \"$@\" > '{}'\n", log.display()),
         )
         .unwrap();
-        fs::set_permissions(&privilege, fs::Permissions::from_mode(0o700)).unwrap();
 
         NixosInstall::new("/nix/store/install/bin/nixos-install")
             .unwrap()

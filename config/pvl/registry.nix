@@ -3,8 +3,8 @@
   secretNamespace ? "pvl",
   ...
 } @ stack: let
-  serviceRegistryLib = import ../flake/service-registry.nix;
-  mkStack = import ./pvl-registry.nix;
+  serviceRegistryLib = import ../../lib/flake/service-registry.nix;
+  mkStack = import ./registry.nix;
   subDomain = subdomain: "${subdomain}.${domain}";
   secretsBase = ../../data/secrets + "/${secretNamespace}";
   secretsLabel = "data/secrets/${secretNamespace}";

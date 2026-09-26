@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use abird_host_agent::{cmd, command::CommandSpec};
+use abird_host_agent::command::CommandSpec;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
+
+use super::without_git_repository_environment;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileBinaryCache {
@@ -64,6 +66,10 @@ impl Nix {
         Ok(Self { executable })
     }
 
+    fn command(&self) -> CommandSpec {
+        without_git_repository_environment(CommandSpec::new(&self.executable))
+    }
+
     pub fn build_output(&self, repository: &Path, installable: &str) -> Result<PathBuf> {
         Ok(self.build_store_path(repository, installable, None)?.0)
     }
@@ -74,11 +80,13 @@ impl Nix {
         installable: &str,
         cache: Option<&FileBinaryCache>,
     ) -> Result<StorePath> {
-        let mut command = CommandSpec::new(&self.executable)
-            .arg("build")
-            .arg(installable)
-            .arg("--no-link")
-            .arg("--print-out-paths");
+        let mut command = immutable_flake_arguments(
+            self.command()
+                .arg("build")
+                .arg(installable)
+                .arg("--no-link")
+                .arg("--print-out-paths"),
+        );
         if let Some(cache) = cache {
             command = offline_cache_arguments(command, cache);
         }
@@ -97,7 +105,11 @@ impl Nix {
     }
 
     pub fn eval_file_json(&self, file: &Path) -> Result<Value> {
-        let result = cmd!(&self.executable, "eval", "--json", "--file", file).output()?;
+        let result = self
+            .command()
+            .args(["eval", "--json", "--file"])
+            .arg(file)
+            .output()?;
         if !result.success {
             bail!("Nix file evaluation failed: {}", result.stderr);
         }
@@ -105,7 +117,8 @@ impl Nix {
     }
 
     pub fn eval_file_apply_json(&self, file: &Path, expression: &str) -> Result<Value> {
-        let result = CommandSpec::new(&self.executable)
+        let result = self
+            .command()
             .arg("eval")
             .arg("--json")
             .arg("--file")
@@ -128,14 +141,13 @@ impl Nix {
         installable: &str,
         expression: &str,
     ) -> Result<Value> {
-        let result = cmd!(
-            &self.executable,
+        let result = immutable_flake_arguments(self.command().args([
             "eval",
             "--json",
             installable,
             "--apply",
-            expression
-        )
+            expression,
+        ]))
         .current_dir(repository)
         .output()?;
         if !result.success {
@@ -148,15 +160,10 @@ impl Nix {
     }
 
     pub fn eval_installable_json(&self, repository: &Path, installable: &str) -> Result<Value> {
-        let result = cmd!(
-            &self.executable,
-            "eval",
-            "--json",
-            "--no-write-lock-file",
-            installable
-        )
-        .current_dir(repository)
-        .output()?;
+        let result =
+            immutable_flake_arguments(self.command().args(["eval", "--json", installable]))
+                .current_dir(repository)
+                .output()?;
         if !result.success {
             bail!("Nix installable evaluation failed: {}", result.stderr);
         }
@@ -178,13 +185,30 @@ impl Nix {
         Ok(value)
     }
 
+    pub fn eval_inventory_file_with_overlay_json(
+        &self,
+        file: &Path,
+        overlay: Option<&Path>,
+        repository_config: Option<&Path>,
+    ) -> Result<Value> {
+        let apply = inventory_apply_expression(repository_config)?;
+        let mut value = self.eval_file_apply_json(file, &apply)?;
+        if let Some(overlay) = overlay {
+            merge_json(&mut value, self.eval_file_apply_json(overlay, &apply)?);
+        }
+        Ok(value)
+    }
+
     pub fn build_link(&self, repository: &Path, installable: &str, out_link: &Path) -> Result<()> {
         let link = out_link
             .to_str()
             .context("Nix output link is not valid UTF-8")?;
-        cmd!(&self.executable, "build", installable, "--out-link", link)
-            .current_dir(repository)
-            .status_inherited()
+        immutable_flake_arguments(
+            self.command()
+                .args(["build", installable, "--out-link", link]),
+        )
+        .current_dir(repository)
+        .status_inherited()
     }
 
     pub fn copy_to_directory(&self, store_path: &Path, destination: &Path) -> Result<()> {
@@ -193,14 +217,13 @@ impl Nix {
     }
 
     pub fn archive_flake(&self, repository: &Path, destination: &FileBinaryCache) -> Result<()> {
-        cmd!(
-            &self.executable,
+        immutable_flake_arguments(self.command().args([
             "flake",
             "archive",
             "--to",
             destination.url(),
-            "."
-        )
+            ".",
+        ]))
         .current_dir(repository)
         .status_inherited()
     }
@@ -213,13 +236,33 @@ impl Nix {
         if store_paths.is_empty() {
             bail!("at least one store path is required for Nix copy");
         }
-        CommandSpec::new(&self.executable)
+        self.command()
             .arg("copy")
             .arg("--to")
             .arg(destination.url())
             .args(store_paths.iter().map(StorePath::as_path))
             .status_inherited()
     }
+}
+
+fn immutable_flake_arguments(command: CommandSpec) -> CommandSpec {
+    command.args(["--no-update-lock-file", "--no-write-lock-file"])
+}
+
+fn inventory_apply_expression(repository_config: Option<&Path>) -> Result<String> {
+    let arguments = match repository_config {
+        Some(path) => {
+            let path = path
+                .to_str()
+                .context("repository config path is not valid UTF-8")?;
+            let literal = serde_json::to_string(path).context("encode repository config path")?;
+            format!("{{ stacks = (import (builtins.toPath {literal})).stacks; }}")
+        }
+        None => "{}".to_owned(),
+    };
+    Ok(format!(
+        "inventory: if builtins.isFunction inventory then inventory {arguments} else inventory"
+    ))
 }
 
 fn offline_cache_arguments(command: CommandSpec, cache: &FileBinaryCache) -> CommandSpec {
@@ -255,22 +298,15 @@ fn merge_json(base: &mut Value, overlay: Value) {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
 
     use serde_json::json;
     use tempfile::tempdir;
 
     use super::*;
+    use crate::test_support::write_executable;
 
     fn executable(path: &Path, body: String) {
-        let staging = path.with_extension("tmp");
-        let mut file = fs::File::create(&staging).unwrap();
-        file.write_all(body.as_bytes()).unwrap();
-        file.sync_all().unwrap();
-        drop(file);
-        fs::set_permissions(&staging, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::rename(staging, path).unwrap();
+        write_executable(path, body).unwrap();
     }
 
     #[test]
@@ -297,6 +333,15 @@ mod tests {
                 }},
                 "hosts": {"parent": {"target": "10.0.0.1", "proxyCommand": null}}
             })
+        );
+    }
+
+    #[test]
+    fn every_nix_command_ignores_inherited_git_selectors() {
+        let nix = Nix::new("/bin/true").unwrap();
+        assert_eq!(
+            nix.command().removed_environment(),
+            super::super::GIT_REPOSITORY_ENVIRONMENT
         );
     }
 
@@ -328,6 +373,43 @@ mod tests {
         assert!(arguments.contains("file:///var/cache/offline"));
         assert!(arguments.contains("fallback"));
         assert!(arguments.contains("false"));
+    }
+
+    #[test]
+    fn every_repository_flake_command_uses_the_committed_lock() {
+        let temporary = tempdir().unwrap();
+        let log = temporary.path().join("argv");
+        let program = temporary.path().join("nix");
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+        executable(
+            &program,
+            format!(
+                "#!{shell}\nprintf '%s ' \"$@\" >> {log}\nprintf '\\n' >> {log}\ncase \"$1\" in\n  build) printf '/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system\\n' ;;\n  eval) printf '{{\"ok\":true}}\\n' ;;\nesac\n",
+                log = log.display(),
+            ),
+        );
+        let nix = Nix::new(program).unwrap();
+        nix.build_store_path(temporary.path(), ".#system", None)
+            .unwrap();
+        nix.eval_installable_json(temporary.path(), ".#inventory")
+            .unwrap();
+        nix.eval_installable_apply_json(temporary.path(), ".#inventory", "x: x")
+            .unwrap();
+        nix.build_link(
+            temporary.path(),
+            ".#system",
+            &temporary.path().join("result"),
+        )
+        .unwrap();
+        nix.archive_flake(
+            temporary.path(),
+            &FileBinaryCache::new(temporary.path().join("cache")).unwrap(),
+        )
+        .unwrap();
+
+        let invocations = fs::read_to_string(log).unwrap();
+        assert_eq!(invocations.matches("--no-update-lock-file").count(), 5);
+        assert_eq!(invocations.matches("--no-write-lock-file").count(), 5);
     }
 
     #[test]
@@ -365,6 +447,77 @@ mod tests {
         assert_eq!(
             arguments.lines().filter(|line| *line == expression).count(),
             1
+        );
+    }
+
+    #[test]
+    fn inventory_file_evaluation_supplies_repository_stacks_to_functions() {
+        let temporary = tempdir().unwrap();
+        let log = temporary.path().join("argv");
+        let program = temporary.path().join("nix");
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+        executable(
+            &program,
+            format!(
+                "#!{shell}\nprintf '%s\\n' \"$@\" > {}\nprintf '{{\"ok\":true}}\\n'\n",
+                log.display()
+            ),
+        );
+
+        let value = Nix::new(program)
+            .unwrap()
+            .eval_inventory_file_with_overlay_json(
+                Path::new("/tmp/inventory.nix"),
+                None,
+                Some(Path::new("/repo/config")),
+            )
+            .unwrap();
+
+        assert_eq!(value, json!({"ok": true}));
+        let arguments = fs::read_to_string(log).unwrap();
+        assert!(arguments.contains("--apply\n"));
+        assert!(arguments.contains("builtins.isFunction inventory"));
+        assert!(arguments.contains("(import (builtins.toPath \"/repo/config\")).stacks"));
+    }
+
+    #[test]
+    fn installable_evaluation_ignores_inherited_git_selectors() {
+        const CHILD: &str = "ABIRD_TEST_NIX_ENVIRONMENT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args([
+                "--exact",
+                "programs::nix::tests::installable_evaluation_ignores_inherited_git_selectors",
+                "--nocapture",
+            ]);
+            child.env(CHILD, "1");
+            for variable in super::super::GIT_REPOSITORY_ENVIRONMENT {
+                child.env(variable, "/incorrect/checkout");
+            }
+            assert!(child.status().unwrap().success());
+            return;
+        }
+        let temporary = tempdir().unwrap();
+        let program = temporary.path().join("nix");
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+        let checks = super::super::GIT_REPOSITORY_ENVIRONMENT
+            .iter()
+            .map(|variable| format!("test -z \"${{{variable}+x}}\" || exit 23\n"))
+            .collect::<String>();
+        executable(
+            &program,
+            format!("#!{shell}\n{checks}printf '{{\"ok\":true}}\\n'\n"),
+        );
+        let nix = Nix::new(program).unwrap();
+        assert_eq!(
+            nix.eval_installable_json(temporary.path(), ".#inventory")
+                .unwrap(),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            nix.eval_installable_apply_json(temporary.path(), ".#inventory", "x: x")
+                .unwrap(),
+            json!({"ok": true})
         );
     }
 

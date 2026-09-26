@@ -1,6 +1,7 @@
 let
   secretsLib = import ../../lib/flake/secrets.nix;
-  userdata = (import ../../lib/stacks).all.users;
+  repositoryConfig = import ../../config;
+  userdata = repositoryConfig.shared.accounts.users;
   admins = userdata.pvl.sshKeys;
   nixbotKeys = userdata.nixbot.sshKeys;
   adminsWithNixbot = admins ++ nixbotKeys;

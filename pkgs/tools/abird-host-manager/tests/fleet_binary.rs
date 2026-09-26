@@ -1,15 +1,17 @@
 use std::fs::{self, OpenOptions};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use abird_host_manager::fleet::forced_command::{ARGUMENT_PREFIX, encode_arguments};
 use abird_host_manager::fleet::maintenance::REQUIRED_PROGRAMS;
 
+#[path = "../src/test_support.rs"]
+mod test_support;
+use test_support::write_executable;
+
 fn executable(path: &std::path::Path, contents: &str) {
-    fs::write(path, contents).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    write_executable(path, contents).unwrap();
 }
 
 fn fixture_repository(path: &std::path::Path) {
@@ -48,8 +50,8 @@ fn both_binary_surfaces_configure_github_nix_access_before_execution() {
 set -eu
 printf '%s\n---\n%s\n' "$GITHUB_TOKEN" "$NIX_CONFIG" > "$TOKEN_LOG"
 case "$*" in
-  'eval --json --file '*'/hosts.nix') printf '%s\n' '{"hosts":{"app":{}},"config":{}}' ;;
-  'eval --json --no-write-lock-file .#nixbot.deployDependencies') printf '{}\n' ;;
+  'eval --json --file '*'/hosts.nix --apply inventory: if builtins.isFunction inventory then inventory {} else inventory') printf '%s\n' '{"hosts":{"app":{}},"config":{}}' ;;
+  'eval --json .#nixbot.deployDependencies --no-update-lock-file --no-write-lock-file') printf '{}\n' ;;
   *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
 esac
 "#,
@@ -108,10 +110,10 @@ fn list_groups_evaluates_the_nix_inventory_and_renders_stable_members() {
         r#"#!/bin/sh
 set -eu
 case "$*" in
-  'eval --json --file '*'/hosts.nix')
+  'eval --json --file '*'/hosts.nix --apply inventory: if builtins.isFunction inventory then inventory {} else inventory')
     printf '%s\n' '{"hosts":{"app":{"target":"10.0.0.2","groups":["prod"]},"db":{"target":"10.0.0.3","groups":["prod","data"]},"ungrouped":{"target":"10.0.0.4"}},"config":{}}'
     ;;
-  'eval --json --no-write-lock-file .#nixbot.deployDependencies') printf '{}\n' ;;
+  'eval --json .#nixbot.deployDependencies --no-update-lock-file --no-write-lock-file') printf '{}\n' ;;
   *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
 esac
 "#,
@@ -166,10 +168,10 @@ fn list_hosts_uses_config_defaults_selection_dependencies_and_exclusions() {
         r#"#!/bin/sh
 set -eu
 case "$*" in
-  'eval --json --file '*'/hosts.nix')
+  'eval --json --file '*'/hosts.nix --apply inventory: if builtins.isFunction inventory then inventory {} else inventory')
     printf '%s\n' '{"hosts":{"parent":{"target":"10.0.0.1","groups":["prod"]},"app":{"target":"10.0.0.2","groups":["prod"],"parent":"parent"},"other":{"target":"10.0.0.3","groups":["other"]}},"config":{"defaultGroup":"prod","defaultHosts":"app"}}'
     ;;
-  'eval --json --no-write-lock-file .#nixbot.deployDependencies') printf '{}\n' ;;
+  'eval --json .#nixbot.deployDependencies --no-update-lock-file --no-write-lock-file') printf '{}\n' ;;
   *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
 esac
 "#,
@@ -276,6 +278,7 @@ fn compatibility_clean_action_is_bounded_to_configured_roots() {
     let runtime = temporary.path().join("runtime");
     let fallback = temporary.path().join("fallback");
     let diagnostic = temporary.path().join("diagnostic");
+    let host_local_lock = temporary.path().join("host-local.lock.d");
     fs::create_dir_all(runtime.join("run-current")).unwrap();
     fs::create_dir_all(fallback.join("run-current")).unwrap();
     fs::create_dir_all(diagnostic.join("diag-current")).unwrap();
@@ -285,6 +288,7 @@ fn compatibility_clean_action_is_bounded_to_configured_roots() {
         .env("NIXBOT_RUNTIME_WORK_ROOT", &runtime)
         .env("NIXBOT_RUNTIME_FALLBACK_ROOT", &fallback)
         .env("NIXBOT_DIAG_KEEP_ROOT", &diagnostic)
+        .env("NIXBOT_HOST_LOCAL_LOCK_PATH", &host_local_lock)
         .output()
         .unwrap();
     assert!(dry.status.success());
@@ -313,6 +317,7 @@ fn compatibility_clean_action_is_bounded_to_configured_roots() {
         .env("NIXBOT_RUNTIME_WORK_ROOT", &runtime)
         .env("NIXBOT_RUNTIME_FALLBACK_ROOT", &fallback)
         .env("NIXBOT_DIAG_KEEP_ROOT", &diagnostic)
+        .env("NIXBOT_HOST_LOCAL_LOCK_PATH", &host_local_lock)
         .output()
         .unwrap();
     assert!(applied.status.success());

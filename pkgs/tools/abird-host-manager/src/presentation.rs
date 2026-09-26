@@ -149,11 +149,7 @@ fn render_workflow(presentation: &CommandPresentation, value: &Value) -> String 
     let transaction = value
         .get("transaction")
         .filter(|transaction| transaction.is_object())
-        .or_else(|| {
-            (value.get("lifecycle_state").is_some()
-                || (value.get("spec").is_some() && value.get("phase").is_some()))
-            .then_some(value)
-        });
+        .or_else(|| value.get("lifecycle_state").is_some().then_some(value));
     let Some(transaction) = transaction else {
         return render_generic(presentation, value);
     };
@@ -176,7 +172,6 @@ fn render_workflow(presentation: &CommandPresentation, value: &Value) -> String 
     let state = transaction
         .get("lifecycle_state")
         .and_then(Value::as_str)
-        .or_else(|| transaction.get("phase").and_then(Value::as_str))
         .unwrap_or("unknown");
 
     writeln!(output, "ID      {id}").unwrap();
@@ -244,7 +239,6 @@ fn render_workflow_list(presentation: &CommandPresentation, value: &Value) -> St
         let state = transaction
             .get("lifecycle_state")
             .and_then(Value::as_str)
-            .or_else(|| transaction.get("phase").and_then(Value::as_str))
             .unwrap_or("unknown");
         let count = transaction
             .pointer("/spec/items")
@@ -939,17 +933,16 @@ fn next_lifecycle_command(state: &str, id: &str, local: bool) -> Option<String> 
 
 fn state_summary(state: &str) -> &str {
     match state {
-        "source_active" | "planned" => "source active",
-        "moved" | "seeded" => "source active · target held · warm seed verified",
+        "source_active" => "source active",
+        "moved" => "source active · target held · warm seed verified",
         "preparing" => "both sides held · synchronizing data",
-        "prepared" | "verified" => "both sides held · data synchronized and verified",
+        "prepared" => "both sides held · data synchronized and verified",
         "running" => "source held · activating and verifying target",
-        "target_active" | "cutover" => "target active · traffic on target · source held",
+        "target_active" => "target active · traffic on target · source held",
         "closing_complete" => "completing on target · inactive hold retained",
         "closing_rollback" => "rolling back to source · inactive hold retained",
-        "rolled_back" => "source active · target held · rollback complete; close pending",
         "closed_on_target" => "target canonical · migration closed",
-        "closed_on_source" | "closed" => "source canonical · migration closed",
+        "closed_on_source" => "source canonical · migration closed",
         _ => state,
     }
 }
@@ -1144,21 +1137,6 @@ mod tests {
             output.contains("Next    abird-host-manager --local transaction prepare move-local")
         );
         assert!(!output.contains("✓ Moved service zulip"));
-    }
-
-    #[test]
-    fn legacy_workflow_without_lifecycle_state_keeps_the_workflow_view() {
-        let output = render(
-            &CommandPresentation::inspect("Transaction move-legacy", PresentationKind::Workflow),
-            &json!({
-                "spec": {"id": "move-legacy", "items": []},
-                "phase": "prepared",
-                "command_executions": []
-            }),
-        );
-        assert!(output.starts_with("Transaction move-legacy\n\n"));
-        assert!(output.contains("ID      move-legacy"));
-        assert!(output.contains("State   both sides held"));
     }
 
     #[test]

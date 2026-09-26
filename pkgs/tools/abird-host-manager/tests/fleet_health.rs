@@ -254,6 +254,7 @@ fn legacy_agent_without_deferral_schema_is_accepted() {
         operation: "agent_status".to_owned(),
         result: AgentStatusResult {
             status_schema_version: None,
+            configuration_revision: None,
             deferred_resources: None,
         },
     };
@@ -311,7 +312,11 @@ fn host_agent_wire_responses_deserialize_into_validation_types() {
 fn schema_two_deferred_resources_require_exact_count_and_isolation() {
     let resource = DeferredResource {
         resource: "service:zulip".to_owned(),
+        state: None,
+        transaction_id: None,
+        projection_id: None,
         reason: "activation_job_specification_conflict".to_owned(),
+        detail: Some("retained diagnostic context".to_owned()),
         generation: 3,
         isolated: true,
     };
@@ -320,6 +325,7 @@ fn schema_two_deferred_resources_require_exact_count_and_isolation() {
         operation: "agent_status".to_owned(),
         result: AgentStatusResult {
             status_schema_version: Some(2),
+            configuration_revision: None,
             deferred_resources: Some(DeferredResourceSet {
                 count: 1,
                 resources: vec![resource.clone()],
@@ -350,6 +356,136 @@ fn schema_two_deferred_resources_require_exact_count_and_isolation() {
         validate_deferred_resources(Some(&unsafe_response)),
         Err(HealthValidationError::UnsafeDeferredResource)
     );
+}
+
+fn schema_three_status() -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "operation": "agent_status",
+        "result": {
+            "status_schema_version": 3,
+            "configuration_revision": "0123456789abcdef",
+            "deferred_resources": {
+                "count": 1,
+                "resources": [{
+                    "resource": "service:zulip",
+                    "state": "active",
+                    "transaction_id": "zulip-tearoff--item-001",
+                    "projection_id": "zulip-tearoff",
+                    "generation": 3,
+                    "reason": "activation_job_specification_conflict",
+                    "isolated": true
+                }]
+            }
+        }
+    })
+}
+
+#[test]
+fn schema_three_accepts_bound_status_with_and_without_deferrals() {
+    let wire = schema_three_status();
+    let response: AgentStatusResponse = serde_json::from_value(wire.clone()).unwrap();
+    let validated = validate_deferred_resources(Some(&response)).unwrap();
+    assert_eq!(validated.len(), 1);
+    assert_eq!(
+        validated[0].transaction_id.as_deref(),
+        Some("zulip-tearoff--item-001")
+    );
+    assert_eq!(validated[0].projection_id.as_deref(), Some("zulip-tearoff"));
+    assert_eq!(validated[0].state.as_deref(), Some("active"));
+
+    let mut empty = wire;
+    empty["result"]["deferred_resources"] = serde_json::json!({"count":0,"resources":[]});
+    let response = serde_json::from_value(empty).unwrap();
+    assert!(
+        validate_deferred_resources(Some(&response))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn schema_three_rejects_duplicate_resource_evidence() {
+    let mut wire = schema_three_status();
+    let duplicate = wire["result"]["deferred_resources"]["resources"][0].clone();
+    wire["result"]["deferred_resources"]["resources"] =
+        serde_json::json!([duplicate.clone(), duplicate]);
+    wire["result"]["deferred_resources"]["count"] = serde_json::json!(2);
+    let response = serde_json::from_value(wire).unwrap();
+    assert_eq!(
+        validate_deferred_resources(Some(&response)),
+        Err(HealthValidationError::InvalidDeferredResourceResponse)
+    );
+}
+
+#[test]
+fn schema_three_requires_revision_and_each_deferral_identity() {
+    for field in [
+        "configuration_revision",
+        "transaction_id",
+        "projection_id",
+        "state",
+    ] {
+        for value in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!("")),
+        ] {
+            // State is an existing string field, not an immutable identity.
+            if field == "state" && value == Some(serde_json::json!("")) {
+                continue;
+            }
+            let mut wire = schema_three_status();
+            let object = if field == "configuration_revision" {
+                wire["result"].as_object_mut().unwrap()
+            } else {
+                wire["result"]["deferred_resources"]["resources"][0]
+                    .as_object_mut()
+                    .unwrap()
+            };
+            if let Some(value) = value {
+                object.insert(field.to_owned(), value);
+            } else {
+                object.remove(field);
+            }
+            let response = serde_json::from_value(wire).unwrap();
+            assert_eq!(
+                validate_deferred_resources(Some(&response)),
+                Err(HealthValidationError::InvalidDeferredResourceResponse),
+                "{field}"
+            );
+        }
+    }
+}
+
+#[test]
+fn schema_three_preserves_exact_count_isolation_and_unknown_schema_refusal() {
+    for (field, value, expected) in [
+        (
+            "count",
+            serde_json::json!(2),
+            HealthValidationError::InvalidDeferredResourceResponse,
+        ),
+        (
+            "isolated",
+            serde_json::json!(false),
+            HealthValidationError::UnsafeDeferredResource,
+        ),
+        (
+            "version",
+            serde_json::json!(4),
+            HealthValidationError::InvalidDeferredResourceResponse,
+        ),
+    ] {
+        let mut wire = schema_three_status();
+        match field {
+            "count" => wire["result"]["deferred_resources"]["count"] = value,
+            "isolated" => wire["result"]["deferred_resources"]["resources"][0]["isolated"] = value,
+            _ => wire["result"]["status_schema_version"] = value,
+        }
+        let response = serde_json::from_value(wire).unwrap();
+        assert_eq!(validate_deferred_resources(Some(&response)), Err(expected));
+    }
 }
 
 #[test]

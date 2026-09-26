@@ -1,6 +1,6 @@
 {
   addressBases,
-  profiles,
+  definitions,
   registryFor,
   preferredServiceFamily ? "ipv4",
 }: let
@@ -72,30 +72,30 @@
     then "${addressBases.ipv6}:${toString subnetId}::/64"
     else throw "Unsupported fabric address family ${family}";
 
-  profileNames = builtins.attrNames profiles;
-  firstProfile =
-    if profileNames == []
-    then throw "A fabric stack requires at least one profile"
-    else profiles.${builtins.head profileNames};
-  roleDefinitionsFor = profile:
+  definitionNames = builtins.attrNames definitions;
+  firstDefinition =
+    if definitionNames == []
+    then throw "A fabric stack requires at least one stack definition"
+    else definitions.${builtins.head definitionNames};
+  roleDefinitionsFor = definition:
     builtins.mapAttrs (_role: spec: {
       addressId = toString spec.octet;
       host = spec.host;
     })
-    (registryFor profile).roles;
-  roles = roleDefinitionsFor firstProfile;
+    (registryFor definition).roles;
+  roles = roleDefinitionsFor firstDefinition;
   consistentRoleDefinitions = builtins.all (
-    profile: roleDefinitionsFor profile == roles
-  ) (builtins.attrValues profiles);
+    definition: roleDefinitionsFor definition == roles
+  ) (builtins.attrValues definitions);
 
-  primaryFabricName = profile: profile.network.name or profile.stackName;
-  endpointFabricName = profile: group:
-    if profile.endpointGroups.${group} ? network
-    then profile.endpointGroups.${group}.network.name or "${profile.stackName}-${group}"
-    else primaryFabricName profile;
+  primaryFabricName = definition: definition.network.name or definition.stackName;
+  endpointFabricName = definition: group:
+    if definition.endpointGroups.${group} ? network
+    then definition.endpointGroups.${group}.network.name or "${definition.stackName}-${group}"
+    else primaryFabricName definition;
   endpointMetadata = endpoint: builtins.removeAttrs endpoint ["network"];
-  primaryEndpoint = profile:
-    builtins.removeAttrs profile.network [
+  primaryEndpoint = definition:
+    builtins.removeAttrs definition.network [
       "kind"
       "members"
       "name"
@@ -105,14 +105,14 @@
       "state"
       "subnetId"
     ]
-    // {fabric = primaryFabricName profile;};
-  endpointDeclaration = profile: group:
-    endpointMetadata profile.endpointGroups.${group}
-    // {fabric = endpointFabricName profile group;};
+    // {fabric = primaryFabricName definition;};
+  endpointDeclaration = definition: group:
+    endpointMetadata definition.endpointGroups.${group}
+    // {fabric = endpointFabricName definition group;};
 
-  memberRolesFor = profile: definition: let
-    defaults = builtins.attrNames profile.instances;
-    members = checkedAttrs "fabric members" ["exclude" "include"] (definition.members or {});
+  memberRolesFor = stackDefinition: fabricDefinition: let
+    defaults = builtins.attrNames stackDefinition.instances;
+    members = checkedAttrs "fabric members" ["exclude" "include"] (fabricDefinition.members or {});
     include = members.include or [];
     exclude = members.exclude or [];
     unknownExclusions = builtins.filter (role: !builtins.elem role defaults) exclude;
@@ -138,8 +138,8 @@
       addressId = toString reservation.addressId;
       host = reservation.host or name;
     };
-  normalizeFabric = profile: rawDefinition: let
-    definition =
+  normalizeFabric = stackDefinition: rawDefinition: let
+    fabricDefinition =
       checkedAttrs "fabric network" [
         "kind"
         "members"
@@ -154,71 +154,71 @@
       ]
       rawDefinition;
   in
-    if !validSubnetId (definition.subnetId or null)
+    if !validSubnetId (fabricDefinition.subnetId or null)
     then throw "Fabric subnetId must be an integer from 0 through 255"
     else
       {
-        kind = definition.kind or "bridge";
-        project = definition.project or profile.stackName;
-        prefixes = familyAttrs (family: prefixFor family definition.subnetId);
-        memberRoles = memberRolesFor profile definition;
-        reservations = builtins.mapAttrs normalizeReservation (definition.reservations or {});
+        kind = fabricDefinition.kind or "bridge";
+        project = fabricDefinition.project or stackDefinition.stackName;
+        prefixes = familyAttrs (family: prefixFor family fabricDefinition.subnetId);
+        memberRoles = memberRolesFor stackDefinition fabricDefinition;
+        reservations = builtins.mapAttrs normalizeReservation (fabricDefinition.reservations or {});
       }
       // (
-        if definition ? routerHost
-        then {routerHost = definition.routerHost;}
+        if fabricDefinition ? routerHost
+        then {routerHost = fabricDefinition.routerHost;}
         else {}
       )
       // (
-        if definition ? state
-        then {state = definition.state;}
+        if fabricDefinition ? state
+        then {state = fabricDefinition.state;}
         else {}
       );
   fabricEntries =
     builtins.concatMap (
-      profileName: let
-        profile = profiles.${profileName};
-        primaryName = primaryFabricName profile;
+      stackName: let
+        definition = definitions.${stackName};
+        primaryName = primaryFabricName definition;
         networkGroups = builtins.filter (
-          group: profile.endpointGroups.${group} ? network
-        ) (builtins.attrNames profile.endpointGroups);
+          group: definition.endpointGroups.${group} ? network
+        ) (builtins.attrNames definition.endpointGroups);
       in
         [
           {
             name = primaryName;
-            value = normalizeFabric profile profile.network;
+            value = normalizeFabric definition definition.network;
           }
         ]
         ++ map (group: {
-          name = endpointFabricName profile group;
-          value = normalizeFabric profile profile.endpointGroups.${group}.network;
+          name = endpointFabricName definition group;
+          value = normalizeFabric definition definition.endpointGroups.${group}.network;
         })
         networkGroups
     )
-    profileNames;
+    definitionNames;
   fabricNames = map (entry: entry.name) fabricEntries;
   fabrics =
     if builtins.length (unique fabricNames) != builtins.length fabricNames
     then throw "Fabric names must be unique: ${builtins.toJSON fabricNames}"
     else builtins.listToAttrs fabricEntries;
 
-  fabricForGroup = profile: group:
-    if !builtins.hasAttr group profile.endpointGroups
-    then throw "Unknown endpoint group ${profile.stackName}.${group}"
-    else endpointFabricName profile group;
-  normalizeAccess = profile: id: rawDeclaration: let
+  fabricForGroup = definition: group:
+    if !builtins.hasAttr group definition.endpointGroups
+    then throw "Unknown endpoint group ${definition.stackName}.${group}"
+    else endpointFabricName definition group;
+  normalizeAccess = definition: id: rawDeclaration: let
     declaration = checkedAttrs "fabric access rule ${id}" ["from" "tcp" "to" "udp"] rawDeclaration;
     source = checkedAttrs "fabric access source ${id}" ["endpointGroups" "role"] (declaration.from or {});
     destination = checkedAttrs "fabric access destination ${id}" ["endpointGroup" "role" "stack"] declaration.to;
-    sourceGroups = source.endpointGroups or [profile.activeEndpointGroup];
-    destinationProfile = profiles.${destination.stack};
-    destinationGroup = destination.endpointGroup or destinationProfile.activeEndpointGroup;
+    sourceGroups = source.endpointGroups or [definition.activeEndpointGroup];
+    destinationDefinition = definitions.${destination.stack};
+    destinationGroup = destination.endpointGroup or destinationDefinition.activeEndpointGroup;
   in
     {
       inherit id;
       from =
         {
-          fabrics = map (fabricForGroup profile) sourceGroups;
+          fabrics = map (fabricForGroup definition) sourceGroups;
         }
         // (
           if source ? role
@@ -227,7 +227,7 @@
         );
       to =
         {
-          fabric = fabricForGroup destinationProfile destinationGroup;
+          fabric = fabricForGroup destinationDefinition destinationGroup;
         }
         // (
           if destination ? role
@@ -247,20 +247,20 @@
     );
   access =
     builtins.concatMap (
-      profileName: let
-        profile = profiles.${profileName};
+      stackName: let
+        definition = definitions.${stackName};
       in
         map (
-          id: normalizeAccess profile id profile.access.${id}
-        ) (builtins.attrNames (profile.access or {}))
+          id: normalizeAccess definition id definition.access.${id}
+        ) (builtins.attrNames (definition.access or {}))
     )
-    profileNames;
+    definitionNames;
 
   contract =
     if !validAddressBases
     then throw "Fabric address bases must describe valid IPv4 /16 or IPv6 /48 spaces"
     else if !consistentRoleDefinitions
-    then throw "Fabric stack profiles must share role host and address definitions"
+    then throw "Stack definitions in one configuration family must share role host and address definitions"
     else
       import ./fabric-contract.nix {
         inherit
@@ -284,11 +284,11 @@
       project = endpoint.project or contract.fabrics.${endpoint.fabric}.project;
       prefixes = contract.fabrics.${endpoint.fabric}.prefixes;
     };
-  endpointFor = profile: endpointGroup:
+  endpointFor = definition: endpointGroup:
     hydrateEndpoint (
       if endpointGroup == null
-      then primaryEndpoint profile
-      else endpointDeclaration profile endpointGroup
+      then primaryEndpoint definition
+      else endpointDeclaration definition endpointGroup
     );
   endpointRoleSpecs = endpoint: let
     fabric = contract.fabrics.${endpoint.fabric};
@@ -315,26 +315,26 @@
 in rec {
   inherit contract;
 
-  endpointGroupsFor = profile:
+  endpointGroupsFor = definition:
     builtins.mapAttrs (group: _endpoint: let
-      hydrated = endpointFor profile group;
+      hydrated = endpointFor definition group;
     in
       hydrated // {roles = endpointRoleSpecs hydrated;})
-    profile.endpointGroups;
+    definition.endpointGroups;
 
   resolveDependencyEndpoint = {
     declaration,
     name,
-    profile,
+    definition,
     ...
   }: let
     placement =
       if declaration ? placement
-      then {stack = profile.stackName;} // declaration.placement
+      then {stack = definition.stackName;} // declaration.placement
       else {stack = declaration.stack;};
-    placementProfile = profiles.${placement.stack};
-    placementGroup = placement.endpointGroup or declaration.endpointGroup or placementProfile.activeEndpointGroup;
-    base = endpointFor placementProfile placementGroup;
+    placementDefinition = definitions.${placement.stack};
+    placementGroup = placement.endpointGroup or declaration.endpointGroup or placementDefinition.activeEndpointGroup;
+    base = endpointFor placementDefinition placementGroup;
     endpoint = hydrateEndpoint (base // (declaration.endpoint or {}));
   in
     {
@@ -362,10 +362,10 @@ in rec {
   mkProjection = {
     dependencyRoles,
     ownedRoles,
-    profile,
+    definition,
     ...
   }: let
-    network = endpointFor profile null;
+    network = endpointFor definition null;
     fabric = network.fabric;
     addressForFamily = family: role:
       contract.addressFor {inherit fabric family role;};
@@ -392,7 +392,7 @@ in rec {
       dependencies = builtins.mapAttrs (
         role: declaration:
           declaration // {inherit (dependencyRoles.${role}) endpoint;}
-      ) (profile.dependencies or {});
+      ) (definition.dependencies or {});
     };
     infrastructure.incus = {
       inherit addressFor addressForFamily fabric instances resourceIdFor;
@@ -403,7 +403,7 @@ in rec {
       prefixes = network.prefixes;
       priority = network.priority;
       project = network.project;
-      stateVolumeSize = profile.stateVolumeSize or null;
+      stateVolumeSize = definition.stateVolumeSize or null;
     };
   };
 }

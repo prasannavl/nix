@@ -27,6 +27,9 @@ pub mod terminal_style;
 pub mod workflow;
 pub mod workflow_runtime;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -101,6 +104,23 @@ pub struct Event {
     pub message: String,
 }
 
+/// An exact repository-projected job identity bound to the runtime journal
+/// generation that requested it. If the journal advances that generation,
+/// the binding is stale by construction and deterministic fallback supplies
+/// the next unpublished proposal until Nix evaluates its canonical successor.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectedJobIdentity {
+    pub generation: u32,
+    #[serde(default = "first_projected_job_attempt")]
+    pub attempt: u64,
+    pub job_id: String,
+}
+
+const fn first_projected_job_attempt() -> u64 {
+    1
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Transaction {
     pub schema_version: u32,
@@ -130,6 +150,10 @@ pub struct Transaction {
     /// Generation zero retains the original deterministic job ID.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub job_generations: BTreeMap<String, u32>,
+    /// Canonical job identities consumed from an evaluated repository
+    /// projection. Rust never constructs entries in this map.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub projected_job_ids: BTreeMap<String, ProjectedJobIdentity>,
     /// Immutable named source/target data-root mapping resolved before the first copy.
     #[serde(default)]
     pub data_root_plan: Vec<DataRootPlan>,
@@ -213,6 +237,7 @@ impl Transaction {
             active_step: None,
             active_job_id: None,
             job_generations: BTreeMap::new(),
+            projected_job_ids: BTreeMap::new(),
             data_root_plan: Vec::new(),
             source_was_active: None,
             target_ever_started: false,
@@ -657,12 +682,17 @@ fn reconcile_active_job<A: Adapter>(
 pub fn deterministic_job_id(transaction: &Transaction, action: Action, operation: &str) -> String {
     let base = format!("{}-{}-{operation}", transaction.id, action.as_str());
     let step_id = format!("{}:{operation}", action.as_str());
-    match transaction
+    let generation = transaction
         .job_generations
         .get(&step_id)
         .copied()
-        .unwrap_or(0)
+        .unwrap_or(0);
+    if let Some(projected) = transaction.projected_job_ids.get(&step_id)
+        && projected.generation == generation
     {
+        return projected.job_id.clone();
+    }
+    match generation {
         0 => base,
         generation => format!("{base}-attempt-{generation}"),
     }

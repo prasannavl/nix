@@ -68,7 +68,7 @@ in {
       if flags.mailingList && flags.shared && listName == sharedName
       then
         builtins.throw ''
-          groupData group ${groupName} enables both mailingList and shared with the same local part ${listName}.
+          account group ${groupName} enables both mailingList and shared with the same local part ${listName}.
           Set mailingList.enable = false, shared.enable = false, mailingList.name, or shared.name so Stalwart does not create two principals for ${listName}@${domainName}.
         ''
       else {

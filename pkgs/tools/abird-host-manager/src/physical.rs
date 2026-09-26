@@ -262,9 +262,29 @@ fn statement_is_complete(statement: &str) -> bool {
 }
 
 pub(crate) fn nix_string(value: &str) -> String {
-    serde_json::to_string(value)
-        .expect("JSON string serialization cannot fail")
-        .replace("${", "\\${")
+    let mut rendered = String::from("\"");
+    let mut characters = value.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => rendered.push_str("\\\\"),
+            '"' => rendered.push_str("\\\""),
+            '\n' => rendered.push_str("\\n"),
+            '\r' => rendered.push_str("\\r"),
+            '\t' => rendered.push_str("\\t"),
+            '$' if characters.peek() == Some(&'{') => rendered.push_str("\\$"),
+            character if character.is_control() => {
+                let json = serde_json::to_string(&character.to_string())
+                    .expect("control-character JSON serialization cannot fail");
+                let escaped = json.replace('\\', "\\\\").replace('"', "\\\"");
+                rendered.push_str("${builtins.fromJSON \"");
+                rendered.push_str(&escaped);
+                rendered.push_str("\"}");
+            }
+            character => rendered.push(character),
+        }
+    }
+    rendered.push('"');
+    rendered
 }
 
 #[cfg(test)]
@@ -338,6 +358,14 @@ mod tests {
     #[test]
     fn nix_strings_escape_interpolation() {
         assert_eq!(nix_string("/dev/${unsafe}"), r#""/dev/\${unsafe}""#);
+    }
+
+    #[test]
+    fn nix_strings_encode_json_only_control_characters() {
+        assert_eq!(
+            nix_string("before\u{0008}after"),
+            r#""before${builtins.fromJSON "\"\\b\""}after""#
+        );
     }
 
     #[test]

@@ -1,17 +1,12 @@
 {
   lib,
   directory ? null,
-  documents ? null,
+  documents ? [],
+  scopeStacks ? null,
 }: let
-  fail = message: throw "invalid phase projection: ${message}";
-  require = condition: message:
-    if condition
-    then true
-    else fail message;
-  requireOnly = allowed: value: context: let
-    unknown = builtins.filter (name: !builtins.elem name allowed) (builtins.attrNames value);
-  in
-    require (unknown == []) "${context} has unknown fields: ${lib.concatStringsSep ", " unknown}";
+  validation = import ../validation;
+  inherit (validation.mk "invalid phase projection") fail require requireOnly;
+  inherit (import ./service-stack.nix) applyServiceRoleOverrides isServiceStack;
   isDigest = value:
     builtins.isString value
     && builtins.match "[0-9a-f]{64}" value != null;
@@ -30,13 +25,11 @@
       == "regular"
       && builtins.match ".*\\.json" name != null)
     (builtins.attrNames directoryEntries);
-  loadedDocuments =
-    if documents != null
-    then documents
-    else
-      map
-      (name: builtins.fromJSON (builtins.readFile (directory + "/${name}")))
-      projectionFiles;
+  directoryDocuments =
+    map
+    (name: builtins.fromJSON (builtins.readFile (directory + "/${name}")))
+    projectionFiles;
+  loadedDocuments = directoryDocuments ++ documents;
 
   validateEndpoint = endpoint:
     assert require (builtins.isAttrs endpoint) "resource endpoint must be an object";
@@ -189,7 +182,26 @@
       routes) "route profiles must be unique, contain the selected and baseline profiles, and each select one projected service endpoint";
       assert require (lib.all (route: lib.length (matchingPlacement route) == 1) routes) "route profile endpoint must match projected placement"; validated;
 
-  validatedDocuments = map validateDocument loadedDocuments;
+  schemaValidatedDocuments = map validateDocument loadedDocuments;
+  effectScopes = projections:
+    lib.unique (builtins.concatMap (projection: map (effect: effect.scope) projection.effects) projections);
+  validateEffectScopes = candidateStacks: projections: let
+    scopes = effectScopes projections;
+    unknownScopes = builtins.filter (scope: !builtins.hasAttr scope candidateStacks) scopes;
+    nonServiceScopes =
+      builtins.filter (
+        scope: builtins.hasAttr scope candidateStacks && !isServiceStack candidateStacks.${scope}
+      )
+      scopes;
+  in
+    assert require (unknownScopes == []) "effects reference unknown scopes: ${lib.concatStringsSep ", " unknownScopes}";
+    assert require (nonServiceScopes == []) "effects reference non-service scopes: ${lib.concatStringsSep ", " nonServiceScopes}"; true;
+  validatedDocuments =
+    if scopeStacks == null
+    then schemaValidatedDocuments
+    else
+      assert require (builtins.isAttrs scopeStacks) "scopeStacks must be null or an attribute set";
+      assert validateEffectScopes scopeStacks schemaValidatedDocuments; schemaValidatedDocuments;
   projectionIds = map (projection: projection.projection_id) validatedDocuments;
   resourceIds = projection:
     map (resource: resource.id) projection.resources;
@@ -239,16 +251,11 @@ in rec {
 
   applyToStack = scope: stack: let
     overrides = serviceRoleOverridesFor scope stack;
-    projected = stack.withServiceRoles overrides;
   in
-    if overrides == {}
-    then stack
-    else
-      projected
-      // lib.optionalAttrs (stack ? placements) {
-        placements = builtins.mapAttrs (_: placement: placement.withServiceRoles overrides) stack.placements;
-      };
+    applyServiceRoleOverrides stack overrides;
 
   applyToStacks = stacks:
-    builtins.mapAttrs (scope: stack: applyToStack scope stack) stacks;
+    assert require (builtins.isAttrs stacks) "candidate stacks must be an attribute set";
+    assert validateEffectScopes stacks documents;
+      builtins.mapAttrs (scope: stack: applyToStack scope stack) stacks;
 }

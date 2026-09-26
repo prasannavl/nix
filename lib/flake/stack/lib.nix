@@ -61,10 +61,11 @@
     if defaultCaCertAgeFile != null
     then defaultCaCertAgeFile
     else secretPaths.file "ca/ca.crt.age";
-  userData = import ./users.nix {
+  accounts = import ../accounts {
     inherit defaultMailDomain stackName;
   };
 in {
+  accounts = accounts;
   pkg = pkg;
   stackName = stackName;
   org = org;
@@ -74,12 +75,6 @@ in {
   noReplyEmailFor = appName: "no-reply+${appName}@${defaultMailDomain}";
   publicDomain = publicDomain;
   internalDomain = internalDomain;
-  users = userData.userData;
-  userLib = userData.lib;
-  userSets = userData.userSets;
-  groupSets = userData.groupSets;
-  groupData = userData.groupData;
-  nixosConfig = userData.nixosConfig;
   lib = {
     units = unitsLib;
     mkNginxLib = {

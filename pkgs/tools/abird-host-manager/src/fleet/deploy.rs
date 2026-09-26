@@ -502,8 +502,12 @@ reject_generation_admission() {{
 }}
 
 admission_programs=()
+current_dispatcher_selected=false
+current_dispatcher_validated=false
+legacy_target_current_system=
 if [ -f "${{current_generation_preflight}}" ] && [ -x "${{current_generation_preflight}}" ]; then
     admission_programs=("${{current_generation_preflight}}")
+    current_dispatcher_selected=true
 else
     admission_generations=("${{current_system}}")
     if [ "${{admission_mode}}" = rollback ]; then
@@ -560,14 +564,47 @@ else
 fi
 
 for admission_program in "${{admission_programs[@]}}"; do
-    echo "[generation-admission] mode=${{admission_mode}} validating ${{system_path}} against durable host-agent state" >&2
-    if "${{admission_program}}" "${{system_path}}" "${{goal}}" "${{admission_mode}}"; then
+    if admission_output="$(ABIRD_HOST_AGENT_GENERATION_PREFLIGHT_OUTPUT=quiet "${{admission_program}}" "${{system_path}}" "${{goal}}" "${{admission_mode}}")"; then
         :
     else
         admission_rc="$?"
+        if [ -n "${{admission_output}}" ]; then
+            printf '%s\n' "${{admission_output}}" >&2
+        fi
         reject_generation_admission "validator rejected ${{system_path}}" "${{admission_rc}}"
     fi
 done
+if [ "${{#admission_programs[@]}}" -gt 0 ]; then
+    echo "[generation-admission] mode=${{admission_mode}} admitted ${{system_path}}" >&2
+fi
+if [ "${{current_dispatcher_selected}}" = true ]; then
+    current_dispatcher_validated=true
+fi
+
+if [ "${{admission_mode}}" = rollback ] && [ "${{current_dispatcher_validated}}" = true ]; then
+    target_has_generation_interface=false
+    for evidence in \
+        "${{system_path}}/sw/bin/abird-host-agent-generation-preflight" \
+        "${{system_path}}/etc/abird-host-agent/generation-admission-registry.json"; do
+        if [ -e "${{evidence}}" ] || [ -L "${{evidence}}" ]; then
+            target_has_generation_interface=true
+        fi
+    done
+    if [ "${{target_has_generation_interface}}" = false ]; then
+        legacy_target_current_system="${{system_path}}"
+    fi
+fi
+
+run_admitted_target_switch() {{
+    if [ -n "${{legacy_target_current_system}}" ]; then
+        ABIRD_HOST_AGENT_CURRENT_SYSTEM="${{legacy_target_current_system}}" "$@"
+    else
+        (
+            unset ABIRD_HOST_AGENT_CURRENT_SYSTEM
+            "$@"
+        )
+    fi
+}}
 export ABIRD_HOST_AGENT_GENERATION_ADMISSION_MODE="${{admission_mode}}"
 "#,
         target_system = shell_single_quote(target_system),
@@ -611,7 +648,7 @@ fi
         &GenerationAdmissionPaths::default(),
     ));
     body.push_str(&format!(
-        "NIXOS_INSTALL_BOOTLOADER=0 {switch} {}\n",
+        "run_admitted_target_switch env NIXOS_INSTALL_BOOTLOADER=0 {switch} {}\n",
         goal.as_str()
     ));
     if goal.persists_profile() {

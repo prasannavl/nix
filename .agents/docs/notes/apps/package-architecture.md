@@ -40,11 +40,12 @@ stack wiring.
   package-local checks, apps, dev shells, and flake output wiring.
 - `lib/flake/service-module.nix` exposes the generic `mkServiceLib` factory for
   service modules, transport helpers, and client-identity wiring.
-- `lib/stacks/*.nix` files are the repo-local stack instantiations of that
-  factory. They own repo defaults such as secret roots, identity suffixes,
-  transport defaults, and default user-service ownership. Do not add
-  compatibility shims such as `lib/flake/stack.nix`; import the selected stack
-  directly or receive it through the root flake's `stack` special arg.
+- `config/<family>/` owns repository-local stack definitions and prebuilt stack
+  instantiations. They own repository defaults such as secret roots, identity
+  suffixes, transport defaults, and default user-service ownership. Shared
+  constructors remain under `lib/flake/stack/`. Do not add compatibility shims;
+  runtime modules receive the selected stack through the root flake's `stack`
+  special argument.
 - Prefer the high-level helper entrypoints:
   - `mkRustDerivation`
   - `mkGoDerivation`
@@ -59,9 +60,9 @@ stack wiring.
 - Shared check helpers own the repeated child-flake pattern. Package-local
   `default.nix` should define `passthru.checks`, and child flakes should mostly
   re-export them.
-- Repo-local package and host call sites should import the repo stack and use
-  `stack.pkg` or `stack.srv` rather than re-encoding repo defaults directly
-  against the generic factory.
+- Repo-local package and host call sites should use the selected `stack.pkg` or
+  `stack.srv` rather than importing repository configuration or re-encoding
+  defaults directly against the generic factory.
 
 ## Package contract
 
@@ -160,7 +161,8 @@ stack wiring.
 - `lib/flake/apps.nix`
 - `lib/flake/pkg-helper.nix`
 - `lib/flake/service-module.nix`
-- `lib/stacks/*.nix`
+- `config/default.nix`
+- `config/<family>/default.nix`
 - `pkgs/*/default.nix`
 - `pkgs/*/flake.nix`
 

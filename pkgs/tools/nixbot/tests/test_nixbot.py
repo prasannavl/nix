@@ -67,6 +67,36 @@ class NixbotScriptMixin:
 
 
 class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
+    def test_initialization_clears_only_inherited_git_checkout_selectors(self):
+        selectors = (
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_DIR",
+            "GIT_GRAFT_FILE",
+            "GIT_IMPLICIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_NAMESPACE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_PREFIX",
+            "GIT_SHALLOW_FILE",
+            "GIT_WORK_TREE",
+        )
+        result = self.run_script(
+            f"""
+            init_vars
+            for variable in {" ".join(selectors)}; do
+              test -z "${{!variable+x}}" || exit 1
+            done
+            printf '%s\n' "$GIT_SSH_COMMAND"
+            """,
+            env={
+                **{selector: "/tmp/inherited-git-selector" for selector in selectors},
+                "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+            },
+        )
+
+        self.assertEqual("ssh -o BatchMode=yes\n", result.stdout)
+
     def test_argument_parsing_normalizes_modes_and_env_overrides(self):
         result = self.run_script(
             """
@@ -253,6 +283,80 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
         )
 
         self.assertEqual(["|all", "prod|all", "|app"], result.stdout.splitlines())
+
+    def test_required_hosts_must_be_covered_by_resolved_selection(self):
+        for argument in ("--require-hosts ''", "--require-hosts=' , '"):
+            with self.subTest(argument=argument):
+                empty = self.run_script(
+                    f"init_vars\nACTION=deploy\nnormalize_host_action\nparse_args {argument}\n",
+                    check=False,
+                )
+                self.assertNotEqual(0, empty.returncode)
+                self.assertIn("--require-hosts cannot be empty", empty.stderr)
+
+        accepted = self.run_script(
+            """
+            init_vars
+            REQUIRED_HOSTS_RAW='app,db'
+            validate_required_host_coverage '["app","db","worker"]' '["app","db","worker"]'
+            """
+        )
+        self.assertEqual("", accepted.stderr)
+
+        rejected = self.run_script(
+            """
+            init_vars
+            REQUIRED_HOSTS_RAW='app,db'
+            validate_required_host_coverage '["app","worker"]' '["app","db","worker"]'
+            """,
+            check=False,
+        )
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn(
+            "Resolved deployment selection does not cover required hosts: db",
+            rejected.stderr,
+        )
+
+        skipped = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            HOSTS_RAW='app,db'
+            NIXBOT_CONFIG_PATH=''
+            GROUPS_RAW=''
+            REQUIRED_HOSTS_RAW='db'
+            NIXBOT_HOSTS_JSON='{"app":{},"db":{"skip":true}}'
+            load_all_hosts_json() { printf '["app","db"]'; }
+            selected=''
+            prepare_run_context selected
+            """,
+            check=False,
+        )
+        self.assertNotEqual(0, skipped.returncode)
+        self.assertIn(
+            "Resolved deployment selection does not cover required hosts: db",
+            skipped.stderr,
+        )
+
+    def test_repeated_required_hosts_accumulate_in_stable_order(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args \
+              --require-hosts app,db \
+              --require-hosts 'db parent' \
+              --require-hosts=worker,app
+            printf '%s\n' "$REQUIRED_HOSTS_RAW"
+            validate_required_host_coverage \
+              '["app","db","parent","worker"]' \
+              '["app","db","parent","worker"]'
+            """
+        )
+
+        self.assertEqual("app,db,parent,worker\n", result.stdout)
 
     def test_default_hosts_config_rejects_invalid_values(self):
         result = self.run_script(
@@ -730,6 +834,29 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
         self.assertIn("--group prod", result.stdout)
         self.assertIn("--hosts app,-old", result.stdout)
 
+    def test_ci_trigger_preserves_required_host_coverage(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            HOSTS_RAW='app,-old'
+            HOSTS_EXPLICIT=1
+            REQUIRED_HOSTS_RAW='app,db'
+            SHA=abcdef0
+            CI_TRIGGER_USER=ci
+            CI_TRIGGER_HOST=ci-host
+            load_deploy_config_json() { printf '{}'; }
+            init_deploy_settings() { :; }
+            configure_ci_trigger_ssh_opts() { CI_TRIGGER_SSH_OPTS=(); }
+            encode_ssh_command_args() { printf '%s\\n' "$*"; }
+            ssh() { printf '%s\\n' "$*"; }
+            run_ci_trigger
+            """
+        )
+        self.assertIn("--hosts app,-old", result.stdout)
+        self.assertIn("--require-hosts app,db", result.stdout)
+
     def test_ci_trigger_does_not_flatten_group_only_selection(self):
         result = self.run_script(
             """
@@ -912,7 +1039,7 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             }
 
             set +e
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             rc=$?
             set -e
             NIXBOT_PODMAN_COMPOSE_CONTROL_REGISTRY=/nonexistent/nixbot-control-registry.json
@@ -1331,6 +1458,52 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
         )
         self.assertIn("#nixbot.deployDependencies", result.stderr)
         self.assertIn("#custom.deployDeps", result.stderr)
+
+    def test_deploy_config_accepts_data_or_stack_aware_function(self):
+        repository = self.work_dir / "inventory-repository"
+        trace = self.work_dir / "nix-arguments"
+        config_dir = repository / "config"
+        hosts_dir = repository / "hosts"
+        config_dir.mkdir(parents=True)
+        hosts_dir.mkdir()
+        (config_dir / "default.nix").write_text(
+            '{ stacks.demo.target = "from-stack"; }\n',
+            encoding="utf-8",
+        )
+        functional = hosts_dir / "functional.nix"
+        functional.write_text(
+            "{ stacks, ... }: { hosts.app.target = stacks.demo.target; config = {}; }\n",
+            encoding="utf-8",
+        )
+        data = hosts_dir / "data.nix"
+        data.write_text(
+            '{ hosts.app.target = "plain-data"; config = {}; }\n',
+            encoding="utf-8",
+        )
+
+        result = self.run_script(
+            f"""
+            init_vars
+            git() {{ printf '%s\n' {repository}; }}
+            nix() {{
+              printf '%s\n' "$@" >> {trace}
+              case "$*" in
+                *functional.nix*) printf '%s\n' '{{"hosts":{{"app":{{"target":"from-stack"}}}},"config":{{}}}}' ;;
+                *data.nix*) printf '%s\n' '{{"hosts":{{"app":{{"target":"plain-data"}}}},"config":{{}}}}' ;;
+                *) return 64 ;;
+              esac
+            }}
+            apply_configured_deploy_dependencies_json() {{ printf '%s\n' "$1"; }}
+            load_deploy_config_json {functional} '' | jq -r .hosts.app.target
+            load_deploy_config_json {data} '' | jq -r .hosts.app.target
+            """
+        )
+
+        self.assertEqual(["from-stack", "plain-data"], result.stdout.splitlines())
+        arguments = trace.read_text(encoding="utf-8")
+        self.assertEqual(2, arguments.splitlines().count("--apply"))
+        self.assertEqual(2, arguments.count("builtins.isFunction inventory"))
+        self.assertEqual(2, arguments.count(str(config_dir)))
 
     def test_deploy_dependencies_reject_unknown_inventory_hosts(self):
         result = self.run_script(
@@ -2337,7 +2510,7 @@ EOF_UNITS
 
         command = result.stdout
         admission_index = command.index(
-            '"${admission_program}" "${system_path}" "${goal}" "${admission_mode}"'
+            'ABIRD_HOST_AGENT_GENERATION_PREFLIGHT_OUTPUT=quiet "${admission_program}" "${system_path}" "${goal}" "${admission_mode}"'
         )
         switch_index = command.index(
             'NIXOS_INSTALL_BOOTLOADER=0 "${system_path}/bin/switch-to-configuration" "${goal}"'
@@ -2345,11 +2518,55 @@ EOF_UNITS
         self.assertLess(admission_index, switch_index)
         self.assertIn("admission_mode=rollback", command)
         self.assertIn(
-            "current_projection_preflight=/run/current-system/sw/bin/abird-host-agent-projection-preflight",
+            "current_generation_preflight=/run/current-system/sw/bin/abird-host-agent-generation-preflight",
             command,
         )
         self.assertIn("refusing automatic rollback because projection safety cannot be proven", command)
         self.assertLess(command.index("reject_generation_admission"), switch_index)
+
+    def test_boot_activation_dispatches_admission_before_persisting(self):
+        root = self.work_dir / "boot-admission"
+        current = root / "current-system"
+        target = root / "target-system"
+        admission_calls = root / "admission-calls"
+        switch_calls = root / "switch-calls"
+        profile_calls = root / "profile-calls"
+        preflight = current / "sw/bin/abird-host-agent-generation-preflight"
+        switch = target / "bin/switch-to-configuration"
+        nix_env = target / "sw/bin/nix-env"
+        preflight.parent.mkdir(parents=True)
+        switch.parent.mkdir(parents=True)
+        nix_env.parent.mkdir(parents=True)
+        preflight.write_text(
+            f"#!/bin/sh\nprintf '{{\"ok\":true}}\\n'\nprintf '%s|%s\\n' \"${{ABIRD_HOST_AGENT_GENERATION_PREFLIGHT_OUTPUT-<unset>}}\" \"$*\" > {admission_calls}\n"
+        )
+        switch.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" > {switch_calls}\n")
+        nix_env.write_text(
+            f"#!/bin/sh\nprintf '%s\\n' \"$*\" > {profile_calls}\n"
+        )
+        for program in (preflight, switch, nix_env):
+            program.chmod(0o700)
+        (target / "nixos-version").write_text("test\n")
+
+        result = self.run_script(
+            f"""
+            init_vars
+            REMOTE_CURRENT_SYSTEM_PATH={current}
+            activation_script="$(nixbot_activation_command {target} boot 1 '')"
+            bash -c "$activation_script"
+            """,
+        )
+
+        self.assertEqual(f"quiet|{target} boot normal\n", admission_calls.read_text())
+        self.assertEqual("boot\n", switch_calls.read_text())
+        self.assertEqual(
+            f"-p /nix/var/nix/profiles/system --set {target}\n",
+            profile_calls.read_text(),
+        )
+        self.assertIn(
+            f"[generation-admission] mode=normal admitted {target}", result.stderr
+        )
+        self.assertNotIn('{"ok":true}', result.stderr)
 
     def missing_preflight_rollback_fixture(self, mode="rollback", name=""):
         root = self.work_dir / name
@@ -2438,12 +2655,15 @@ EOF_UNITS
         switch_marker = self.work_dir / "switched"
         admission_args = self.work_dir / "admission-args"
         switch = fake_system / "bin/switch-to-configuration"
-        preflight = current_system / "sw/bin/abird-host-agent-projection-preflight"
+        preflight = current_system / "sw/bin/abird-host-agent-generation-preflight"
         switch.parent.mkdir(parents=True)
         preflight.parent.mkdir(parents=True)
         switch.write_text(f"#!/bin/sh\ntouch {switch_marker}\n")
         preflight.write_text(
-            f"#!/bin/sh\nprintf '%s\\n' \"$*\" > {admission_args}\nexit 23\n"
+            "#!/bin/sh\n"
+            "printf '{\"ok\":false,\"reason\":\"denied\"}\\n'\n"
+            f"printf '%s|%s\\n' \"${{ABIRD_HOST_AGENT_GENERATION_PREFLIGHT_OUTPUT-<unset>}}\" \"$*\" > {admission_args}\n"
+            "exit 23\n"
         )
         switch.chmod(0o700)
         preflight.chmod(0o700)
@@ -2465,8 +2685,9 @@ EOF_UNITS
 
         self.assertEqual(["rc:23"], result.stdout.splitlines()[-1:])
         self.assertEqual(
-            f"{fake_system} switch rollback\n", admission_args.read_text()
+            f"quiet|{fake_system} switch rollback\n", admission_args.read_text()
         )
+        self.assertIn('{"ok":false,"reason":"denied"}', result.stderr)
 
 
     def test_generation_admission_runs_before_switch_and_preserves_rejection(self):
@@ -2495,6 +2716,91 @@ EOF_UNITS
                     else:
                         self.assertFalse(marker.exists())
                         self.assertIn("[generation-admission] rejected-before-switch", result.stderr)
+
+    def test_current_dispatcher_scopes_legacy_target_rollback_compatibility(self):
+        for mode, expected_current in (
+            ("normal", "unset"),
+            ("rollback", None),
+        ):
+            with self.subTest(mode=mode):
+                name = f"dispatcher-legacy-target-{mode}"
+                command, current, target, marker = self.missing_preflight_rollback_fixture(
+                    mode, name
+                )
+                expected_current = expected_current or str(target)
+                preflight = current / "sw/bin/abird-host-agent-generation-preflight"
+                preflight.parent.mkdir(parents=True)
+                preflight.write_text("#!/bin/sh\nexit 0\n")
+                preflight.chmod(0o700)
+                switch = target / "bin/switch-to-configuration"
+                switch.write_text(
+                    "#!/bin/sh\n"
+                    f'printf "%s\\n" "${{ABIRD_HOST_AGENT_CURRENT_SYSTEM-unset}}" > {marker}\n'
+                    f'printf "%s\\n" "${{ABIRD_HOST_AGENT_GENERATION_ADMISSION_MODE-unset}}" >> {marker}\n'
+                    f'printf "%s\\n" "${{NIXOS_NO_CHECK-unset}}" >> {marker}\n'
+                    f'printf "%s\\n" "unrelated-pre-switch-ran" >> {marker}\n'
+                )
+                switch.chmod(0o700)
+
+                result = self.run_script(
+                    command,
+                    env={"ABIRD_HOST_AGENT_CURRENT_SYSTEM": "ambient-current-system"},
+                )
+
+                self.assertEqual(["rc:0"], result.stdout.splitlines())
+                self.assertEqual(
+                    [expected_current, mode, "unset", "unrelated-pre-switch-ran"],
+                    marker.read_text().splitlines(),
+                )
+                if mode == "rollback":
+                    self.assertIn(
+                        "current dispatcher admitted pre-registry target",
+                        result.stderr,
+                    )
+                else:
+                    self.assertNotIn(
+                        "current dispatcher admitted pre-registry target",
+                        result.stderr,
+                    )
+
+    def test_current_dispatcher_does_not_mask_target_generation_interface(self):
+        for interface in ("helper", "registry"):
+            for kind in ("file", "directory", "dangling-symlink"):
+                with self.subTest(interface=interface, kind=kind):
+                    name = f"dispatcher-target-interface-{interface}-{kind}"
+                    command, current, target, marker = self.missing_preflight_rollback_fixture(
+                        "rollback", name
+                    )
+                    preflight = current / "sw/bin/abird-host-agent-generation-preflight"
+                    preflight.parent.mkdir(parents=True)
+                    preflight.write_text("#!/bin/sh\nexit 0\n")
+                    preflight.chmod(0o700)
+                    evidence = target / (
+                        "sw/bin/abird-host-agent-generation-preflight"
+                        if interface == "helper"
+                        else "etc/abird-host-agent/generation-admission-registry.json"
+                    )
+                    evidence.parent.mkdir(parents=True)
+                    if kind == "directory":
+                        evidence.mkdir()
+                    elif kind == "dangling-symlink":
+                        evidence.symlink_to(self.work_dir / "missing")
+                    else:
+                        evidence.write_text("target interface evidence\n")
+                    switch = target / "bin/switch-to-configuration"
+                    switch.write_text(
+                        "#!/bin/sh\n"
+                        f'printf "%s\\n" "${{ABIRD_HOST_AGENT_CURRENT_SYSTEM-unset}}" > {marker}\n'
+                    )
+                    switch.chmod(0o700)
+
+                    result = self.run_script(
+                        command,
+                        env={"ABIRD_HOST_AGENT_CURRENT_SYSTEM": "ambient-current-system"},
+                    )
+
+                    self.assertEqual(["rc:0"], result.stdout.splitlines())
+                    self.assertEqual("unset\n", marker.read_text())
 
     def test_legacy_rollback_cannot_replace_missing_generation_interface(self):
         for mode in ("normal", "rollback"):
@@ -5205,13 +5511,18 @@ EOF_SCRIPT
             "ok": True,
             "operation": "agent_status",
             "result": {
-                "status_schema_version": 2,
+                "status_schema_version": 3,
+                "configuration_revision": "0123456789abcdef",
                 "deferred_resources": {
                     "count": 1,
                     "resources": [
                         {
                             "resource": "service:zulip",
+                            "transaction_id": "zulip-tearoff--item-001",
+                            "projection_id": "zulip-tearoff",
+                            "state": "active",
                             "reason": "activation_job_specification_conflict",
+                            "detail": "terminal failed activation job differs",
                             "generation": 3,
                             "isolated": True,
                         }
@@ -5229,7 +5540,7 @@ EOF_SCRIPT
             """
             init_vars
             NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
-            _remote_health_check_deferred_resources
+            _remote_health_check_deferred_resources abird-zulip
             """,
             env={
                 "TEST_HOST_AGENT": str(agent),
@@ -5237,10 +5548,225 @@ EOF_SCRIPT
             },
         )
 
+        evidence = json.loads(result.stdout)
+        self.assertEqual(1, evidence["schema_version"])
+        self.assertEqual("host_agent_generation_evidence", evidence["operation"])
+        self.assertEqual("resource-deferred", evidence["result"]["kind"])
+        self.assertEqual("desired-resource-state", evidence["result"]["domain"])
+        self.assertEqual("zulip-tearoff--item-001", evidence["result"]["transaction_id"])
+        self.assertEqual("zulip-tearoff", evidence["result"]["projection_id"])
+        self.assertEqual("service:zulip", evidence["result"]["resource"])
+        self.assertEqual("deferred-held", evidence["result"]["status"])
+        self.assertEqual("abird-zulip", evidence["result"]["host"])
         self.assertEqual(
-            ["service:zulip\tactivation_job_specification_conflict\t3"],
-            result.stdout.splitlines(),
+            "terminal failed activation job differs", evidence["result"]["detail"]
         )
+
+    def test_remote_health_check_requires_explicit_nixbot_host_identity(self):
+        result = self.run_script(
+            """
+            init_vars
+            hostname() { printf 'ambient-kernel-host\n'; }
+            set +e
+            _remote_health_check_deferred_resources
+            missing_rc=$?
+            _remote_health_check_deferred_resources '../ambient-kernel-host'
+            invalid_rc=$?
+            set -e
+            printf 'missing-rc:%s\ninvalid-rc:%s\n' "$missing_rc" "$invalid_rc"
+            """,
+        )
+
+        self.assertEqual(["missing-rc:1", "invalid-rc:1"], result.stdout.splitlines())
+        self.assertIn(
+            "deferred-resource evidence requires an exact Nixbot host identity",
+            result.stderr,
+        )
+        self.assertNotIn("ambient-kernel-host", result.stdout)
+
+    def test_remote_health_check_rejects_unbound_schema_three_status(self):
+        agent = self.work_dir / "abird-host-agent"
+        response = {
+            "ok": True,
+            "operation": "agent_status",
+            "result": {
+                "status_schema_version": 3,
+                "deferred_resources": {"count": 0, "resources": []},
+            },
+        }
+        agent.write_text(
+            f"#!{shutil.which('bash')}\nprintf '%s\\n' \"$TEST_AGENT_RESPONSE\"\n",
+            encoding="utf-8",
+        )
+        agent.chmod(0o755)
+
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
+            _remote_health_check_deferred_resources abird-zulip
+            """,
+            check=False,
+            env={
+                "TEST_HOST_AGENT": str(agent),
+                "TEST_AGENT_RESPONSE": json.dumps(response),
+            },
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("invalid or unsafe deferred host-agent resource response", result.stderr)
+
+    def test_remote_health_check_rejects_schema_three_deferral_without_identity(self):
+        agent = self.work_dir / "abird-host-agent"
+        response = {
+            "ok": True,
+            "operation": "agent_status",
+            "result": {
+                "status_schema_version": 3,
+                "configuration_revision": "0123456789abcdef",
+                "deferred_resources": {
+                    "count": 1,
+                    "resources": [
+                        {
+                            "resource": "service:zulip",
+                            "state": "active",
+                            "reason": "activation_failed",
+                            "generation": 3,
+                            "isolated": True,
+                        }
+                    ],
+                },
+            },
+        }
+        agent.write_text(
+            f"#!{shutil.which('bash')}\nprintf '%s\\n' \"$TEST_AGENT_RESPONSE\"\n",
+            encoding="utf-8",
+        )
+        agent.chmod(0o755)
+
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
+            _remote_health_check_deferred_resources abird-zulip
+            """,
+            check=False,
+            env={
+                "TEST_HOST_AGENT": str(agent),
+                "TEST_AGENT_RESPONSE": json.dumps(response),
+            },
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("invalid or unsafe deferred host-agent resource response", result.stderr)
+
+    def test_remote_health_check_rejects_duplicate_deferred_resource_evidence(self):
+        agent = self.work_dir / "abird-host-agent"
+        agent.write_text(
+            f"#!{shutil.which('bash')}\nprintf '%s\\n' \"$TEST_AGENT_RESPONSE\"\n",
+            encoding="utf-8",
+        )
+        agent.chmod(0o755)
+
+        for version in (2, 3):
+            with self.subTest(version=version):
+                resource = {
+                    "resource": "service:zulip",
+                    "state": "active",
+                    "reason": "activation_failed",
+                    "generation": 3,
+                    "isolated": True,
+                }
+                result_fields = {
+                    "status_schema_version": version,
+                    "deferred_resources": {
+                        "count": 2,
+                        "resources": [
+                            resource,
+                            {**resource, "reason": "activation_job_specification_conflict"},
+                        ],
+                    },
+                }
+                if version == 3:
+                    result_fields["configuration_revision"] = "0123456789abcdef"
+                    for item in result_fields["deferred_resources"]["resources"]:
+                        item["transaction_id"] = "zulip-tearoff--item-001"
+                        item["projection_id"] = "zulip-tearoff"
+                response = {
+                    "ok": True,
+                    "operation": "agent_status",
+                    "result": result_fields,
+                }
+                result = self.run_script(
+                    """
+                    init_vars
+                    NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
+                    _remote_health_check_deferred_resources abird-zulip
+                    """,
+                    check=False,
+                    env={
+                        "TEST_HOST_AGENT": str(agent),
+                        "TEST_AGENT_RESPONSE": json.dumps(response),
+                    },
+                )
+
+                self.assertEqual(1, result.returncode)
+                self.assertIn(
+                    "invalid or unsafe deferred host-agent resource response",
+                    result.stderr,
+                )
+
+    def test_remote_health_check_rejects_invalid_deferred_resource_scalars(self):
+        agent = self.work_dir / "abird-host-agent"
+        agent.write_text(
+            f"#!{shutil.which('bash')}\nprintf '%s\\n' \"$TEST_AGENT_RESPONSE\"\n",
+            encoding="utf-8",
+        )
+        agent.chmod(0o755)
+
+        for field, invalid_value in (
+            ("generation", -1),
+            ("generation", 1.5),
+            ("detail", 7),
+        ):
+            with self.subTest(field=field, invalid_value=invalid_value):
+                resource = {
+                    "resource": "service:zulip",
+                    "state": "active",
+                    "reason": "activation_failed",
+                    "generation": 3,
+                    "isolated": True,
+                    field: invalid_value,
+                }
+                response = {
+                    "ok": True,
+                    "operation": "agent_status",
+                    "result": {
+                        "status_schema_version": 2,
+                        "deferred_resources": {
+                            "count": 1,
+                            "resources": [resource],
+                        },
+                    },
+                }
+                result = self.run_script(
+                    """
+                    init_vars
+                    NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
+                    _remote_health_check_deferred_resources abird-zulip
+                    """,
+                    check=False,
+                    env={
+                        "TEST_HOST_AGENT": str(agent),
+                        "TEST_AGENT_RESPONSE": json.dumps(response),
+                    },
+                )
+
+                self.assertEqual(1, result.returncode)
+                self.assertIn(
+                    "invalid or unsafe deferred host-agent resource response",
+                    result.stderr,
+                )
 
     def test_remote_health_check_accepts_legacy_agent_without_deferral_schema(self):
         agent = self.work_dir / "abird-host-agent"
@@ -5254,13 +5780,80 @@ EOF_SCRIPT
             """
             init_vars
             NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
-            output="$(_remote_health_check_deferred_resources)"
+            output="$(_remote_health_check_deferred_resources abird-zulip)"
             printf 'rc:%s output:%s\n' "$?" "$output"
             """,
             env={"TEST_HOST_AGENT": str(agent)},
         )
 
         self.assertEqual(["rc:0 output:"], result.stdout.splitlines())
+
+    def test_remote_health_check_accepts_historical_schema_two_deferrals(self):
+        agent = self.work_dir / "abird-host-agent"
+        response = {
+            "ok": True,
+            "operation": "agent_status",
+            "result": {
+                "status_schema_version": 2,
+                "deferred_resources": {
+                    "count": 2,
+                    "resources": [
+                        {
+                            "resource": "service:zulip",
+                            "state": "active",
+                            "reason": "activation_job_specification_conflict",
+                            "generation": 3,
+                            "isolated": True,
+                        },
+                        {
+                            "resource": "service:forgejo",
+                            "reason": "activation_job_specification_conflict",
+                            "detail": None,
+                            "generation": 8,
+                            "isolated": True,
+                        },
+                    ],
+                },
+            },
+        }
+        agent.write_text(
+            f"#!{shutil.which('bash')}\nprintf '%s\\n' \"$TEST_AGENT_RESPONSE\"\n",
+            encoding="utf-8",
+        )
+        agent.chmod(0o755)
+
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
+            _remote_health_check_deferred_resources abird-zulip
+            """,
+            env={
+                "TEST_HOST_AGENT": str(agent),
+                "TEST_AGENT_RESPONSE": json.dumps(response),
+            },
+        )
+
+        evidence = [json.loads(line)["result"] for line in result.stdout.splitlines()]
+        self.assertEqual(
+            ["service:forgejo", "service:zulip"],
+            sorted(item["resource"] for item in evidence),
+        )
+        self.assertTrue(all("transaction_id" not in item for item in evidence))
+        self.assertTrue(all("projection_id" not in item for item in evidence))
+        self.assertTrue(all(item["status"] == "deferred-held" for item in evidence))
+        self.assertNotIn(
+            "state",
+            next(
+                item for item in evidence if item["resource"] == "service:forgejo"
+            ),
+        )
+        self.assertNotIn(
+            "detail",
+            next(
+                item for item in evidence if item["resource"] == "service:forgejo"
+            ),
+        )
 
     def test_remote_health_check_rejects_unsafe_deferred_resource(self):
         agent = self.work_dir / "abird-host-agent"
@@ -5274,6 +5867,7 @@ EOF_SCRIPT
                     "resources": [
                         {
                             "resource": "service:zulip",
+                            "state": "active",
                             "reason": "activation_failed",
                             "generation": 3,
                             "isolated": False,
@@ -5292,7 +5886,7 @@ EOF_SCRIPT
             """
             init_vars
             NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
-            _remote_health_check_deferred_resources
+            _remote_health_check_deferred_resources abird-zulip
             """,
             check=False,
             env={
@@ -5312,11 +5906,11 @@ EOF_SCRIPT
             _remote_managed_user_names() { :; }
             _remote_health_check_held_user_units() { :; }
             _remote_health_check_deferred_resources() {
-              printf 'service:zulip\tactivation_failed\t3\n'
+              printf '%s\n' '{"schema_version":1,"operation":"host_agent_generation_evidence","result":{"kind":"resource-deferred","domain":"desired-resource-state","host":"abird-zulip","transaction_id":"zulip-tearoff--item-001","projection_id":"zulip-tearoff","resource":"service:zulip","status":"deferred-held","state":"active","generation":3,"reason":"activation_failed","isolated":true}}'
             }
             _remote_health_check_podman_unhealthy_containers() { :; }
             _remote_health_check_podman_starting_containers() { :; }
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             """
         )
 
@@ -5325,7 +5919,7 @@ EOF_SCRIPT
             result.stderr,
         )
         self.assertIn(
-            "resource=service:zulip outcome=deferred-held reason=activation_failed generation=3",
+            '[host-agent-generation-evidence] {"schema_version":1,"operation":"host_agent_generation_evidence"',
             result.stderr,
         )
         self.assertIn("[health-check] ok", result.stderr)
@@ -5387,7 +5981,7 @@ EOF_SCRIPT
             }
 
             set +e
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             rc=$?
             set -e
             printf 'rc:%s\n' "$rc"
@@ -5445,7 +6039,7 @@ EOF_SCRIPT
             }
 
             set +e
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             rc=$?
             set -e
             printf 'rc:%s\n' "$rc"
@@ -5471,7 +6065,7 @@ EOF_SCRIPT
               [ "$calls" -ge 3 ] && return 0
               return 2
             }
-            _remote_post_switch_user_health_check
+            _remote_post_switch_user_health_check '' test-host
             printf 'calls:%s\n' "$calls"
             """,
         )
@@ -5508,7 +6102,7 @@ EOF_SCRIPT
             _remote_health_check_podman_unhealthy_containers() { :; }
             _remote_health_check_podman_starting_containers() { :; }
 
-            _remote_post_switch_user_health_check
+            _remote_post_switch_user_health_check '' test-host
             """,
         )
 
@@ -5532,7 +6126,7 @@ EOF_SCRIPT
             _remote_health_check_podman_starting_containers() { :; }
 
             set +e
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             rc=$?
             set -e
             printf 'rc:%s\\n' "$rc"
@@ -5563,7 +6157,7 @@ EOF_SCRIPT
             _remote_health_check_podman_starting_containers() { :; }
 
             set +e
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             rc=$?
             set -e
             printf 'rc:%s\\n' "$rc"
@@ -5643,7 +6237,7 @@ EOF_SCRIPT
             }
 
             set +e
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             rc=$?
             set -e
             printf 'rc:%s\n' "$rc"
@@ -5716,7 +6310,7 @@ EOF_SCRIPT
               return 0
             }
 
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             """,
             env={"TEST_RUNTIME_CONVERGED": str(marker)},
         )
@@ -5770,7 +6364,7 @@ EOF_SCRIPT
             }
 
             set +e
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             rc=$?
             set -e
             printf 'rc:%s\n' "$rc"
@@ -5825,7 +6419,7 @@ EOF_SCRIPT
             }
 
             set +e
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             rc=$?
             set -e
             printf 'rc:%s\\n' "$rc"
@@ -5868,7 +6462,7 @@ EOF_SCRIPT
             _remote_health_check_podman_starting_containers() { :; }
 
             set +e
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             rc=$?
             set -e
             printf 'rc:%s\\n' "$rc"
@@ -5912,7 +6506,7 @@ EOF_SCRIPT
             setpriv() { return 0; }
 
             set +e
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             rc=$?
             set -e
             printf 'rc:%s\\n' "$rc"
@@ -5972,7 +6566,7 @@ EOF_SCRIPT
             }
 
             set +e
-            _remote_post_switch_user_health_check_once
+            _remote_post_switch_user_health_check_once '' test-host
             rc=$?
             set -e
             printf 'rc:%s\\n' "$rc"
@@ -6068,7 +6662,7 @@ EOF_SCRIPT
             _remote_health_check_podman_unhealthy_containers() {{ :; }}
             _remote_health_check_podman_starting_containers() {{ :; }}
 
-            _remote_post_switch_user_health_check_once '{ignored_unit}'
+            _remote_post_switch_user_health_check_once '{ignored_unit}' test-host
             """
         )
 
@@ -6099,7 +6693,7 @@ EOF_SCRIPT
             _remote_health_check_podman_starting_containers() {{ :; }}
 
             set +e
-            _remote_post_switch_user_health_check_once '{ignored_unit}'
+            _remote_post_switch_user_health_check_once '{ignored_unit}' test-host
             rc=$?
             set -e
             printf 'rc:%s\n' "$rc"
@@ -6152,7 +6746,7 @@ EOF_SCRIPT
             _remote_health_check_rootless_mutations() {{ :; }}
 
             set +e
-            _remote_post_switch_user_health_check_once '{ignored_unit}'
+            _remote_post_switch_user_health_check_once '{ignored_unit}' test-host
             rc=$?
             set -e
             printf 'rc:%s\n' "$rc"
@@ -6237,12 +6831,12 @@ EOF_SCRIPT
     def test_post_switch_health_command_preserves_multiple_ignored_unit_names(self):
         result = self.run_script(
             """
-            build_post_switch_health_check_cmd $'one.service\ntwo.service' | tail -n 1
+            build_post_switch_health_check_cmd $'one.service\ntwo.service' abird-zulip | tail -n 1
             """
         )
 
         self.assertEqual(
-            r"_remote_post_switch_user_health_check $'one.service\ntwo.service'",
+            r"_remote_post_switch_user_health_check $'one.service\ntwo.service' abird-zulip",
             result.stdout.strip(),
         )
 
@@ -7483,7 +8077,7 @@ EOF_SCRIPT
               "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" \
               "$health_log_dir" "$health_status_dir" \
               0 1 successful
-            health_check_cmd="$(build_post_switch_health_check_cmd)"
+            health_check_cmd="$(build_post_switch_health_check_cmd '' app)"
             grep -F '[health-check] ok' <<<"$health_check_cmd"
             grep -F '_remote_health_check_expected_runtime ()' <<<"$health_check_cmd"
             grep -F '_remote_health_check_pending_start_job_for_unit ()' <<<"$health_check_cmd"

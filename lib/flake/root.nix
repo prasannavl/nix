@@ -3,16 +3,22 @@
   flake-utils ? inputs.flake-utils,
   nixpkgs ? inputs.nixpkgs,
   systems ? flake-utils.lib.defaultSystems,
-  stackProfiles ? import ../stacks,
-  # Repository composition enters exclusively through these defaulted
-  # arguments: the shared assembly below stays repository-blind, and each
-  # repository's manifest (flake.nix) declares its own facts (see
+  # Repository composition enters exclusively through these injected
+  # arguments; the shared assembly below names no repository path or stack set.
+  # The manifest (flake.nix) supplies them (see
   # .agents/docs/design-patterns/shared-test-areas.md).
-  servicePlacementFile ? null,
-  serviceMoveDirectory ? null,
+  repositoryConfig,
+  repositoryInventory,
+  # Runtime-only host/instance/resource projections: null when unsupported.
   phaseProjectionDirectory ? null,
+  # Runtime-only closeout and local-controller evidence, separate from stable
+  # service placement authority.
+  runtimeProjectionCloseoutsFile ? null,
+  # Shared host-agent service option; overridable when a repository ships the
+  # host agent under another name.
+  hostAgentServiceName ? "abird-host-agent",
   repoChecksFn ? ({...}: {}),
-  flakeProfileInputNames ? {
+  inputSetInputNames ? {
     default = {
       nixpkgs = "nixpkgs";
       homeManager = "home-manager";
@@ -21,11 +27,27 @@
       vscodeExt = "vscode-ext";
     };
   },
-  repoModules ? {},
-  repoRegistry ? {},
   defaultMachineProfileName ? null,
 }: let
-  nixRepoRegistry = repoRegistry.nix or null;
+  accountsLib = import ./accounts/lib.nix;
+  validation = import ../validation;
+  inherit (validation.mk "invalid flake root") require;
+  inherit (import ./service-stack.nix) isServiceStack;
+  canonicalStacks = repositoryConfig.stacks;
+  scopeStacks = repositoryConfig.scopeStacks;
+  fabrics = repositoryConfig.fabrics;
+  nixbotInventory =
+    if builtins.isFunction repositoryInventory
+    then repositoryInventory {stacks = canonicalStacks;}
+    else repositoryInventory;
+  inventoryNixCache = nixbotInventory.config.registries.nix or null;
+  repositoryNix = {
+    substituters = nixpkgs.lib.unique (
+      nixpkgs.lib.optional (inventoryNixCache != null) inventoryNixCache.url
+      ++ repositoryConfig.nix.substituters
+    );
+    trustedPublicKeys = repositoryConfig.nix.trustedPublicKeys;
+  };
   machineProfiles = {
     vm = {
       name = "vm";
@@ -41,13 +63,13 @@
     };
   };
 
-  overlaysFor = profileInputs: import ../../overlays {inputs = profileInputs;};
+  overlaysFor = inputSetInputs: import ../../overlays {inputs = inputSetInputs;};
 
-  mkFlakeProfile = name: inputNames: let
+  mkInputSet = name: inputNames: let
     selected = builtins.mapAttrs (_: inputName: inputs.${inputName}) inputNames;
-    # Each profile key selects a flake input; the selected values override the
-    # same-named flake inputs so hosts see e.g. flakeProfile.inputs.home-manager.
-    profileInputs =
+    # Each input-set key selects a flake input; the selected values override the
+    # same-named flake inputs so hosts see e.g. inputSet.inputs.home-manager.
+    inputSetInputs =
       inputs
       // nixpkgs.lib.mapAttrs'
       (profileKey: inputName: nixpkgs.lib.nameValuePair inputName selected.${profileKey})
@@ -56,49 +78,60 @@
     selected
     // {
       name = name;
-      inputs = profileInputs;
-      overlays = overlaysFor profileInputs;
+      inputs = inputSetInputs;
+      overlays = overlaysFor inputSetInputs;
     };
 
-  flakeProfiles = builtins.mapAttrs mkFlakeProfile flakeProfileInputNames;
+  inputSets = builtins.mapAttrs mkInputSet inputSetInputNames;
 
-  overlays = flakeProfiles.default.overlays;
+  overlays = inputSets.default.overlays;
 
-  servicePlacement = import ./service-placements.nix {
+  inventoryEndpointForHost = declaredHost: let
+    exact =
+      if builtins.hasAttr declaredHost nixbotInventory.hosts
+      then [declaredHost]
+      else [];
+    resourceMatches = builtins.filter (
+      host: (nixbotInventory.hosts.${host}.resourceId or host) == declaredHost
+    ) (builtins.attrNames nixbotInventory.hosts);
+    matches =
+      if exact != []
+      then exact
+      else resourceMatches;
+  in
+    assert require (builtins.length matches <= 1) "inventory host ${declaredHost} matches more than one resource identity";
+      if matches == []
+      then null
+      else let
+        host = builtins.head matches;
+        inventoryHost = nixbotInventory.hosts.${host};
+      in {
+        inherit host;
+        host_resource = "host:${inventoryHost.resourceId or host}";
+      };
+  projectionDomains = import ./projection-domains.nix {
     inherit (nixpkgs) lib;
-    file = servicePlacementFile;
-  };
-  canonicalStackProfiles = servicePlacement.applyToStacks stackProfiles;
-  legacyPhaseProjection = import ./phase-projection.nix {
-    inherit (nixpkgs) lib;
-    directory = phaseProjectionDirectory;
-  };
-  serviceMoves = import ./service-moves.nix {
-    inherit (nixpkgs) lib;
-    stacks = canonicalStackProfiles;
+    stacks = scopeStacks;
     inventory = nixbotInventory;
-    directory = serviceMoveDirectory;
+    scopeOwners = repositoryConfig.scopeOwners;
+    scopeDefinitions = repositoryConfig.scopeDefinitions;
+    repositoryProjections = repositoryConfig.projections;
+    phaseProjectionDirectory = phaseProjectionDirectory;
+    extraAdapters = repositoryConfig.projectionAdapters;
+    extraRuntimeAdapters = repositoryConfig.projectionRuntimeAdapters;
   };
-  servicePlacementAdmission = import ./service-placement-admission.nix {
+  phaseProjection = projectionDomains.phaseProjection;
+  serviceMoveContract = projectionDomains.contracts.serviceMoves;
+  servicePlacementDocument = projectionDomains.contracts.servicePlacements;
+  runtimeProjectionCloseouts = import ./runtime-projection-closeouts.nix {
     inherit (nixpkgs) lib;
-    baselineStacks = stackProfiles;
-    effectiveStacks = canonicalStackProfiles;
-    moveContract = serviceMoves.contract;
+    document =
+      if runtimeProjectionCloseoutsFile != null && builtins.pathExists runtimeProjectionCloseoutsFile
+      then builtins.fromJSON (builtins.readFile runtimeProjectionCloseoutsFile)
+      else null;
   };
-  phaseProjection = import ./phase-projection.nix {
-    inherit (nixpkgs) lib;
-    documents = legacyPhaseProjection.documents ++ serviceMoves.projections;
-  };
-  effectiveServicePlacements =
-    servicePlacement.document
-    // {
-      controller_reconcile_exclusions = nixpkgs.lib.unique (
-        servicePlacement.document.controller_reconcile_exclusions
-        ++ serviceMoves.contract.controller_reconcile_exclusions
-      );
-    };
-  effectiveStackProfiles = phaseProjection.applyToStacks canonicalStackProfiles;
-  nixbotInventory = import ../../hosts/nixbot.nix;
+  effectiveScopeStacks = projectionDomains.effectiveStacks;
+  effectiveStacks = repositoryConfig.materializeScopeStacks effectiveScopeStacks;
   nixbotControllerCapability = nixbotInventory.config.controller;
   nixbotInventoryHosts = builtins.attrNames nixbotInventory.hosts;
   nixbotControllerCandidates =
@@ -108,41 +141,41 @@
         == nixbotControllerCapability
     )
     nixbotInventoryHosts;
-  nixbotControllerHost = assert builtins.length nixbotControllerCandidates == 1;
+  nixbotControllerHost = assert require (builtins.length nixbotControllerCandidates == 1) "inventory controller capability ${nixbotControllerCapability} must select exactly one host";
     builtins.head nixbotControllerCandidates;
   closeoutRuntimeHosts = nixpkgs.lib.unique (
     builtins.concatMap
     (closeout: closeout.affected_hosts)
-    (builtins.attrValues servicePlacement.document.closeouts)
+    (builtins.attrValues runtimeProjectionCloseouts.closeouts)
   );
   projectionRuntimeHosts =
     builtins.filter (
       host: host != nixbotControllerHost
     )
-    (nixpkgs.lib.unique (phaseProjection.runtimeHosts ++ closeoutRuntimeHosts));
-  validatedProjectionRuntimeHosts = assert nixpkgs.lib.all (
-    host: builtins.elem host nixbotInventoryHosts
-  )
-  projectionRuntimeHosts; projectionRuntimeHosts;
+    (nixpkgs.lib.unique (projectionDomains.runtime.runtimeHosts ++ closeoutRuntimeHosts));
+  validatedProjectionRuntimeHosts = assert require (nixpkgs.lib.all (
+      host: builtins.elem host nixbotInventoryHosts
+    )
+    projectionRuntimeHosts) "projection runtime hosts must all exist in the deployment inventory"; projectionRuntimeHosts;
 
   rootLib = import ./. {
-    inherit flake-utils inputs nixpkgs overlays repoChecksFn;
-    stackProfiles = effectiveStackProfiles;
+    inherit flake-utils inputs nixpkgs overlays repoChecksFn repositoryConfig;
+    stacks = effectiveStacks;
   };
 
   packageOutputs = rootLib.outputsFor systems;
 
   repoModuleComposition = import ./repo-modules.nix {
     inherit (nixpkgs) lib;
-    inherit repoModules;
-    stackProfiles = effectiveStackProfiles;
+    repoModules = repositoryConfig.modules;
+    stacks = effectiveStacks;
   };
 
-  commonModulesFor = flakeProfile: selectedRepoModules:
+  commonModulesFor = inputSet: selectedRepoModules:
     [
-      flakeProfile.homeManager.nixosModules.home-manager
-      flakeProfile.agenix.nixosModules.default
-      {nixpkgs.overlays = flakeProfile.overlays;}
+      inputSet.homeManager.nixosModules.home-manager
+      inputSet.agenix.nixosModules.default
+      {nixpkgs.overlays = inputSet.overlays;}
       ../podman-compose
     ]
     ++ selectedRepoModules
@@ -151,17 +184,9 @@
       {imports = builtins.attrValues (builtins.removeAttrs rootLib.nixosModules ["default"]);}
     ];
 
-  defaultStack = {
-    nixosConfig = {...}: {
-      disabledUsers = {};
-      disabledGroups = {};
-      disabledActivationScripts = {};
-    };
-  };
-
   mkNixosSystem = {
     hostName,
-    flakeProfile ? flakeProfiles.default,
+    inputSet ? inputSets.default,
     machineProfile ? (
       if defaultMachineProfileName == null
       then null
@@ -171,45 +196,56 @@
     stack ? null,
     system ? "x86_64-linux",
   }: let
-    selectedInputs = flakeProfile.inputs;
-    effectiveStack =
-      if stack == null
-      then defaultStack
-      else stack;
+    selectedInputs = inputSet.inputs;
+    effectiveStack = stack;
     selectedMachineProfileModules =
       if machineProfile == null
       then []
       else [machineProfile.module];
     selectedRepoModules = repoModuleComposition.modulesFor stack;
-    repoModulePkgs = import flakeProfile.nixpkgs {
+    repoModulePkgs = import inputSet.nixpkgs {
       inherit system;
-      overlays = flakeProfile.overlays;
+      overlays = inputSet.overlays;
+    };
+    selectedAccounts =
+      if effectiveStack == null
+      then repositoryConfig.shared.accounts or null
+      else effectiveStack.accounts or null;
+    accounts =
+      if accountsLib.isAccounts selectedAccounts
+      then selectedAccounts
+      else if effectiveStack == null
+      then throw "stack-independent system ${hostName} requires a valid repository.shared.accounts contract"
+      else throw "stack ${effectiveStack.stackName or hostName} requires a valid accounts contract";
+    repository = {
+      inherit fabrics;
+      inventory = nixbotInventory;
+      nix = repositoryNix;
+      inherit (repositoryConfig) shared;
+      stacks = effectiveStacks;
     };
   in
-    flakeProfile.nixpkgs.lib.nixosSystem {
+    inputSet.nixpkgs.lib.nixosSystem {
       inherit system;
       specialArgs = {
-        inherit flakeProfile flakeProfiles hostName machineProfile machineProfiles system;
+        inherit accounts hostName inputSet inputSets machineProfile machineProfiles repository system;
         inputs = selectedInputs;
         inherit repoModulePkgs;
-        repoRegistry = nixRepoRegistry;
         stack = effectiveStack;
-        stacks = effectiveStackProfiles;
-        servicePlacements = effectiveServicePlacements;
-        serviceMoveContract = serviceMoves.contract;
-        inherit servicePlacementAdmission;
+        serviceMoveContract = serviceMoveContract;
+        inherit runtimeProjectionCloseouts;
+        projectionAdmission = projectionDomains.admission;
         phaseProjections = phaseProjection.documents;
       };
       modules =
-        commonModulesFor flakeProfile selectedRepoModules
+        commonModulesFor inputSet selectedRepoModules
         ++ [
           {
             system.configurationRevision = inputs.self.rev or null;
             home-manager.extraSpecialArgs = {
-              inherit flakeProfile flakeProfiles machineProfile machineProfiles;
+              inherit accounts inputSet inputSets machineProfile machineProfiles repository;
               inputs = selectedInputs;
               stack = effectiveStack;
-              stacks = effectiveStackProfiles;
             };
           }
         ]
@@ -273,10 +309,34 @@
       inherit devShells nixbot nixosConfigurations nixosImages pkgs;
       inherit (rootLib) nixosModules;
       hostManager = {
-        stacks = effectiveStackProfiles;
-        servicePlacements = effectiveServicePlacements;
-        serviceMoves = serviceMoves.contract;
-        inherit servicePlacementAdmission;
+        inherit (repositoryConfig) defaultSelection;
+        stacks = effectiveStacks;
+        scopes = effectiveScopeStacks;
+        servicePlacements = servicePlacementDocument;
+        inherit runtimeProjectionCloseouts;
+        serviceResourcesByHost =
+          nixpkgs.lib.mapAttrs
+          (_host: nixosConfig: nixosConfig.config.services.${hostAgentServiceName}.services)
+          nixosConfigurations;
+        scopeCatalog = projectionDomains.scopeCatalog;
+        serviceMoveRepositoryMutationsFor = projectionDomains.serviceMoveMutationsFor;
+        projectionDomains = {
+          schema_version = projectionDomains.schema_version;
+          inherit (projectionDomains) claims contracts repository runtime;
+          generation = projectionDomains.generation.domains;
+          admission = projectionDomains.admission;
+        };
+        projectionSnapshot = {
+          schema_version = 1;
+          repository = projectionDomains.repository;
+          service_moves = serviceMoveContract;
+          service_placements = servicePlacementDocument;
+          runtime_plans = projectionDomains.runtime.plans;
+          scope_role_endpoints = nixpkgs.lib.mapAttrs (_scope: stack:
+            nixpkgs.lib.filterAttrs (_role: endpoint: endpoint != null)
+            (nixpkgs.lib.mapAttrs (_role: role: inventoryEndpointForHost role.host) stack.serviceRegistry.roles))
+          (nixpkgs.lib.filterAttrs (_scope: isServiceStack) effectiveScopeStacks);
+        };
       };
       overlays.default = overlay;
     };

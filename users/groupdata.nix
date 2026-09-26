@@ -1,12 +1,12 @@
 {
   users,
-  userLib ? import ../lib/flake/stack/user-data-lib.nix,
+  accountsLib ? import ../lib/flake/accounts/lib.nix,
   ...
 }: {
   users = {
     name = "users";
     users =
-      userLib.userFilter {
+      accountsLib.userFilter {
         isActive = true;
         hasMail = true;
         id = true;

@@ -59,25 +59,18 @@ pub fn deploy_with_lines(
     command = command
         .arg(&policy.program)
         .args(["deploy", "--sha", revision]);
-    if request.exclude_hosts.is_empty() {
+    let host_selectors = request.host_selectors();
+    if host_selectors.len() == 1 {
         command = command.args(["--host", request.host.as_str()]);
     } else {
-        let selection = std::iter::once(request.host.as_str())
-            .chain(request.exclude_hosts.iter().map(|host| host.as_str()))
-            .enumerate()
-            .map(|(index, host)| {
-                if index == 0 {
-                    host.to_owned()
-                } else {
-                    format!("-{host}")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+        let selection = host_selectors.join(",");
         command = command.args(["--hosts", &selection]);
     }
     if let Some(nix_config) = &request.nix_config {
         command = command.args(["--nix-config", nix_config]);
+    }
+    if !request.required_hosts.is_empty() {
+        command = command.args(["--require-hosts", &request.required_hosts.join(",")]);
     }
     command
         .args([
@@ -97,10 +90,10 @@ pub fn deploy_with_lines(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     use super::*;
+    use crate::test_support::write_executable;
 
     #[test]
     fn keeps_connection_host_and_nix_config_separate() {
@@ -108,12 +101,11 @@ mod tests {
         let capture = temp.path().join("capture");
         let fake = temp.path().join("runuser");
         let config_override = temp.path().join("controller.override.nix");
-        fs::write(
+        write_executable(
             &fake,
             format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >{}\n", capture.display()),
         )
         .unwrap();
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(&config_override, "{}\n").unwrap();
         let mut policy = NixbotDeployPolicy {
             program: PathBuf::from("/nix/store/nixbot/bin/nixbot"),
@@ -132,6 +124,7 @@ mod tests {
             revision: Some("fedcba9876543210".to_owned()),
             nix_config: Some("abird-gondor-proxy-zulip-target".to_owned()),
             exclude_hosts: vec!["gap3-gondor".to_owned()],
+            required_hosts: vec!["abird-gondor-proxy".to_owned()],
         };
         deploy(&policy, &request).unwrap();
         let argv = fs::read_to_string(&capture).unwrap();
@@ -139,6 +132,7 @@ mod tests {
         assert!(argv.contains("NIXBOT_CONFIG_OVERRIDE_PATH="));
         assert!(argv.contains("abird-gondor-proxy,-gap3-gondor"));
         assert!(argv.contains("abird-gondor-proxy-zulip-target"));
+        assert!(argv.contains("--require-hosts\nabird-gondor-proxy"));
         assert!(argv.contains("--sha\nfedcba9876543210"));
         assert!(argv.contains("--build-plan-jobs\n1\n"));
         assert!(argv.contains("--build-jobs\n1\n"));

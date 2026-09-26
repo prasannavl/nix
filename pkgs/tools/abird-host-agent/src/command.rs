@@ -32,6 +32,7 @@ pub struct CommandSpec {
     arguments: Vec<OsString>,
     redacted_arguments: BTreeSet<usize>,
     environment: Vec<(OsString, OsString)>,
+    removed_environment: BTreeSet<OsString>,
     redacted_environment: BTreeSet<usize>,
     current_dir: Option<PathBuf>,
 }
@@ -55,6 +56,7 @@ impl CommandSpec {
             arguments: Vec::new(),
             redacted_arguments: BTreeSet::new(),
             environment: Vec::new(),
+            removed_environment: BTreeSet::new(),
             redacted_environment: BTreeSet::new(),
             current_dir: None,
         }
@@ -81,6 +83,11 @@ impl CommandSpec {
         self.redacted_environment.insert(self.environment.len());
         self.environment
             .push((key.as_ref().to_os_string(), value.as_ref().to_os_string()));
+        self
+    }
+
+    pub fn env_remove(mut self, key: impl AsRef<OsStr>) -> Self {
+        self.removed_environment.insert(key.as_ref().to_os_string());
         self
     }
 
@@ -133,7 +140,17 @@ impl CommandSpec {
             .collect()
     }
 
+    pub fn removed_environment(&self) -> Vec<String> {
+        self.removed_environment
+            .iter()
+            .map(|key| key.to_string_lossy().into_owned())
+            .collect()
+    }
+
     fn configure(&self, command: &mut Command) {
+        for key in &self.removed_environment {
+            command.env_remove(key);
+        }
         command.args(&self.arguments).envs(
             self.environment
                 .iter()
@@ -301,6 +318,14 @@ mod tests {
                 ("TOKEN".to_owned(), "<redacted>".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn command_builder_removes_inherited_environment() {
+        let command = CommandSpec::new("/bin/true")
+            .env_remove("SECOND")
+            .env_remove("FIRST");
+        assert_eq!(command.removed_environment(), ["FIRST", "SECOND"]);
     }
 
     #[test]

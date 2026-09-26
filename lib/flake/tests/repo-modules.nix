@@ -1,9 +1,8 @@
 {pkgs}: let
   inherit (pkgs) lib;
-  stackProfiles = {
-    alpha = {};
-    beta = {};
-    all = {};
+  stacks = {
+    alpha.stackName = "alpha";
+    beta.stackName = "beta";
   };
   repoModules = {
     repo.base = ../default.nix;
@@ -13,7 +12,7 @@
     };
   };
   composition = import ../repo-modules.nix {
-    inherit lib repoModules stackProfiles;
+    inherit lib repoModules stacks;
   };
   paths = modules: map toString modules;
   repoPath = toString ../default.nix;
@@ -21,7 +20,7 @@
   betaPath = toString ../packages.nix;
   invalid = repoModules:
     builtins.tryEval (builtins.deepSeq (import ../repo-modules.nix {
-        inherit lib repoModules stackProfiles;
+        inherit lib repoModules stacks;
       })
       true);
   unknownEffectiveStack = builtins.tryEval (builtins.deepSeq (composition.modulesFor {stackName = "missing";}) true);
@@ -30,12 +29,11 @@
   nonAttributeEffectiveStack = builtins.tryEval (builtins.deepSeq (composition.modulesFor "alpha") true);
 in
   assert paths (composition.modulesFor null) == [repoPath];
-  assert paths (composition.modulesFor {stackName = "all";}) == [repoPath];
   assert paths (composition.modulesFor {stackName = "alpha";}) == [repoPath alphaPath];
   assert paths (composition.modulesFor {stackName = "beta";}) == [repoPath betaPath];
   assert !(invalid {unexpected = {};}).success;
   assert !(invalid {stacks.missing.feature = ../root.nix;}).success;
-  assert !(invalid {stacks.all.feature = ../root.nix;}).success;
+  assert !(invalid {stacks.shared.feature = ../root.nix;}).success;
   assert !(invalid {repo.feature = {};}).success;
   assert !(invalid {repo.missing = /definitely-missing-repository-module.nix;}).success;
   assert !(invalid {

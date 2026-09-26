@@ -5,7 +5,7 @@
   trackedPath =
     if stack != null
     then stack.srv.trackedPath
-    else throw "cloudflare tunnel helper mkHostManagedTunnel requires a stack profile";
+    else throw "cloudflare tunnel helper mkHostManagedTunnel requires a stack";
 
   credentialBaseName = credentialsStoreName: let
     withoutJsonAge = lib.removeSuffix ".json.age" credentialsStoreName;

@@ -32,32 +32,23 @@ impl NixosGenerateConfig {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-
     use tempfile::tempdir;
 
     use super::*;
+    use crate::test_support::write_executable;
 
     #[test]
     fn captures_hardware_config_through_the_privilege_boundary() {
         let temporary = tempdir().unwrap();
         let privilege = temporary.path().join("privilege");
-        let staging = temporary.path().join("privilege.tmp");
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
-        let mut file = fs::File::create(&staging).unwrap();
-        file.write_all(
+        write_executable(
+            &privilege,
             format!(
                 "#!{shell}\nprintf '%s\\n' 'nixpkgs.hostPlatform = lib.mkDefault \"x86_64-linux\";'\n"
-            )
-            .as_bytes(),
+            ),
         )
         .unwrap();
-        file.sync_all().unwrap();
-        drop(file);
-        fs::set_permissions(&staging, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::rename(staging, &privilege).unwrap();
 
         let output = NixosGenerateConfig::new("/nix/store/generator")
             .unwrap()

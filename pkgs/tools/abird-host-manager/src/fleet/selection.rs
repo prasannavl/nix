@@ -2,13 +2,14 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use anyhow::{Result, bail};
 
-use super::inventory::{DeployMode, Inventory};
+use super::inventory::{DeployMode, Inventory, validate_host_name};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectionOptions {
     pub groups: Vec<String>,
     pub host: Option<String>,
     pub hosts: Option<String>,
+    pub required_hosts: Vec<String>,
     pub control_plane_first: bool,
     pub deploy_jobs_per_domain: usize,
 }
@@ -19,6 +20,7 @@ impl Default for SelectionOptions {
             groups: Vec::new(),
             host: None,
             hosts: None,
+            required_hosts: Vec::new(),
             control_plane_first: false,
             deploy_jobs_per_domain: 8,
         }
@@ -116,6 +118,22 @@ pub fn select(inventory: &Inventory, options: &SelectionOptions) -> Result<Selec
     }
     if ordered.is_empty() {
         bail!("all selected hosts are skipped");
+    }
+    let mut missing = Vec::new();
+    for host in stable_unique(options.required_hosts.iter().cloned()) {
+        validate_host_name(&host)?;
+        if !inventory.hosts.contains_key(&host) {
+            bail!("unknown required deployment host: {host}");
+        }
+        if !ordered.contains(&host) {
+            missing.push(host);
+        }
+    }
+    if !missing.is_empty() {
+        bail!(
+            "Resolved deployment selection does not cover required hosts: {}",
+            missing.join(", ")
+        );
     }
     let levels = dependency_levels(inventory, &ordered, &control_plane)?;
     let waves = capacity_waves(inventory, &levels, options.deploy_jobs_per_domain)?;

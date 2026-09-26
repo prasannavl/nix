@@ -8,7 +8,7 @@
     inherit machineProfiles mkNixosSystem stacks;
   };
   installerImages = import ../installer {
-    inherit mkNixosSystem stacks hosts;
+    inherit hosts mkNixosSystem;
   };
 in {
   installer = installerImages;
@@ -16,7 +16,6 @@ in {
   incus-lxc-base = mkNixosSystem {
     system = "x86_64-linux";
     hostName = "nixos";
-    stack = stacks.all;
     machineProfile = machineProfiles.incusLxc;
     modules = [./incus-lxc-base.nix];
   };
@@ -24,7 +23,6 @@ in {
   incus-vm-base = mkNixosSystem {
     system = "x86_64-linux";
     hostName = "nixos";
-    stack = stacks.all;
     machineProfile = machineProfiles.incusVm;
     modules = [./incus-vm-base.nix];
   };

@@ -463,6 +463,7 @@ mod tests {
             program: "tool".to_owned(),
             args: vec!["secret-argument-is-not-logged".to_owned()],
             environment: Vec::new(),
+            clear_git_repository_environment: false,
             cwd: temporary.path().to_path_buf(),
             stdin: Some("secret-input-is-not-logged".to_owned()),
             effect: super::super::host_runtime::EffectKind::ReadOnly,

@@ -523,8 +523,9 @@ fn default_true() -> bool {
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::fs::symlink;
+
+    use crate::test_support::write_executable;
 
     fn request(program: PathBuf, operation: InstanceBackupAction) -> InstanceBackupRequest {
         InstanceBackupRequest {
@@ -572,12 +573,11 @@ mod tests {
     fn export_is_idempotent_verified_and_deletable() {
         let temp = tempfile::tempdir().unwrap();
         let program = temp.path().join("incus");
-        fs::write(
+        write_executable(
             &program,
             "#!/bin/sh\nif [ \"$1\" = export ]; then printf 'portable-backup' > \"$3\"; fi\n",
         )
         .unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
         let backup_root = temp.path().join("backups");
         let resource = "instance:demo";
         let archive_root = backup_root

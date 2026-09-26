@@ -6,8 +6,8 @@ already own their own helper/module surface, such as `lib/incus/tests`,
 `lib/podman-compose/tests`, and `lib/systemd-user-manager/tests`.
 
 Use `lib/flake/tests` for the isolated `lib/flake` helper surface. These tests
-should avoid depending on repo host modules or real stack profiles unless that
-is the behavior being tested.
+should avoid depending on repo host modules or real stacks unless that is the
+behavior being tested.
 
 Root flake `checks` should expose these lib tests directly so `nix flake check`
 and targeted `nix build .#checks.<system>.<name>` runs exercise them. The broad

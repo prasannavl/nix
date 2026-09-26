@@ -421,19 +421,13 @@ fn parse_entries(output: &[u8]) -> (Vec<Value>, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};
 
     use super::*;
+    use crate::test_support::write_executable;
 
     fn executable(path: &std::path::Path, body: &str) {
-        // Publish a closed inode atomically. Executing a just-written script can
-        // otherwise race with overlay-backed Nix build directories and fail
-        // spuriously with ETXTBSY under parallel tests.
-        let staging = path.with_extension("tmp");
-        fs::write(&staging, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&staging, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::rename(staging, path).unwrap();
+        write_executable(path, format!("#!/bin/sh\n{body}\n")).unwrap();
     }
 
     #[test]

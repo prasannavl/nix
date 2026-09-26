@@ -18,9 +18,12 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/design-patterns/ai-model-ownership.md`: Exact managed-model
   ownership, ad-hoc retention, preservation handoff, API-only reconciliation,
   and compose-derived backend projection rules.
+- `.agents/docs/design-patterns/dual-projection-domains.md`: Generic
+  repository-intent fold, generation/runtime projections, publication,
+  admission, and extension-domain boundaries.
 - `.agents/docs/design-patterns/host-control-integration-boundaries.md`: Shared
   host-control composition, publication, admission, and engine compatibility
-  boundaries, with Pvl topology ownership and pending upstream APIs explicit.
+  boundaries with the landed Pvl repository composition explicit.
 
 - `.agents/docs/design-patterns/external-source-units.md`: Canonical external
   package ownership, `sources.nix` discovery, report-only and update-capable
@@ -29,7 +32,13 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/design-patterns/dns.md`: Durable DNS change-management rules for
   the repo Cloudflare stack.
 - `.agents/docs/design-patterns/nix-native-service-moves.md`: Canonical
-  Nix-authored service-move, two-stage closeout, admission, and compatibility
+  Nix-authored multi-service move, two-stage closeout, admission, and recovery
+  boundaries.
+- `.agents/docs/design-patterns/package-project-boundaries.md`: Package,
+  repository configuration, standalone evaluation, and future isolated-flake
+  boundaries.
+- `.agents/docs/design-patterns/phase-projection-control-plane.md`: Runtime-only
+  projection kernel, host-agent reconciliation, evidence, and controller
   boundaries.
 - `.agents/docs/design-patterns/external-service-secret-placement.md`:
   Stack-scoped external-provider secret placement under
@@ -45,8 +54,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/design-patterns/repository-module-composition.md`: Canonical
   repository and stack module registry, selection, validation, package-adapter,
   and evaluation-cycle boundaries.
-- `.agents/docs/design-patterns/stack-first-environments.md`: Stack-first
-  environment, service-registry, package-boundary, and deferred-consumer rules.
+- `.agents/docs/design-patterns/repository-configuration-model.md`: Canonical
+  configuration-family, stack, placement, scope, account, input-set, and
+  repository-manifest vocabulary and topology.
 - `.agents/docs/design-patterns/tunnels-and-static-origins.md`: Tunnel edge-IP
   policy and static-origin rollout rules.
 - `.agents/docs/design-patterns/shared-test-areas.md`: Canonical split of shared
@@ -537,6 +547,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/abird-nix-native-projection-port-2026-09.md`:
+  Commit-by-commit Abird projection port, Pvl repository adaptations, exact
+  shared-tree parity, and validation boundary.
 - `.agents/docs/notes/tooling/abird-post-28631f93-audit-2026-09.md`: Shared
   convergence audit of the twelve-commit range through `857ac6eb`, per-commit
   statuses, the generic NATS/repository-module/AI/PrismML units, and byte/mode

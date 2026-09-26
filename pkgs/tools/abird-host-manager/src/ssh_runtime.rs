@@ -147,7 +147,7 @@ fn absolute_from_current_dir(path: PathBuf) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use crate::test_support::write_executable;
 
     #[test]
     fn plain_identity_is_returned_without_materialization() {
@@ -163,8 +163,7 @@ mod tests {
     fn encrypted_identity_is_materialized_once_with_private_permissions() {
         let temp = tempfile::tempdir().unwrap();
         let age = temp.path().join("age");
-        fs::write(&age, "#!/bin/sh\nset -eu\ncp -- \"$6\" \"$5\"\n").unwrap();
-        fs::set_permissions(&age, fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable(&age, "#!/bin/sh\nset -eu\ncp -- \"$6\" \"$5\"\n").unwrap();
         let decrypt_identity = temp.path().join("decrypt-identity");
         fs::write(&decrypt_identity, "dummy\n").unwrap();
         let source = temp.path().join("nixbot.key.age");

@@ -18,13 +18,12 @@ use crate::progress::{
 use crate::projection::{ActivationReceipt, PhaseProjection};
 use crate::workflow::{AuthorityKey, MoveItem, TransactionSpec, validate_workflow_id};
 use crate::{
-    Action, Store, Transaction, execute_action_until, plan_retire_pending_action,
-    reset_action_epoch, supersede_active_job,
+    Action, ProjectedJobIdentity, Store, Transaction, execute_action_until,
+    plan_retire_pending_action, reset_action_epoch, supersede_active_job,
 };
 
-pub const TRANSACTION_RECORD_SCHEMA_VERSION: u32 = 1;
-pub const COMMAND_PLAN_SCHEMA_VERSION: u32 = 1;
-
+pub const TRANSACTION_RECORD_SCHEMA_VERSION: u32 = 2;
+pub const COMMAND_PLAN_SCHEMA_VERSION: u32 = 2;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LifecycleCommand {
@@ -71,6 +70,18 @@ pub enum CommandStatus {
     Failed,
 }
 
+/// Repository authority selected when a durable command plan is created.
+///
+/// This belongs to the command journal rather than the CLI invocation: resume
+/// and close reconciliation must continue the exact publication authority that
+/// owns the already-running command.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandPublicationMode {
+    Remote,
+    Local,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepStatus {
@@ -101,13 +112,9 @@ pub struct CommandStepExecution {
     pub executor: String,
     pub input_sha256: String,
     pub status: StepStatus,
-    #[serde(default)]
     pub attempt: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
 }
 
@@ -146,7 +153,7 @@ pub struct CommandExecution {
     pub from_state: LifecycleState,
     pub desired_state: LifecycleState,
     pub status: CommandStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_mode: Option<CommandPublicationMode>,
     pub close_decision: Option<CloseDecision>,
     pub steps: Vec<CommandStepExecution>,
     pub created_at_unix_ms: u128,
@@ -217,37 +224,26 @@ pub struct TransactionRecord {
     pub config: PathBuf,
     pub phase: WorkflowPhase,
     pub pending_action: Option<Action>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lifecycle_state: Option<LifecycleState>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data_authority: Option<DataAuthority>,
-    #[serde(default)]
+    pub lifecycle_state: LifecycleState,
+    pub data_authority: DataAuthority,
     pub run_epoch: u64,
-    #[serde(default)]
     pub current_run_succeeded: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub close_decision: Option<CloseDecision>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command_executions: Vec<CommandExecution>,
-    #[serde(default)]
     pub items: BTreeMap<String, Transaction>,
-    /// Last desired projection published for new repository-backed moves.
-    /// Missing means this is a legacy runtime-only transaction.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Last desired projection published for repository-backed moves. `null`
+    /// is allowed only during the initial registration/publication window.
     pub projection: Option<PhaseProjection>,
     /// Superseded projections retained by digest so mixed deploy/runtime
     /// reconciliation can inspect the exact prior generation after Git has
     /// advanced to a compensating phase.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub projection_history: BTreeMap<String, PhaseProjection>,
     /// Concrete authority evidence retained independently from desired state.
     /// Repository deployment and manager-brokered receipt are co-equal
     /// issuers, but only the latter proves runtime preparation.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub activation_authorizations: BTreeMap<String, ActivationAuthorization>,
     pub created_at_unix_ms: u128,
     pub updated_at_unix_ms: u128,
-    #[serde(default)]
     pub events: Vec<WorkflowEvent>,
 }
 
@@ -278,8 +274,8 @@ impl TransactionRecord {
             config,
             phase: WorkflowPhase::Planned,
             pending_action: None,
-            lifecycle_state: Some(LifecycleState::SourceActive),
-            data_authority: Some(DataAuthority::Source),
+            lifecycle_state: LifecycleState::SourceActive,
+            data_authority: DataAuthority::Source,
             run_epoch: 0,
             current_run_succeeded: false,
             close_decision: None,
@@ -298,39 +294,6 @@ impl TransactionRecord {
         &self.spec.id
     }
 
-    pub fn effective_lifecycle_state(&self) -> LifecycleState {
-        self.lifecycle_state.unwrap_or(match self.phase {
-            WorkflowPhase::Planned => LifecycleState::SourceActive,
-            WorkflowPhase::Setup | WorkflowPhase::Seeded => LifecycleState::Moved,
-            WorkflowPhase::Prepared | WorkflowPhase::Verified => LifecycleState::Prepared,
-            WorkflowPhase::Cutover => LifecycleState::TargetActive,
-            WorkflowPhase::RolledBack => LifecycleState::ClosingRollback,
-            WorkflowPhase::Closed => {
-                if self.close_decision == Some(CloseDecision::Complete) {
-                    LifecycleState::ClosedOnTarget
-                } else {
-                    LifecycleState::ClosedOnSource
-                }
-            }
-        })
-    }
-
-    pub fn effective_data_authority(&self) -> DataAuthority {
-        self.data_authority.unwrap_or_else(|| {
-            if self.phase == WorkflowPhase::Cutover
-                || self.items.values().any(|item| item.target_ever_started)
-                    && !matches!(
-                        self.phase,
-                        WorkflowPhase::RolledBack | WorkflowPhase::Closed
-                    )
-            {
-                DataAuthority::Target
-            } else {
-                DataAuthority::Source
-            }
-        })
-    }
-
     pub fn select_close_decision(
         &mut self,
         requested: Option<CloseDecision>,
@@ -347,10 +310,10 @@ impl TransactionRecord {
             Some(existing) => Ok(existing),
             None => {
                 self.close_decision = Some(selected);
-                self.lifecycle_state = Some(match selected {
+                self.lifecycle_state = match selected {
                     CloseDecision::Complete => LifecycleState::ClosingComplete,
                     CloseDecision::Rollback => LifecycleState::ClosingRollback,
-                });
+                };
                 Ok(selected)
             }
         }
@@ -363,15 +326,70 @@ impl TransactionRecord {
         close_decision: Option<CloseDecision>,
         step_ids: impl IntoIterator<Item = impl Into<String>>,
     ) -> Result<usize> {
+        self.begin_command_inner(command, desired_state, close_decision, None, step_ids)
+    }
+
+    pub fn begin_publication_command(
+        &mut self,
+        command: LifecycleCommand,
+        desired_state: LifecycleState,
+        close_decision: Option<CloseDecision>,
+        publication_mode: CommandPublicationMode,
+        step_ids: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<usize> {
+        self.begin_command_inner(
+            command,
+            desired_state,
+            close_decision,
+            Some(publication_mode),
+            step_ids,
+        )
+    }
+
+    fn begin_command_inner(
+        &mut self,
+        command: LifecycleCommand,
+        desired_state: LifecycleState,
+        close_decision: Option<CloseDecision>,
+        publication_mode: Option<CommandPublicationMode>,
+        step_ids: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<usize> {
+        let step_ids = step_ids.into_iter().map(Into::into).collect::<Vec<_>>();
         if let Some(index) = self
             .command_executions
             .iter()
             .rposition(|execution| execution.status == CommandStatus::Running)
         {
             let execution = &self.command_executions[index];
-            if execution.command != command || execution.close_decision != close_decision {
+            if execution.command != command
+                || execution.desired_state != desired_state
+                || execution.close_decision != close_decision
+            {
                 bail!(
-                    "transaction has running {:?} command {}; resume it before starting {command:?}",
+                    "transaction has running {:?} command {} with different frozen intent; resume it before starting {command:?}",
+                    execution.command,
+                    execution.id
+                );
+            }
+            if let (Some(existing), Some(requested)) =
+                (execution.publication_mode, publication_mode)
+                && existing != requested
+            {
+                bail!(
+                    "transaction has running {:?} command {} with {existing:?} publication authority; refusing {requested:?}",
+                    execution.command,
+                    execution.id
+                );
+            }
+            let frozen_steps = execution
+                .steps
+                .iter()
+                .map(|step| step.id.as_str())
+                .collect::<Vec<_>>();
+            let requested_steps = step_ids.iter().map(String::as_str).collect::<Vec<_>>();
+            if frozen_steps != requested_steps {
+                bail!(
+                    "transaction has running {:?} command {} with an incompatible frozen step plan",
                     execution.command,
                     execution.id
                 );
@@ -388,13 +406,14 @@ impl TransactionRecord {
             ),
             schema_version: COMMAND_PLAN_SCHEMA_VERSION,
             command,
-            from_state: self.effective_lifecycle_state(),
+            from_state: self.lifecycle_state,
             desired_state,
             status: CommandStatus::Running,
+            publication_mode,
             close_decision,
             steps: step_ids
                 .into_iter()
-                .map(|step| CommandStepExecution::pending(self.id(), command, step.into()))
+                .map(|step| CommandStepExecution::pending(self.id(), command, step))
                 .collect(),
             created_at_unix_ms: now,
             updated_at_unix_ms: now,
@@ -462,6 +481,12 @@ impl TransactionRecord {
             bail!("step {step_id:?} was not started");
         }
         let already_succeeded = step.status == StepStatus::Succeeded;
+        if already_succeeded {
+            if step.evidence != evidence {
+                bail!("step {step_id:?} already succeeded with different durable evidence");
+            }
+            return Ok(());
+        }
         let description = step.description.clone();
         step.status = StepStatus::Succeeded;
         step.evidence = evidence;
@@ -469,9 +494,7 @@ impl TransactionRecord {
         let now = now_unix_ms()?;
         command.updated_at_unix_ms = now;
         self.updated_at_unix_ms = now;
-        if !already_succeeded {
-            command_step_completed(&description);
-        }
+        command_step_completed(&description);
         Ok(())
     }
 
@@ -578,7 +601,7 @@ impl TransactionRecord {
             bail!("cannot complete a command with unfinished steps");
         }
         command.status = CommandStatus::Succeeded;
-        self.lifecycle_state = Some(command.desired_state);
+        self.lifecycle_state = command.desired_state;
         let now = now_unix_ms()?;
         command.updated_at_unix_ms = now;
         self.updated_at_unix_ms = now;
@@ -689,6 +712,43 @@ impl TransactionRecord {
 
     pub fn set_projection(&mut self, projection: PhaseProjection) -> Result<()> {
         projection.validate()?;
+        for resource in &projection.resources {
+            let Some(job_id) = resource.endpoint.activation_job_id.as_ref() else {
+                continue;
+            };
+            let (item_id, action, operation) = match resource.role.as_str() {
+                "source" => (
+                    resource.id.strip_suffix(":source"),
+                    Action::Rollback,
+                    "activate-source",
+                ),
+                "target" => (
+                    resource.id.strip_suffix(":target"),
+                    Action::Cutover,
+                    "activate-target",
+                ),
+                role => bail!("projected activation has unsupported resource role {role:?}"),
+            };
+            let item_id =
+                item_id.context("projected activation resource has no canonical item suffix")?;
+            let child = self.items.get_mut(item_id).with_context(|| {
+                format!("projected activation references unknown transaction item {item_id:?}")
+            })?;
+            if resource.endpoint.transaction_id.as_deref() != Some(child.id.as_str()) {
+                bail!("projected activation transaction identity does not match its item journal");
+            }
+            let step_id = format!("{}:{operation}", action.as_str());
+            let generation = child.job_generations.get(&step_id).copied().unwrap_or(0);
+            let attempt = projected_activation_attempt(&child.id, action, operation, job_id)?;
+            child.projected_job_ids.insert(
+                step_id,
+                ProjectedJobIdentity {
+                    generation,
+                    attempt,
+                    job_id: job_id.clone(),
+                },
+            );
+        }
         if let Some(previous) = self.projection.take()
             && previous.projection_sha256 != projection.projection_sha256
         {
@@ -718,6 +778,31 @@ impl TransactionRecord {
             })
             .collect()
     }
+}
+
+fn projected_activation_attempt(
+    transaction_id: &str,
+    action: Action,
+    operation: &str,
+    job_id: &str,
+) -> Result<u64> {
+    let base = format!("{transaction_id}-{}-{operation}", action.as_str());
+    if job_id == base {
+        return Ok(1);
+    }
+    let retry = job_id
+        .strip_prefix(&format!("{base}-attempt-"))
+        .with_context(|| {
+            format!("projected activation job {job_id:?} is not canonical for {transaction_id:?}")
+        })?
+        .parse::<u64>()
+        .context("projected activation retry suffix is not an integer")?;
+    if retry == 0 {
+        bail!("projected activation retry suffix must be positive");
+    }
+    retry
+        .checked_add(1)
+        .context("projected activation attempt overflow")
 }
 
 fn lifecycle_command_name(command: LifecycleCommand) -> &'static str {
@@ -993,15 +1078,17 @@ fn reject_active_backup_overlap_at(root: &Path, candidate: &TransactionRecord) -
 }
 
 fn read_transaction_record(path: &Path, expected_id: &str) -> Result<TransactionRecord> {
-    let record: TransactionRecord =
+    let raw: serde_json::Value =
         serde_json::from_reader(BufReader::new(File::open(path).with_context(|| {
             format!("failed to open transaction record {}", path.display())
         })?))
         .with_context(|| format!("failed to parse transaction record {}", path.display()))?;
-    validate_record(&record)?;
+    let record: TransactionRecord = serde_json::from_value(raw)
+        .with_context(|| format!("failed to parse transaction record {}", path.display()))?;
     if record.id() != expected_id {
         bail!("transaction record ID does not match its filename");
     }
+    validate_record(&record)?;
     Ok(record)
 }
 
@@ -1105,30 +1192,30 @@ pub fn execute_workflow_action_until(
     record.phase = workflow_phase_after(action);
     record.pending_action = None;
     match action {
-        Action::Seed => record.lifecycle_state = Some(LifecycleState::Moved),
+        Action::Seed => record.lifecycle_state = LifecycleState::Moved,
         Action::Prepare => {
             record.run_epoch = record
                 .run_epoch
                 .checked_add(1)
                 .context("run epoch overflow")?;
             record.current_run_succeeded = false;
-            record.lifecycle_state = Some(LifecycleState::Prepared);
+            record.lifecycle_state = LifecycleState::Prepared;
         }
         Action::Cutover => {
             record.current_run_succeeded = true;
-            record.data_authority = Some(DataAuthority::Target);
-            record.lifecycle_state = Some(LifecycleState::TargetActive);
+            record.data_authority = DataAuthority::Target;
+            record.lifecycle_state = LifecycleState::TargetActive;
         }
         Action::Rollback => {
             record.current_run_succeeded = false;
-            record.data_authority = Some(DataAuthority::Source);
-            record.lifecycle_state = Some(LifecycleState::ClosingRollback);
+            record.data_authority = DataAuthority::Source;
+            record.lifecycle_state = LifecycleState::ClosingRollback;
         }
         Action::Close => {
-            record.lifecycle_state = Some(match record.close_decision {
+            record.lifecycle_state = match record.close_decision {
                 Some(CloseDecision::Complete) => LifecycleState::ClosedOnTarget,
                 _ => LifecycleState::ClosedOnSource,
-            });
+            };
         }
         _ => {}
     }
@@ -1196,7 +1283,7 @@ pub fn plan_workflow_action(record: &mut TransactionRecord, action: Action) -> R
         }
         None => {
             record.pending_action = Some(action);
-            record.lifecycle_state = Some(match action {
+            record.lifecycle_state = match action {
                 Action::Prepare => LifecycleState::Preparing,
                 Action::Cutover => LifecycleState::Running,
                 Action::Rollback => LifecycleState::ClosingRollback,
@@ -1204,8 +1291,8 @@ pub fn plan_workflow_action(record: &mut TransactionRecord, action: Action) -> R
                     Some(CloseDecision::Complete) => LifecycleState::ClosingComplete,
                     _ => LifecycleState::ClosingRollback,
                 },
-                _ => record.effective_lifecycle_state(),
-            });
+                _ => record.lifecycle_state,
+            };
             if action == Action::Prepare {
                 record.current_run_succeeded = false;
             }
@@ -1328,7 +1415,7 @@ pub fn plan_terminal_failed_run_for_prepare(
     }
 
     record.pending_action = None;
-    record.lifecycle_state = Some(LifecycleState::Prepared);
+    record.lifecycle_state = LifecycleState::Prepared;
     record.current_run_succeeded = false;
     event(
         record,
@@ -1809,7 +1896,7 @@ fn validate_record(record: &TransactionRecord) -> Result<()> {
     {
         if record.phase != WorkflowPhase::Closed || record.projection_history.is_empty() {
             bail!(
-                "legacy transaction cannot retain projection history or activation authorizations"
+                "non-projected transaction cannot retain projection history or activation authorizations"
             );
         }
         for (digest, historical) in &record.projection_history {
@@ -2053,6 +2140,16 @@ mod tests {
         record
             .complete_command_step(execution, "check", Some(serde_json::json!({"ok": true})))
             .unwrap();
+        record
+            .complete_command_step(execution, "check", Some(serde_json::json!({"ok": true})))
+            .unwrap();
+        assert!(
+            record
+                .complete_command_step(execution, "check", Some(serde_json::json!({"ok": false})))
+                .unwrap_err()
+                .to_string()
+                .contains("different durable evidence")
+        );
         record.start_command_step(execution, "mutate").unwrap();
         record
             .fail_command_step(execution, "mutate", "terminal failure")
@@ -2070,6 +2167,75 @@ mod tests {
             .unwrap();
         assert_ne!(execution, successor);
         assert!(record.command_executions[successor].id.ends_with("/0002"));
+    }
+
+    #[test]
+    fn publication_command_mode_is_durable_and_round_trips() {
+        let spec = TransactionSpec::new(
+            Some("move-publication-mode"),
+            vec![service("chat", "zulip", "source", "target")],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut record = TransactionRecord::new(spec, "/tmp/config.json".into()).unwrap();
+        let execution = record
+            .begin_publication_command(
+                LifecycleCommand::Run,
+                LifecycleState::TargetActive,
+                None,
+                CommandPublicationMode::Local,
+                ["git.retain-local-projection"],
+            )
+            .unwrap();
+        assert_eq!(
+            record.command_executions[execution].publication_mode,
+            Some(CommandPublicationMode::Local)
+        );
+        assert!(
+            record
+                .begin_publication_command(
+                    LifecycleCommand::Run,
+                    LifecycleState::TargetActive,
+                    None,
+                    CommandPublicationMode::Remote,
+                    ["git.push-projection"],
+                )
+                .is_err()
+        );
+        assert!(
+            record
+                .begin_publication_command(
+                    LifecycleCommand::Run,
+                    LifecycleState::TargetActive,
+                    None,
+                    CommandPublicationMode::Local,
+                    ["git.retain-local-projection", "unexpected"],
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("incompatible frozen step plan")
+        );
+        assert!(
+            record
+                .begin_publication_command(
+                    LifecycleCommand::Run,
+                    LifecycleState::Prepared,
+                    None,
+                    CommandPublicationMode::Local,
+                    ["git.retain-local-projection"],
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("different frozen intent")
+        );
+
+        let decoded: TransactionRecord =
+            serde_json::from_value(serde_json::to_value(record).unwrap()).unwrap();
+        assert_eq!(
+            decoded.command_executions[execution].publication_mode,
+            Some(CommandPublicationMode::Local)
+        );
     }
 
     #[test]
@@ -2134,20 +2300,31 @@ mod tests {
     }
 
     #[test]
-    fn legacy_transaction_record_without_projection_remains_readable() {
+    fn version_one_transaction_records_are_not_current_journals() {
         let spec = TransactionSpec::new(
-            Some("move-legacy"),
+            Some("move-historical"),
             vec![service("chat", "zulip", "source", "target")],
             Vec::new(),
             Vec::new(),
         )
         .unwrap();
         let record = TransactionRecord::new(spec, "/tmp/config.json".into()).unwrap();
-        let mut value = serde_json::to_value(record).unwrap();
-        value.as_object_mut().unwrap().remove("projection");
-        let decoded: TransactionRecord = serde_json::from_value(value).unwrap();
-        assert!(decoded.projection.is_none());
-        validate_record(&decoded).unwrap();
+        let mut incomplete = serde_json::to_value(&record).unwrap();
+        incomplete
+            .as_object_mut()
+            .unwrap()
+            .remove("lifecycle_state");
+        assert!(serde_json::from_value::<TransactionRecord>(incomplete).is_err());
+
+        let mut retired = serde_json::to_value(record).unwrap();
+        retired["schema_version"] = serde_json::json!(1);
+        let retired: TransactionRecord = serde_json::from_value(retired).unwrap();
+        assert!(
+            validate_record(&retired)
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported transaction-record schema version 1")
+        );
     }
 
     #[test]
@@ -2187,6 +2364,7 @@ mod tests {
         )
         .unwrap();
         spec.declarative_scope = Some("demo".to_owned());
+        spec.repository_owner = Some("demo".to_owned());
         let seeded = MoveProjector::derive(&spec, &config, MovePhase::Seeded, None, None).unwrap();
         let prepared =
             MoveProjector::derive(&spec, &config, MovePhase::Prepared, Some(&seeded), None)
@@ -2371,6 +2549,18 @@ mod tests {
     }
 
     #[test]
+    fn archived_transaction_records_are_outside_the_active_store() {
+        let state = TempDir::new().unwrap();
+        let archive = state.path().join("workflow-transaction-archive");
+        fs::create_dir(&archive).unwrap();
+        fs::write(archive.join("retired.json"), b"retained audit bytes\n").unwrap();
+
+        let store = WorkflowStore::read_only(state.path().to_path_buf());
+        assert!(store.list().unwrap().is_empty());
+        assert!(!store.contains("retired").unwrap());
+    }
+
+    #[test]
     fn parent_record_refreshes_durable_child_progress_after_interruption() {
         let state = TempDir::new().unwrap();
         let store = WorkflowStore::open(state.path().to_path_buf()).unwrap();
@@ -2520,6 +2710,46 @@ mod tests {
     }
 
     #[test]
+    fn projected_activation_attempts_accept_only_the_canonical_nix_grammar() {
+        let transaction = "move-suite--item-002";
+        assert_eq!(
+            projected_activation_attempt(
+                transaction,
+                Action::Cutover,
+                "activate-target",
+                "move-suite--item-002-cutover-activate-target",
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            projected_activation_attempt(
+                transaction,
+                Action::Cutover,
+                "activate-target",
+                "move-suite--item-002-cutover-activate-target-attempt-4",
+            )
+            .unwrap(),
+            5
+        );
+        for invalid in [
+            "move-suite--item-002-cutover-activate-target-attempt-0",
+            "move-suite--item-002-cutover-activate-target-attempt-x",
+            "move-suite--item-001-cutover-activate-target",
+        ] {
+            assert!(
+                projected_activation_attempt(
+                    transaction,
+                    Action::Cutover,
+                    "activate-target",
+                    invalid,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn prepare_retires_a_terminal_failed_run_and_starts_a_fresh_epoch() {
         let state = TempDir::new().unwrap();
         let store = WorkflowStore::open(state.path().to_path_buf()).unwrap();
@@ -2535,7 +2765,7 @@ mod tests {
         )
         .unwrap();
         record.phase = WorkflowPhase::Prepared;
-        record.lifecycle_state = Some(LifecycleState::Running);
+        record.lifecycle_state = LifecycleState::Running;
         record.pending_action = Some(Action::Cutover);
         record.current_run_succeeded = true;
         let run = record
@@ -2581,14 +2811,14 @@ mod tests {
         assert_eq!(retired, ["move-reprepare--chat-cutover-activate-target"]);
         assert_eq!(record.command_executions[run].status, CommandStatus::Failed);
         assert_eq!(record.pending_action, None);
-        assert_eq!(record.lifecycle_state, Some(LifecycleState::Prepared));
+        assert_eq!(record.lifecycle_state, LifecycleState::Prepared);
         assert!(!record.current_run_succeeded);
         assert_eq!(record.items["chat"].pending_action, None);
         assert_eq!(record.items["chat"].active_job_id, None);
 
         begin_workflow_action(&store, &mut record, Action::Prepare).unwrap();
         assert_eq!(record.pending_action, Some(Action::Prepare));
-        assert_eq!(record.lifecycle_state, Some(LifecycleState::Preparing));
+        assert_eq!(record.lifecycle_state, LifecycleState::Preparing);
         assert!(
             !record.items["chat"]
                 .completed_steps

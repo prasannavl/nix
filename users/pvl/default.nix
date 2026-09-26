@@ -1,6 +1,6 @@
 let
-  userdata = (import ../userdata.nix).pvl;
-  mkModule = modules: {...}: let
+  mkModule = modules: {accounts, ...}: let
+    userdata = accounts.users.pvl;
     selectedModules = map import modules;
   in {
     imports =

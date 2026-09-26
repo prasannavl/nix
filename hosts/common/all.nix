@@ -1,9 +1,9 @@
 {
+  accounts,
   lib,
-  stacks,
   ...
 }: let
-  userdata = stacks.all.users.nixbot;
+  userdata = accounts.users.nixbot;
 in {
   x.sshAgentForwardingUsers = lib.mkAfter ["nixbot"];
 

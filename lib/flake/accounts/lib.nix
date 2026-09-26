@@ -92,8 +92,19 @@ let
     if id
     then getIds filtered
     else filtered;
+
+  isAccounts = value:
+    builtins.isAttrs value
+    && builtins.isAttrs (value.users or null)
+    && builtins.isAttrs (value.groups or null)
+    && builtins.isAttrs (value.userSets or null)
+    && builtins.isAttrs (value.groupSets or null)
+    && builtins.isAttrs (value.helpers or null)
+    && builtins.isAttrs (value.meta or null)
+    && builtins.isFunction (value.nixosModule or null);
 in {
   inherit
+    isAccounts
     unique
     userFilter
     userHasAnyGroup

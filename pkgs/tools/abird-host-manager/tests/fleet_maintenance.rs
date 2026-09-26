@@ -1,10 +1,14 @@
 use std::fs::{self, FileTimes, OpenOptions};
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::time::{Duration, SystemTime};
 
 use abird_host_manager::fleet::maintenance::{
     CleanMode, CleanOutcome, REQUIRED_PROGRAMS, clean_roots, missing_programs,
 };
+
+#[path = "../src/test_support.rs"]
+mod test_support;
+use test_support::write_executable;
 
 #[test]
 fn dependency_check_reports_every_missing_program_in_stable_order() {
@@ -13,8 +17,7 @@ fn dependency_check_reports_every_missing_program_in_stable_order() {
     fs::create_dir(&bin).unwrap();
     for name in ["age", "git", "nix"] {
         let path = bin.join(name);
-        fs::write(&path, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable(&path, "#!/bin/sh\n").unwrap();
     }
     let missing = missing_programs(&[bin]).unwrap();
     assert_eq!(

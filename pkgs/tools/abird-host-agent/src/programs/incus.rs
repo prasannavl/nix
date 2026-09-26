@@ -440,15 +440,14 @@ fn is_not_found(stderr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+    use crate::test_support::write_executable;
 
     fn fake_incus(script: &str) -> (tempfile::TempDir, Incus) {
         let temp = tempfile::tempdir().unwrap();
         let program = temp.path().join("incus");
-        fs::write(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
         let incus = Incus::new(&program).unwrap();
         (temp, incus)
     }
@@ -458,12 +457,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let args = temp.path().join("args");
         let program = temp.path().join("incus");
-        fs::write(
+        write_executable(
             &program,
             format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", args.display()),
         )
         .unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
         let incus = Incus::new(&program).unwrap();
         incus
             .copy(IncusCopyRequest {
@@ -507,12 +505,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let args = temp.path().join("args");
         let program = temp.path().join("incus");
-        fs::write(
+        write_executable(
             &program,
             format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n", args.display()),
         )
         .unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
         let incus = Incus::new(&program).unwrap();
         let archive = temp.path().join("instance.tar.gz");
         incus

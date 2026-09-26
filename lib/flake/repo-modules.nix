@@ -1,21 +1,11 @@
 {
   lib,
   repoModules ? {},
-  stackProfiles ? {},
+  stacks ? {},
 }: let
-  fail = message: throw "invalid repository modules: ${message}";
-  require = condition: message:
-    if condition
-    then true
-    else fail message;
-  requireOnly = allowed: value: context: let
-    unknown = builtins.filter (name: !builtins.elem name allowed) (builtins.attrNames value);
-  in
-    require (unknown == []) "${context} has unknown fields: ${builtins.concatStringsSep ", " unknown}";
-  duplicateValues = values: let
-    groups = builtins.groupBy toString values;
-  in
-    builtins.attrNames (lib.filterAttrs (_: group: builtins.length group > 1) groups);
+  validation = import ../validation;
+  inherit (validation.mk "invalid repository modules") require requireOnly;
+  inherit (import ./utils.nix {inherit lib;}) duplicateValues;
   validateLayer = context: modules:
     assert require (builtins.isAttrs modules) "${context} must be an attribute set";
     assert require (builtins.all (name: name != "") (builtins.attrNames modules)) "${context} has an empty module name";
@@ -26,7 +16,7 @@
     repo = repoModules.repo or {};
     stacks = repoModules.stacks or {};
   };
-  stackNames = builtins.attrNames stackProfiles;
+  stackNames = builtins.attrNames stacks;
   declaredStackNames = builtins.attrNames declared.stacks;
   unknownStackNames = builtins.filter (name: !builtins.elem name stackNames) declaredStackNames;
   validated = {
@@ -59,9 +49,9 @@
       then null
       else stack.stackName;
     validStackName = stack == null || (hasStackName && builtins.isString stackName);
-    knownStack = validStackName && (stack == null || stackName == "all" || builtins.elem stackName stackNames);
+    knownStack = validStackName && (stack == null || builtins.elem stackName stackNames);
     stackModules =
-      if stackName == null || stackName == "all"
+      if stackName == null
       then {}
       else registry.stacks.${stackName} or {};
   in
@@ -71,10 +61,10 @@
     assert require knownStack "effective stack ${stackName} is not declared";
       builtins.attrValues registry.repo ++ builtins.attrValues stackModules;
 in
+  assert require (builtins.isAttrs stacks) "stacks must be an attribute set";
   assert require (builtins.isAttrs repoModules) "composition must be an attribute set";
   assert requireOnly ["repo" "stacks"] repoModules "composition";
   assert require (builtins.isAttrs declared.stacks) "stacks must be an attribute set";
-  assert require (!builtins.elem "all" declaredStackNames) "stack all is aggregate-only and may not register modules";
   assert require (unknownStackNames == []) "unknown stacks: ${builtins.concatStringsSep ", " unknownStackNames}";
   assert require (duplicateRegisteredPaths == []) "module paths may be registered only once: ${builtins.concatStringsSep ", " duplicateRegisteredPaths}";
     builtins.deepSeq registry {

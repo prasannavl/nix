@@ -33,3 +33,4 @@ Pvl acceptance notes moved out of shared files by that split:
 {pkgs}:
 import ./flake-isolated.nix {inherit pkgs;}
 // import ./postgres-extensions.nix {inherit pkgs;}
+// import ./secrets.nix {inherit pkgs;}

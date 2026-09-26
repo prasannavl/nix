@@ -17,6 +17,12 @@ and persisted by the selected host agent before it runs. The manager then polls
 the immutable job ID. Reconnecting after an SSH failure submits or queries the
 same specification; it cannot create a second mutation.
 
+Active transaction journals use schema 2 and persist lifecycle state, data
+authority, command plans, publication mode, and projection authority explicitly.
+The manager does not infer omitted fields from old records. Terminal records
+retained only for audit belong in the sibling `workflow-transaction-archive`
+directory, which is outside the active store and is never listed or resumed.
+
 For an ad hoc repository-local run, `--local-run NAME` is shorthand for local
 execution with state at `.agents/runs/NAME/host-manager`. It is intentionally
 incompatible with both `--controller` and `--state-dir`; run names are bounded,
@@ -69,13 +75,14 @@ prepared or target_active --close--> closing_complete|closing_rollback
   target-active projection: it verifies exact holds, source inactivity, target
   readiness and routing, then records the missing run evidence. Rollback
   performs reverse synchronization when target may have written. Close first
-  folds placement into `data/service-placements.nix` and retains the temporary
-  move in an adoption phase with the exact terminal lease contract. After that
-  revision deploys successfully, it commits and deploys a clean stable revision
-  with the move removed. Only successful cleanup deployment may release the
-  inactive-side hold and archive the journal. In normal mode both revisions use
-  exact revision-bound durable controller Nixbot jobs. In `--local` mode they
-  deploy from the invoking checkout without a push or controller-owned journal.
+  folds placement into `config/<family>/placements/<service>.nix` and retains
+  the temporary move in an adoption phase with the exact terminal lease
+  contract. After that revision deploys successfully, it commits and deploys a
+  clean stable revision with the move removed. Only successful cleanup
+  deployment may release the inactive-side hold and archive the journal. In
+  normal mode both revisions use exact revision-bound durable controller Nixbot
+  jobs. In `--local` mode they deploy from the invoking checkout without a push
+  or controller-owned journal.
 
 Each command snapshots an ordered, versioned step plan in the transaction
 journal. Completed steps are adopted, ambiguous jobs are reconciled by exact ID,
@@ -132,12 +139,24 @@ buffering, or corrupting their output.
 ## Nix-native service moves
 
 New logical service moves commit one high-level declaration under
-`data/service-moves/`. The stable role lives in `data/service-placements.nix`.
-Nix evaluates those declarations with the service capsule's migration contract
-and derives the exact placement, holds, activation identity, route, affected
-hosts, and transition digest. Host-manager executes only that evaluated result;
-JSON used at the Nix/Rust boundary is ephemeral transport and is never committed
-configuration.
+`config/<family>/moves/`. The stable role lives in
+`config/<family>/placements/<service>.nix`. The evaluated scope catalog maps a
+canonical stack or placement scope to that repository family. Nix evaluates
+those declarations with the service capsule's migration contract and derives the
+exact placement, holds, activation identity, route, affected hosts, and
+transition digest. Host-manager publishes that result through the generic
+runtime-plan ABI. Host-manager executes only that runtime plan and requires it
+to match the domain contract; JSON used at the Nix/Rust boundary is ephemeral
+transport and is never committed configuration.
+
+One command may name multiple services when they share the same selected scope,
+repository family, source, and target. They become ordered items in one Nix
+declaration with per-item basis and leases. Phase commits and closeout are one
+repository transaction across all items; runtime actions are a resumable saga
+with durable evidence per item. No output describes the group as atomically
+activated across hosts. Services in the group may share the same declarative
+route executor: their independent route files are applied in item order, while
+writer resources and data roots must remain disjoint.
 
 `move`, `prepare`, and `run` commit their requested Nix state and reconcile the
 fine-grained resources directly, without a NixOS deployment. `close` uses two
@@ -150,12 +169,13 @@ Deploying controller-authoritative nonterminal Nix intent can initialize its
 runtime journal and invoke the same reconciler. Terminal adoption without an
 existing evidence-bearing journal is rejected.
 
-## Legacy phase projections
+## Runtime-only phase projections
 
-Existing resource projections and historical JSON-backed transactions retain a
-compatibility path under `data/phase-projections/`. New logical service moves do
-not write JSON phase projections. The compatibility adapter remains digest
-strict and must not reinterpret an old transaction as a Nix-native move.
+Typed host, instance, and resource workflows without a Nix projection domain use
+`data/phase-projections/`. Logical service moves are rejected there and must be
+authored through the Nix service-move domain. Runtime-only closeout evidence is
+stored in `data/phase-projection-closeouts.json`; it cannot change service
+placement. Both paths remain digest-strict.
 
 Publication and deployment reconciliation have deliberately different Git
 capabilities. Operator phase decisions may publish through their ephemeral
@@ -274,8 +294,9 @@ projection and may reassert its holds or route. The final inactive hold is
 released and the journal archived only after that deploy succeeds. After an
 interruption, use `transaction resume ID`. Resume inspects the journal:
 projected transactions reconcile to their already-published desired phase with
-full activation-authority validation, while legacy transactions continue only
-their exact pending action. It never chooses or publishes a new phase.
+full activation-authority validation. Historical records without a projection
+remain inspectable audit evidence and cannot be resumed. Resume never chooses or
+publishes a new phase.
 
 A publication authentication failure is safe to retry. Make a write-authorized
 credential available to the configured publication transport and repeat the same
@@ -396,6 +417,7 @@ cache semantics. A bounded compatibility reader accepts the former `ci.host` and
   "schema_version": 1,
   "controller": "controller",
   "transfer_broker": "controller",
+  "adoption_stability_interval_ms": 2000,
   "ssh": {
     "program": "/run/current-system/sw/bin/ssh",
     "args": ["-o", "StrictHostKeyChecking=yes"],
@@ -640,20 +662,23 @@ boundaries.
 
 `transaction resume` is the single operator recovery command. For a projected
 transaction it refreshes and validates the already-published projection, then
-converges only the missing actions up to that desired phase. For a legacy
-transaction it reattaches only to the exact pending action and durable job ID.
-If controller or repository policy intentionally changes after a job has
-terminally failed, add `--supersede-failed-job`. The manager proves the old
-host-agent job is `failed`, preserves its record, and assigns the same logical
-step a new attempt ID; it refuses to supersede a pending or running job.
+converges only the missing actions up to that desired phase. A current record
+without a projection is an incomplete registration and cannot be resumed. If
+controller or repository policy intentionally changes after a job has terminally
+failed, add `--supersede-failed-job`. The manager proves the old host-agent job
+is `failed`, preserves its record, and assigns the same logical step a new
+attempt ID; it refuses to supersede a pending or running job.
 
-The one-argument service form is repository-aware. Without `--stack`, it selects
-the only stack declaring the service, or the unique `env = "prod"` candidate
-when development or platform stacks declare it too. Ambiguous repositories fail
-closed and require `--stack`. It then resolves the selected stack's active
-endpoint and requires that host's evaluated agent declaration to identify
-exactly one canonical resource (for example, `service:mail`). Grouped units and
-user ownership remain agent metadata. `--host` bypasses placement while still
+The one-argument service form is repository-aware. `--scope` selects one exact
+canonical or placement scope, while `--stack` limits lookup to all scopes of one
+stack; the flags are mutually exclusive. Otherwise a unique stable-placement
+declaration wins, followed by a unique canonical scope and then a unique
+production compatibility candidate. Ambiguous repositories fail closed and
+require `--stack` or `--scope`. A move additionally requires stable placement
+authority. The manager then resolves the selected scope's active endpoint and
+requires that host's evaluated agent declaration to identify exactly one
+canonical resource (for example, `service:mail`). Grouped units and user
+ownership remain agent metadata. `--host` bypasses placement while still
 resolving the declared resource when a repository is available. Raw systemd
 operations are deliberately separate under `unit <verb> HOST UNIT`; this
 standalone surface cannot be confused with a logical service lookup.

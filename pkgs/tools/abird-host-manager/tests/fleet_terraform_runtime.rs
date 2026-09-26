@@ -18,10 +18,13 @@ use abird_host_manager::fleet::terraform_runtime::{
     select_projects_for_execution, validate_project_environment,
 };
 
+#[path = "../src/test_support.rs"]
+mod test_support;
+use test_support::write_executable;
+
 fn executable(directory: &Path, name: &str, body: &str) -> PathBuf {
     let path = directory.join(name);
-    fs::write(&path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(&path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
     path
 }
 

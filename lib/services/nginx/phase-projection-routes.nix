@@ -11,7 +11,8 @@
   validationArgvFor,
   reloadServices,
 }: let
-  fail = message: throw "invalid nginx phase-projection route: ${message}";
+  validation = import ../../validation;
+  inherit (validation.mk "invalid nginx phase-projection route") fail;
   profileNameFor = service: hostResource: "${service}@${hostResource}";
   activeEffects =
     builtins.concatMap

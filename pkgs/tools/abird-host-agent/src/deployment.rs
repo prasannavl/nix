@@ -58,6 +58,23 @@ pub struct NixbotDeployRequest {
     pub nix_config: Option<String>,
     #[serde(default)]
     pub exclude_hosts: Vec<String>,
+    /// Exact concrete hosts that the resolved Nixbot selection must cover.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_hosts: Vec<String>,
+}
+
+impl NixbotDeployRequest {
+    pub fn host_selectors(&self) -> Vec<String> {
+        let mut selected = vec![self.host.clone()];
+        selected.extend(
+            self.required_hosts
+                .iter()
+                .filter(|host| *host != &self.host)
+                .cloned(),
+        );
+        selected.extend(self.exclude_hosts.iter().map(|host| format!("-{host}")));
+        selected
+    }
 }
 
 pub fn validate_deployment(deployment: &DeploymentDefinition) -> Result<()> {
@@ -108,7 +125,7 @@ pub fn validate_nixbot_deploy_policy(policy: &NixbotDeployPolicy) -> Result<()> 
 }
 
 pub fn validate_nixbot_deploy_request(request: &NixbotDeployRequest) -> Result<()> {
-    if !is_safe_name(&request.host) {
+    if !is_nixbot_host_name(&request.host) {
         bail!("Nixbot deployment host is invalid");
     }
     if request
@@ -126,7 +143,7 @@ pub fn validate_nixbot_deploy_request(request: &NixbotDeployRequest) -> Result<(
         bail!("Nixbot deployment request revision must be a commit ID");
     }
     for host in &request.exclude_hosts {
-        if !is_safe_name(host) || host == &request.host {
+        if !is_nixbot_host_name(host) || host == &request.host {
             bail!("Nixbot deployment exclusion is invalid");
         }
     }
@@ -135,6 +152,17 @@ pub fn validate_nixbot_deploy_request(request: &NixbotDeployRequest) -> Result<(
     exclusions.dedup();
     if exclusions.len() != request.exclude_hosts.len() {
         bail!("Nixbot deployment exclusions cannot contain duplicates");
+    }
+    for host in &request.required_hosts {
+        if !is_nixbot_host_name(host) || request.exclude_hosts.contains(host) {
+            bail!("Nixbot required deployment host is invalid or excluded");
+        }
+    }
+    let mut required = request.required_hosts.clone();
+    required.sort();
+    required.dedup();
+    if required.len() != request.required_hosts.len() {
+        bail!("Nixbot required deployment hosts cannot contain duplicates");
     }
     Ok(())
 }
@@ -185,6 +213,24 @@ fn is_safe_name(value: &str) -> bool {
             .is_some_and(u8::is_ascii_alphanumeric)
 }
 
+/// Nixbot inventory keys are logical host identifiers, not DNS names or SSH
+/// targets. Keep this grammar aligned with Nixbot's exact-host selector so a
+/// request accepted by the agent cannot fail later at deployment selection.
+fn is_nixbot_host_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && value
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
+}
+
 fn is_commit_revision(value: &str) -> bool {
     (7..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -223,11 +269,22 @@ mod tests {
             revision: None,
             nix_config: Some("abird-gondor-proxy-zulip-target".to_owned()),
             exclude_hosts: vec!["gap3-gondor".to_owned()],
+            required_hosts: vec!["abird-gondor-proxy".to_owned()],
         };
         validate_nixbot_deploy_policy(&policy).unwrap();
         validate_nixbot_deploy_request(&request).unwrap();
         let mut invalid = request;
         invalid.revision = Some("not-a-commit".to_owned());
         assert!(validate_nixbot_deploy_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn nixbot_host_names_match_exact_inventory_selectors() {
+        for valid in ["host", "abird-gondor-proxy", "h1"] {
+            assert!(is_nixbot_host_name(valid), "{valid}");
+        }
+        for invalid in ["", "-host", "host-", "host.name", "host_name", "host:name"] {
+            assert!(!is_nixbot_host_name(invalid), "{invalid}");
+        }
     }
 }

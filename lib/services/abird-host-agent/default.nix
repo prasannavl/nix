@@ -37,12 +37,59 @@
   declaredResourcesById = cfg.extraResources // typedResources;
   declaredResources = builtins.attrValues declaredResourcesById;
   effectivePhaseProjections = (specialArgs.phaseProjections or []) ++ cfg.phaseProjections;
-  servicePlacementAdmission =
-    specialArgs.servicePlacementAdmission or {
-      schema_version = 1;
-      placements = {};
-      moves = {};
-    };
+  projectionAdmission = specialArgs.projectionAdmission or {};
+  serviceMoveAdmission = projectionAdmission.serviceMoves or {};
+  servicePlacementAdmission = serviceMoveAdmission.document or null;
+  statefulServicePlacementPreflight = pkgs.writeShellApplication {
+    name = "abird-host-agent-stateful-service-placement-preflight";
+    runtimeInputs = [pkgs.coreutils pkgs.jq];
+    text =
+      builtins.replaceStrings
+      ["@JQ@" "@HOST_AGENT@" "@HOST@"]
+      ["${lib.getExe pkgs.jq}" "${configuredPackage}/bin/abird-host-agent" config.networking.hostName]
+      (builtins.readFile ./stateful-service-placement-preflight.sh);
+  };
+  admissionAdapters = import ./projection-admission-adapters.nix {
+    statefulServicePlacementProgram = "${statefulServicePlacementPreflight}/bin/abird-host-agent-stateful-service-placement-preflight";
+  };
+  explicitlyDisabledAdmission = admission:
+    builtins.isAttrs admission
+    && (admission.enabled or null) == false;
+  registeredAdmissions = lib.filterAttrs (_: admission: !explicitlyDisabledAdmission admission) projectionAdmission;
+  validAdmissionAuthorityPath = (import ../../validation/paths.nix {inherit lib;}).isRepositoryPath;
+  validAdmission = admission:
+    builtins.isAttrs admission
+    && ((admission.enabled or (admission ? adapter)) == true)
+    && (admission.schema_version or null) == 1
+    && builtins.isString (admission.adapter or null)
+    && admission.adapter != ""
+    && builtins.isList (admission.authority_paths or null)
+    && lib.all validAdmissionAuthorityPath admission.authority_paths
+    && builtins.length admission.authority_paths == builtins.length (lib.unique admission.authority_paths)
+    && builtins.isAttrs (admission.document or null);
+  invalidAdmissionDomains = builtins.attrNames (lib.filterAttrs (_: admission: !validAdmission admission) registeredAdmissions);
+  validAdmissions = lib.filterAttrs (_: validAdmission) registeredAdmissions;
+  mismatchedAdmissionDomains = builtins.attrNames (lib.filterAttrs (domain: admission:
+    builtins.hasAttr admission.adapter admissionAdapters
+    && !builtins.elem domain admissionAdapters.${admission.adapter}.domains)
+  validAdmissions);
+  unsupportedAdmissionAdapters = lib.filter (adapter: !builtins.hasAttr adapter admissionAdapters) (
+    map (admission: admission.adapter) (builtins.attrValues validAdmissions)
+  );
+  invalidAdmissionDocumentDomains = builtins.attrNames (lib.filterAttrs (_domain: admission:
+    builtins.hasAttr admission.adapter admissionAdapters
+    && !admissionAdapters.${admission.adapter}.validateDocument admission.document)
+  validAdmissions);
+  generationAdmissionRegistry = {
+    schema_version = 1;
+    domains =
+      lib.mapAttrsToList (name: admission: {
+        inherit name;
+        inherit (admission) adapter authority_paths schema_version;
+        program = lib.attrByPath [admission.adapter "program"] null admissionAdapters;
+      })
+      validAdmissions;
+  };
   projectedResourceStateSets = map (projection:
     phaseProjection.localDesiredResourceStates {
       hostResource = "host:${config.networking.hostName}";
@@ -185,56 +232,29 @@
         --set ABIRD_HOST_AGENT_SSH_HOST_ED25519_PUBLIC_KEY ${lib.escapeShellArg sshHostEd25519PublicKey}
     '';
   };
-  projectionPreflight = pkgs.writeShellApplication {
-    name = "abird-host-agent-projection-preflight";
-    text = ''
-      incoming="$1"
-      action="$2"
-      mode="''${3:-normal}"
-
-      case "$mode" in
-        normal|rollback) ;;
-        *)
-          echo "unsupported projection preflight mode: $mode" >&2
-          exit 2
-          ;;
-      esac
-
-      case "$action" in
-        switch|test)
-          desired="$incoming/etc/abird-host-agent/desired-resource-states.json"
-          resources="$incoming/etc/abird-host-agent/resources.json"
-          if [ ! -e "$desired" ] || [ ! -e "$resources" ]; then
-            echo "incoming system path is missing host-agent projection authority: $incoming" >&2
-            exit 1
-          fi
-
-          complete_authority=()
-          if [ "$mode" = rollback ]; then
-            complete_authority+=(--require-complete-authority)
-          fi
-          ${configuredPackage}/bin/abird-host-agent \
-            --resource-manifest "$resources" \
-            _reconcile desired-resource-states \
-            --manifest "$desired" \
-            --preflight-only \
-            "''${complete_authority[@]}" >/dev/null
-          ;;
-      esac
-    '';
-  };
-  servicePlacementPreflight = pkgs.writeShellApplication {
-    name = "abird-host-agent-service-placement-preflight";
-    runtimeInputs = [pkgs.jq];
+  generationPreflight = pkgs.writeShellApplication {
+    name = "abird-host-agent-generation-preflight";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.jq
+    ];
     text =
       builtins.replaceStrings
-      ["\${JQ}"]
-      ["${lib.getExe pkgs.jq}"]
-      (builtins.readFile ./service-placement-preflight.sh);
+      ["@JQ@" "@SHA256SUM@" "@HOST@"]
+      ["${lib.getExe pkgs.jq}" "${lib.getExe' pkgs.coreutils "sha256sum"}" config.networking.hostName]
+      (builtins.readFile ./generation-preflight.sh);
   };
-  servicePlacementAdmissionManifest = pkgs.writeText "abird-host-agent-service-placement-contract.json" (builtins.toJSON servicePlacementAdmission);
+  servicePlacementAdmissionManifest =
+    if servicePlacementAdmission == null
+    then null
+    else pkgs.writeText "abird-host-agent-service-placement-contract.json" (builtins.toJSON servicePlacementAdmission);
+  generationAdmissionRegistryManifest = pkgs.writeText "abird-host-agent-generation-admission-registry.json" (builtins.toJSON generationAdmissionRegistry);
   resourceManifest = pkgs.writeText "abird-host-agent-resources.json" (builtins.toJSON {
     schema_version = 1;
+    configuration_revision =
+      if config.system.configurationRevision == null
+      then "UNCOMMITTED-CONTROLLER-GENERATION"
+      else config.system.configurationRevision;
     backup_root = cfg.backupRoot;
     rsync_program = cfg.rsyncProgram;
     tar_program = cfg.tarProgram;
@@ -516,6 +536,26 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
+        assertion = config.networking.hostName != "";
+        message = "services.abird-host-agent requires a non-empty networking.hostName for evidence identity.";
+      }
+      {
+        assertion = invalidAdmissionDomains == [];
+        message = "projection admission domains have invalid schema, adapter, or authority paths: ${lib.concatStringsSep ", " invalidAdmissionDomains}";
+      }
+      {
+        assertion = mismatchedAdmissionDomains == [];
+        message = "projection admission domains are bound to validators for a different domain: ${lib.concatStringsSep ", " mismatchedAdmissionDomains}";
+      }
+      {
+        assertion = unsupportedAdmissionAdapters == [];
+        message = "projection admission domains use unsupported adapters: ${lib.concatStringsSep ", " unsupportedAdmissionAdapters}";
+      }
+      {
+        assertion = invalidAdmissionDocumentDomains == [];
+        message = "projection admission domains have invalid adapter documents: ${lib.concatStringsSep ", " invalidAdmissionDocumentDomains}";
+      }
+      {
         assertion = lib.all (name: name != "") typedResourceNames;
         message = "services.abird-host-agent typed resource names must not be empty.";
       }
@@ -699,11 +739,14 @@ in {
     ];
 
     environment = {
-      systemPackages = [configuredPackage projectionPreflight servicePlacementPreflight];
+      systemPackages = [configuredPackage generationPreflight];
       etc =
         {
           "abird-host-agent/resources.json".source = resourceManifest;
           "abird-host-agent/desired-resource-states.json".source = desiredResourceStateManifest;
+          "abird-host-agent/generation-admission-registry.json".source = generationAdmissionRegistryManifest;
+        }
+        // lib.optionalAttrs (servicePlacementAdmissionManifest != null) {
           "abird-host-agent/service-placement-contract.json".source = servicePlacementAdmissionManifest;
         }
         // lib.mapAttrs' (resource: transaction:
@@ -745,9 +788,8 @@ in {
     # activation then refreshes and enforces only that granular resource latch.
     # This remains the rollback safety boundary: an older NixOS snapshot may
     # never overwrite a newer durable host-agent hold epoch.
-    system.preSwitchChecks.abird-host-agent-projection = ''
-      ${servicePlacementPreflight}/bin/abird-host-agent-service-placement-preflight "$1" "$2"
-      ${projectionPreflight}/bin/abird-host-agent-projection-preflight "$1" "$2"
+    system.preSwitchChecks.abird-host-agent-generation = ''
+      ${generationPreflight}/bin/abird-host-agent-generation-preflight --quiet "$1" "$2"
     '';
 
     systemd = {

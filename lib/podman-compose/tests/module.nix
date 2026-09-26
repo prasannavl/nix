@@ -18,9 +18,15 @@
   localImagePackageRuntimeRef = "localhost/demo/package:1-nix-${localImageStoreHash}";
   localImageStoreRef = "nix-store:${localImageTar}";
   localImageStoreRuntimeRef = "localhost/nix-local/image:${localImageStoreHash}";
+  expectedSourceHash = input: let
+    inputString = builtins.unsafeDiscardStringContext (toString input);
+  in
+    if lib.hasPrefix (builtins.storeDir + "/") inputString
+    then builtins.hashString "sha256" inputString
+    else builtins.hashFile "sha256" input;
   testCaSourceHash = builtins.hashString "sha256" (builtins.toJSON [
-    (builtins.hashString "sha256" (builtins.unsafeDiscardStringContext (toString sourceFile)))
-    (builtins.hashString "sha256" (builtins.unsafeDiscardStringContext (toString localImageTar)))
+    (expectedSourceHash sourceFile)
+    (expectedSourceHash localImageTar)
   ]);
 
   evalConfig = import (pkgs.path + "/nixos/lib/eval-config.nix") {

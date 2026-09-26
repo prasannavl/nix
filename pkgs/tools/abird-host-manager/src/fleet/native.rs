@@ -12,6 +12,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
+use crate::programs::clear_git_repository_environment;
+
 use super::bootstrap::{
     AgeDiscoveryMode, AgeIdentityPolicy, ForcedCommandInput, ForcedCommandObservation,
     ForcedCommandReadiness, age_identity_candidates, build_forced_command_check,
@@ -25,8 +27,12 @@ use super::build::{
     closure_verification_command, copy_derivation_command, development_build_command,
     local_build_command, validate_cached_build_plan,
 };
-use super::build_lease::{BuilderLeaseCoordinator, InvocationId, LeaseEpoch};
-use super::build_runtime::{RemoteBuildTools, plan_remote_build};
+use super::build_lease::{
+    BuilderLeaseCoordinator, InvocationId, LeaseEpoch, LeaseRetryPolicy, SystemLeaseConnector,
+};
+use super::build_runtime::{
+    ProtectedBuilder, RemoteBuildTools, plan_remote_build, realize_protected,
+};
 use super::cli::{Action, Invocation};
 use super::engine::{FleetEffects, PhaseFailure};
 use super::environment::{Environment, LocalSelfTarget, Settings};
@@ -143,6 +149,19 @@ impl<'a> NativeFleetEffects<'a> {
             Some(directory) => progress.with_diagnostics(directory)?,
             None => progress,
         };
+        let builder_lease = BuilderLeaseCoordinator::with_retry_policy(
+            Arc::new(SystemLeaseConnector),
+            LeaseRetryPolicy::transport(
+                settings.transport_retry_attempts,
+                Duration::from_secs(settings.transport_retry_delay_seconds),
+            )?,
+        );
+        let builder_lease = match super::signal::runtime() {
+            Some(cancellation) => {
+                builder_lease.with_cancellation(Arc::new(move || cancellation.cancel_local()))
+            }
+            None => builder_lease,
+        };
         Ok(Self {
             invocation,
             nix_program,
@@ -165,7 +184,7 @@ impl<'a> NativeFleetEffects<'a> {
                 started,
                 std::process::id(),
             ),
-            builder_lease: Arc::new(BuilderLeaseCoordinator::default()),
+            builder_lease: Arc::new(builder_lease),
             builder_closures: BTreeMap::new(),
             settings,
             derivations: BTreeMap::new(),
@@ -293,7 +312,9 @@ impl<'a> NativeFleetEffects<'a> {
 
     fn build_plan_cache_context(&self) -> Result<Option<(PathBuf, String)>> {
         let git = |args: &[&str]| -> Result<std::process::Output> {
-            Command::new("git")
+            let mut command = Command::new("git");
+            clear_git_repository_environment(&mut command);
+            command
                 .args(args)
                 .current_dir(self.repository)
                 .output()
@@ -319,7 +340,9 @@ impl<'a> NativeFleetEffects<'a> {
         if !head.status.success() || !tree.status.success() {
             return Ok(None);
         }
-        let version = Command::new(self.nix_program)
+        let mut command = Command::new(self.nix_program);
+        clear_git_repository_environment(&mut command);
+        let version = command
             .arg("--version")
             .current_dir(self.repository)
             .output()
@@ -777,15 +800,44 @@ impl<'a> NativeFleetEffects<'a> {
         derivation: &NixStorePath,
         build_args: &BuildArgs,
     ) -> Result<(NixStorePath, LeaseEpoch)> {
-        for _ in 0..self.settings.transport_retry_attempts {
-            let before = self.builder_lease.ensure(lease_spec)?;
-            let closure = self.realize_on_builder(target, store_uri, derivation, build_args)?;
-            let after = self.builder_lease.ensure(lease_spec)?;
-            if after.epoch == before.epoch || self.verify_builder_closure(target, &closure)? {
-                return Ok((closure, after.epoch));
+        struct NativeProtectedBuilder<'runtime, 'context> {
+            runtime: &'runtime mut NativeFleetEffects<'context>,
+            target: &'runtime HostExecutionTarget,
+            lease_spec: &'runtime super::build_lease::LeaseProcessSpec,
+            store_uri: &'runtime str,
+            derivation: &'runtime NixStorePath,
+            build_args: &'runtime BuildArgs,
+        }
+        impl ProtectedBuilder for NativeProtectedBuilder<'_, '_> {
+            fn ensure_lease(&mut self) -> Result<super::build_lease::LeaseObservation> {
+                self.runtime.builder_lease.ensure(self.lease_spec)
+            }
+
+            fn realize(&mut self) -> Result<NixStorePath> {
+                self.runtime.realize_on_builder(
+                    self.target,
+                    self.store_uri,
+                    self.derivation,
+                    self.build_args,
+                )
+            }
+
+            fn verify_closure(&mut self, closure: &NixStorePath) -> Result<bool> {
+                self.runtime.verify_builder_closure(self.target, closure)
             }
         }
-        bail!("builder lease changed repeatedly while realizing closure")
+        let attempts = self.settings.transport_retry_attempts;
+        realize_protected(
+            &mut NativeProtectedBuilder {
+                runtime: self,
+                target,
+                lease_spec,
+                store_uri,
+                derivation,
+                build_args,
+            },
+            attempts,
+        )
     }
 
     fn realize_on_builder(
@@ -2732,11 +2784,17 @@ fn run_output(
     repository: &Path,
     command: &super::build::CommandSpec,
 ) -> Result<std::process::Output> {
-    Command::new(&command.program)
+    repository_command(&command.program)
         .args(&command.args)
         .current_dir(repository)
         .output()
         .with_context(|| format!("execute {}", command.program))
+}
+
+fn repository_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    clear_git_repository_environment(&mut command);
+    command
 }
 
 fn require_success(program: &str, output: &std::process::Output) -> Result<()> {
@@ -2756,4 +2814,24 @@ pub fn action_needs_inventory(action: &Action) -> bool {
         action,
         Action::Run | Action::Deploy | Action::Build | Action::DevBuild | Action::CheckBootstrap
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repository_commands_remove_git_checkout_selectors() {
+        let command = repository_command("nix");
+        for selector in crate::programs::GIT_REPOSITORY_ENVIRONMENT {
+            assert_eq!(
+                command
+                    .get_envs()
+                    .find(|(name, _)| name == selector)
+                    .map(|(_, value)| value),
+                Some(None),
+                "{selector} was not removed"
+            );
+        }
+    }
 }

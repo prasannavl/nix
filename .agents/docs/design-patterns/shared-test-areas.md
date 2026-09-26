@@ -11,23 +11,23 @@ byte-tracked across repositories.
 
 - `<area>/tests/default.nix` (Python areas: `<area>/tests/test_<tool>.py`) holds
   only generic, host-neutral checks. It may not import repository hosts, stacks,
-  or product packages, and it is registered by shared wiring such as
-  `lib/tests/default.nix`. Every repository holding the area must carry the
-  exact same bytes. Shared test trees may carry repo-only identity files beside
-  the shared files (per-stack service files, prefixed sibling modules), but
-  shared files never reference or import them, so the shared bytes and their
-  registration stay identical everywhere.
+  configuration composition, or product packages, and it is registered by shared
+  wiring such as `lib/tests/default.nix`. Every repository holding the area must
+  carry the exact same bytes. Shared test trees may carry repo-only identity
+  files beside the shared files (per-stack service files, prefixed sibling
+  modules), but shared files never reference or import them, so the shared bytes
+  and their registration stay identical everywhere.
 - `lib/flake/tests/` holds the flake-lib-level areas only (service moves, phase
-  projections, fabric contracts, service-client endpoints, stack sets, isolated
-  flake wiring). Its generic files are shared; the repository's own flake-level
-  identity content lives in a per-topology identity directory
-  `lib/flake/tests/<topology>/` (`abird/` in Abird, `pvl/` in Pvl - one
-  directory per named topology, so Gap3 flake-level content would live in
-  `gap3/`). The directory's `default.nix` is a pure aggregator importing each
-  area file; area files are named after their generic counterparts
-  (`phase-projection.nix` beside the shared `../phase-projection.nix`), and
-  real-topology fixtures, named-host variants, product wiring assertions, and
-  their check registrations live there.
+  projections, fabric contracts, service-client endpoints, stack folds,
+  repository configuration, isolated flake wiring). Its generic files are
+  shared; the repository's own flake-level identity content lives in a
+  per-topology identity directory `lib/flake/tests/<topology>/` (`abird/` in
+  Abird, `pvl/` in Pvl - one directory per named topology, so Gap3 flake-level
+  content would live in `gap3/`). The directory's `default.nix` is a pure
+  aggregator importing each area file; area files are named after their generic
+  counterparts (`phase-projection.nix` beside the shared
+  `../phase-projection.nix`), and real-topology fixtures, named-host variants,
+  product wiring assertions, and their check registrations live there.
 - Service-level identity checks localize with their service: a repo-only
   per-stack file `<service>/tests/<stack>.nix` sits beside the service's shared
   synthetic contracts (for example `lib/services/kanidm/tests/gap3.nix` for the
@@ -63,8 +63,13 @@ defaulted (empty function, empty list, null), so the shared assembly stays
 repository-blind and evaluates without any repository composition: no shared
 file references repository identity content, and a repository without identity
 content simply passes nothing. The same injection carries the rest of the
-repository's composition facts (data-file paths, the flake-profile input-name
-table, extra common NixOS modules, the default machine profile).
+repository's composition facts (data-file paths, the input-set input-name table,
+extra common NixOS modules, the default machine profile, and the composed
+repository configuration `repositoryConfig` read from the repository's
+`config/`). The shared flake tests register the generic repository-config
+contract check (`lib/flake/tests/repository-config.nix`) only when that
+composition is supplied, and a repository's own topology assertions for it live
+in its identity directory (`lib/flake/tests/<topology>/config-stacks.nix`).
 
 Shared registration files (`lib/tests/default.nix`, `<area>/tests/default.nix`)
 never reference identity content; generic test files register checks as a
@@ -83,21 +88,22 @@ byte-identical files cannot name per-repository identity paths. A shared test
 file that imported its own repository's identity content would need a different
 import line per repository, permanently diverging and requiring hand adaptation
 at every port - the exact churn this split removes. (Fixed structural paths that
-every repository provides by policy - the `hosts/` and `stacks/` trees the
-shared assembly imports - remain byte-nameable precisely because both
-repositories carry them; identity content is the part that cannot be named.) A
-fixed neutral name referenced from a shared file would keep the bytes equal but
-is a service locator Nix does not have: it silently couples shared evaluation to
-repository-provided content, places a per-repository divergent file inside the
-shared tree, and fails when the file is absent. Indirection can only move such
-divergence around, never reduce it. Manifest injection instead conserves
-divergence and gives it its cheapest home: `flake.nix` is already per-repository
-by nature (its inputs), so declaring repository facts there as data costs zero
-new divergence and keeps the invariant absolute - shared `lib/flake` files are
-byte-portable, and repository facts flow down as defaulted arguments. This is
-also what makes localized per-stack service files safe: since registration never
-flows through the service's shared files, a repo-only file can sit beside them
-without forcing any shared byte or shared evaluation to change.
+every repository provides by policy - the `hosts/` tree and the `config/`
+composition root the manifest injects - remain byte-nameable precisely because
+both repositories carry them; identity content is the part that cannot be
+named.) A fixed neutral name referenced from a shared file would keep the bytes
+equal but is a service locator Nix does not have: it silently couples shared
+evaluation to repository-provided content, places a per-repository divergent
+file inside the shared tree, and fails when the file is absent. Indirection can
+only move such divergence around, never reduce it. Manifest injection instead
+conserves divergence and gives it its cheapest home: `flake.nix` is already
+per-repository by nature (its inputs), so declaring repository facts there as
+data costs zero new divergence and keeps the invariant absolute - shared
+`lib/flake` files are byte-portable, and repository facts flow down as defaulted
+arguments. This is also what makes localized per-stack service files safe: since
+registration never flows through the service's shared files, a repo-only file
+can sit beside them without forcing any shared byte or shared evaluation to
+change.
 
 ## Documentation rule
 

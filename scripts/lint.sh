@@ -262,7 +262,6 @@ collect_diff_files() {
 
 	if [ -n "${LINT_DIFF_BASE}" ]; then
 		emit_unique_existing_from seen git diff --name-only -z --diff-filter=ACMR "${LINT_DIFF_BASE}" HEAD -- "${patterns[@]}"
-		return
 	fi
 
 	emit_unique_existing_from seen git diff --name-only -z --cached --diff-filter=ACMR -- "${patterns[@]}"

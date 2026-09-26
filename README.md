@@ -21,7 +21,8 @@ This is the nix driven monorepo, organized as small modules and composed via
 - `lib/flake/`: flake support helpers such as linting and the custom flake tree
   helper.
 - `overlays/`: custom overlays used by the system.
-- `hosts/nixbot.nix`: deploy mapping (plain Nix attrset).
+- `hosts/nixbot.nix`: deploy mapping, either a plain Nix attrset or a function
+  that receives `{ stacks = ...; }` from repository composition.
 - `data/secrets/default.nix`: agenix recipients map for `*.age` files.
 
 ## Services

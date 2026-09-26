@@ -1,10 +1,10 @@
 {
+  accounts,
   lib,
   stack,
-  stacks,
   ...
 }: let
-  userdata = stacks.all.users.nixbot;
+  userdata = accounts.users.nixbot;
   repoRoot = ./../..;
   secretsLib = import ../../lib/flake/secrets.nix;
   globals = secretsLib.mkGlobals {

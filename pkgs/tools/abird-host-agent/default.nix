@@ -7,9 +7,8 @@ pkgHelper.mkRustDerivation {
   pname = "abird-host-agent";
   version = "0.1.0";
   projectDir = "pkgs/tools/abird-host-agent";
-  # Several tests execute freshly published fixture programs. Serial execution
-  # avoids overlay-backed Nix sandboxes spuriously returning ETXTBSY.
-  testCargoArgs = ["-p" "abird-host-agent" "--" "--test-threads=1"];
+  # Executable fixtures are published by an isolated writer process so the
+  # ordinary parallel Cargo test schedule is safe from ETXTBSY races.
   buildAttrs.doCheck = false;
   enableDevShell = true;
   meta = {

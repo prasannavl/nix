@@ -1,13 +1,6 @@
 {lib}: let
-  fail = message: throw "invalid phase projection: ${message}";
-  require = condition: message:
-    if condition
-    then true
-    else fail message;
-  requireOnly = allowed: value: context: let
-    unknown = builtins.filter (name: !builtins.elem name allowed) (builtins.attrNames value);
-  in
-    require (unknown == []) "${context} has unknown fields: ${lib.concatStringsSep ", " unknown}";
+  validation = import ../../validation;
+  inherit (validation.mk "invalid phase projection") require requireOnly;
   isDigest = value:
     builtins.isString value
     && builtins.match "[0-9a-f]{64}" value != null;

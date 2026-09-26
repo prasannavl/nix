@@ -3,7 +3,11 @@
   nixpkgs,
   flake-utils,
   overlays ? [],
-  stackProfiles ? {},
+  stacks ? {},
+  # Repository composition injected by the manifest, defaulted so the shared
+  # library evaluates without it. The generic repository-config contract check
+  # is registered only when a composition is supplied.
+  repositoryConfig ? null,
   # Repository check composition (identity checks and product check
   # promotions), injected by the caller with an empty default so this library
   # stays repository-blind; see
@@ -64,7 +68,7 @@
   };
 in rec {
   inherit pkgHelper serviceModuleFactory;
-  stacks = stackProfiles;
+  inherit stacks;
   serviceModule = rootServiceModule;
 
   pkgsFor = system:
@@ -88,6 +92,9 @@ in rec {
     checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
       (libTestsFn {pkgs = pkgs;})
       // (flakeTestsFn {pkgs = pkgs;})
+      // lib.optionalAttrs (repositoryConfig != null) {
+        lib-flake-repository-config = import ./tests/repository-config.nix {inherit pkgs repositoryConfig;};
+      }
       // (repoChecksFn {inherit pkgs lib packageSet;})
     );
 

@@ -71,7 +71,7 @@ blocker inventory above is resolved under an approved migration.
 ## Validation
 
 - `git grep -n 'backend =' abird/master -- hosts` found no explicit Compose pins
-  in Abird; `lib/stacks/**` likewise sets none.
+  in Abird; its repository-authored stack configuration likewise sets none.
 - `lib/podman-compose/**` is byte-identical between Pvl `master` and
   `abird/master` (parity audit, 2026-09-22).
 - Blocker paths were verified against the compiler's allowed-key and validation

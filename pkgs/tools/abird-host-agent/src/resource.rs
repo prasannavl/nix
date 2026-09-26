@@ -28,6 +28,8 @@ pub enum ExpectedState {
 #[serde(deny_unknown_fields)]
 pub struct ResourceManifest {
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration_revision: Option<String>,
     #[serde(default)]
     pub broker_transfer: Option<BrokerTransferPolicy>,
     #[serde(default)]
@@ -165,6 +167,13 @@ impl ResourceManifest {
                 "unsupported resource manifest schema version {}",
                 self.schema_version
             );
+        }
+        if self
+            .configuration_revision
+            .as_deref()
+            .is_some_and(|revision| revision.is_empty() || revision.contains(['\0', '\r', '\n']))
+        {
+            bail!("resource manifest configuration revision is invalid");
         }
         if !self.backup_root.is_absolute() || self.backup_root == Path::new("/") {
             bail!("backup root must be an absolute non-root path");
@@ -449,6 +458,7 @@ mod tests {
     fn rejects_unsafe_data_paths() {
         let manifest = ResourceManifest {
             schema_version: 1,
+            configuration_revision: None,
             broker_transfer: None,
             nixbot_deploy: None,
             backup_root: default_backup_root(),

@@ -1812,6 +1812,7 @@ fn execute_agent_status(
             "resource": desired.id,
             "state": desired.state,
             "projection_id": desired.projection_id,
+            "transaction_id": desired.transaction_id,
             "projection_digest": desired.projection_digest,
             "generation": desired.generation,
             "reason": deferral.reason,
@@ -1847,7 +1848,8 @@ fn execute_agent_status(
             "ok": true,
             "operation": "agent_status",
             "result": {
-                "status_schema_version": 2,
+                "status_schema_version": 3,
+                "configuration_revision": manifest.configuration_revision,
                 "schema_version": manifest.schema_version,
                 "resources": manifest.resources.len(),
                 "holds": holds.len(),
@@ -4508,11 +4510,11 @@ fn require_declared_data_path(declared: &[PathBuf], requested: &Path) -> Result<
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     use clap::{CommandFactory, Parser};
 
     use super::*;
+    use crate::test_support::write_executable;
 
     fn write_reconcile_resource_manifest(directory: &Path) -> PathBuf {
         let path = directory.join("resources.json");
@@ -4577,8 +4579,7 @@ mod tests {
 
     fn fake_systemctl(directory: &Path) -> Systemctl {
         let path = directory.join("systemctl");
-        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable(&path, "#!/bin/sh\nexit 0\n").unwrap();
         Systemctl::new(path)
     }
 
@@ -4587,7 +4588,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let calls = temp.path().join("calls");
         let systemctl_path = temp.path().join("systemctl");
-        fs::write(
+        write_executable(
             &systemctl_path,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
@@ -4595,7 +4596,6 @@ mod tests {
             ),
         )
         .unwrap();
-        fs::set_permissions(&systemctl_path, fs::Permissions::from_mode(0o700)).unwrap();
         let checks = vec![ReadinessResult {
             check: ReadinessCheck::Http {
                 address: "127.0.0.1:18082".to_owned(),
@@ -4636,8 +4636,7 @@ mod tests {
     fn activation_failure_reports_probe_and_stop_failures_together() {
         let temp = tempfile::tempdir().unwrap();
         let systemctl_path = temp.path().join("systemctl");
-        fs::write(&systemctl_path, "#!/bin/sh\nexit 19\n").unwrap();
-        fs::set_permissions(&systemctl_path, fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable(&systemctl_path, "#!/bin/sh\nexit 19\n").unwrap();
         let checks = vec![ReadinessResult {
             check: ReadinessCheck::Path {
                 path: PathBuf::from("/run/ready"),
@@ -4673,7 +4672,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let calls = temp.path().join("calls");
         let systemctl_path = temp.path().join("systemctl");
-        fs::write(
+        write_executable(
             &systemctl_path,
             format!(
                 r#"#!/bin/sh
@@ -4688,7 +4687,6 @@ esac
             ),
         )
         .unwrap();
-        fs::set_permissions(&systemctl_path, fs::Permissions::from_mode(0o700)).unwrap();
         let hold = HoldRecord {
             schema_version: 1,
             resource: "service:abird-zulip".to_owned(),
@@ -4997,8 +4995,8 @@ esac
         .unwrap_err();
         assert!(format!("{error:#}").contains("requires deferred-held convergence"));
 
-        fs::write(
-            temp.path().join("systemctl"),
+        write_executable(
+            &temp.path().join("systemctl"),
             "#!/bin/sh\ncase \"$*\" in *is-active*) exit 3;; esac\nexit 0\n",
         )
         .unwrap();
@@ -5047,12 +5045,11 @@ esac
         let temp = tempfile::tempdir().unwrap();
         let resource_manifest = write_reconcile_resource_manifest(temp.path());
         let systemctl_path = temp.path().join("systemctl");
-        fs::write(
+        write_executable(
             &systemctl_path,
             "#!/bin/sh\ncase \"$*\" in start\\ --\\ *|*\" start -- \"*) exit 19;; *is-active*) exit 3;; esac\nexit 0\n",
         )
         .unwrap();
-        fs::set_permissions(&systemctl_path, fs::Permissions::from_mode(0o700)).unwrap();
         let systemctl = Systemctl::new(systemctl_path);
         let state_root = temp.path().join("state");
         let store = StateStore::new(&state_root);
@@ -5109,12 +5106,16 @@ esac
                 .unwrap();
         assert_eq!(status.value["result"]["deferred_resources"]["count"], 1);
         assert_eq!(
+            status.value["result"]["deferred_resources"]["resources"][0]["transaction_id"],
+            active.transaction_id.as_deref().unwrap()
+        );
+        assert_eq!(
             status.value["result"]["deferred_resources"]["resources"][0]["isolated"],
             true
         );
 
-        fs::write(
-            temp.path().join("systemctl"),
+        write_executable(
+            &temp.path().join("systemctl"),
             "#!/bin/sh\ncase \"$*\" in *is-active*) exit 3;; esac\nexit 0\n",
         )
         .unwrap();
@@ -5143,12 +5144,11 @@ esac
         let temp = tempfile::tempdir().unwrap();
         let resource_manifest = write_reconcile_resource_manifest(temp.path());
         let systemctl_path = temp.path().join("systemctl");
-        fs::write(
+        write_executable(
             &systemctl_path,
             "#!/bin/sh\ncase \"$*\" in start\\ --\\ *|*\" start -- \"*) exit 19;; *is-active*) exit 3;; esac\nexit 0\n",
         )
         .unwrap();
-        fs::set_permissions(&systemctl_path, fs::Permissions::from_mode(0o700)).unwrap();
         let systemctl = Systemctl::new(systemctl_path);
         let state_root = temp.path().join("state");
         let store = StateStore::new(&state_root);
@@ -6486,8 +6486,7 @@ esac
         .unwrap();
 
         let fake_systemctl = temp.path().join("systemctl");
-        fs::write(&fake_systemctl, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(&fake_systemctl, fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable(&fake_systemctl, "#!/bin/sh\nexit 0\n").unwrap();
         let systemctl = Systemctl::new(fake_systemctl);
         let job = jobs
             .run_job("activate-1", |spec| {
@@ -6505,7 +6504,7 @@ esac
         let state_path = temp.path().join("route");
         let calls = temp.path().join("systemctl-calls");
         let fake_systemctl = temp.path().join("systemctl");
-        fs::write(
+        write_executable(
             &fake_systemctl,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
@@ -6513,7 +6512,6 @@ esac
             ),
         )
         .unwrap();
-        fs::set_permissions(&fake_systemctl, fs::Permissions::from_mode(0o700)).unwrap();
         let spec = JobSpec {
             schema_version: 1,
             job_id: "route-1".to_owned(),
@@ -6611,7 +6609,7 @@ esac
 
         let calls = temp.path().join("calls");
         let fake_systemctl = temp.path().join("systemctl");
-        fs::write(
+        write_executable(
             &fake_systemctl,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
@@ -6619,7 +6617,6 @@ esac
             ),
         )
         .unwrap();
-        fs::set_permissions(&fake_systemctl, fs::Permissions::from_mode(0o700)).unwrap();
         let systemctl = Systemctl::new(fake_systemctl);
         let job = jobs
             .run_job("restore-1", |spec| {

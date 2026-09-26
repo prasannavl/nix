@@ -7,8 +7,12 @@ args @ {
 }: let
   cfg = config.services.abird-host-manager;
   phaseProjections = args.phaseProjections or [];
-  servicePlacements = args.servicePlacements or {closeouts = {};};
   serviceMoveContract = args.serviceMoveContract or {moves = {};};
+  runtimeProjectionCloseouts =
+    args.runtimeProjectionCloseouts or {
+      closeouts = {};
+      controller_reconcile_exclusions = [];
+    };
   # Projection kinds register exactly one controller adapter. Host-local kinds
   # remain in the registry with no controller command, so adding a projection
   # cannot accidentally route it through a move transaction reconciler.
@@ -41,7 +45,10 @@ args @ {
     adapter
     != null
     && adapter.reconcile != null
-    && !(builtins.elem projection.projection_id (servicePlacements.controller_reconcile_exclusions or [])))
+    && !(builtins.elem projection.projection_id (
+      runtimeProjectionCloseouts.controller_reconcile_exclusions
+      ++ (serviceMoveContract.controller_reconcile_exclusions or [])
+    )))
   cfg.phaseProjections;
   projectionIds = map (projection: projection.projection_id) cfg.phaseProjections;
   nixbotRepositories =
@@ -187,7 +194,7 @@ args @ {
     decision = move.declaration.decision;
     projection_sha256 = move.projection.projection_sha256;
   }) (lib.filterAttrs (_: move: move.declaration.decision != null) serviceMoveContract.moves);
-  allCloseouts = (servicePlacements.closeouts or {}) // nixNativeCloseouts;
+  allCloseouts = runtimeProjectionCloseouts.closeouts // nixNativeCloseouts;
   controllerCloseouts = lib.filterAttrs (_: closeout: closeout.controller_reconcile or true) allCloseouts;
 in {
   options.services.abird-host-manager = {
@@ -264,8 +271,8 @@ in {
           message = "services.abird-host-manager.repository matches more than one services.nixbot.repos path";
         }
         {
-          assertion = lib.intersectLists (builtins.attrNames (servicePlacements.closeouts or {})) (builtins.attrNames nixNativeCloseouts) == [];
-          message = "legacy and Nix-native host-manager closeouts must not share a transaction ID";
+          assertion = lib.intersectLists (builtins.attrNames runtimeProjectionCloseouts.closeouts) (builtins.attrNames nixNativeCloseouts) == [];
+          message = "runtime-only and Nix-native host-manager closeouts must not share a transaction ID";
         }
         {
           assertion = builtins.length cfg.failedJobSupersessionProjections == builtins.length (lib.unique cfg.failedJobSupersessionProjections);

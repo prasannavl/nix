@@ -4,12 +4,8 @@
     system = pkgs.stdenv.hostPlatform.system;
     inherit pkgs;
     specialArgs = {
+      accounts.nixosModule = {...}: {};
       hostName = "incus-lxc-profile-test";
-      stack.nixosConfig = {...}: {
-        disabledActivationScripts = {};
-        disabledGroups = {};
-        disabledUsers = {};
-      };
     };
     modules = [
       ../profiles/incus-lxc.nix

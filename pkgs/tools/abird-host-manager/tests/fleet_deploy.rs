@@ -1,10 +1,11 @@
 #[path = "../src/fleet/deploy.rs"]
 mod deploy;
+#[path = "../src/test_support.rs"]
+mod test_support;
 
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -20,6 +21,7 @@ use deploy::{
     pre_switch_admission_command, rollback_command, rollback_unit_name, rollback_waves,
     snapshot_command, verify_activation,
 };
+use test_support::write_executable;
 
 fn generation(name: &str) -> SystemGeneration {
     SystemGeneration::parse(&format!("/nix/store/abc123-nixos-system-{name}")).unwrap()
@@ -42,8 +44,7 @@ fn assert_bash_syntax(script: &str) {
 
 fn executable(path: &Path, contents: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, contents).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    write_executable(path, contents).unwrap();
 }
 
 fn admission_paths(root: &Path) -> GenerationAdmissionPaths {
@@ -57,6 +58,21 @@ fn admission_paths(root: &Path) -> GenerationAdmissionPaths {
 
 fn run_admission(script: &str) -> std::process::Output {
     Command::new("bash").arg("-c").arg(script).output().unwrap()
+}
+
+fn run_admission_and_switch(script: &str, switch: &Path) -> std::process::Output {
+    Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            "{script}\nrun_admitted_target_switch \"$TEST_TARGET_SWITCH\""
+        ))
+        .env("TEST_TARGET_SWITCH", switch)
+        .env(
+            "ABIRD_HOST_AGENT_CURRENT_SYSTEM",
+            "/inherited/current-system",
+        )
+        .output()
+        .unwrap()
 }
 
 #[test]
@@ -366,7 +382,7 @@ fn generation_dispatcher_owns_normal_and_rollback_admission() {
             executable(
                 &current.join("sw/bin/abird-host-agent-generation-preflight"),
                 &format!(
-                    "#!/bin/sh\nprintf '%s\\n' \"$*\" > {}\nexit {status}\n",
+                    "#!/bin/sh\nprintf '{{\"ok\":true}}\\n'\nprintf '%s|%s\\n' \"${{ABIRD_HOST_AGENT_GENERATION_PREFLIGHT_OUTPUT-<unset>}}\" \"$*\" > {}\nexit {status}\n",
                     calls.display()
                 ),
             );
@@ -381,7 +397,7 @@ fn generation_dispatcher_owns_normal_and_rollback_admission() {
             assert_eq!(
                 fs::read_to_string(&calls).unwrap(),
                 format!(
-                    "{} switch {}\n",
+                    "quiet|{} switch {}\n",
                     target.display(),
                     match mode {
                         ActivationAdmissionMode::Normal => "normal",
@@ -390,10 +406,22 @@ fn generation_dispatcher_owns_normal_and_rollback_admission() {
                 )
             );
             if status == 0 {
+                assert!(output.stdout.is_empty());
+                assert!(String::from_utf8_lossy(&output.stderr).contains(&format!(
+                    "[generation-admission] mode={} admitted {}",
+                    match mode {
+                        ActivationAdmissionMode::Normal => "normal",
+                        ActivationAdmissionMode::Rollback => "rollback",
+                    },
+                    target.display()
+                )));
+                assert!(!String::from_utf8_lossy(&output.stderr).contains("{\"ok\":true}"));
                 assert!(
                     !String::from_utf8_lossy(&output.stderr).contains("rejected-before-switch")
                 );
             } else {
+                assert!(output.stdout.is_empty());
+                assert!(String::from_utf8_lossy(&output.stderr).contains("{\"ok\":true}"));
                 assert!(
                     String::from_utf8_lossy(&output.stderr)
                         .contains("[generation-admission] rejected-before-switch")
@@ -401,6 +429,162 @@ fn generation_dispatcher_owns_normal_and_rollback_admission() {
             }
         }
     }
+}
+
+#[test]
+fn rollback_uses_target_as_legacy_current_only_after_current_dispatcher_accepts_it() {
+    let temporary = tempfile::tempdir().unwrap();
+    let paths = admission_paths(temporary.path());
+    let current = PathBuf::from(&paths.current_system);
+    let target = temporary.path().join("target-system");
+    let observed = temporary.path().join("observed-current-system");
+    let switch = temporary.path().join("switch-to-configuration");
+    executable(
+        &current.join("sw/bin/abird-host-agent-generation-preflight"),
+        "#!/bin/sh\nexit 0\n",
+    );
+    executable(
+        &switch,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"${{ABIRD_HOST_AGENT_CURRENT_SYSTEM-<unset>}}\" > {}\n",
+            observed.display()
+        ),
+    );
+
+    let rollback = generation_admission_script(
+        &target.display().to_string(),
+        ActivationGoal::Switch,
+        ActivationAdmissionMode::Rollback,
+        &paths,
+    );
+    assert!(
+        run_admission_and_switch(&rollback, &switch)
+            .status
+            .success()
+    );
+    assert_eq!(
+        fs::read_to_string(&observed).unwrap(),
+        format!("{}\n", target.display())
+    );
+
+    let normal = generation_admission_script(
+        &target.display().to_string(),
+        ActivationGoal::Switch,
+        ActivationAdmissionMode::Normal,
+        &paths,
+    );
+    assert!(run_admission_and_switch(&normal, &switch).status.success());
+    assert_eq!(fs::read_to_string(&observed).unwrap(), "<unset>\n");
+
+    for (interface_index, relative) in [
+        "sw/bin/abird-host-agent-generation-preflight",
+        "etc/abird-host-agent/generation-admission-registry.json",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for evidence_kind in ["file", "directory", "dangling-symlink"] {
+            let modern_target = temporary
+                .path()
+                .join(format!("modern-target-{interface_index}-{evidence_kind}"));
+            let evidence = modern_target.join(relative);
+            fs::create_dir_all(evidence.parent().unwrap()).unwrap();
+            match evidence_kind {
+                "file" => fs::write(&evidence, "interface evidence\n").unwrap(),
+                "directory" => fs::create_dir(&evidence).unwrap(),
+                "dangling-symlink" => {
+                    std::os::unix::fs::symlink(
+                        temporary.path().join("missing-interface"),
+                        &evidence,
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let modern_rollback = generation_admission_script(
+                &modern_target.display().to_string(),
+                ActivationGoal::Switch,
+                ActivationAdmissionMode::Rollback,
+                &paths,
+            );
+            assert!(
+                run_admission_and_switch(&modern_rollback, &switch)
+                    .status
+                    .success(),
+                "{relative} represented by {evidence_kind}"
+            );
+            assert_eq!(
+                fs::read_to_string(&observed).unwrap(),
+                "<unset>\n",
+                "{relative} represented by {evidence_kind}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rejected_current_dispatcher_never_runs_the_target_switch() {
+    let temporary = tempfile::tempdir().unwrap();
+    let paths = admission_paths(temporary.path());
+    let current = PathBuf::from(&paths.current_system);
+    let target = temporary.path().join("target-system");
+    let switched = temporary.path().join("switched");
+    let switch = temporary.path().join("switch-to-configuration");
+    executable(
+        &current.join("sw/bin/abird-host-agent-generation-preflight"),
+        "#!/bin/sh\nexit 23\n",
+    );
+    executable(
+        &switch,
+        &format!("#!/bin/sh\ntouch {}\n", switched.display()),
+    );
+    let rollback = generation_admission_script(
+        &target.display().to_string(),
+        ActivationGoal::Switch,
+        ActivationAdmissionMode::Rollback,
+        &paths,
+    );
+    let output = run_admission_and_switch(&rollback, &switch);
+    assert_eq!(output.status.code(), Some(23));
+    assert!(!switched.exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("rejected-before-switch"));
+}
+
+#[test]
+fn legacy_current_validators_do_not_enable_the_legacy_target_override() {
+    let temporary = tempfile::tempdir().unwrap();
+    let paths = admission_paths(temporary.path());
+    let current = PathBuf::from(&paths.current_system);
+    let target = temporary.path().join("target-system");
+    let observed = temporary.path().join("observed-current-system");
+    let switch = temporary.path().join("switch-to-configuration");
+    executable(
+        &current.join("sw/bin/abird-host-agent-service-placement-preflight"),
+        "#!/bin/sh\nexit 0\n",
+    );
+    executable(
+        &current.join("sw/bin/abird-host-agent-projection-preflight"),
+        "#!/bin/sh\nexit 0\n",
+    );
+    executable(
+        &switch,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"${{ABIRD_HOST_AGENT_CURRENT_SYSTEM-<unset>}}\" > {}\n",
+            observed.display()
+        ),
+    );
+    let rollback = generation_admission_script(
+        &target.display().to_string(),
+        ActivationGoal::Switch,
+        ActivationAdmissionMode::Rollback,
+        &paths,
+    );
+    assert!(
+        run_admission_and_switch(&rollback, &switch)
+            .status
+            .success()
+    );
+    assert_eq!(fs::read_to_string(observed).unwrap(), "<unset>\n");
 }
 
 #[test]
@@ -421,6 +605,7 @@ fn rollback_admission_allows_only_truly_unmanaged_hosts_without_a_dispatcher() {
     assert!(
         String::from_utf8_lossy(&unmanaged.stderr).contains("no host-agent authority or state")
     );
+    assert!(!String::from_utf8_lossy(&unmanaged.stderr).contains(" admitted "));
 
     fs::remove_dir(&current).unwrap();
     let missing_current = run_admission(&script);

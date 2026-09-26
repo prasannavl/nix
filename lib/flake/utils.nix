@@ -3,10 +3,12 @@
     builtins.attrNames (
       lib.filterAttrs (_: count: count > 1) (
         builtins.foldl'
-        (acc: value:
+        (acc: value: let
+          key = toString value;
+        in
           acc
           // {
-            ${value} = (acc.${value} or 0) + 1;
+            ${key} = (acc.${key} or 0) + 1;
           })
         {}
         values

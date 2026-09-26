@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 
+use crate::programs::clear_git_repository_environment;
+
 use super::bootstrap::ForcedCommandPlan;
 use super::build::{
     self, CacheSource, CommandAttempt, CommandSpec, CommandStatus, DistributionPlan,
@@ -57,6 +59,7 @@ pub struct ProcessRequest {
     pub program: String,
     pub args: Vec<String>,
     pub environment: Vec<(String, String)>,
+    pub clear_git_repository_environment: bool,
     pub cwd: PathBuf,
     pub stdin: Option<String>,
     pub effect: EffectKind,
@@ -148,6 +151,9 @@ impl ProcessRunner for SystemProcessRunner {
             .stderr(Stdio::piped());
         for (name, value) in &request.environment {
             command.env(name, value);
+        }
+        if request.clear_git_repository_environment {
+            clear_git_repository_environment(&mut command);
         }
         let mut child = command.spawn()?;
         if let (Some(input), Some(mut stdin)) = (&request.stdin, child.stdin.take()) {
@@ -271,6 +277,9 @@ fn run_observed_process(
         .stderr(Stdio::piped());
     for (name, value) in &request.environment {
         command.env(name, value);
+    }
+    if request.clear_git_repository_environment {
+        clear_git_repository_environment(&mut command);
     }
     #[cfg(unix)]
     {
@@ -569,6 +578,7 @@ pub fn build_ssh_request(
         program: "ssh".to_owned(),
         args,
         environment: Vec::new(),
+        clear_git_repository_environment: false,
         cwd: target.cwd.clone(),
         stdin: Some(encoded_remote_script(argv, environment)?),
         effect,
@@ -715,6 +725,7 @@ pub fn control_master_exit_request(target: &HostExecutionTarget) -> Result<Optio
         program: "ssh".to_owned(),
         args,
         environment: Vec::new(),
+        clear_git_repository_environment: false,
         cwd: target.cwd.clone(),
         stdin: None,
         effect: EffectKind::Mutation,
@@ -915,6 +926,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             program,
             args,
             environment,
+            clear_git_repository_environment,
             cwd,
             stdin,
             effect,
@@ -932,6 +944,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             program: "timeout".to_owned(),
             args: timeout_args,
             environment,
+            clear_git_repository_environment,
             cwd,
             stdin,
             effect,
@@ -949,6 +962,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             program: command.program.clone(),
             args: command.args.clone(),
             environment: Vec::new(),
+            clear_git_repository_environment: true,
             cwd: self.cwd.clone(),
             stdin: None,
             effect,
@@ -1044,6 +1058,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 program: argv.remove(0),
                 args: argv,
                 environment: command.environment.clone(),
+                clear_git_repository_environment: true,
                 cwd: target.cwd.clone(),
                 stdin,
                 effect,
@@ -1601,6 +1616,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             program: "ssh".to_owned(),
             args,
             environment: Vec::new(),
+            clear_git_repository_environment: false,
             cwd: self.cwd.clone(),
             stdin: None,
             effect: EffectKind::ReadOnly,

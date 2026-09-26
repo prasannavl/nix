@@ -2,8 +2,8 @@
 
 ## Ownership boundary
 
-Abird assembles its authoritative fabric contract from the concrete stack
-profiles under `lib/stacks`: stable IPv4 and IPv6 prefixes, fabric-local role
+Abird assembles its authoritative fabric contract from the stack definitions
+under `config/abird/stacks`: stable IPv4 and IPv6 prefixes, fabric-local role
 addresses, placements, lifecycle state, and logical allow edges. Pvl does not
 import or evaluate the Abird repository. It owns a deliberately small accepted
 projection directly in `hosts/pvl-x2/incus.nix`, beside the physical realization

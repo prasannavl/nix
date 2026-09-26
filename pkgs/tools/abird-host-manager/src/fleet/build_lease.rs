@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
@@ -75,11 +75,81 @@ pub struct LeaseObservation {
 
 pub trait ActiveLease: Send {
     fn confirm(&mut self) -> Result<()>;
+    fn confirm_with_timeout(&mut self, _timeout: Duration) -> Result<()> {
+        self.confirm()
+    }
     fn release(&mut self);
 }
 
 pub trait LeaseConnector: Send + Sync {
     fn connect(&self, spec: &LeaseProcessSpec) -> Result<Box<dyn ActiveLease>>;
+    fn connect_with_timeout(
+        &self,
+        spec: &LeaseProcessSpec,
+        _timeout: Duration,
+    ) -> Result<Box<dyn ActiveLease>> {
+        self.connect(spec)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LeaseRetryPolicy {
+    attempts: usize,
+    delay: Duration,
+    timeout: Duration,
+}
+
+impl LeaseRetryPolicy {
+    pub fn new(attempts: usize, delay: Duration, timeout: Duration) -> Result<Self> {
+        if attempts == 0 || timeout.is_zero() {
+            bail!("builder lease retries need positive attempts and timeout");
+        }
+        Ok(Self {
+            attempts,
+            delay,
+            timeout,
+        })
+    }
+
+    pub fn transport(attempts: usize, delay: Duration) -> Result<Self> {
+        let mut timeout = (READY_TIMEOUT + HEARTBEAT_TIMEOUT)
+            .saturating_mul(u32::try_from(attempts).unwrap_or(u32::MAX));
+        let waits = attempts.saturating_sub(1);
+        for attempt in 1..=waits.min(32) {
+            timeout = timeout.saturating_add(Self::backoff(delay, attempt));
+        }
+        if waits > 32 {
+            timeout = timeout.saturating_add(
+                Self::backoff(delay, 32)
+                    .saturating_mul(u32::try_from(waits - 32).unwrap_or(u32::MAX)),
+            );
+        }
+        Self::new(attempts, delay, timeout)
+    }
+
+    fn backoff(delay: Duration, attempt: usize) -> Duration {
+        delay.saturating_mul(
+            1_u32
+                .checked_shl((attempt - 1).min(31) as u32)
+                .unwrap_or(u32::MAX),
+        )
+    }
+}
+
+pub trait LeaseRetryClock: Send + Sync {
+    fn now(&self) -> Duration;
+    fn wait(&self, duration: Duration);
+}
+
+struct SystemLeaseRetryClock(Instant);
+
+impl LeaseRetryClock for SystemLeaseRetryClock {
+    fn now(&self) -> Duration {
+        self.0.elapsed()
+    }
+    fn wait(&self, duration: Duration) {
+        thread::sleep(duration);
+    }
 }
 
 #[derive(Default)]
@@ -87,7 +157,18 @@ pub struct SystemLeaseConnector;
 
 impl LeaseConnector for SystemLeaseConnector {
     fn connect(&self, spec: &LeaseProcessSpec) -> Result<Box<dyn ActiveLease>> {
-        Ok(Box::new(SystemActiveLease::spawn(spec)?))
+        self.connect_with_timeout(spec, READY_TIMEOUT)
+    }
+
+    fn connect_with_timeout(
+        &self,
+        spec: &LeaseProcessSpec,
+        timeout: Duration,
+    ) -> Result<Box<dyn ActiveLease>> {
+        Ok(Box::new(SystemActiveLease::spawn(
+            spec,
+            timeout.min(READY_TIMEOUT),
+        )?))
     }
 }
 
@@ -102,6 +183,9 @@ struct CoordinatorState {
 pub struct BuilderLeaseCoordinator {
     connector: Arc<dyn LeaseConnector>,
     state: Mutex<CoordinatorState>,
+    retry: LeaseRetryPolicy,
+    clock: Arc<dyn LeaseRetryClock>,
+    cancelled: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl Default for BuilderLeaseCoordinator {
@@ -112,8 +196,31 @@ impl Default for BuilderLeaseCoordinator {
 
 impl BuilderLeaseCoordinator {
     pub fn new(connector: Arc<dyn LeaseConnector>) -> Self {
+        Self::with_retry_policy(
+            connector,
+            LeaseRetryPolicy::transport(3, Duration::from_secs(2))
+                .expect("valid default lease retry policy"),
+        )
+    }
+
+    pub fn with_retry_policy(connector: Arc<dyn LeaseConnector>, retry: LeaseRetryPolicy) -> Self {
+        Self::with_retry_clock(
+            connector,
+            retry,
+            Arc::new(SystemLeaseRetryClock(Instant::now())),
+        )
+    }
+
+    pub fn with_retry_clock(
+        connector: Arc<dyn LeaseConnector>,
+        retry: LeaseRetryPolicy,
+        clock: Arc<dyn LeaseRetryClock>,
+    ) -> Self {
         Self {
             connector,
+            retry,
+            clock,
+            cancelled: None,
             state: Mutex::new(CoordinatorState {
                 authority: None,
                 epoch: LeaseEpoch::initial(),
@@ -123,7 +230,13 @@ impl BuilderLeaseCoordinator {
         }
     }
 
+    pub fn with_cancellation(mut self, cancelled: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.cancelled = Some(cancelled);
+        self
+    }
+
     pub fn ensure(&self, spec: &LeaseProcessSpec) -> Result<LeaseObservation> {
+        self.require_not_cancelled()?;
         let mut state = self
             .state
             .lock()
@@ -136,8 +249,9 @@ impl BuilderLeaseCoordinator {
         }
 
         if let Some(active) = state.active.as_mut()
-            && active.confirm().is_ok()
+            && active.confirm_with_timeout(HEARTBEAT_TIMEOUT).is_ok()
         {
+            self.require_not_cancelled()?;
             return Ok(LeaseObservation {
                 epoch: state.epoch,
                 reacquired: false,
@@ -148,17 +262,99 @@ impl BuilderLeaseCoordinator {
             stale.release();
         }
         let reacquired = state.ever_acquired;
-        if reacquired {
-            state.epoch = state.epoch.next()?;
+        // A confirmed session earns a fresh reconnect budget. Failed connects
+        // and newly acquired confirmations share that episode's budget; none
+        // establishes an epoch or leaves an unconfirmed lease retained.
+        let started = self.clock.now();
+        for attempt in 1..=self.retry.attempts {
+            self.require_not_cancelled()?;
+            let remaining = self.retry_remaining(started)?;
+            let error = match self.connector.connect_with_timeout(spec, remaining) {
+                Ok(mut active) => {
+                    let confirmation = match self.retry_remaining(started) {
+                        Ok(remaining) => {
+                            active.confirm_with_timeout(remaining.min(HEARTBEAT_TIMEOUT))
+                        }
+                        Err(error) => Err(error),
+                    };
+                    match confirmation {
+                        Ok(()) => {
+                            if let Err(error) = self
+                                .retry_remaining(started)
+                                .and_then(|_| self.require_not_cancelled())
+                            {
+                                active.release();
+                                return Err(error);
+                            }
+                            let epoch = if reacquired {
+                                state.epoch.next()
+                            } else {
+                                Ok(state.epoch)
+                            };
+                            let epoch = match epoch {
+                                Ok(epoch) => epoch,
+                                Err(error) => {
+                                    active.release();
+                                    return Err(error);
+                                }
+                            };
+                            state.epoch = epoch;
+                            state.active = Some(active);
+                            state.ever_acquired = true;
+                            return Ok(LeaseObservation { epoch, reacquired });
+                        }
+                        Err(error) => {
+                            active.release();
+                            error.context("confirm acquired builder lease")
+                        }
+                    }
+                }
+                Err(error) => error.context("connect builder lease transport"),
+            };
+            self.retry_remaining(started).with_context(|| {
+                format!("builder lease acquisition time budget exhausted; last failure: {error:#}")
+            })?;
+            self.require_not_cancelled()?;
+            if attempt == self.retry.attempts {
+                return Err(error).context("builder lease acquisition retry attempts exhausted");
+            }
+            self.wait_for_retry(
+                LeaseRetryPolicy::backoff(self.retry.delay, attempt)
+                    .min(self.retry_remaining(started)?),
+            )?;
         }
-        let mut active = self.connector.connect(spec)?;
-        active.confirm().context("confirm acquired builder lease")?;
-        state.active = Some(active);
-        state.ever_acquired = true;
-        Ok(LeaseObservation {
-            epoch: state.epoch,
-            reacquired,
-        })
+        unreachable!("positive lease retry attempts always return")
+    }
+
+    fn require_not_cancelled(&self) -> Result<()> {
+        if self.cancelled.as_ref().is_some_and(|cancelled| cancelled()) {
+            bail!("builder lease acquisition cancelled");
+        }
+        Ok(())
+    }
+
+    fn retry_remaining(&self, started: Duration) -> Result<Duration> {
+        let elapsed = self.clock.now().saturating_sub(started);
+        let remaining = self.retry.timeout.saturating_sub(elapsed);
+        if remaining.is_zero() {
+            bail!("builder lease acquisition time budget exhausted");
+        }
+        Ok(remaining)
+    }
+
+    fn wait_for_retry(&self, duration: Duration) -> Result<()> {
+        let mut remaining = duration;
+        while !remaining.is_zero() {
+            self.require_not_cancelled()?;
+            let step = if self.cancelled.is_some() {
+                remaining.min(Duration::from_millis(100))
+            } else {
+                remaining
+            };
+            self.clock.wait(step);
+            remaining = remaining.saturating_sub(step);
+        }
+        self.require_not_cancelled()
     }
 
     pub fn release(&self) {
@@ -181,7 +377,7 @@ impl Drop for BuilderLeaseCoordinator {
 }
 
 enum DriverCommand {
-    Confirm(mpsc::Sender<Result<(), String>>),
+    Confirm(mpsc::Sender<Result<(), String>>, Duration),
     Stop,
 }
 
@@ -191,7 +387,7 @@ struct SystemActiveLease {
 }
 
 impl SystemActiveLease {
-    fn spawn(spec: &LeaseProcessSpec) -> Result<Self> {
+    fn spawn(spec: &LeaseProcessSpec, ready_timeout: Duration) -> Result<Self> {
         let mut command = Command::new(&spec.program);
         command
             .args(&spec.args)
@@ -223,7 +419,7 @@ impl SystemActiveLease {
         let stderr_worker = thread::spawn(move || {
             let _ = io::copy(&mut BufReader::new(stderr), &mut io::sink());
         });
-        let readiness = match lines_rx.recv_timeout(READY_TIMEOUT) {
+        let readiness = match lines_rx.recv_timeout(ready_timeout) {
             Ok(Ok(line)) if line == "READY" => Ok(()),
             Ok(Ok(line)) => Err(anyhow::anyhow!(
                 "unexpected builder lease readiness frame: {line}"
@@ -259,12 +455,17 @@ impl SystemActiveLease {
 
 impl ActiveLease for SystemActiveLease {
     fn confirm(&mut self) -> Result<()> {
+        self.confirm_with_timeout(HEARTBEAT_TIMEOUT)
+    }
+
+    fn confirm_with_timeout(&mut self, timeout: Duration) -> Result<()> {
+        let timeout = timeout.min(HEARTBEAT_TIMEOUT);
         let (reply_tx, reply_rx) = mpsc::channel();
         self.commands
-            .send(DriverCommand::Confirm(reply_tx))
+            .send(DriverCommand::Confirm(reply_tx, timeout))
             .context("builder lease driver stopped")?;
         reply_rx
-            .recv_timeout(HEARTBEAT_TIMEOUT)
+            .recv_timeout(timeout)
             .context("builder lease confirmation timed out")?
             .map_err(anyhow::Error::msg)
     }
@@ -296,17 +497,17 @@ fn lease_driver(
             Ok(command) => command,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let (reply, _receiver) = mpsc::channel();
-                DriverCommand::Confirm(reply)
+                DriverCommand::Confirm(reply, HEARTBEAT_TIMEOUT)
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => DriverCommand::Stop,
         };
         match command {
             DriverCommand::Stop => break,
-            DriverCommand::Confirm(reply) => {
+            DriverCommand::Confirm(reply, timeout) => {
                 let result = (|| -> Result<(), String> {
                     writeln!(stdin, "PING").map_err(|error| error.to_string())?;
                     stdin.flush().map_err(|error| error.to_string())?;
-                    match lines.recv_timeout(HEARTBEAT_TIMEOUT) {
+                    match lines.recv_timeout(timeout) {
                         Ok(Ok(line)) if line == "PONG" => Ok(()),
                         Ok(Ok(line)) => Err(format!("unexpected builder lease frame: {line}")),
                         Ok(Err(error)) => Err(error.to_string()),

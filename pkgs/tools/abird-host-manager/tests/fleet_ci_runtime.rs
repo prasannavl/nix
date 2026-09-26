@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use abird_host_manager::fleet::repository;
+
 #[path = "../src/fleet/ci_runtime.rs"]
 mod ci_runtime;
 #[path = "../src/fleet/cli.rs"]
@@ -8,10 +10,10 @@ mod cli;
 mod environment;
 #[path = "../src/fleet/inventory.rs"]
 mod inventory;
-#[path = "../src/fleet/repository.rs"]
-mod repository;
 #[path = "../src/fleet/system.rs"]
 mod system;
+#[path = "../src/test_support.rs"]
+mod test_support;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
@@ -33,6 +35,7 @@ use repository::{
     CiCleanMode, CiHostSelection, CommandOutput, CommandRequest, CommandRunner, CommitSha,
     StagedPatch, decode_argv,
 };
+use test_support::write_executable;
 
 fn sha(value: &str) -> CommitSha {
     CommitSha::parse(value).unwrap()
@@ -377,6 +380,7 @@ fn trigger_plan(dry_run: bool, stdin: Option<Vec<u8>>) -> repository::CiTriggerP
         clean_mode: CiCleanMode::Auto,
         group: Some("prod; echo unsafe".to_owned()),
         hosts: None,
+        required_hosts: Vec::new(),
         nix_config: None,
         log_format: repository::CiLogFormat::Plain,
         dry_run,
@@ -554,8 +558,7 @@ fn empty_keyscan_result_fails_closed_without_attempting_ssh() {
 
 fn executable(directory: &Path, name: &str, body: &str) -> PathBuf {
     let path = directory.join(name);
-    fs::write(&path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(&path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
     path
 }
 
@@ -738,4 +741,31 @@ fn log_format_and_host_selection_are_derived_from_existing_cli_contracts() {
         ci_runtime::forwarded_log_format(options.log_format),
         repository::CiLogFormat::GithubActions
     );
+}
+
+#[test]
+fn ci_trigger_preserves_required_host_guard_through_encoded_dispatch() {
+    let fixture = TempDir::new().unwrap();
+    let inventory = inventory();
+    let options = Options {
+        required_hosts: vec!["app".to_owned(), "db".to_owned()],
+        ..Options::default()
+    };
+    let mut repository = FakeRepository {
+        resolved: BTreeMap::from([("HEAD".to_owned(), sha("abcdef0123456789"))]),
+        ..FakeRepository::default()
+    };
+    let prepared = prepare_ci_trigger(
+        &request_input(&options, &inventory, fixture.path()),
+        &mut repository,
+    )
+    .unwrap();
+    let forwarded = repository::decode_argv(&prepared.plan.encoded_argv).unwrap();
+    assert!(
+        forwarded
+            .windows(2)
+            .any(|pair| pair == ["--require-hosts", "app,db"])
+    );
+    let invocation = abird_host_manager::fleet::cli::Invocation::parse_legacy(forwarded).unwrap();
+    assert_eq!(invocation.options.required_hosts, ["app", "db"]);
 }

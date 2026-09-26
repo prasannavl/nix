@@ -20,7 +20,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::programs::nix::Nix;
+use crate::programs::{clear_git_repository_environment, nix::Nix};
 use crate::progress::{ProgressReporter, StepProgress, command_reporter};
 use crate::projection::{DesiredResourceState, PhaseProjection, ProjectionEffect};
 use crate::repository::Repository;
@@ -46,6 +46,8 @@ impl std::error::Error for RenderedInventoryCommandFailure {}
 pub struct HostManagerConfig {
     pub schema_version: u32,
     pub ssh: SshConfig,
+    #[serde(default = "default_adoption_stability_interval_ms")]
+    pub adoption_stability_interval_ms: u64,
     pub hosts: BTreeMap<String, Host>,
     #[serde(default)]
     pub controller: Option<String>,
@@ -255,16 +257,25 @@ impl HostManagerConfig {
     }
 
     fn load_nixbot(path: &Path) -> Result<Self> {
+        Self::load_nixbot_with_program(path, manager_nix_program())
+    }
+
+    fn load_nixbot_with_program(path: &Path, nix_program: PathBuf) -> Result<Self> {
         let path = path
             .canonicalize()
             .with_context(|| format!("resolve Nixbot config {}", path.display()))?;
-        let nix_program = manager_nix_program();
         let ssh_program = std::env::var_os("ABIRD_HOST_MANAGER_SSH")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/run/current-system/sw/bin/ssh"));
         let overlay = nixbot_overlay_path(&path)?;
-        let value =
-            Nix::new(nix_program)?.eval_file_with_overlay_json(&path, overlay.as_deref())?;
+        let repository_config = repository_for_config(&path)?
+            .map(|repository| repository.root().join("config"))
+            .filter(|config| config.join("default.nix").is_file());
+        let value = Nix::new(nix_program)?.eval_inventory_file_with_overlay_json(
+            &path,
+            overlay.as_deref(),
+            repository_config.as_deref(),
+        )?;
         let ssh_runtime = Arc::new(SshRuntime::from_environment()?);
         let hosts = value
             .get("hosts")
@@ -405,6 +416,7 @@ impl HostManagerConfig {
                         revision: None,
                         nix_config: None,
                         exclude_hosts: parent.into_iter().collect(),
+                        required_hosts: Vec::new(),
                     }),
                     rsync_program: default_rsync_program(),
                     rsync_prefix: None,
@@ -423,6 +435,7 @@ impl HostManagerConfig {
                 rsync_program: default_rsync_program(),
                 tar_program: default_tar_program(),
             },
+            adoption_stability_interval_ms: default_adoption_stability_interval_ms(),
             hosts: inventory,
             controller: None,
             transfer_broker: None,
@@ -565,6 +578,9 @@ impl HostManagerConfig {
         }
         if self.ssh.job_timeout_seconds == 0 || self.ssh.job_timeout_seconds > 604_800 {
             bail!("job timeout must be between 1 and 604800 seconds");
+        }
+        if !(100..=60_000).contains(&self.adoption_stability_interval_ms) {
+            bail!("adoption stability interval must be between 100 and 60000 milliseconds");
         }
         validate_argv("global SSH arguments", &self.ssh.args)?;
         if self.hosts.is_empty() {
@@ -1604,28 +1620,61 @@ pub fn run_local_nixbot_deploy(
     repository_root: &Path,
     request: &NixbotDeployRequest,
 ) -> Result<()> {
+    let status = local_nixbot_command(nix_program)
+        .current_dir(repository_root)
+        .args(["run", ".#nixbot", "--"])
+        .args(local_nixbot_deploy_arguments(request)?)
+        .status()
+        .context("run Nixbot from the local repository checkout")?;
+    if !status.success() {
+        bail!("local Nixbot deployment failed with {status}");
+    }
+    Ok(())
+}
+
+fn local_nixbot_command(nix_program: &Path) -> Command {
+    let mut command = Command::new(nix_program);
+    clear_git_repository_environment(&mut command);
+    command
+}
+
+/// Construct the same guarded deployment request for the native cutover.
+/// The active local deployment path continues to invoke the Nixbot package.
+pub fn local_nixbot_deploy_invocation(
+    request: &NixbotDeployRequest,
+    environment: &crate::fleet::environment::Environment,
+) -> Result<crate::fleet::cli::Invocation> {
+    crate::fleet::cli::Invocation::parse_legacy_with_environment(
+        local_nixbot_deploy_arguments(request)?,
+        environment,
+    )
+}
+
+fn local_nixbot_deploy_arguments(request: &NixbotDeployRequest) -> Result<Vec<String>> {
+    validate_nixbot_deploy_request(request)?;
     let revision = request
         .revision
         .as_deref()
         .context("local Nixbot deploy request has no committed revision")?;
-    let mut command = Command::new(nix_program);
-    command
-        .current_dir(repository_root)
-        .args(["run", ".#nixbot", "--", "deploy", "--sha", revision]);
-    if request.exclude_hosts.is_empty() {
-        command.args(["--host", request.host.as_str()]);
+    let mut arguments = vec!["deploy".to_owned(), "--sha".to_owned(), revision.to_owned()];
+    let host_selectors = request.host_selectors();
+    if host_selectors.len() == 1 {
+        arguments.extend(["--host".to_owned(), request.host.clone()]);
     } else {
-        let hosts = std::iter::once(request.host.clone())
-            .chain(request.exclude_hosts.iter().map(|host| format!("-{host}")))
-            .collect::<Vec<_>>()
-            .join(",");
-        command.args(["--hosts", &hosts]);
+        let hosts = host_selectors.join(",");
+        arguments.extend(["--hosts".to_owned(), hosts]);
     }
     if let Some(nix_config) = &request.nix_config {
-        command.args(["--nix-config", nix_config]);
+        arguments.extend(["--nix-config".to_owned(), nix_config.clone()]);
     }
-    let status = command
-        .args([
+    if !request.required_hosts.is_empty() {
+        arguments.extend([
+            "--require-hosts".to_owned(),
+            request.required_hosts.join(","),
+        ]);
+    }
+    arguments.extend(
+        [
             "--build-plan-jobs",
             "1",
             "--build-jobs",
@@ -1635,13 +1684,11 @@ pub fn run_local_nixbot_deploy(
             "--verify-jobs",
             "1",
             "--no-rollback",
-        ])
-        .status()
-        .context("run Nixbot from the local repository checkout")?;
-    if !status.success() {
-        bail!("local Nixbot deployment failed with {status}");
-    }
-    Ok(())
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
+    Ok(arguments)
 }
 
 fn host_ssh_options(host: &Host) -> Vec<String> {
@@ -2304,6 +2351,7 @@ impl NativeAdapter {
             &manager_nix_program(),
             &self.config,
             Some(source_namespace),
+            None,
             logical_service,
         )?;
         if placement.host != expected_host {
@@ -4735,6 +4783,10 @@ fn default_job_timeout_seconds() -> u64 {
     86_400
 }
 
+fn default_adoption_stability_interval_ms() -> u64 {
+    2_000
+}
+
 fn default_rsync_program() -> PathBuf {
     PathBuf::from("/run/current-system/sw/bin/rsync")
 }
@@ -4746,9 +4798,53 @@ fn default_tar_program() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+    use crate::test_support::write_executable;
+
+    #[test]
+    fn loads_functional_repository_inventory_with_repository_stacks() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path().join("repository");
+        let inventory = repository.join("hosts/nixbot.nix");
+        let config = repository.join("config/default.nix");
+        let arguments = temporary.path().join("nix-arguments");
+        let nix = temporary.path().join("nix");
+        for directory in [
+            repository.join("hosts"),
+            repository.join("config"),
+            repository.join("pkgs"),
+            repository.join("data/secrets"),
+        ] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        for file in [
+            repository.join("flake.nix"),
+            repository.join("pkgs/manifest.nix"),
+            repository.join("data/secrets/default.nix"),
+            repository.join("hosts/default.nix"),
+            inventory.clone(),
+            config.clone(),
+        ] {
+            fs::write(file, "{}\n").unwrap();
+        }
+        write_executable(
+            &nix,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s\\n' '{{\"hosts\":{{\"node\":{{\"target\":\"127.0.0.1\"}}}},\"config\":{{}}}}'\n",
+                arguments.display()
+            ),
+        )
+        .unwrap();
+
+        let loaded = HostManagerConfig::load_nixbot_with_program(&inventory, nix).unwrap();
+
+        assert!(loaded.hosts.contains_key("node"));
+        let arguments = fs::read_to_string(arguments).unwrap();
+        assert!(arguments.contains("--apply\n"));
+        assert!(arguments.contains("builtins.isFunction inventory"));
+        assert!(arguments.contains(config.parent().unwrap().to_str().unwrap()));
+    }
 
     #[test]
     fn formats_durable_transfer_progress_for_humans() {
@@ -4890,6 +4986,7 @@ mod tests {
         )
         .unwrap();
         spec.declarative_scope = Some("abird".to_owned());
+        spec.repository_owner = Some("abird".to_owned());
         let projection =
             MoveProjector::derive(&spec, &config, MovePhase::Seeded, None, None).unwrap();
         let mut adapter = NativeAdapter::from_config(config);
@@ -5191,22 +5288,20 @@ mod tests {
         let source_agent = temp.path().join("source-agent");
         let target_agent = temp.path().join("target-agent");
         let declaration = r#"{"ok":true,"result":{"resource":{"data_paths":[],"data_roots":[{"name":"state","path":"/var/lib/state","excludes":[]}]}}}"#;
-        fs::write(
+        write_executable(
             &source_agent,
-            format!(
+            &format!(
                 "#!/bin/sh\ncase \"$*\" in\n  *\"resource ready\"*) printf '%s\\n' '{{\"ok\":true,\"result\":{{\"ready\":true}}}}' ;;\n  *) printf '%s\\n' '{declaration}' ;;\nesac\n"
             ),
         )
         .unwrap();
-        fs::write(
+        write_executable(
             &target_agent,
-            format!(
+            &format!(
                 "#!/bin/sh\ncase \"$*\" in\n  *\"job list\"*) printf '%s\\n' '{{\"ok\":true}}' ;;\n  *) printf '%s\\n' '{declaration}' ;;\nesac\n"
             ),
         )
         .unwrap();
-        fs::set_permissions(&source_agent, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::set_permissions(&target_agent, fs::Permissions::from_mode(0o700)).unwrap();
         let config: HostManagerConfig = serde_json::from_value(serde_json::json!({
             "schema_version": 1,
             "ssh": {"program": "/bin/false"},
@@ -5241,9 +5336,9 @@ mod tests {
             .unwrap();
         assert_eq!(transaction.data_root_plan.len(), 1);
 
-        fs::write(
+        write_executable(
             &source_agent,
-            format!(
+            &format!(
                 "#!/bin/sh\ncase \"$*\" in\n  *\"resource ready\"*) printf '%s\\n' '{{\"ok\":true,\"result\":{{\"ready\":false}}}}' ;;\n  *) printf '%s\\n' '{declaration}' ;;\nesac\n"
             ),
         )
@@ -5398,7 +5493,7 @@ mod tests {
         let arguments = temp.path().join("arguments");
         let working_directory = temp.path().join("working-directory");
         let nix = temp.path().join("nix");
-        fs::write(
+        write_executable(
             &nix,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\npwd > '{}'\n",
@@ -5407,7 +5502,6 @@ mod tests {
             ),
         )
         .unwrap();
-        fs::set_permissions(&nix, fs::Permissions::from_mode(0o700)).unwrap();
         let config: HostManagerConfig = serde_json::from_value(serde_json::json!({
             "schema_version": 1,
             "ssh": {"program": "/bin/false"},
@@ -5424,7 +5518,8 @@ mod tests {
                         "host": "target-system",
                         "revision": "fedcba9876543210",
                         "nix_config": "target-generation",
-                        "exclude_hosts": ["old-system"]
+                        "exclude_hosts": ["old-system"],
+                        "required_hosts": ["target-system"]
                     }
                 }
             }
@@ -5458,10 +5553,143 @@ mod tests {
         assert!(arguments.contains("run\n.#nixbot\n--\ndeploy\n--sha\n0123456789abcdef\n"));
         assert!(arguments.contains("--hosts\ntarget-system,-old-system\n"));
         assert!(arguments.contains("--nix-config\ntarget-generation\n"));
+        assert!(arguments.contains("--require-hosts\ntarget-system\n"));
         assert!(!arguments.contains("fedcba9876543210"));
         assert_eq!(
             fs::read_to_string(working_directory).unwrap().trim(),
             temp.path().to_string_lossy(),
+        );
+    }
+
+    #[test]
+    fn local_native_deployment_preserves_move_coverage_and_serial_policy() {
+        let request = NixbotDeployRequest {
+            host: "target-system".to_owned(),
+            revision: Some("0123456789abcdef".to_owned()),
+            nix_config: None,
+            exclude_hosts: vec!["old-system".to_owned()],
+            required_hosts: vec!["target-system".to_owned(), "other-system".to_owned()],
+        };
+        let environment = crate::fleet::environment::Environment::from_map(BTreeMap::from([
+            ("NIXBOT_BUILD_HOST".to_owned(), "builder-system".to_owned()),
+            ("NIXBOT_BUILD_JOBS".to_owned(), "8".to_owned()),
+            ("NIXBOT_VERIFY_JOBS".to_owned(), "8".to_owned()),
+            ("NIXBOT_HOSTS".to_owned(), "wrong-system".to_owned()),
+        ]));
+        let invocation = local_nixbot_deploy_invocation(&request, &environment).unwrap();
+        assert_eq!(invocation.action, crate::fleet::cli::Action::Deploy);
+        assert_eq!(
+            invocation.options.sha.as_deref(),
+            request.revision.as_deref()
+        );
+        assert_eq!(
+            invocation.options.build_host.as_deref(),
+            Some("builder-system")
+        );
+        assert!(invocation.options.build_host_explicit);
+        assert_eq!(
+            invocation.options.hosts.as_deref(),
+            Some("target-system,other-system,-old-system")
+        );
+        assert_eq!(invocation.options.required_hosts, request.required_hosts);
+        assert_eq!(
+            invocation.options.build_plan_jobs,
+            crate::fleet::cli::JobCount::Count(1)
+        );
+        assert_eq!(invocation.options.build_jobs, 1);
+        assert_eq!(invocation.options.deploy_jobs, 1);
+        assert_eq!(invocation.options.verify_jobs, 1);
+        assert!(invocation.options.no_rollback);
+
+        let mut single = request.clone();
+        single.required_hosts = vec![single.host.clone()];
+        single.nix_config = Some("target-generation".to_owned());
+        let invocation = local_nixbot_deploy_invocation(&single, &environment).unwrap();
+        assert_eq!(
+            invocation.options.hosts.as_deref(),
+            Some("target-system,-old-system")
+        );
+        assert_eq!(
+            invocation.options.nix_config.as_deref(),
+            Some("target-generation")
+        );
+        assert_eq!(invocation.options.required_hosts, single.required_hosts);
+        single.exclude_hosts.clear();
+        let invocation = local_nixbot_deploy_invocation(&single, &environment).unwrap();
+        assert_eq!(invocation.options.host.as_deref(), Some("target-system"));
+        assert_eq!(invocation.options.required_hosts, single.required_hosts);
+
+        let mut invalid = request.clone();
+        invalid.nix_config = Some("target-generation".to_owned());
+        assert!(
+            local_nixbot_deploy_invocation(&invalid, &environment)
+                .unwrap_err()
+                .to_string()
+                .contains("one positive")
+        );
+        invalid = request.clone();
+        invalid.required_hosts.push("old-system".to_owned());
+        assert!(local_nixbot_deploy_invocation(&invalid, &environment).is_err());
+        invalid = request.clone();
+        invalid.required_hosts.push("target-system".to_owned());
+        assert!(local_nixbot_deploy_invocation(&invalid, &environment).is_err());
+        for revision in [
+            None,
+            Some(UNCOMMITTED_CONTROLLER_REVISION.to_owned()),
+            Some("not-a-revision".to_owned()),
+        ] {
+            invalid = request.clone();
+            invalid.revision = revision;
+            assert!(local_nixbot_deploy_invocation(&invalid, &environment).is_err());
+        }
+    }
+
+    #[test]
+    fn local_nixbot_command_removes_git_checkout_selectors() {
+        let command = local_nixbot_command(Path::new("nix"));
+        for selector in crate::programs::GIT_REPOSITORY_ENVIRONMENT {
+            assert_eq!(
+                command
+                    .get_envs()
+                    .find(|(name, _)| name == selector)
+                    .map(|(_, value)| value),
+                Some(None),
+                "{selector} was not removed"
+            );
+        }
+    }
+
+    #[test]
+    fn local_subprocess_deployment_preserves_multiple_required_hosts() {
+        let temp = tempfile::tempdir().unwrap();
+        let arguments = temp.path().join("arguments");
+        let nix = temp.path().join("nix");
+        write_executable(
+            &nix,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+                arguments.display()
+            ),
+        )
+        .unwrap();
+        let request = NixbotDeployRequest {
+            host: "target-system".to_owned(),
+            revision: Some("0123456789abcdef".to_owned()),
+            nix_config: None,
+            exclude_hosts: vec!["old-system".to_owned()],
+            required_hosts: vec!["target-system".to_owned(), "other-system".to_owned()],
+        };
+        run_local_nixbot_deploy(&nix, temp.path(), &request).unwrap();
+        let actual = fs::read_to_string(&arguments).unwrap();
+        assert!(actual.contains("--hosts\ntarget-system,other-system,-old-system\n"));
+        assert!(actual.contains("--require-hosts\ntarget-system,other-system\n"));
+        let mut invalid = request;
+        invalid.revision = Some(UNCOMMITTED_CONTROLLER_REVISION.to_owned());
+        fs::remove_file(&arguments).unwrap();
+        assert!(run_local_nixbot_deploy(&nix, temp.path(), &invalid).is_err());
+        assert!(
+            !arguments.exists(),
+            "invalid request invoked the subprocess"
         );
     }
 
@@ -5667,7 +5895,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let arguments = temp.path().join("arguments");
         let agent = temp.path().join("agent");
-        fs::write(
+        write_executable(
             &agent,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
@@ -5675,7 +5903,6 @@ mod tests {
             ),
         )
         .unwrap();
-        fs::set_permissions(&agent, fs::Permissions::from_mode(0o700)).unwrap();
         let config: HostManagerConfig = serde_json::from_value(serde_json::json!({
             "schema_version": 1,
             "ssh": {"program": "/bin/false"},
@@ -5711,7 +5938,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let marker = temp.path().join("dropped");
         let ssh = temp.path().join("ssh");
-        fs::write(
+        write_executable(
             &ssh,
             format!(
                 r#"#!/bin/sh
@@ -5737,7 +5964,6 @@ esac
             ),
         )
         .unwrap();
-        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
         let config_path = temp.path().join("config.json");
         fs::write(
             &config_path,
@@ -5776,7 +6002,7 @@ esac
         let temp = tempfile::tempdir().unwrap();
         let log = temp.path().join("agent.log");
         let agent = temp.path().join("agent");
-        fs::write(
+        write_executable(
             &agent,
             format!(
                 r#"#!/bin/sh
@@ -5796,7 +6022,6 @@ esac
             ),
         )
         .unwrap();
-        fs::set_permissions(&agent, fs::Permissions::from_mode(0o700)).unwrap();
         let config: HostManagerConfig = serde_json::from_value(serde_json::json!({
             "schema_version": 1,
             "ssh": {"program": "/bin/false"},
@@ -5899,12 +6124,11 @@ esac
     fn broker_endpoint_carries_the_key_observed_over_inventory_transport() {
         let temp = tempfile::tempdir().unwrap();
         let ssh = temp.path().join("ssh");
-        fs::write(
+        write_executable(
             &ssh,
             "#!/bin/sh\nprintf '%s\\n' '{\"ok\":true,\"result\":{\"public_key\":\"ssh-ed25519 observed-key\"}}'\n",
         )
         .unwrap();
-        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
         let config: HostManagerConfig = serde_json::from_value(serde_json::json!({
             "schema_version": 1,
             "ssh": {"program": ssh},
@@ -5930,5 +6154,38 @@ esac
                 .iter()
                 .any(|argument| argument == "--preserve-env=SSH_AUTH_SOCK")
         );
+    }
+
+    #[test]
+    fn inventory_keys_and_nixbot_hosts_keep_distinct_grammars() {
+        for valid in [
+            "host",
+            "abird-gondor-proxy",
+            "host.name",
+            "host_name",
+            "host:name",
+        ] {
+            validate_name("host inventory name", valid).unwrap();
+        }
+        for invalid in ["", "host/name", "host name"] {
+            assert!(
+                validate_name("host inventory name", invalid).is_err(),
+                "{invalid}"
+            );
+        }
+
+        for invalid in ["-host", "host-", "host.name", "host_name", "host:name"] {
+            let request = NixbotDeployRequest {
+                host: invalid.to_owned(),
+                revision: None,
+                nix_config: None,
+                exclude_hosts: Vec::new(),
+                required_hosts: Vec::new(),
+            };
+            assert!(
+                validate_nixbot_deploy_request(&request).is_err(),
+                "{invalid}"
+            );
+        }
     }
 }

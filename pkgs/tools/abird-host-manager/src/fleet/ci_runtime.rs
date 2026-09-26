@@ -182,6 +182,7 @@ pub fn prepare_ci_trigger<R: CiRepositorySource>(
         clean_mode: input.clean_mode,
         group: selection.group,
         hosts: selection.hosts,
+        required_hosts: input.options.required_hosts.clone(),
         nix_config: input.options.nix_config.clone(),
         log_format: forwarded_log_format(input.options.log_format),
         dry_run: input.options.dry_run,

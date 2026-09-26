@@ -193,7 +193,6 @@ in rec {
   }: let
     catalogAnalysis = analyzeCatalog catalog;
     catalogKeys = builtins.attrNames catalog;
-    catalogEntries = catalogAnalysis.entries;
     runtimeConfigs = backends.llamaRouter.runtimes or {};
     runtimeNames = builtins.attrNames runtimeConfigs;
     ollamaAvailable = (backends.ollama.deployments or []) != [];

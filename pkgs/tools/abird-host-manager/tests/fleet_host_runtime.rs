@@ -1,5 +1,9 @@
 #![allow(dead_code)]
 
+mod programs {
+    pub use abird_host_manager::programs::clear_git_repository_environment;
+}
+
 #[allow(clippy::all)]
 #[path = "../src/fleet/bootstrap.rs"]
 mod bootstrap;
@@ -64,7 +68,7 @@ use host_runtime::{
     ActivationExecution, DeployOutcome, DryRun, EffectKind, HealthEvaluator, HostExecutionTarget,
     HostRuntime, ProcessCancellation, ProcessEventObserver, ProcessOutput, ProcessRequest,
     ProcessRunner, ProcessStream, RemoteBuildRequest, ReportingProcessRunner, SystemHealthProbe,
-    build_ssh_request, build_ssh_upload_request, builder_lease_process_spec,
+    SystemProcessRunner, build_ssh_request, build_ssh_upload_request, builder_lease_process_spec,
     control_master_exit_request,
 };
 use system::ResolvedHost;
@@ -1171,6 +1175,7 @@ fn reporting_process_runner_streams_both_channels_and_retains_exact_output() {
             program: "/bin/sh".to_owned(),
             args: strings(&["-c", "printf 'one\\ntwo'; printf 'bad\\n' >&2"]),
             environment: Vec::new(),
+            clear_git_repository_environment: false,
             cwd: PathBuf::from("/"),
             stdin: None,
             effect: EffectKind::ReadOnly,
@@ -1189,6 +1194,55 @@ fn reporting_process_runner_streams_both_channels_and_retains_exact_output() {
     assert_eq!(events.last().unwrap(), "finish:probe alpha:true");
 }
 
+fn git_environment_request(clear_git_repository_environment: bool) -> ProcessRequest {
+    ProcessRequest {
+        program: "env".to_owned(),
+        args: Vec::new(),
+        environment: vec![
+            ("GIT_DIR".to_owned(), "/incorrect/repository".to_owned()),
+            ("GIT_WORK_TREE".to_owned(), "/incorrect/worktree".to_owned()),
+        ],
+        clear_git_repository_environment,
+        cwd: PathBuf::from("/"),
+        stdin: None,
+        effect: EffectKind::ReadOnly,
+        label: "repository-environment".to_owned(),
+    }
+}
+
+fn assert_no_git_checkout_selectors(output: &ProcessOutput) {
+    assert!(output.succeeded());
+    for selector in ["GIT_DIR", "GIT_WORK_TREE"] {
+        assert!(
+            !output
+                .stdout
+                .lines()
+                .any(|line| line.starts_with(&format!("{selector}="))),
+            "{selector} reached the child process"
+        );
+    }
+}
+
+#[test]
+fn local_repository_processes_clear_git_selectors_after_request_environment() {
+    let request = git_environment_request(true);
+    assert_no_git_checkout_selectors(&SystemProcessRunner.run(&request).unwrap());
+
+    let observer = Arc::new(RecordingObserver::default());
+    let mut reporting = ReportingProcessRunner::new(observer);
+    assert_no_git_checkout_selectors(&reporting.run(&request).unwrap());
+
+    let inherited = SystemProcessRunner
+        .run(&git_environment_request(false))
+        .unwrap();
+    assert!(inherited.stdout.contains("GIT_DIR=/incorrect/repository\n"));
+    assert!(
+        inherited
+            .stdout
+            .contains("GIT_WORK_TREE=/incorrect/worktree\n")
+    );
+}
+
 #[test]
 fn reporting_process_runner_emits_configured_heartbeats_for_quiet_commands() {
     let observer = Arc::new(RecordingObserver::default());
@@ -1198,6 +1252,7 @@ fn reporting_process_runner_emits_configured_heartbeats_for_quiet_commands() {
             program: "/bin/sh".to_owned(),
             args: strings(&["-c", "sleep 0.12"]),
             environment: Vec::new(),
+            clear_git_repository_environment: false,
             cwd: PathBuf::from("/"),
             stdin: None,
             effect: EffectKind::ReadOnly,
@@ -1255,6 +1310,7 @@ fn reporting_process_runner_terminates_the_complete_child_process_group() {
             program: "/bin/sh".to_owned(),
             args: strings(&["-c", "sleep 30 & wait"]),
             environment: Vec::new(),
+            clear_git_repository_environment: false,
             cwd: PathBuf::from("/"),
             stdin: None,
             effect: EffectKind::ReadOnly,
