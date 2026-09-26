@@ -139,6 +139,7 @@ in {
     # AI
     jan
     claude-code
+    agent-workspace-linux
 
     # Custom packages
     (python3.withPackages (ps: with ps; [pip setuptools virtualenv numpy]))

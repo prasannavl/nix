@@ -73,6 +73,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/apps/package-architecture.md`: Canonical package,
   child-flake, package-owned module, service-module helper, and repo stack
   rules.
+- `.agents/docs/notes/apps/agent-workspace-linux-2026-09.md`: Records the
+  `pkgs/ext/agent-workspace-linux` prebuilt-release unit, its wrapped runtime
+  tools, the pvl-a1/pvl-l5 host install, and the user-owned MCP/skill boundary.
 - `.agents/docs/notes/apps/llm-agents-nixpkgs-ownership-2026-09.md`: Records
   `llm-agents` ownership of its upstream Nixpkgs package set, the retained
   non-package follows, and the Electron compatibility boundary.

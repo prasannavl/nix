@@ -141,6 +141,7 @@ in {
     # AI
     jan
     claude-code
+    agent-workspace-linux
     llm-agents-pkgs.chatgpt
     llm-agents-pkgs.claude-desktop
 
