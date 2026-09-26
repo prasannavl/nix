@@ -77,10 +77,15 @@ select a named port only when needed; it must not repeat these values.
 
 Configuration changes schedule or restart reconciliation through the managed
 target so a newly loaded policy cannot be hidden by an older active worker. Each
-backend service also schedules the worker after every successful start, so a
+backend service also starts an idle worker after every successful start, so a
 manual, stopped, or automatic deployment reconciles its shared store without
-starting sibling deployments. Workers order after all candidate backends, select
-the first reachable API, and exit quickly when every backend is inactive.
+starting sibling deployments or interrupting reconciliation already in flight.
+The policy dispatcher is the sole restart owner. It observes the complete
+systemd restart job and judges terminal worker state only after the queued
+stop/start transaction finishes; the expected stopped invocation cannot be
+mistaken for failure while its replacement is pending. Workers order after all
+candidate backends, select the first reachable API, and exit quickly when every
+backend is inactive.
 
 `services.ai.models` is the only model selection list. Catalog references record
 backend capability; configured membership additionally requires a non-empty

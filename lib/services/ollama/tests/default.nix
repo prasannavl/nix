@@ -13,6 +13,7 @@
       cp -R ${../.} "$repo/lib/services/ollama"
       chmod -R u+w "$repo"
       export MODEL_RECONCILER_OWNERSHIP_LIB=${../../model-reconciler/ownership.sh}
+      export MODEL_RECONCILER_DISPATCH_LIB=${../../model-reconciler/dispatch.sh}
       python -m unittest discover \
         --start-directory "$repo/lib/services/ollama/tests" \
         --pattern 'test_*.py'

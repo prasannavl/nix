@@ -53,6 +53,7 @@
       inherit name runtimeEnv runtimeInputs;
       text = ''
         export MODEL_RECONCILER_OWNERSHIP_LIB=${./ownership.sh}
+        export MODEL_RECONCILER_DISPATCH_LIB=${./dispatch.sh}
         exec ${lib.getExe pkgs.bash} ${helper} "$@"
       '';
     };

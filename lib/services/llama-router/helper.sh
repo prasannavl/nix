@@ -11,13 +11,16 @@ init_vars() {
 	: "${LLAMA_ROUTER_PRESERVED_MODELS:=}"
 }
 
-load_ownership_helpers() {
-	local helper_path
+load_model_reconciler_helpers() {
+	local ownership_helper_path dispatch_helper_path
 
-	helper_path="${MODEL_RECONCILER_OWNERSHIP_LIB:-$(dirname "${BASH_SOURCE[0]}")/../model-reconciler/ownership.sh}"
+	ownership_helper_path="${MODEL_RECONCILER_OWNERSHIP_LIB:-$(dirname "${BASH_SOURCE[0]}")/../model-reconciler/ownership.sh}"
+	dispatch_helper_path="${MODEL_RECONCILER_DISPATCH_LIB:-$(dirname "${BASH_SOURCE[0]}")/../model-reconciler/dispatch.sh}"
 	# Nix injects the immutable library path.
 	# shellcheck disable=SC1090
-	source "$helper_path"
+	source "$ownership_helper_path"
+	# shellcheck disable=SC1090
+	source "$dispatch_helper_path"
 	model_reconciler_init_state
 }
 
@@ -400,7 +403,7 @@ load_main() {
 }
 
 dispatch_load_worker() {
-	local worker_unit poll_deadline active_state sub_state result
+	local worker_unit
 	worker_unit="$1"
 	shift
 
@@ -412,41 +415,12 @@ dispatch_load_worker() {
 		return
 	fi
 
-	systemctl --user reset-failed "$worker_unit" >/dev/null 2>&1 || true
-	systemctl --user restart --no-block "$worker_unit"
-
-	poll_deadline="$(($(date +%s) + 10))"
-	while [ "$(date +%s)" -lt "$poll_deadline" ]; do
-		active_state="$(systemctl --user show --property=ActiveState --value "$worker_unit" 2>/dev/null || true)"
-		sub_state="$(systemctl --user show --property=SubState --value "$worker_unit" 2>/dev/null || true)"
-		result="$(systemctl --user show --property=Result --value "$worker_unit" 2>/dev/null || true)"
-
-		case "$active_state:$result" in
-		failed:*)
-			echo "llama-router model load: worker failed during dispatch (state=$active_state sub=$sub_state result=$result)" >&2
-			return 1
-			;;
-		inactive:success)
-			echo "llama-router model load: worker completed during dispatch"
-			return
-			;;
-		activating:* | active:* | deactivating:* | reloading:*)
-			sleep 1
-			continue
-			;;
-		esac
-
-		printf 'llama-router model load: worker entered unexpected state during dispatch (state=%s sub=%s result=%s)\n' \
-			"$active_state" "$sub_state" "$result" >&2
-		return 1
-	done
-
-	echo "llama-router model load: worker accepted; continuing asynchronously"
+	model_reconciler_dispatch_worker "llama-router model load" "$worker_unit"
 }
 
 main() {
 	local command="${1:-load}"
-	load_ownership_helpers
+	load_model_reconciler_helpers
 
 	case "$command" in
 	load)

@@ -516,10 +516,10 @@ in
   assert !(lib.hasInfix "sleep-idle-seconds" cfg.services.podman-compose.test.instances.llama-router.files."models.ini".text);
   assert lib.hasInfix "[*]\nsleep-idle-seconds = 300\n" (eval idleTimeoutCfg).services.podman-compose.test.instances.llama-router.files."models.ini".text;
   assert builtins.any
-  (lib.hasInfix "restart --no-block test-ollama-models-pull.service")
+  (lib.hasInfix "start --no-block test-ollama-models-pull.service")
   cfg.systemd.user.services.special-ollama.serviceConfig.ExecStartPost;
   assert builtins.any
-  (lib.hasInfix "restart --no-block test-llama-router-models-load.service")
+  (lib.hasInfix "start --no-block test-llama-router-models-load.service")
   cfg.systemd.user.services.custom-llama-router.serviceConfig.ExecStartPost;
   assert cfg.systemd.user.services ? "test-ollama-models";
   assert cfg.systemd.user.services ? "test-ollama-models-pull";
@@ -569,7 +569,7 @@ in
   "d /var/lib/test/ai/llama-router-prism 0755 test-user test-user -"
   prism.systemd.tmpfiles.rules;
   assert builtins.any
-  (lib.hasInfix "restart --no-block test-llama-router-prism-models-load.service")
+  (lib.hasInfix "start --no-block test-llama-router-prism-models-load.service")
   prism.systemd.user.services.custom-llama-router-prism.serviceConfig.ExecStartPost;
   assert !(allAssertionsHold (eval badRoleCfg));
   assert !(allAssertionsHold (eval missingInstanceCfg));

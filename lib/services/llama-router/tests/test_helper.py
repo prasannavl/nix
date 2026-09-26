@@ -104,27 +104,56 @@ cmd="${{1-}}"
 if [ "$#" -gt 0 ]; then shift; fi
 case "$cmd" in
   show)
-    property=""
+    properties=""
+    value_only=false
     unit=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        --property=*) property="${{1#--property=}}" ;;
-        --value) ;;
+        --property=*) properties="$properties ${{1#--property=}}" ;;
+        --value) value_only=true ;;
         *) unit="$1" ;;
       esac
       shift
     done
-    case "$property" in
-      ActiveState)
-        state_file="{states_dir}/$unit"
-        if [ -f "$state_file" ]; then cat "$state_file"; else printf '%s\\n' active; fi
-        ;;
-      SubState) printf '%s\\n' dead ;;
-      Result) printf '%s\\n' success ;;
-      After)
-        printf '%s\\n' "pvl-llama-router.service network-online.target"
+    transition_poll=0
+    case " $properties " in
+      *" Job "*)
+        if [ "${{FAKE_SYSTEMCTL_RESTART_TRANSITION:-0}}" = 1 ]; then
+          poll_file="{states_dir}/restart-transition-poll"
+          if [ -f "$poll_file" ]; then transition_poll="$(cat "$poll_file")"; fi
+          transition_poll=$((transition_poll + 1))
+          printf '%s\\n' "$transition_poll" >"$poll_file"
+        fi
         ;;
     esac
+    for property in $properties; do
+      value=""
+      case "$property" in
+        ActiveState)
+          if [ "$transition_poll" -eq 1 ]; then
+            value=failed
+          else
+            state_file="{states_dir}/$unit"
+            if [ -f "$state_file" ]; then value="$(cat "$state_file")"; else value=active; fi
+          fi
+          ;;
+        SubState)
+          if [ "$transition_poll" -eq 1 ]; then value=failed; else value=dead; fi
+          ;;
+        Result)
+          if [ "$transition_poll" -eq 1 ]; then value=signal; else value="${{FAKE_SYSTEMCTL_RESULT:-success}}"; fi
+          ;;
+        Job)
+          if [ "$transition_poll" -eq 1 ]; then value=/org/freedesktop/systemd1/job/1; fi
+          ;;
+        After) value="pvl-llama-router.service network-online.target" ;;
+      esac
+      if [ "$value_only" = true ]; then
+        printf '%s\\n' "$value"
+      else
+        printf '%s=%s\\n' "$property" "$value"
+      fi
+    done
     ;;
 esac
 """,
@@ -190,6 +219,36 @@ esac
             f"--user restart --no-block {worker}",
             self.read_log("systemctl.log"),
         )
+
+    def test_dispatch_waits_for_replacement_after_old_worker_is_stopped(self):
+        worker = "pvl-llama-router-models-load.service"
+        self.set_unit_state(worker, "inactive")
+        result = subprocess.run(
+            ["bash", str(self.helper), "dispatch", worker, "test/model:Q4_K_M"],
+            cwd=self.repo_root,
+            env=self.helper_env(FAKE_SYSTEMCTL_RESTART_TRANSITION="1"),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        self.assertIn("worker completed during dispatch", result.stdout)
+        self.assertEqual(self.read_log("sleep.log"), ["1"])
+
+    def test_dispatch_rejects_terminal_replacement_failure(self):
+        worker = "pvl-llama-router-models-load.service"
+        self.set_unit_state(worker, "failed")
+        result = subprocess.run(
+            ["bash", str(self.helper), "dispatch", worker, "test/model:Q4_K_M"],
+            cwd=self.repo_root,
+            env=self.helper_env(FAKE_SYSTEMCTL_RESULT="exit-code"),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("worker failed during dispatch", result.stderr)
 
     def test_skip_if_configured_backends_are_inactive(self):
         self.set_unit_state("pvl-llama-router.service", "inactive")

@@ -432,7 +432,7 @@
     then "${stackName}-llama-router-models-load"
     else "${stackName}-llama-router-${runtime}-models-load";
   systemctl = lib.getExe' pkgs.systemd "systemctl";
-  backendReconcileCommand = backend: runtime: "-${systemctl} --user restart --no-block ${backendWorkerName backend runtime}.service";
+  backendReconcileCommand = backend: runtime: "-${systemctl} --user start --no-block ${backendWorkerName backend runtime}.service";
 in {
   options.services.ai = {
     stack.name = mkOption {

@@ -16,6 +16,15 @@ switches can restart it when its policy changes. The long-running pull remains
 in a separate worker so normal managed-target startup is not blocked by model
 downloads.
 
+The policy dispatcher is the only caller that restarts the worker. Backend
+`ExecStartPost` hooks use `start --no-block`, which schedules an idle worker but
+does not interrupt one already applying policy. A dispatcher restart is one
+systemd stop/start job: it reads the worker status in one snapshot and waits
+while that job exists, so the terminated old invocation's transient
+`failed/signal` state is not reported as the replacement worker's result. This
+fixes the false `pvl-a1` health failure observed during the 2026-09-26 user-unit
+reload; the replacement worker completed successfully in the same activation.
+
 ## Backend topology
 
 The reconciler accepts these topology inputs:

@@ -3,6 +3,8 @@
   modelReconciler = import ../. {inherit lib pkgs;};
   probe = pkgs.writeShellScript "model-reconciler-ownership-probe" ''
     source "$MODEL_RECONCILER_OWNERSHIP_LIB"
+    source "$MODEL_RECONCILER_DISPATCH_LIB"
+    declare -F model_reconciler_dispatch_worker >/dev/null
     model_reconciler_init_state
     model_reconciler_load_state
     test "''${#MODEL_RECONCILER_OWNED_MODELS[@]}" -eq 1
