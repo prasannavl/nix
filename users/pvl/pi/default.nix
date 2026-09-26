@@ -10,6 +10,7 @@
     piTps = pkgs.callPackage ../../../lib/ext/pi/pi-tps {};
     piWeb = pkgs.callPackage ../../../lib/ext/pi/pi-web {};
     piDiff = pkgs.callPackage ../../../lib/ext/pi/pi-diff {};
+    piCodexLimit = pkgs.callPackage ../../../lib/ext/pi/pi-codex-limit {};
     revdiff = pkgs.callPackage ../../../lib/ext/revdiff {};
     revdiffPi = pkgs.callPackage ../../../lib/ext/revdiff/pi.nix {};
     piModelsDiscoveryRoot = "${piModelsDiscovery}/share/pi/packages/pi-models-discovery";
@@ -17,6 +18,7 @@
     piSubagentsRoot = "${piSubagents}/lib/node_modules/pi-subagents";
     piTpsRoot = "${piTps}/share/pi/packages/pi-tps";
     piDiffRoot = "${piDiff}/lib/node_modules/@heyhuynhgiabuu/pi-diff";
+    piCodexLimitRoot = "${piCodexLimit}/share/pi/packages/pi-codex-limit";
     revdiffPiRoot = "${revdiffPi}/share/pi/packages/revdiff-pi";
     subagentPrompts = [
       "council"
@@ -31,6 +33,7 @@
 
     home.file =
       {
+        ".pi/agent/extensions/pi-codex-limit".source = piCodexLimitRoot;
         ".pi/agent/extensions/pi-diff".source = piDiffRoot;
         ".pi/agent/extensions/pi-extensions-i18n".source = "${piModelsDiscoveryRoot}/node_modules/pi-extensions-i18n";
         ".pi/agent/extensions/pi-models-discovery/index.ts".source = "${piModelsDiscoveryRoot}/index.ts";
