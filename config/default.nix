@@ -15,5 +15,8 @@ in
       (readPublicKey ../data/secrets/globals/nix/builder-pvl.pub)
     ];
     families.pvl = import ./pvl;
-    modules.repo.abird-host-agent = ../lib/services/abird-host-agent;
+    modules.repo = {
+      abird-host-agent = ../lib/services/abird-host-agent;
+      projection-authority-staging = ./pvl/projection-authority-staging.nix;
+    };
   }

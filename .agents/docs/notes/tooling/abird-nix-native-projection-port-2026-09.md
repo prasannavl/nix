@@ -94,3 +94,30 @@ unaccounted for.
   library, binary, and integration suites also passed serially.
 - `cargo fmt --check`, `git diff --cached --check`, and the repository's
   authoritative no-IFD `.#lint` application passed.
+
+## First deployment correction
+
+The first Pvl deployment attempt was rejected before host mutation. Both
+`pvl-a1` and `pvl-l5` still ran complete pre-registry authority with a schema-1
+service-placement document, while the initially ported adapter accepted only
+schema 3. The incoming dispatcher therefore could not prove automatic rollback
+to the unregistered predecessor.
+
+The failed deployment left both hosts on their prior generations. Read-only
+inspection also found the same schema-1, empty-move contract on `pvl-x2` and
+`pvl-vlab`; the remaining inventory endpoints were not reachable from the
+operator environment during the audit. Runtime agent state is not the source of
+the rejected schema and must not be deleted to perform this rollout.
+
+Pvl instead uses an authority-first staging generation. The temporary
+`config/pvl/projection-authority-staging.nix` module keeps the generated
+schema-3 placement, desired-state, and resource authority while publishing an
+empty generation-admission registry. This deploys the new authority without
+invoking the service-move adapter. The shared host-agent implementation and
+tests remain byte-identical to Abird and continue to accept only schema 3.
+
+After every deployable Pvl host has successfully entered the staging generation,
+remove the temporary module and its registration from `config/default.nix`. The
+following deployment registers `serviceMoves`; its predecessor then already has
+complete schema-3 authority, so the strict adapter can prove both forward
+admission and automatic rollback without a legacy normalizer or state deletion.
