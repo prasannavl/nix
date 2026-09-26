@@ -41,6 +41,7 @@ init_vars() {
 		pi-subagents
 		pi-tps
 		pi-web
+		pi-diff
 	)
 	REQUESTED_PACKAGES=()
 }
@@ -298,10 +299,14 @@ update_package() {
 		read -r owner repo <<<"$(github_repo "$package")"
 		release_hash="$(prefetch_unpack_hash "https://github.com/${owner}/${repo}/archive/refs/tags/v${version}.tar.gz")"
 		;;
+	pi-diff)
+		read -r owner repo <<<"$(github_repo "$package")"
+		release_hash="$(prefetch_unpack_hash "https://github.com/${owner}/${repo}/archive/refs/tags/v${version}.tar.gz")"
+		;;
 	esac
 
 	set_source_record "$package" "$version" "$rev" "$src_hash" "$release_hash" "$npm_deps_hash"
-	if [[ "$package" == "pi-subagents" || "$package" == "pi-web" ]]; then
+	if [[ "$package" == "pi-subagents" || "$package" == "pi-web" || "$package" == "pi-diff" ]]; then
 		compute_npm_deps_hash "$package"
 	fi
 	build_package "$package"

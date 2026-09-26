@@ -47,4 +47,14 @@
     releaseHash = "sha256-EhoxOwmEIsN3G6MQImZbCSJM4QBnnzKzNV+gmuIUkN0=";
     npmDepsHash = "sha256-8HJ2S5soReHvwXEKg31sd7iTKYQKbzMb/UpDRe/sR2E=";
   };
+
+  pi-diff = {
+    kind = "npm";
+    package = "@heyhuynhgiabuu/pi-diff";
+    owner = "buddingnewinsights";
+    repo = "pi-diff";
+    version = "0.9.1";
+    releaseHash = "sha256-9dCBzSgtp9UL09VkQFxJ3zD6Vt/DW4xoQlccDImN7vc=";
+    npmDepsHash = "sha256-Q8peGfXjXH59Pu41suQxyNAtm/M2RyyT16OnIARW544=";
+  };
 }
