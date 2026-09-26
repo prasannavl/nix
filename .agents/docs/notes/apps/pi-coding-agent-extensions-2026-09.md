@@ -2,10 +2,10 @@
 
 On 2026-09-14, the Pvl Home Manager profiles gained declarative
 `pi-models-discovery`, `pi-session-manager`, `pi-subagents`, and `pi-tps`
-resources, plus the `pi-web` command. On 2026-09-26 they gained `pi-diff`; see
-`.agents/docs/notes/apps/revdiff-pi-2026-09.md` for that packaging decision. The
-installation does not take ownership of Pi's writable
-`~/.pi/agent/settings.json`.
+resources, plus the `pi-web` command. On 2026-09-26 they gained `pi-diff` and
+`pi-codex-limit`; see `.agents/docs/notes/apps/revdiff-pi-2026-09.md` for the
+`pi-diff` packaging decision. The installation does not take ownership of Pi's
+writable `~/.pi/agent/settings.json`.
 
 ## Package layout
 
@@ -28,7 +28,7 @@ promote the Pi derivations into `pkgs/` and register them in
 
 `lib/ext/pi/sources.nix` is the single machine-maintained source of versions,
 upstream revisions, source hashes, release hashes, and npm dependency hashes for
-all six packages. The executable `lib/ext/pi/update.sh` participates in the
+all seven packages. The executable `lib/ext/pi/update.sh` participates in the
 standard maintenance interface as the `pi` extension updater:
 
 ```console
@@ -54,6 +54,7 @@ under Pi's auto-discovered global resource directories:
 - the immutable code children under
   `~/.pi/agent/extensions/pi-models-discovery/`
 - `~/.pi/agent/extensions/pi-extensions-i18n`
+- `~/.pi/agent/extensions/pi-codex-limit`
 - `~/.pi/agent/extensions/pi-diff`
 - `~/.pi/agent/extensions/pi-session-manager.ts`
 - `~/.pi/agent/extensions/pi-tps.ts`
@@ -92,10 +93,12 @@ package, the in-app switcher is not used: change the locale by editing
 Audit of the other managed extensions: none write inside their store tree.
 `pi-models-discovery` writes `models.json` plus `cache.json` under the
 user-owned `pi-models-discovery` directory, `pi-tps` writes
-`~/.pi/agent/pi-tps.json`, `pi-session-manager` mutates user-owned session
-files, and `pi-subagents` writes to user-owned paths such as
-`~/.pi/agent/extensions/subagent/config.json`, agent definitions, missions, and
-run state. Only `pi-extensions-i18n` needed the locale workaround.
+`~/.pi/agent/pi-tps.json`, `pi-codex-limit` keeps no writable state (it reads
+Codex credentials through Pi's model registry and renders a footer widget),
+`pi-session-manager` mutates user-owned session files, and `pi-subagents` writes
+to user-owned paths such as `~/.pi/agent/extensions/subagent/config.json`, agent
+definitions, missions, and run state. Only `pi-extensions-i18n` needed the
+locale workaround.
 
 ## Packaging and compatibility
 
@@ -134,6 +137,13 @@ from the upstream manifest, and caches only the `@shikijs/cli`, `diff`, and
 `xxhash-wasm` runtime closure. See
 `.agents/docs/notes/apps/revdiff-pi-2026-09.md` for the full rationale.
 
+The local `pi-codex-limit` derivation packages the `pi-codex-limit` 1.8.2 npm
+tarball from `santychuy/pi-setup` (`extensions/codex-limit`). It is a pure
+TypeScript extension with no runtime npm dependencies, so the derivation unpacks
+the published tarball directly and relies on Pi to provide
+`@earendil-works/pi-tui` at runtime. The extension reads Codex usage and renders
+a subscription-limit footer widget; it declares no skill, prompt, or command.
+
 All sources are content-addressed and version-pinned. Pi does not download or
 update these packages at startup; normal Nix source and dependency hashes
 control upgrades.
@@ -149,6 +159,7 @@ nix-build lib/ext/pi/pi-subagents --no-out-link
 nix-build lib/ext/pi/pi-tps --no-out-link
 nix-build lib/ext/pi/pi-web --no-out-link
 nix-build lib/ext/pi/pi-diff --no-out-link
+nix-build lib/ext/pi/pi-codex-limit --no-out-link
 nix eval .#nixosConfigurations.pvl-a1.config.system.build.toplevel.drvPath --raw
 nix eval .#nixosConfigurations.pvl-l5.config.system.build.toplevel.drvPath --raw
 nix eval .#nixosConfigurations.pvl-x2.config.system.build.toplevel.drvPath --raw
