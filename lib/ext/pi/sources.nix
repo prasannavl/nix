@@ -57,4 +57,11 @@
     releaseHash = "sha256-9dCBzSgtp9UL09VkQFxJ3zD6Vt/DW4xoQlccDImN7vc=";
     npmDepsHash = "sha256-Q8peGfXjXH59Pu41suQxyNAtm/M2RyyT16OnIARW544=";
   };
+
+  pi-codex-limit = {
+    kind = "npm";
+    package = "pi-codex-limit";
+    version = "1.8.2";
+    srcHash = "sha256-OMu2mwhRU4IGTIPsBTZGzdS8Ro32u7LI7b+PIsYJ+E0=";
+  };
 }

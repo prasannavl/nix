@@ -42,6 +42,7 @@ init_vars() {
 		pi-tps
 		pi-web
 		pi-diff
+		pi-codex-limit
 	)
 	REQUESTED_PACKAGES=()
 }
@@ -289,7 +290,7 @@ update_package() {
 		read -r owner repo <<<"$(github_repo "$package")"
 		src_hash="$(prefetch_unpack_hash "https://github.com/${owner}/${repo}/archive/${rev}.tar.gz")"
 		;;
-	pi-session-manager)
+	pi-session-manager | pi-codex-limit)
 		tarball="$(jq -er '.dist.tarball' <<<"$metadata")"
 		src_hash="$(prefetch_unpack_hash "$tarball")"
 		;;
