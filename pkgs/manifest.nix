@@ -28,6 +28,7 @@
       apps.cloudflare-apps-deploy = ["deploy"];
     };
     agent-workspace-linux = ./ext/agent-workspace-linux/default.nix;
+    tuicr = ./ext/tuicr/default.nix;
     kanidm-server = ./ext/kanidm-server/default.nix;
     bulwarkmail = ./ext/bulwarkmail/default.nix;
     stalwart-server = ./ext/stalwart-server/default.nix;
