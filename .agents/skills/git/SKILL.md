@@ -102,6 +102,24 @@ If push hooks may be configured, inspect the relevant hook path or hook manager
 metadata enough to know whether pre-push validation exists. Do not read secrets
 while inspecting hooks.
 
+## Commit Signing
+
+This repository signs commits and tags with SSH (`commit.gpgsign=true`,
+`gpg.format=ssh`). Agent or headless shells may not inherit the desktop
+session's SSH agent socket; `git commit` then fails with
+`Couldn't get agent socket?` and `failed to write commit object`. Export the GCR
+agent socket before committing or pushing:
+
+```bash
+export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/gcr/ssh"
+```
+
+Confirm the commit carries a signature with
+`git cat-file commit HEAD | grep -m1 gpgsig`. See
+`.agents/docs/notes/hosts/pvl-a1-sway-ssh-agent-2026-04.md` for the session
+setup. This prerequisite is also recorded in
+`.agents/docs/notes/tooling/repo-tooling.md`.
+
 If the target is ambiguous, ask a concise question before making git changes.
 
 ## Commit Splitting

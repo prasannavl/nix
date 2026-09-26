@@ -51,6 +51,13 @@ scripts.
 
 ## Small maintenance conventions
 
+- Commits and tags are SSH-signed (`commit.gpgsign=true`, `gpg.format=ssh`).
+  Non-interactive agent shells may lack the desktop `SSH_AUTH_SOCK`, so
+  `git commit` fails with `Couldn't get agent socket?`. Export
+  `SSH_AUTH_SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/gcr/ssh"` before
+  committing or pushing, then confirm with
+  `git cat-file commit HEAD | grep -m1 gpgsig`. See
+  `.agents/docs/notes/hosts/pvl-a1-sway-ssh-agent-2026-04.md`.
 - `scripts/update.sh --only-flake` is the repo-wide flake-lock updater.
 - VS Code packaging and update automation should stay explicit about upstream
   source, pinned hashes, and toolchain dependencies needed by the configured
