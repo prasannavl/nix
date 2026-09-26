@@ -140,6 +140,7 @@ in {
     jan
     claude-code
     agent-workspace-linux
+    tuicr
 
     # Custom packages
     (python3.withPackages (ps: with ps; [pip setuptools virtualenv numpy]))

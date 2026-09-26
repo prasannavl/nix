@@ -84,6 +84,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   of the nixpkgs `crewai` framework/CLI, why the upstream package was sufficient
   with no wrapper or secrets, the host-local Ollama/llama-router backend
   context, and the notable ~1.7 GiB closure.
+- `.agents/docs/notes/apps/tuicr-2026-09.md`: Records the `pkgs/ext/tuicr`
+  build-from-source unit, the `git` test dependency, the pvl-a1/pvl-l5/pvl-x2
+  host install, and the staged `cargoHash` update path.
 - `.agents/docs/notes/apps/llm-agents-nixpkgs-ownership-2026-09.md`: Records
   `llm-agents` ownership of its upstream Nixpkgs package set, the retained
   non-package follows, and the Electron compatibility boundary.

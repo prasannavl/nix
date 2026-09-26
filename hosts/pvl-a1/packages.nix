@@ -143,6 +143,7 @@ in {
     claude-code
     crewai
     agent-workspace-linux
+    tuicr
     llm-agents-pkgs.chatgpt
     llm-agents-pkgs.claude-desktop
 
