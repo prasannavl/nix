@@ -103,6 +103,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/apps/pi-subagents-npm-fetcher-v2-2026-09.md`: Records why
   `lib/ext/pi/pi-subagents` needs `npmDepsFetcherVersion = 2` to avoid the
   `ENOTCACHED` npm dependency-cache failure during pinned updates.
+- `.agents/docs/notes/apps/revdiff-pi-2026-09.md`: Records the `lib/ext/revdiff`
+  binary plus Pi-package unit and the `lib/ext/pi/pi-diff` suite addition,
+  including the TS-source loading rationale and the sanitized npm dependency
+  closure.
 
 ### Hosts
 
