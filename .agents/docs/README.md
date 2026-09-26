@@ -547,6 +547,11 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/abird-post-6fe3b63a-reaudit-2026-09.md`: Complete
+  36-commit re-audit of `857ac6eb..6fe3b63a`, per-commit dispositions across the
+  AI endpoint/projection series, memory docs, and Nix-native projection
+  follow-up, and byte/mode parity (571 common, 553 exact, 18 explained, no port
+  required).
 - `.agents/docs/notes/tooling/abird-nix-native-projection-port-2026-09.md`:
   Commit-by-commit Abird projection port, Pvl repository adaptations, exact
   shared-tree parity, and validation boundary.
