@@ -13,7 +13,9 @@ Host files split into two planes:
 
 - `hosts/<host>/services/ai.nix` (policy plane): catalog selection (`models`),
   role pointers (`roles.main`, `roles.smallTask`, `roles.embedding`), and
-  per-backend `deployments` (name, port, lifecycle).
+  per-backend `deployments` (name, port, lifecycle). llama.cpp deployments also
+  select runtime, cache, model placement, and idle policy, with shared backend
+  defaults.
 - `hosts/<host>/services/<backend>.nix` (machine plane): container definition
   only — image, devices, GPU tuning, port binds, volumes. Ports, volumes, and
   Web UI backend URLs are read back from `services.ai` instead of being
@@ -28,18 +30,21 @@ reconciler arguments, lifecycle (`auto`, `manual` → `autoStart = false`,
 
 ## Contract
 
-- `services.ai.models` is a nullable list of catalog keys; null selects every
-  model with at least one configured backend deployment, and unknown keys fail
-  evaluation.
+- `services.ai.models` is the host admission list of catalog keys; null selects
+  every model with an Ollama or llama.cpp deployment, while an explicit list may
+  also admit an HF-backed model for a host-owned vLLM/SGLang service. Unknown
+  keys fail evaluation.
 - `roles` are keys into the same selection; roles pointing outside the selection
   fail evaluation (null defaults, hosts opt in).
 - Catalog admission is fleet-wide. A malformed unselected entry fails the policy
   rather than remaining latent until a future host selects it.
 - A backend activates only when its `deployments` list is non-empty. Catalog
   references record capability; configured membership requires a valid reference
-  and a deployment, plus the matching runtime deployment for llama.cpp. Each
-  deployment must have a matching host-declared `podman-compose` instance (the
-  module asserts `source != null`); the module never declares compose sources.
+  and a deployment, plus a compatible runtime for llama.cpp. Catalog
+  `llama.runtimes` lists compatible engines, and deployment `models` only
+  narrows placement beneath host admission. Each deployment must have a matching
+  host-declared `podman-compose` instance (the module asserts `source != null`);
+  the module never declares compose sources.
 - Pulls run through the running backend's API, so the shared Ollama models dir
   (and the llama.cpp cache dir) are mounted read-write into the containers;
   whichever deployment performs a pull, blobs land once in the shared location
@@ -48,9 +53,10 @@ reconciler arguments, lifecycle (`auto`, `manual` → `autoStart = false`,
   hosts run an AMD and an NVIDIA variant side by side (mirroring
   `ollama`/`ollama-nvidia`), with the reconciler probing the deployment URLs in
   order and using the first reachable one.
-- Emissions are gated: a selected model with no configured backend deployment or
-  a deployment with a missing instance produces assertions, not half-wired
-  units. Runtimes with deployments must resolve to distinct cache directories.
+- Emissions are gated: a selected model with neither configured backend
+  membership nor an explicit HF source, or a deployment with a missing instance,
+  produces assertions rather than half-wired units. Runtimes with deployments
+  must resolve to distinct canonical cache directories.
 - The catalog is the extension path for new backends (e.g. `vllm`/`sglang` via
   the `hf` field): add the reference field, then mirror the `backends.*` wiring.
 
@@ -60,7 +66,7 @@ Device-class port scheme (current, 2026-09-22): CPU/Vulkan `11xxx`, ROCm
 `12xxx`, NVIDIA `13xxx`, with llama.cpp PrismML one slot higher. See
 `.agents/docs/notes/hosts/pvl-ai-backend-port-convention-2026-09.md`.
 
-- `pvl-l5`: 8 models (the a1 set plus ternary `bonsai-2-27b`). Ollama
+- `pvl-l5`: 8 models (the a1 set plus ternary `bonsai2-27b`). Ollama
   `ollama-cpu` (11434, manual), `ollama-rocm` (12434, stopped), `ollama-nvidia`
   (13434, stopped); llama.cpp `llama-cpu` (11000, manual), `llama-rocm` (12000,
   stopped), `llama-nvidia` (13000, stopped); PrismML `llama-prism-rocm` (12001,

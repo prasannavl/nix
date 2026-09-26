@@ -87,18 +87,19 @@ mistaken for failure while its replacement is pending. Workers order after all
 candidate backends, select the first reachable API, and exit quickly when every
 backend is inactive.
 
-`services.ai.models` is the only model selection list. Catalog references record
+`services.ai.models` is the only host admission list. Catalog references record
 backend capability; configured membership additionally requires a non-empty
-deployment list for that backend. A llama.cpp reference also requires its
-normalized runtime to have a deployment. There are no per-backend override
-lists.
+deployment list for that backend. A llama.cpp deployment may narrow its
+placement with `models`, but that filter cannot admit a model outside
+`services.ai.models`. There are no independent per-backend catalogs or model
+selection lists.
 
-`models = null` selects every entry with at least one configured membership. An
-explicit selection is checked against the same predicate, so a syntactically
-valid reference cannot become silently unserved when its backend or runtime is
-absent. A reference for an undeployed backend is harmless when another
-configured backend serves the model. A selected entry with no configured
-membership fails evaluation.
+`models = null` selects every entry with an Ollama or llama.cpp configured
+membership. An explicit selection may additionally admit a valid Hugging
+Face-backed model for a host-owned runtime such as vLLM or SGLang; prefetch does
+not imply that admission. A reference for an undeployed backend is harmless when
+another configured backend serves the model. A selected entry with no configured
+membership or explicit HF source fails evaluation.
 
 One pure `analyzeCatalog` function owns fleet-wide catalog admission, including
 reference and preset schemas plus duplicate identities. One pure `resolvePolicy`
@@ -129,46 +130,75 @@ resolver and reconciler share one pure preset schema and renderer. Reject all
 ambiguities and malformed values before constructing `listToAttrs` maps or
 router presets.
 
-llama.cpp engines are named and isolated. An entry's `llama.runtime` selects the
-engine: `default` (the upstream llama.cpp build) or a fork such as `prism`. Each
-configured runtime under `backends.llamaRouter.runtimes.<name>` owns its own
-deployments, cache directory, reconciler state file, reconciler units,
-`preservedModels`, and `idleTimeoutSeconds`, so one engine's cache scan or model
-set can never leak into another engine. The resolved cache directory must be
-unique across runtimes with deployments; deployments of one runtime may share
-that runtime's cache. The read-only `backends.llamaRouter.runtimesInfo.<name>`
-projection exposes each runtime's resolved `urls`, `ports`, `portsByName`,
-`endpoints`, `serviceNames`, `readyTarget`, `requiredModels`, `modelPresets`,
-`cacheDir`, and `active`.
+llama.cpp engines are named and isolated. A catalog entry's optional
+`llama.runtimes` list declares every compatible engine; absence means
+`[ "default" ]`, the upstream llama.cpp build. A model may therefore run on both
+upstream and a compatible fork without duplicating its catalog entry.
 
-`idleTimeoutSeconds` (default `null`) is emitted as the models.ini `[*]`
-`sleep-idle-seconds` key for that runtime, so llama.cpp releases a model's
-resident weights and KV cache after the idle window instead of holding them
-until LRU eviction; the shared `[*]` section also reaches cache-scanned ad-hoc
-models.
+The writable API is flat: `backends.llamaRouter.deployments` contains service
+records with optional `runtime`, `cacheDir`, `models`, `preservedModels`, and
+`idleTimeoutSeconds`, while `backends.llamaRouter.defaults` supplies shared
+fallbacks. `runtime` defaults to `default`; `cacheDir` otherwise derives from
+the runtime; `models = null` selects every admitted model compatible with the
+runtime; and `idleTimeoutSeconds = null` inherits the backend default. A
+deployment may use `false` to disable an inherited idle timeout.
+
+Runtime ownership is derived, not configured as another public hierarchy.
+Deployments of one runtime must resolve to one cache directory and one systemd
+user; their model filters and `preservedModels` are separately unioned for that
+runtime's single reconciler and ownership manifest. A preserved model therefore
+never leaks into another runtime's retirement policy. Different runtimes must
+use distinct canonical cache paths and state files, so one engine's scan or
+retirement can never leak into another. Each deployment receives its own
+`models.ini`, containing only its placed models and idle policy. The read-only
+`backends.llamaRouter.deploymentsInfo.<instance>` projection exposes the
+effective runtime, cache, catalog keys, GGUF refs, presets, runtime preservation
+union, idle timeout, service name, URL, and port.
+
+A positive `idleTimeoutSeconds` is emitted as that deployment's models.ini
+`[*] sleep-idle-seconds` key, so its llama.cpp service releases resident weights
+and KV cache after the idle window instead of holding them until LRU eviction.
+The `[*]` section also reaches cache-scanned ad-hoc models in that service.
 
 Consumer addressing is separate from topology. Each deployment may set an
 optional `host`; the backend projections expose ordered `endpoints` descriptors
-(`instance`, `device`, `port`, `host`). The pure `mkConsumers` accepts
-descriptors that are either a `{ host; port; }` pair or a fully resolved
+(`instance`, `device`, `port`, `host`, exact ordered `modelIds`, and the
+resolved `runtime` for llama.cpp). `modelIds` comes from the same per-deployment
+policy projection that renders `models.ini`; consumers therefore cannot
+advertise a model admitted only to a sibling runtime. The pure `mkConsumers`
+accepts descriptors that are either a `{ host; port; }` pair or a fully resolved
 `{ url; }`, and returns the consumer view per backend (`ollama`, `llama`):
 ordered `endpoints`, native `urls`, OpenAI `openaiUrls`, required `default` /
 `openaiDefault` primaries, and `byDevice` / `openaiByDevice` list lookups keyed
-by device class; llama.cpp also carries `apiKeys`. Output endpoint descriptors
-normalize an omitted host to `defaultHost`, while a fully resolved URL remains
-URL-owned. A missing primary throws one clear message instead of yielding a null
-URL, so consumers never guard or coerce. The NixOS module exposes the view as
-`services.ai.consumersFor
-defaultHost`, while a repository whose addresses live
-elsewhere (for example a service registry) calls `mkConsumers` directly with its
-own descriptors — abird derives them from `mkApi` so there is a single address
-source.
+by device class; llama.cpp also carries `apiKeys`. The llama.cpp view includes
+every configured runtime in deployment order instead of treating the upstream
+`default` engine as the only consumer-visible runtime. Output endpoint
+descriptors normalize an omitted or explicitly null host to `defaultHost`, while
+a fully resolved URL remains URL-owned. Hand-authored descriptors that do not
+carry admission context normalize `modelIds` to an empty list. Endpoint order is
+deployment declaration order; declare GPU runtimes before CPU fallbacks when
+consumers should present CPU last. A missing primary throws one clear message
+instead of yielding a null URL, so consumers never guard or coerce. The NixOS
+module exposes the view as `services.ai.consumersFor defaultHost`, while a
+repository whose addresses live elsewhere (for example a service registry) calls
+`mkConsumers` directly with its own descriptors — abird derives them from
+`mkApi` so there is a single address source.
 
-Deployment instance names, resolved service names, API ports, and configured
-runtime cache directories must be globally unique across AI backends and
-runtimes. An unresolved deployment port is `null`, is omitted from endpoint
-projections and collision checks, and is reported by the specific missing-port
-or missing-instance assertion rather than a synthetic sentinel collision.
+The additive cache-warmup path is specified in `ai-model-prefetch.md`. It may
+ask current backends or Hugging Face to cache the candidate selection before
+activation, but it never writes this reconciler's ownership manifest or performs
+retirement.
+
+Deployment instance names, resolved service names, and API ports must be
+globally unique across AI backends and runtimes. Configured HF, Ollama, and
+per-runtime llama.cpp storage roots must be pairwise non-overlapping by path
+component, including equal and ancestor/descendant paths. An unresolved
+deployment port is `null`, is omitted from endpoint projections and collision
+checks, and is reported by the specific missing-port or missing-instance
+assertion rather than a synthetic sentinel collision. All managed storage paths
+use the same canonical-safe absolute-path contract before any tmpfiles rule or
+preactivation plan is rendered; noncanonical aliases cannot bypass
+cache-isolation checks.
 
 ## Closure-safe helper packaging
 

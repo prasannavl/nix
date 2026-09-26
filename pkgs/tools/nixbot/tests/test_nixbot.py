@@ -935,7 +935,46 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
         self.assertIn('${system_path}/sw/bin/podman-compose-image-pull-all', command)
         self.assertIn("NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN", command)
 
-    def test_deploy_host_prepulls_images_before_activation(self):
+    def test_pre_activation_ai_model_command_uses_built_system_runner(self):
+        result = self.run_script(
+            """
+            init_vars
+            command="$(build_pre_activation_ai_model_prefetch_cmd /nix/store/new-system)"
+            bash -n <<<"$command"
+            printf '%s' "$command"
+            """
+        )
+
+        command = result.stdout
+        self.assertIn("_remote_pre_activation_ai_model_prefetch /nix/store/new-system", command)
+        self.assertIn('${system_path}/sw/bin/ai-model-prefetch-all', command)
+        self.assertNotIn("AI_MODEL_PREFETCH_PLAN", command)
+
+    def test_dry_run_skips_pre_activation_downloads(self):
+        result = self.run_script(
+            """
+            init_vars
+            DRY_RUN=1
+            run_prepared_root_command_with_retry() {
+              printf 'unexpected remote acquisition\n'
+              return 99
+            }
+            run_pre_activation_podman_image_pulls app /nix/store/new-system
+            run_pre_activation_ai_model_prefetch app /nix/store/new-system
+            """
+        )
+
+        self.assertEqual("", result.stdout)
+        self.assertIn(
+            "DRY-RUN: skipping pre-activation Podman image pulls on app",
+            result.stderr,
+        )
+        self.assertIn(
+            "DRY-RUN: skipping pre-activation AI model prefetch on app",
+            result.stderr,
+        )
+
+    def test_deploy_host_distributes_then_admits_and_prepulls_before_activation(self):
         result = self.run_script(
             """
             init_vars
@@ -957,9 +996,11 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
               PREP_DEPLOY_SSH_OPTS=()
               return 0
             }
-            run_pre_switch_admission() { printf 'admit\\n'; }
+            run_pre_switch_preparation() { printf 'prepare\\n'; }
+            run_candidate_generation_admission() { printf 'admit-generation:%s\\n' "$1"; }
             copy_system_path_from_local_to_prepared_target() { printf 'copy:%s:%s\\n' "$1" "$2"; }
             run_pre_activation_podman_image_pulls() { printf 'prepull:%s:%s\\n' "$1" "$2"; }
+            run_pre_activation_ai_model_prefetch() { printf 'prefetch:%s:%s\\n' "$1" "$2"; }
             activate_prepared_system_path() { printf 'activate:%s:%s\\n' "$1" "$2"; }
             deploy_host app /nix/store/new-system
             """
@@ -967,13 +1008,153 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
 
         self.assertEqual(
             [
-                "admit",
                 "copy:app:/nix/store/new-system",
+                "prepare",
+                "admit-generation:/nix/store/new-system",
                 "prepull:app:/nix/store/new-system",
+                "prefetch:app:/nix/store/new-system",
                 "activate:app:/nix/store/new-system",
             ],
             result.stdout.splitlines(),
         )
+
+    def test_remote_build_deploy_uses_the_same_pre_activation_order(self):
+        result = self.run_script(
+            """
+            init_vars
+            PREP_DEPLOY_AGE_IDENTITY_KEY=
+            run_parented_host_operation_with_retry() {
+              shift 2
+              "$@"
+            }
+            prepare_host_transport_for_deploy() {
+              PREP_DEPLOY_LOCAL_EXEC=1
+              PREP_USING_BOOTSTRAP_FALLBACK=0
+              PREP_DEPLOY_SSH_TARGET=
+              PREP_DEPLOY_SSH_OPTS=()
+              return 0
+            }
+            register_active_deploy() { :; }
+            unregister_active_deploy() { :; }
+            prepare_remote_build_system_path_on_prepared_target() {
+              printf 'distribute:%s:%s\\n' "$1" "$2"
+            }
+            run_pre_switch_preparation() { printf 'prepare\\n'; }
+            run_candidate_generation_admission() { printf 'admit-generation:%s\\n' "$1"; }
+            run_pre_activation_podman_image_pulls() { printf 'prepull:%s:%s\\n' "$1" "$2"; }
+            run_pre_activation_ai_model_prefetch() { printf 'prefetch:%s:%s\\n' "$1" "$2"; }
+            mark_deploy_activation_started() { printf 'mark:%s\\n' "$1"; }
+            activate_prepared_system_path() { printf 'activate:%s:%s\\n' "$1" "$2"; }
+            deploy_remote_build_host_path app /nix/store/new-system
+            """
+        )
+
+        self.assertEqual(
+            [
+                "distribute:app:/nix/store/new-system",
+                "prepare",
+                "admit-generation:/nix/store/new-system",
+                "prepull:app:/nix/store/new-system",
+                "prefetch:app:/nix/store/new-system",
+                "mark:app",
+                "activate:app:/nix/store/new-system",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_generation_admission_failure_stops_candidate_acquisition(self):
+        result = self.run_script(
+            """
+            init_vars
+            DRY_RUN=0
+            BUILD_HOST=local
+            NIXBOT_IF_CHANGED=0
+            GOAL=switch
+            PREP_DEPLOY_AGE_IDENTITY_KEY=
+            log_host_stage() { :; }
+            host_parent_for() { return 1; }
+            run_parented_host_operation_with_retry() {
+              shift 2
+              "$@"
+            }
+            prepare_host_transport_for_deploy() {
+              PREP_DEPLOY_LOCAL_EXEC=1
+              PREP_USING_BOOTSTRAP_FALLBACK=0
+              PREP_DEPLOY_SSH_TARGET=
+              PREP_DEPLOY_SSH_OPTS=()
+              return 0
+            }
+            register_active_deploy() { :; }
+            unregister_active_deploy() { :; }
+            copy_system_path_from_local_to_prepared_target() { printf 'copy\\n'; }
+            run_pre_switch_preparation() { printf 'prepare\\n'; }
+            run_candidate_generation_admission() {
+              printf 'admit-generation\\n'
+              return 23
+            }
+            run_pre_activation_podman_image_pulls() { printf 'unexpected-image-pull\\n'; }
+            run_pre_activation_ai_model_prefetch() { printf 'unexpected-model-prefetch\\n'; }
+            mark_deploy_activation_started() { printf 'unexpected-mark\\n'; }
+            activate_prepared_system_path() { printf 'unexpected-activate\\n'; }
+            if deploy_host app /nix/store/new-system; then
+              printf 'unexpected-success\\n'
+            else
+              printf 'rc:%s\\n' "$?"
+            fi
+            """
+        )
+
+        self.assertEqual(
+            ["copy", "prepare", "admit-generation", "rc:23"],
+            result.stdout.splitlines(),
+        )
+        self.assertNotIn("unexpected-", result.stdout)
+
+    def test_remote_build_dry_run_skips_distribution_and_markers(self):
+        result = self.run_script(
+            """
+            init_vars
+            DRY_RUN=1
+            PREP_DEPLOY_AGE_IDENTITY_KEY=
+            run_parented_host_operation_with_retry() {
+              shift 2
+              "$@"
+            }
+            prepare_host_transport_for_deploy() {
+              PREP_DEPLOY_LOCAL_EXEC=1
+              PREP_USING_BOOTSTRAP_FALLBACK=0
+              PREP_DEPLOY_SSH_TARGET=
+              PREP_DEPLOY_SSH_OPTS=()
+              return 0
+            }
+            register_active_deploy() { printf 'unexpected-register\n'; }
+            unregister_active_deploy() { printf 'unexpected-unregister\n'; }
+            ensure_remote_build_output_available() { printf 'unexpected-realize\n'; }
+            copy_system_path_from_build_cache_to_prepared_target() { printf 'unexpected-cache-copy\n'; }
+            copy_system_path_from_build_cache_via_local_to_prepared_target() { printf 'unexpected-relay\n'; }
+            mark_deploy_activation_started() { printf 'unexpected-mark\n'; }
+            activate_prepared_system_path() { printf 'activate:%s:%s\n' "$1" "$2"; }
+            deploy_remote_build_host_path app /nix/store/new-system
+            """
+        )
+
+        self.assertEqual(
+            ["activate:app:/nix/store/new-system"],
+            result.stdout.splitlines(),
+        )
+        self.assertIn(
+            "DRY-RUN: skipping remote-build closure distribution to app: /nix/store/new-system",
+            result.stderr,
+        )
+        self.assertIn(
+            "DRY-RUN: skipping pre-activation Podman image pulls on app",
+            result.stderr,
+        )
+        self.assertIn(
+            "DRY-RUN: skipping pre-activation AI model prefetch on app",
+            result.stderr,
+        )
+        self.assertNotIn("unexpected-", result.stdout)
 
     def test_health_starting_timeout_uses_native_podman_compose_registry(self):
         registry = self.work_dir / "control-registry.json"
@@ -2523,6 +2704,59 @@ EOF_UNITS
         )
         self.assertIn("refusing automatic rollback because projection safety cannot be proven", command)
         self.assertLess(command.index("reject_generation_admission"), switch_index)
+
+    def test_candidate_generation_admission_is_reusable_without_switching(self):
+        result = self.run_script(
+            """
+            init_vars
+            nixbot_generation_admission_command '/nix/store/candidate system' switch normal
+            """
+        )
+
+        command = result.stdout
+        self.assertIn("system_path=/nix/store/candidate\\ system", command)
+        self.assertIn(
+            "current_generation_preflight=/run/current-system/sw/bin/abird-host-agent-generation-preflight",
+            command,
+        )
+        self.assertIn(
+            '"${admission_program}" "${system_path}" "${goal}" "${admission_mode}"',
+            command,
+        )
+        self.assertNotIn("NIXOS_INSTALL_BOOTLOADER", command)
+
+    def test_first_interface_activation_defers_candidate_acquisition(self):
+        root = self.work_dir / "first-interface-acquisition"
+        current = root / "current-system"
+        target = root / "target-system"
+        switch = target / "bin/switch-to-configuration"
+        registry = target / "etc/abird-host-agent/generation-admission-registry.json"
+        current.mkdir(parents=True)
+        switch.parent.mkdir(parents=True)
+        registry.parent.mkdir(parents=True)
+        switch.write_text("#!/bin/sh\\nexit 0\\n")
+        switch.chmod(0o700)
+        registry.write_text("{}\\n")
+
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            GOAL=switch
+            REMOTE_CURRENT_SYSTEM_PATH={current}
+            run_prepared_root_command() {{ bash -c "$1"; }}
+            run_prepared_root_command_with_retry() {{ printf 'unexpected-acquisition\\n'; return 99; }}
+            run_candidate_generation_admission {target}
+            run_pre_activation_podman_image_pulls app {target}
+            run_pre_activation_ai_model_prefetch app {target}
+            printf 'deferred:%s\\n' "${{CANDIDATE_ACQUISITION_DEFERRED:-0}}"
+            """
+        )
+
+        self.assertEqual("deferred:1", result.stdout.strip())
+        self.assertNotIn("unexpected-acquisition", result.stdout)
+        self.assertIn("deferring Podman image pulls", result.stderr)
+        self.assertIn("deferring AI model prefetch", result.stderr)
 
     def test_boot_activation_dispatches_admission_before_persisting(self):
         root = self.work_dir / "boot-admission"
@@ -6840,10 +7074,10 @@ EOF_SCRIPT
             result.stdout.strip(),
         )
 
-    def test_pre_switch_admission_repairs_managers_and_preserves_failed_units(self):
+    def test_pre_switch_preparation_repairs_managers_and_preserves_failed_units(self):
         result = self.run_script(
             """
-            build_pre_switch_admission_cmd
+            build_pre_switch_preparation_cmd
             """,
         )
 
@@ -6854,7 +7088,7 @@ EOF_SCRIPT
         self.assertIn("systemctl reset-failed", result.stdout)
         self.assertNotIn("systemctl --user reset-failed", result.stdout)
 
-    def test_pre_switch_admission_starts_inactive_logind_user_manager(self):
+    def test_pre_switch_preparation_starts_inactive_logind_user_manager(self):
         result = self.run_script(
             """
             loginctl() { printf '1001 peter yes lingering\n'; }
@@ -6887,7 +7121,7 @@ EOF_SCRIPT
             result.stderr,
         )
 
-    def test_pre_switch_admission_does_not_restart_active_manager_without_bus(self):
+    def test_pre_switch_preparation_does_not_restart_active_manager_without_bus(self):
         result = self.run_script(
             """
             loginctl() { printf '1001 peter yes lingering\n'; }

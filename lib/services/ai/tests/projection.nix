@@ -2,11 +2,18 @@
   projectionLib = import ../projection.nix;
   catalog = import ../catalog.nix;
   roles = {
-    main = "gemma4-26b";
+    main = "gemma4-26b-a4b";
     smallTask = "gemma4-e2b";
-    embedding = "nomic-embed-text";
+    embedding = "nomic-embed-text-v15-100m";
   };
   backends = {
+    hf = {
+      active = true;
+      cacheDir = "/hf-cache";
+      prefetch.gemma4-26b-a4b = true;
+      tokenFile = "/run/credentials/hf-token";
+      user = "model-user";
+    };
     ollama = {
       active = true;
       deployments = [{lifecycle = "auto";}];
@@ -16,16 +23,11 @@
     };
     llamaRouter = {
       active = true;
-      runtimes.default = {
-        active = true;
+      defaults = {
         cacheDir = "/cache";
-        deployments = [{}];
         idleTimeoutSeconds = 300;
-        modelPresets = {derived = {};};
-        ports = [11000];
-        preservedModels = ["example/preserved:Q4"];
       };
-      runtimesInfo.default.active = true;
+      deployments = [{preservedModels = ["example/preserved:Q4"];}];
     };
   };
   autoProjection = projectionLib.mkProjection {
@@ -34,10 +36,10 @@
   };
   explicitProjection = projectionLib.mkProjection {
     inherit catalog;
-    models = ["gemma4-26b" "nomic-embed-text"];
+    models = ["gemma4-26b-a4b" "nomic-embed-text-v15-100m"];
     roles = {
-      main = "gemma4-26b";
-      embedding = "nomic-embed-text";
+      main = "gemma4-26b-a4b";
+      embedding = "nomic-embed-text-v15-100m";
     };
   };
   emptyProjection = projectionLib.mkProjection {inherit catalog;};
@@ -57,7 +59,7 @@
   };
   llamaOnlyPolicy = projectionLib.resolvePolicy {
     catalog = backendShapeCatalog;
-    backends.llamaRouter.runtimes.default.deployments = [{}];
+    backends.llamaRouter.deployments = [{}];
   };
   noRuntimePolicy = projectionLib.resolvePolicy {
     catalog.only = {
@@ -75,8 +77,12 @@
     models = ["dual"];
     backends = {
       ollama.deployments = [{}];
-      llamaRouter.runtimes.prism.deployments = [{}];
+      llamaRouter.deployments = [{runtime = "prism";}];
     };
+  };
+  registryConsumers = projectionLib.mkConsumers {
+    ollamaEndpoints = [{url = "http://registry:11434";}];
+    llamaEndpoints = [{url = "http://registry:11436";}];
   };
   duplicatePolicy = projectionLib.resolvePolicy {
     catalog = {
@@ -93,7 +99,7 @@
     };
     backends = {
       ollama.deployments = [{}];
-      llamaRouter.runtimes.default.deployments = [{}];
+      llamaRouter.deployments = [{}];
     };
   };
   invalidDormantPolicy = projectionLib.resolvePolicy {
@@ -108,6 +114,37 @@
       };
     };
     models = ["selected"];
+    backends.ollama.deployments = [{}];
+  };
+  invalidArtifactPolicy = projectionLib.resolvePolicy {
+    catalog.only = {
+      id = "only";
+      ollama = "only";
+      artifacts.broken.hf = {
+        ref = "";
+        include = [""];
+      };
+    };
+    models = ["only"];
+    backends.ollama.deployments = [{}];
+  };
+  malformedHfBasePolicy = projectionLib.resolvePolicy {
+    catalog.only = {
+      id = "only";
+      hf.ref = "";
+      ollama = "only";
+      artifacts.valid.hf = "example/valid-artifact";
+    };
+    models = ["only"];
+    backends.ollama.deployments = [{}];
+  };
+  artifactOnlyHfPolicy = projectionLib.resolvePolicy {
+    catalog.only = {
+      id = "only";
+      ollama = "only";
+      artifacts.valid.hf = "example/valid-artifact";
+    };
+    models = ["only"];
     backends.ollama.deployments = [{}];
   };
   badRolePolicy = projectionLib.resolvePolicy {
@@ -138,8 +175,77 @@
         };
       };
       models = ["only"];
-      backends.llamaRouter.runtimes.default.deployments = [{}];
+      backends.llamaRouter.deployments = [{}];
     };
+  placementPolicy = projectionLib.resolvePolicy {
+    catalog = {
+      first = {
+        id = "first";
+        llama = "example/first:Q4";
+      };
+      second = {
+        id = "second";
+        llama = "example/second:Q4";
+      };
+      shared = {
+        id = "shared";
+        llama = {
+          ref = "example/shared:Q4";
+          runtimes = ["default" "prism"];
+        };
+      };
+    };
+    backends.llamaRouter.deployments = [
+      {
+        instance = "first";
+        models = ["first" "shared"];
+      }
+      {
+        instance = "second";
+        models = ["second"];
+      }
+      {
+        instance = "prism";
+        models = ["shared"];
+        runtime = "prism";
+      }
+    ];
+  };
+  incompatiblePlacementPolicy = projectionLib.resolvePolicy {
+    catalog.only = {
+      id = "only";
+      llama = "example/only:Q4";
+    };
+    models = ["only"];
+    backends.llamaRouter.deployments = [
+      {
+        models = ["only"];
+        runtime = "prism";
+      }
+    ];
+  };
+  unsafeCatalogRuntimePolicy = projectionLib.resolvePolicy {
+    catalog.only = {
+      id = "only";
+      llama = {
+        ref = "example/only:Q4";
+        runtimes = ["../unsafe"];
+      };
+    };
+    models = ["only"];
+    backends.llamaRouter.deployments = [{runtime = "../unsafe";}];
+  };
+  unsafeDeploymentRuntimePolicy = projectionLib.resolvePolicy {
+    catalog.only = {
+      id = "only";
+      llama = "example/only:Q4";
+    };
+    models = ["only"];
+    backends.llamaRouter = {
+      defaults.runtime = "Unsafe";
+      deployments = [{}];
+    };
+  };
   diagnosticCodes = policy: builtins.map (entry: entry.code) policy.diagnostics;
   invalidProjection = value: builtins.tryEval (builtins.deepSeq value true);
 in
@@ -162,49 +268,79 @@ in
   ];
   assert diagnosticCodes invalidDormantPolicy == ["invalid-llama-reference"];
   assert !invalidDormantPolicy.valid;
+  assert diagnosticCodes invalidArtifactPolicy == ["invalid-model-artifact"];
+  assert diagnosticCodes malformedHfBasePolicy == ["invalid-huggingface-reference"];
+  assert artifactOnlyHfPolicy.valid;
   # Presets use the same schema here and in the reconciler renderer.
   assert diagnosticCodes (invalidPresetPolicy {threads = "";}) == ["invalid-llama-preset"];
   assert diagnosticCodes (invalidPresetPolicy {threads = "a\nb";}) == ["invalid-llama-preset"];
   assert diagnosticCodes (invalidPresetPolicy {"bad key" = "1";}) == ["invalid-llama-preset"];
   assert diagnosticCodes (invalidPresetPolicy {alias = "override";}) == ["invalid-llama-preset"];
+  # Deployment filters are placement, while the runtime projection is their
+  # ownership union. A catalog entry may be compatible with several runtimes.
+  assert placementPolicy.valid;
+  assert (builtins.elemAt placementPolicy.llama.deployments 0).models == ["first" "shared"];
+  assert (builtins.elemAt placementPolicy.llama.deployments 1).requiredModels == ["example/second:Q4"];
+  assert placementPolicy.runtimes.default.models == ["first" "second" "shared"];
+  assert placementPolicy.runtimes.prism.models == ["shared"];
+  assert diagnosticCodes incompatiblePlacementPolicy == ["incompatible-llama-deployment-model" "unknown-llama-runtime"];
+  assert builtins.elem "invalid-llama-runtime" (diagnosticCodes unsafeCatalogRuntimePolicy);
+  assert builtins.elem "invalid-llama-deployment-runtime" (diagnosticCodes unsafeDeploymentRuntimePolicy);
   # Bad roles are diagnostics and safe null defaults, never raw attr errors.
   assert malformedRolePolicy.defaults.main == null;
   assert diagnosticCodes malformedRolePolicy == ["invalid-role"];
   assert badRolePolicy.defaults.main == null;
   assert diagnosticCodes badRolePolicy == ["invalid-role"];
   # Explicit selections are used verbatim; null selects the deployed set.
-  assert explicitProjection.models == ["gemma4-26b" "nomic-embed-text"];
+  assert explicitProjection.valid;
+  assert explicitProjection.models == ["gemma4-26b-a4b" "nomic-embed-text-v15-100m"];
   assert explicitProjection.defaults.main.id == "gemma4:26b";
   assert builtins.length autoProjection.models == 14;
-  assert !(builtins.elem "bonsai-2-27b" autoProjection.models);
+  assert !(builtins.elem "bonsai2-27b" autoProjection.models);
   assert autoProjection.defaults.smallTask.id == "gemma4:e2b";
   assert autoProjection.valid;
   assert autoProjection.ollama.requiredModels != [];
+  assert autoProjection.ollama.models != [];
   assert autoProjection.runtimes.default.requiredModels != [];
+  assert autoProjection.runtimes.default.modelIds != [];
   # The cross-repository handoff is complete and contains declarations only.
   assert autoProjection.moduleConfig.catalog == catalog;
   assert autoProjection.moduleConfig.models == autoProjection.models;
   assert autoProjection.moduleConfig.roles == roles;
+  assert autoProjection.moduleConfig.backends.hf
+  == {
+    cacheDir = "/hf-cache";
+    prefetch.gemma4-26b-a4b = true;
+    tokenFile = "/run/credentials/hf-token";
+    user = "model-user";
+  };
   assert autoProjection.moduleConfig.backends.ollama
   == {
     deployments = [{lifecycle = "auto";}];
     modelsDir = "/models";
   };
-  assert autoProjection.moduleConfig.backends.llamaRouter.runtimes.default
+  assert autoProjection.moduleConfig.backends.llamaRouter
   == {
-    cacheDir = "/cache";
-    deployments = [{}];
-    idleTimeoutSeconds = 300;
-    preservedModels = ["example/preserved:Q4"];
+    defaults = {
+      cacheDir = "/cache";
+      idleTimeoutSeconds = 300;
+    };
+    deployments = [{preservedModels = ["example/preserved:Q4"];}];
   };
   assert !(autoProjection.moduleConfig.backends.ollama ? active);
-  assert !(autoProjection.moduleConfig.backends.llamaRouter ? runtimesInfo);
+  assert !(autoProjection.moduleConfig.backends.llamaRouter ? deploymentsInfo);
+  assert !(autoProjection.moduleConfig.backends.llamaRouter ? preservedModels);
   # Unset roles degrade to null/empty values rather than failing evaluation.
   assert emptyProjection.valid;
   assert emptyProjection.defaults == {};
   assert emptyProjection.models == [];
   # Generic helpers keep repository views thin.
-  assert (projectionLib.catalogById catalog)."gemma4:26b" == "google/gemma-4-26B-A4B-it";
+  assert (projectionLib.hfCatalogById catalog)."gemma4:26b" == "google/gemma-4-26B-A4B-it";
+  assert (projectionLib.hfSourcesById catalog)."gemma4:26b"
+  == {ref = "google/gemma-4-26B-A4B-it";};
+  assert projectionLib.hfSourceForId catalog "gemma4:26b"
+  == {ref = "google/gemma-4-26B-A4B-it";};
+  assert !(builtins.tryEval (projectionLib.hfSourceForId catalog "bonsai2:27b")).success;
   assert builtins.elem "gemma4:26b" (projectionLib.pinnedModelIds catalog);
   assert !(builtins.elem "nomic-embed-text" (projectionLib.pinnedModelIds catalog));
   assert (projectionLib.mkServiceApis {
@@ -224,7 +360,7 @@ in
     portFor = _: _: 9;
   }).ollama.port
   == 9;
-  assert !(invalidProjection (projectionLib.catalogById {
+  assert !(invalidProjection (projectionLib.hfCatalogById {
     first = {
       id = "same";
       hf = "example/first";
@@ -234,15 +370,26 @@ in
       hf = "example/second";
     };
   })).success;
-  assert !(invalidProjection (projectionLib.catalogById {
-    missing-hf.id = "missing-hf";
-  })).success;
+  assert projectionLib.hfCatalogById {
+    hf-model = {
+      id = "hf-model";
+      hf = "example/hf-model";
+    };
+    ollama-only = {
+      id = "ollama-only";
+      ollama = "ollama-only";
+    };
+  }
+  == {hf-model = "example/hf-model";};
   # Consumers: `host` per endpoint overrides the default host, so one backend
   # can span hosts; order is preserved and native/OpenAI primaries are exposed.
   assert projectionLib.mkConsumers {
     defaultHost = "default";
     ollamaEndpoints = [
-      {port = 1;}
+      {
+        host = null;
+        port = 1;
+      }
       {
         port = 2;
         host = "remote";
@@ -256,11 +403,13 @@ in
         {
           port = 1;
           host = "default";
+          modelIds = [];
           url = "http://default:1";
         }
         {
           port = 2;
           host = "remote";
+          modelIds = [];
           url = "http://remote:2";
         }
       ];
@@ -276,6 +425,7 @@ in
         {
           port = 3;
           host = "default";
+          modelIds = [];
           url = "http://default:3";
         }
       ];
@@ -308,11 +458,8 @@ in
   # A required primary with no deployed endpoint fails with one clear message.
   assert !(builtins.tryEval (projectionLib.mkConsumers {}).ollama.default).success;
   # Endpoints may be fully resolved URLs (registry-driven consumers).
-  assert (projectionLib.mkConsumers {
-    ollamaEndpoints = [{url = "http://registry:11434";}];
-    llamaEndpoints = [{url = "http://registry:11436";}];
-  }).llama.openaiDefault
-  == "http://registry:11436/v1";
+  assert registryConsumers.llama.openaiDefault == "http://registry:11436/v1";
+  assert !(builtins.head registryConsumers.ollama.endpoints ? host);
     pkgs.runCommand "ai-projection-test" {} ''
       touch $out
     ''

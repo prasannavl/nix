@@ -159,6 +159,7 @@
   };
 in
   {
+    lib-ai-model-prefetch = aiTests.model-prefetch;
     lib-ai-lib = aiTests.lib;
     lib-ai-module = aiTests.module;
     lib-ai-projection = aiTests.projection;

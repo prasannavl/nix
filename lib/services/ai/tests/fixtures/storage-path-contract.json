@@ -1,0 +1,23 @@
+{
+  "valid": [
+    "/a",
+    "/run/secrets/hf-token",
+    "/var/lib/AZaz09._+,:=@-",
+    "/var/lib/example/models"
+  ],
+  "invalid": [
+    "/",
+    "relative/path",
+    "/var/lib/example/",
+    "/var//lib/example",
+    "/var/lib/./example",
+    "/var/lib/../example",
+    "/var/lib/model cache",
+    "/var/lib/model\tcache",
+    "/var/lib/model\ncache",
+    "/var/lib/model-%n",
+    "/var/lib/model\\x2dcache",
+    "/var/lib/model\"cache",
+    "/var/lib/model\u0001cache"
+  ]
+}

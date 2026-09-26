@@ -29,26 +29,39 @@ let
         else [])
       names);
   sanitizeDeployment = deployment:
-    selectAttrs deployment ["instance" "portName" "lifecycle"];
+    selectAttrs deployment ["host" "instance" "lifecycle" "portName"];
+  sanitizeLlamaDeployment = deployment:
+    selectAttrs deployment [
+      "cacheDir"
+      "host"
+      "idleTimeoutSeconds"
+      "instance"
+      "lifecycle"
+      "models"
+      "portName"
+      "preservedModels"
+      "runtime"
+    ];
   sanitizeBackends = backends: {
+    hf = selectAttrs (backends.hf or {}) ["cacheDir" "prefetch" "prefetchDefaults" "tokenFile" "user"];
     ollama =
-      selectAttrs (backends.ollama or {}) ["modelsDir" "preservedModels"]
+      selectAttrs (backends.ollama or {}) ["modelsDir" "prefetch" "preservedModels"]
       // {
         deployments = builtins.map sanitizeDeployment (backends.ollama.deployments or []);
       };
-    llamaRouter.runtimes =
-      builtins.mapAttrs
-      (_: runtime:
-        selectAttrs runtime ["cacheDir" "idleTimeoutSeconds" "preservedModels"]
-        // {
-          deployments = builtins.map sanitizeDeployment (runtime.deployments or []);
-        })
-      (backends.llamaRouter.runtimes or {});
+    llamaRouter =
+      selectAttrs (backends.llamaRouter or {}) ["prefetch"]
+      // {
+        defaults = selectAttrs (backends.llamaRouter.defaults or {}) ["cacheDir" "idleTimeoutSeconds" "models" "runtime"];
+        deployments = builtins.map sanitizeLlamaDeployment (backends.llamaRouter.deployments or []);
+      };
   };
   validEntry = entry:
     builtins.isAttrs entry
     && (entry ? id)
-    && isNonEmptyString entry.id;
+    && isNonEmptyString entry.id
+    && (!(entry ? internal) || builtins.isBool entry.internal)
+    && (!(entry ? artifacts) || builtins.isAttrs entry.artifacts);
   validBackend = backend: entry:
     validEntry entry
     && backendLib.validBackendConfig (backendLib.backendConfig backend entry);
@@ -57,9 +70,15 @@ let
   in
     validBackend "llama" entry
     && presetLib.validModelRef config.ref;
+  validHfBackend = entry:
+    validEntry entry && backendLib.validHfConfig (backendLib.backendConfig "hf" entry);
+  validArtifact = artifact:
+    builtins.isAttrs artifact
+    && (artifact ? hf)
+    && backendLib.validHfConfig (backendLib.backendConfig "hf" artifact);
   validRuntime = entry:
     validLlamaBackend entry
-    && backendLib.llamaRuntime entry != null;
+    && backendLib.validLlamaRuntimes entry;
   validPreset = entry: let
     config = backendLib.backendConfig "llama" entry;
     preset = config.preset or {};
@@ -115,13 +134,26 @@ in rec {
       builtins.filter
       (key: let entry = catalog.${key}; in validEntry entry && (entry ? ollama) && !validBackend "ollama" entry)
       keys;
+    invalidHfKeys =
+      builtins.filter
+      (key: let entry = catalog.${key}; in validEntry entry && (entry ? hf) && !validHfBackend entry)
+      keys;
+    invalidArtifactKeys =
+      builtins.concatMap
+      (key:
+        builtins.map
+        (artifact: "${key}.${artifact}")
+        (builtins.filter
+          (artifact: !validArtifact (backendLib.artifactsOf catalog.${key}).${artifact})
+          (builtins.attrNames (backendLib.artifactsOf catalog.${key}))))
+      keys;
     invalidLlamaKeys =
       builtins.filter
       (key: let entry = catalog.${key}; in validEntry entry && (entry ? llama) && !validLlamaBackend entry)
       keys;
     invalidRuntimeKeys =
       builtins.filter
-      (key: let entry = catalog.${key}; in validLlamaBackend entry && backendLib.llamaRuntime entry == null)
+      (key: let entry = catalog.${key}; in validLlamaBackend entry && !backendLib.validLlamaRuntimes entry)
       keys;
     invalidPresetKeys =
       builtins.filter
@@ -129,17 +161,20 @@ in rec {
       keys;
     duplicateIds = duplicateValues (builtins.map (entry: entry.id) entries);
     duplicateOllamaRefs = duplicateValues (refsFor "ollama" entries);
-    runtimeNames = builtins.attrNames (builtins.listToAttrs (builtins.map
-      (entry: {
-        name = backendLib.llamaRuntime entry;
-        value = true;
-      })
+    runtimeNames = builtins.attrNames (builtins.listToAttrs (builtins.concatMap
+      (entry:
+        builtins.map
+        (runtime: {
+          name = runtime;
+          value = true;
+        })
+        (backendLib.llamaRuntimes entry))
       (builtins.filter validRuntime entries)));
     llamaRefsByRuntime = builtins.listToAttrs (builtins.map
       (runtime: {
         name = runtime;
         value = refsFor "llama" (builtins.filter
-          (entry: validRuntime entry && backendLib.llamaRuntime entry == runtime)
+          (entry: validRuntime entry && builtins.elem runtime (backendLib.llamaRuntimes entry))
           entries);
       })
       runtimeNames);
@@ -152,13 +187,17 @@ in rec {
       runtimeNames;
     diagnostics =
       optionalDiagnostic (invalidEntryKeys != []) "invalid-catalog-entry"
-      "services.ai.catalog: entries require a non-empty string id: ${concat ", " invalidEntryKeys}"
+      "services.ai.catalog: entries require a non-empty string id, optional boolean internal flag, and optional artifacts attrset: ${concat ", " invalidEntryKeys}"
       ++ optionalDiagnostic (invalidOllamaKeys != []) "invalid-ollama-reference"
       "services.ai.catalog: Ollama references must be non-empty single-line strings: ${concat ", " invalidOllamaKeys}"
+      ++ optionalDiagnostic (invalidHfKeys != []) "invalid-huggingface-reference"
+      "services.ai.catalog: hf references require a non-empty ref plus optional non-empty revision and include strings: ${concat ", " invalidHfKeys}"
+      ++ optionalDiagnostic (invalidArtifactKeys != []) "invalid-model-artifact"
+      "services.ai.catalog: nested artifacts require a valid hf reference: ${concat ", " invalidArtifactKeys}"
       ++ optionalDiagnostic (invalidLlamaKeys != []) "invalid-llama-reference"
       "services.ai.catalog: llama references must be org/repo or org/repo:tag strings: ${concat ", " invalidLlamaKeys}"
       ++ optionalDiagnostic (invalidRuntimeKeys != []) "invalid-llama-runtime"
-      "services.ai.catalog: llama.runtime must be a non-empty string: ${concat ", " invalidRuntimeKeys}"
+      "services.ai.catalog: llama.runtimes must be a non-empty unique list of lowercase runtime ids matching [a-z0-9][a-z0-9-]*: ${concat ", " invalidRuntimeKeys}"
       ++ optionalDiagnostic (invalidPresetKeys != []) "invalid-llama-preset"
       "services.ai.catalog: llama presets require a valid model alias plus non-empty single-line option names and values, and cannot override alias, embeddings, or hf: ${concat ", " invalidPresetKeys}"
       ++ optionalDiagnostic (duplicateIds != []) "duplicate-model-id"
@@ -168,7 +207,7 @@ in rec {
       ++ optionalDiagnostic (duplicateLlamaRefs != []) "duplicate-llama-reference"
       "services.ai.catalog: llama references must be unique within a runtime: ${concat ", " duplicateLlamaRefs}";
   in {
-    inherit diagnostics duplicateIds duplicateLlamaRefs duplicateOllamaRefs entries invalidEntryKeys invalidLlamaKeys invalidOllamaKeys invalidPresetKeys invalidRuntimeKeys;
+    inherit diagnostics duplicateIds duplicateLlamaRefs duplicateOllamaRefs entries invalidArtifactKeys invalidEntryKeys invalidHfKeys invalidLlamaKeys invalidOllamaKeys invalidPresetKeys invalidRuntimeKeys;
     valid = diagnostics == [];
   };
 
@@ -188,28 +227,68 @@ in rec {
     roles ? {},
     backends ? {
       ollama.deployments = [];
-      llamaRouter.runtimes = {};
+      llamaRouter.deployments = [];
     },
   }: let
     catalogAnalysis = analyzeCatalog catalog;
     catalogKeys = builtins.attrNames catalog;
-    runtimeConfigs = backends.llamaRouter.runtimes or {};
-    runtimeNames = builtins.attrNames runtimeConfigs;
+    llamaDefaults = backends.llamaRouter.defaults or {};
+    declaredLlamaDeployments = backends.llamaRouter.deployments or [];
+    llamaDeployments =
+      builtins.map
+      (deployment: {
+        declaration = deployment;
+        runtime = backendLib.effectiveDeploymentValue llamaDefaults deployment "runtime" "default";
+        selection = backendLib.effectiveDeploymentValue llamaDefaults deployment "models" null;
+      })
+      declaredLlamaDeployments;
+    validDeploymentRuntime = deployment: backendLib.validRuntimeName deployment.runtime;
+    validDeploymentSelection = deployment:
+      deployment.selection
+      == null
+      || (
+        builtins.isList deployment.selection
+        && builtins.all isNonEmptyString deployment.selection
+      );
+    deploymentLabel = deployment: let
+      instance = deployment.declaration.instance or null;
+    in
+      if isNonEmptyString instance
+      then instance
+      else if validDeploymentRuntime deployment
+      then "<${deployment.runtime}>"
+      else "<invalid>";
+    runtimeNames = builtins.attrNames (builtins.listToAttrs (builtins.map
+      (deployment: {
+        name = deployment.runtime;
+        value = true;
+      })
+      (builtins.filter validDeploymentRuntime llamaDeployments)));
     ollamaAvailable = (backends.ollama.deployments or []) != [];
-    membershipFor = entry:
-      backendLib.configuredBackends {
-        inherit entry;
-        ollama = ollamaAvailable;
-        runtimes = runtimeConfigs;
-      };
+    deploymentAllows = key: entry: deployment:
+      validDeploymentRuntime deployment
+      && validDeploymentSelection deployment
+      && validRuntime entry
+      && builtins.elem deployment.runtime (backendLib.llamaRuntimes entry)
+      && (deployment.selection == null || builtins.elem key deployment.selection);
+    llamaDeploymentsFor = key: entry:
+      builtins.filter (deployment: deploymentAllows key entry deployment) llamaDeployments;
+    membershipFor = key: entry: {
+      # Explicit admission may target an external HF-backed runtime such as
+      # vLLM or SGLang, whose service command remains host-owned. Automatic
+      # selection stays limited to modeled Ollama/llama.cpp deployments.
+      hf = models != null && validHfBackend entry;
+      ollama = ollamaAvailable && validBackend "ollama" entry;
+      llamaDeployments = llamaDeploymentsFor key entry;
+    };
     autoModels =
       builtins.filter
       (key: let
         entry = catalog.${key};
-        membership = membershipFor entry;
+        membership = membershipFor key entry;
       in
         validEntry entry
-        && (membership.ollama || membership.llamaRuntime != null))
+        && (membership.ollama || membership.llamaDeployments != []))
       catalogKeys;
     resolvedModels =
       if models == null
@@ -217,31 +296,84 @@ in rec {
       else models;
     duplicateModelKeys = duplicateValues resolvedModels;
     unknownKeys = builtins.filter (key: !(catalog ? ${key})) resolvedModels;
-    selectedEntries = entriesFor catalog resolvedModels;
     selected =
-      builtins.map
-      (entry: {
-        inherit entry;
-        membership = membershipFor entry;
-      })
-      selectedEntries;
-    unknownRuntimeEntries = builtins.map (item: item.entry) (builtins.filter
+      builtins.concatMap
+      (key:
+        if catalog ? ${key} && validEntry catalog.${key}
+        then let
+          entry = catalog.${key};
+        in [
+          {
+            inherit entry key;
+            membership = membershipFor key entry;
+          }
+        ]
+        else [])
+      resolvedModels;
+    selectedEntries = builtins.map (item: item.entry) selected;
+    unknownRuntimeItems =
+      builtins.filter
       (item:
         !item.membership.ollama
-        && item.membership.llamaRuntime == null
+        && item.membership.llamaDeployments == []
+        && !item.membership.hf
         && validRuntime item.entry
-        && !(builtins.elem (backendLib.llamaRuntime item.entry) runtimeNames))
+        && builtins.all
+        (runtime: !(builtins.elem runtime runtimeNames))
+        (backendLib.llamaRuntimes item.entry))
+      selected;
+    unknownRuntimeKeys = builtins.map (item: item.key) unknownRuntimeItems;
+    unservedKeys = builtins.map (item: item.key) (builtins.filter
+      (item:
+        !item.membership.ollama
+        && item.membership.llamaDeployments == []
+        && !item.membership.hf
+        && !(builtins.elem item unknownRuntimeItems))
       selected);
-    unknownRuntimeKeys = builtins.map (entry: entry.id) unknownRuntimeEntries;
-    unservedKeys =
+    declaredDeploymentModels =
+      builtins.concatMap
+      (deployment:
+        if builtins.isList deployment.selection
+        then builtins.map (key: {inherit deployment key;}) deployment.selection
+        else [])
+      llamaDeployments;
+    duplicateDeploymentModels =
+      builtins.concatMap
+      (deployment:
+        if !builtins.isList deployment.selection
+        then []
+        else
+          builtins.map
+          (key: "${deploymentLabel deployment}=${key}")
+          (duplicateValues deployment.selection))
+      llamaDeployments;
+    unknownDeploymentModels =
       builtins.map
-      (item: item.entry.id)
+      (item: "${deploymentLabel item.deployment}=${item.key}")
+      (builtins.filter (item: !(catalog ? ${item.key})) declaredDeploymentModels);
+    incompatibleDeploymentModels =
+      builtins.map
+      (item: "${deploymentLabel item.deployment}=${item.key}")
       (builtins.filter
         (item:
-          !item.membership.ollama
-          && item.membership.llamaRuntime == null
-          && !(builtins.elem item.entry unknownRuntimeEntries))
-        selected);
+          catalog ? ${item.key}
+          && (
+            !validRuntime catalog.${item.key}
+            || !validDeploymentRuntime item.deployment
+            || !(builtins.elem item.deployment.runtime (backendLib.llamaRuntimes catalog.${item.key}))
+          ))
+        declaredDeploymentModels);
+    unadmittedDeploymentModels =
+      if models == null
+      then []
+      else
+        builtins.map
+        (item: "${deploymentLabel item.deployment}=${item.key}")
+        (builtins.filter
+          (item: catalog ? ${item.key} && !(builtins.elem item.key resolvedModels))
+          declaredDeploymentModels);
+    invalidDeploymentRuntimes = builtins.map deploymentLabel (builtins.filter (deployment: !validDeploymentRuntime deployment) llamaDeployments);
+    invalidDeploymentSelections = builtins.map deploymentLabel (builtins.filter (deployment: !validDeploymentSelection deployment) llamaDeployments);
     roleNames = builtins.attrNames roles;
     badRoles =
       builtins.filter
@@ -271,16 +403,18 @@ in rec {
       then defaults.embedding.id
       else null;
     ollamaEntries = builtins.map (item: item.entry) (builtins.filter (item: item.membership.ollama) selected);
-    runtimeEntries = runtime:
-      builtins.map (item: item.entry) (builtins.filter (item: item.membership.llamaRuntime == runtime) selected);
-    runtimeProjection = runtime: let
-      entries = runtimeEntries runtime;
+    deploymentItems = deployment:
+      builtins.filter
+      (item: builtins.elem deployment item.membership.llamaDeployments)
+      selected;
+    projectionForItems = items: let
+      entries = builtins.map (item: item.entry) items;
       refs = refsFor "llama" entries;
       aliases = builtins.map (entry: entry.id) entries;
       projectionSafe = duplicateValues refs == [] && duplicateValues aliases == [] && builtins.all validPreset entries;
     in {
-      active = (runtimeConfigs.${runtime}.deployments or []) != [];
-      models = builtins.map (entry: entry.id) entries;
+      models = builtins.map (item: item.key) items;
+      modelIds = aliases;
       requiredModels = refs;
       modelPresets =
         if projectionSafe
@@ -293,6 +427,24 @@ in rec {
             entries)
         else {};
     };
+    deploymentProjection = deployment:
+      {inherit (deployment) runtime;}
+      // projectionForItems (deploymentItems deployment);
+    runtimeEntries = runtime:
+      builtins.filter
+      (item:
+        builtins.any
+        (deployment: deployment.runtime == runtime)
+        item.membership.llamaDeployments)
+      selected;
+    runtimeProjection = runtime: let
+      deployments = builtins.filter (deployment: deployment.runtime == runtime) llamaDeployments;
+    in
+      {
+        active = deployments != [];
+        inherit deployments;
+      }
+      // projectionForItems (runtimeEntries runtime);
     diagnostics =
       catalogAnalysis.diagnostics
       ++ (
@@ -303,10 +455,22 @@ in rec {
           "services.ai.models: catalog keys must be unique: ${concat ", " duplicateModelKeys}"
           ++ optionalDiagnostic (unknownKeys != []) "unknown-model"
           "services.ai: unknown catalog keys: ${concat ", " unknownKeys}"
+          ++ optionalDiagnostic (invalidDeploymentRuntimes != []) "invalid-llama-deployment-runtime"
+          "services.ai.backends.llamaRouter.deployments: runtime must resolve to a lowercase id matching [a-z0-9][a-z0-9-]*: ${concat ", " invalidDeploymentRuntimes}"
+          ++ optionalDiagnostic (invalidDeploymentSelections != []) "invalid-llama-deployment-models"
+          "services.ai.backends.llamaRouter.deployments: models must resolve to null or a list of non-empty catalog keys: ${concat ", " invalidDeploymentSelections}"
+          ++ optionalDiagnostic (duplicateDeploymentModels != []) "duplicate-llama-deployment-model"
+          "services.ai.backends.llamaRouter.deployments: model selections must be unique per deployment: ${concat ", " duplicateDeploymentModels}"
+          ++ optionalDiagnostic (unknownDeploymentModels != []) "unknown-llama-deployment-model"
+          "services.ai.backends.llamaRouter.deployments: unknown catalog keys: ${concat ", " unknownDeploymentModels}"
+          ++ optionalDiagnostic (incompatibleDeploymentModels != []) "incompatible-llama-deployment-model"
+          "services.ai.backends.llamaRouter.deployments: models must support the deployment runtime: ${concat ", " incompatibleDeploymentModels}"
+          ++ optionalDiagnostic (unadmittedDeploymentModels != []) "unadmitted-llama-deployment-model"
+          "services.ai.backends.llamaRouter.deployments: explicit models must be admitted by services.ai.models: ${concat ", " unadmittedDeploymentModels}"
           ++ optionalDiagnostic (unknownRuntimeKeys != []) "unknown-llama-runtime"
-          "services.ai: selected models reference undeclared llama runtimes: ${concat ", " unknownRuntimeKeys}"
+          "services.ai: selected models have no deployment for any compatible llama runtime: ${concat ", " unknownRuntimeKeys}"
           ++ optionalDiagnostic (unservedKeys != []) "unserved-model"
-          "services.ai: selected models have no deployed backend: ${concat ", " unservedKeys}"
+          "services.ai: selected models have no deployed backend or explicit Hugging Face source: ${concat ", " unservedKeys}"
           ++ optionalDiagnostic (badRoles != []) "invalid-role"
           "services.ai.roles: keys outside the managed model selection: ${concat ", " (builtins.map (role: "${role}=${
               if isNonEmptyString roles.${role}
@@ -325,6 +489,7 @@ in rec {
       models = builtins.map (entry: entry.id) ollamaEntries;
       requiredModels = refsFor "ollama" ollamaEntries;
     };
+    llama.deployments = builtins.map deploymentProjection llamaDeployments;
     runtimes = builtins.listToAttrs (builtins.map
       (runtime: {
         name = runtime;
@@ -333,33 +498,42 @@ in rec {
       runtimeNames);
   };
 
-  # OpenAI-compatible {served id -> upstream HF repo} map.
-  catalogById = sourceCatalog: let
+  # OpenAI-compatible {served id -> structured HF source} map. Public entries
+  # without an HF source are valid for other backends and are omitted.
+  hfSourcesById = sourceCatalog: let
     catalog = checkedCatalog sourceCatalog;
-    missingHf = builtins.filter (key: let
-      hf = catalog.${key}.hf or null;
-    in
-      !builtins.isString hf || hf == "") (builtins.attrNames catalog);
+    hfKeys =
+      builtins.filter
+      (key: !(catalog.${key}.internal or false) && validHfBackend catalog.${key})
+      (builtins.attrNames catalog);
   in
-    if missingHf != []
-    then throw "AI catalog entries require a non-empty string hf reference for catalogById: ${concat ", " missingHf}"
-    else
-      builtins.listToAttrs (builtins.map
-        (model: {
-          name = model.id;
-          value = model.hf;
-        })
-        (builtins.attrValues catalog));
+    builtins.listToAttrs (builtins.map
+      (key: {
+        name = catalog.${key}.id;
+        value = backendLib.backendConfig "hf" catalog.${key};
+      })
+      hfKeys);
+
+  hfSourceForId = sourceCatalog: id: let
+    sources = hfSourcesById sourceCatalog;
+  in
+    sources.${id} or (throw "AI model ${id} has no Hugging Face source required by this consumer");
+
+  # Compatibility view for callers that only need the repository reference.
+  hfCatalogById = sourceCatalog:
+    builtins.mapAttrs (_: source: source.ref) (hfSourcesById sourceCatalog);
 
   # Catalog ids flagged for default Web UI pinning.
   pinnedModelIds = sourceCatalog: let
     catalog = checkedCatalog sourceCatalog;
   in
-    builtins.map (model: model.id) (builtins.filter (model: model.pinned or false) (builtins.attrValues catalog));
+    builtins.map (model: model.id) (builtins.filter (model: !(model.internal or false) && (model.pinned or false)) (builtins.attrValues catalog));
 
   # Consumer-facing endpoint view: the single source of truth for consumers.
-  # Endpoints are ordered descriptors `{ host?; port; instance?; device?; }`; an
-  # endpoint without `host` uses `defaultHost`. Each backend (`ollama`, `llama`)
+  # Endpoints are ordered descriptors
+  # `{ host?; port; instance?; device?; modelIds?; }`; an endpoint without
+  # `host` uses `defaultHost`. `modelIds` is the exact ordered set of client
+  # model IDs admitted to that endpoint. Each backend (`ollama`, `llama`)
   # yields ordered `endpoints`, native `urls` and OpenAI `openaiUrls`, a
   # `default` / `openaiDefault` primary, and `byDevice` / `openaiByDevice`
   # lookups keyed by device class (`rocm`/`nvidia`/`cpu`). llama.cpp also
@@ -371,15 +545,17 @@ in rec {
     openaiApiKey ? "ollama",
   }: let
     # Endpoints are either fully resolved (`url`) or a `host`/`port` pair; an
-    # absent `host` uses `defaultHost`.
+    # absent or explicitly null `host` uses `defaultHost`.
+    resolveHost = endpoint: let
+      host = endpoint.host or null;
+    in
+      if host == null
+      then defaultHost
+      else host;
     resolveUrl = endpoint:
       if (endpoint.url or null) != null
       then endpoint.url
-      else "http://${
-        if (endpoint.host or null) == null
-        then defaultHost
-        else endpoint.host
-      }:${toString endpoint.port}";
+      else "http://${resolveHost endpoint}:${toString endpoint.port}";
     # The primary is required: a consumer that reaches for it must have the
     # backend deployed. Fail with one clear message instead of a null URL, so
     # no consumer ever guards or coerces a missing endpoint.
@@ -393,9 +569,12 @@ in rec {
         // (
           if (endpoint.url or null) != null
           then {}
-          else {host = endpoint.host or defaultHost;}
+          else {host = resolveHost endpoint;}
         )
-        // {url = resolveUrl endpoint;})
+        // {
+          modelIds = endpoint.modelIds or [];
+          url = resolveUrl endpoint;
+        })
       endpoints;
       urls = builtins.map (endpoint: endpoint.url) resolved;
       openaiUrls = builtins.map (url: "${url}/v1") urls;
@@ -449,7 +628,7 @@ in rec {
     roles ? {},
     backends ? {
       ollama.deployments = [];
-      llamaRouter.runtimes = {};
+      llamaRouter.deployments = [];
     },
     apiServices ? {},
   }: let

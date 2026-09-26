@@ -446,8 +446,8 @@ mod tests {
     #[test]
     fn internal_process_labels_render_as_human_status() {
         assert_eq!(
-            process_label("pre-switch-admission"),
-            "Pre switch admission"
+            process_label("pre-switch-preparation"),
+            "Pre switch preparation"
         );
         assert_eq!(process_label("remote_build"), "Remote build");
     }

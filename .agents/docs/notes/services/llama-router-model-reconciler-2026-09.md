@@ -139,14 +139,14 @@ Two upstream facts make it wire cleanly into the reconciler:
   model, including cache-scanned ad-hoc entries.
 
 The module uses the second path:
-`services.ai.backends.llamaRouter.runtimes.<name>.idleTimeoutSeconds`
-(`nullOr ints.positive`, default `null` = previous behavior) is emitted as
-`[*] sleep-idle-seconds = <n>` in the generated `models.ini`. `pvl-a1` and
-`pvl-l5` set `300` seconds, matching Ollama's default keep-alive, so a large
-model no longer stays resident behind a follow-up request; it sleeps after the
-idle window and the next request reloads it. `--models-max 3` allows embedding
-plus up to two chat models to co-reside while active, but idle workers release
-memory instead of waiting for a fourth-model LRU eviction.
+`services.ai.backends.llamaRouter.deployments[*].idleTimeoutSeconds` inherits
+from `llamaRouter.defaults` and is emitted as `[*] sleep-idle-seconds = <n>` in
+that service's generated `models.ini`; `false` disables an inherited value.
+`pvl-a1` and `pvl-l5` set `300` seconds, matching Ollama's default keep-alive,
+so a large model no longer stays resident behind a follow-up request; it sleeps
+after the idle window and the next request reloads it. `--models-max 3` allows
+embedding plus up to two chat models to co-reside while active, but idle workers
+release memory instead of waiting for a fourth-model LRU eviction.
 
 Validated on `pvl-l5`: the generated `models.ini` renders the `[*]` section, the
 rendered host config evaluates with `idleTimeoutSeconds = 300`, and a one-off

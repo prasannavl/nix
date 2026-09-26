@@ -18,6 +18,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/design-patterns/ai-model-ownership.md`: Exact managed-model
   ownership, ad-hoc retention, preservation handoff, API-only reconciliation,
   and compose-derived backend projection rules.
+- `.agents/docs/design-patterns/ai-model-prefetch.md`: Single-catalog model and
+  nested auxiliary-weight identity, backend-local composable prefetch policy,
+  runtime-owned commands and KV settings, and additive Ollama/llama.cpp/Hugging
+  Face pre-activation caching.
 - `.agents/docs/design-patterns/dual-projection-domains.md`: Generic
   repository-intent fold, generation/runtime projections, publication,
   admission, and extension-domain boundaries.
@@ -537,14 +541,19 @@ Use this index as the canonical map for `.agents/docs/**`.
   an omitted host despite the shared test expecting `defaultHost`, the fix, and
   the resulting Abird parity gap where Pvl leads `abird/master` on
   `lib/services/ai/projection.nix`.
+- `.agents/docs/notes/services/ai-model-pre-activation-prefetch-2026-09.md`:
+  Implemented candidate-generation model plan and runner, catalog-derived
+  Ollama/llama.cpp warming, explicit Hugging Face cache warming, failure and
+  credential boundaries, deploy ordering, and host adoption.
 - `.agents/docs/notes/services/llama-runtimes-membership-by-ref-prism-2026-09.md`:
   Records the membership-by-ref catalog API (no per-backend model overrides),
-  named isolated llama.cpp runtimes (`llama.runtime`), the module-evaluation
-  recursion fix, and the PrismML fork external unit
-  (`prism-llama-cpp-{rocm,cuda}`) mounted over `/app` for `pvl-a1`'s ternary
-  Bonsai 2 27B `PTQ1_0` engine, the deferred single-fork-runtime consolidation,
-  and the `pvl-a1` Pi/OpenCode client profiles (Codex unchanged; its
-  developer-message shape is rejected by the Bonsai template).
+  catalog runtime compatibility lists, flat llama.cpp deployments with derived
+  runtime ownership, the module-evaluation recursion fix, and the PrismML fork
+  external unit (`prism-llama-cpp-{rocm,cuda}`) mounted over `/app` for
+  `pvl-a1`'s ternary Bonsai 2 27B `PTQ1_0` engine, the deferred
+  single-fork-runtime consolidation, and the `pvl-a1` Pi/OpenCode client
+  profiles (Codex unchanged; its developer-message shape is rejected by the
+  Bonsai template).
 - `.agents/docs/notes/services/native-user-graph-legacy-manager-removal-2026-07.md`:
   Records the final removal of the superseded `systemd-user-manager` module,
   checks, documentation, and nixbot compatibility path after native

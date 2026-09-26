@@ -1924,8 +1924,8 @@ rollback_activation_unit_name() {
 	nixbot_host_unit_name rollback-to-configuration "${node}"
 }
 
-nixbot_activation_command() {
-	local system_path="$1" goal="$2" persist_profile="$3" post_promote_bootloader_goal="$4" restart_managed="${5:-0}" admission_mode="${6:-normal}"
+nixbot_generation_admission_command() {
+	local system_path="$1" goal="$2" admission_mode="${3:-normal}" acquisition_gate="${4:-0}"
 
 	case "${admission_mode}" in
 	normal | rollback) ;;
@@ -1934,14 +1934,19 @@ nixbot_activation_command() {
 		return 2
 		;;
 	esac
+	case "${acquisition_gate}" in
+	0 | 1) ;;
+	*)
+		echo "unsupported acquisition admission gate: ${acquisition_gate}" >&2
+		return 2
+		;;
+	esac
 
 	printf 'set -Eeuo pipefail\n'
 	printf 'system_path=%q\n' "${system_path}"
 	printf 'goal=%q\n' "${goal}"
-	printf 'persist_profile=%q\n' "${persist_profile}"
-	printf 'post_promote_bootloader_goal=%q\n' "${post_promote_bootloader_goal}"
-	printf 'restart_managed=%q\n' "${restart_managed}"
 	printf 'admission_mode=%q\n' "${admission_mode}"
+	printf 'acquisition_gate=%q\n' "${acquisition_gate}"
 	printf 'current_system=%q\n' "${REMOTE_CURRENT_SYSTEM_PATH}"
 	printf 'current_generation_preflight=%q\n' "${REMOTE_CURRENT_SYSTEM_PATH}/sw/bin/abird-host-agent-generation-preflight"
 	printf 'current_placement_preflight=%q\n' "${REMOTE_CURRENT_SYSTEM_PATH}/sw/bin/abird-host-agent-service-placement-preflight"
@@ -1949,9 +1954,7 @@ nixbot_activation_command() {
 	printf 'host_agent_config_dir=%q\n' "${REMOTE_HOST_AGENT_CONFIG_DIR}"
 	printf 'host_agent_state_dir=%q\n' "${REMOTE_HOST_AGENT_STATE_DIR}"
 	printf 'host_agent_runtime_dir=%q\n' "${REMOTE_HOST_AGENT_RUNTIME_DIR}"
-	cat <<'EOF_ACTIVATION'
-nix_env_path="${system_path}/sw/bin/nix-env"
-
+	cat <<'EOF_GENERATION_ADMISSION'
 if [ ! -x "${system_path}/bin/switch-to-configuration" ]; then
 	echo "system path is not activatable: ${system_path}" >&2
 	exit 1
@@ -2061,6 +2064,31 @@ if [ "${uses_current_dispatcher}" -eq 1 ] && [ "${admission_mode}" = rollback ];
 		echo "[rollback-admission] current dispatcher admitted pre-registry target; preserving target checks with its placement baseline" >&2
 	fi
 fi
+
+if [ "${acquisition_gate}" -eq 1 ] && [ "${#admission_programs[@]}" -eq 0 ]; then
+	for evidence in \
+		"${system_path}/sw/bin/abird-host-agent-generation-preflight" \
+		"${system_path}/etc/abird-host-agent/generation-admission-registry.json"; do
+		if [ -e "${evidence}" ] || [ -L "${evidence}" ]; then
+			echo "[generation-admission] current authority is absent; deferring candidate acquisition until first activation" >&2
+			printf 'nixbot-candidate-acquisition=deferred\n'
+			exit 0
+		fi
+	done
+fi
+
+EOF_GENERATION_ADMISSION
+}
+
+nixbot_activation_command() {
+	local system_path="$1" goal="$2" persist_profile="$3" post_promote_bootloader_goal="$4" restart_managed="${5:-0}" admission_mode="${6:-normal}"
+
+	nixbot_generation_admission_command "${system_path}" "${goal}" "${admission_mode}" || return "$?"
+	printf 'persist_profile=%q\n' "${persist_profile}"
+	printf 'post_promote_bootloader_goal=%q\n' "${post_promote_bootloader_goal}"
+	printf 'restart_managed=%q\n' "${restart_managed}"
+	cat <<'EOF_ACTIVATION'
+nix_env_path="${system_path}/sw/bin/nix-env"
 
 if [ -n "${legacy_target_current_system}" ]; then
 	ABIRD_HOST_AGENT_CURRENT_SYSTEM="${legacy_target_current_system}" \
@@ -9738,7 +9766,7 @@ ${units}
 EOF_USER_RESET_UNITS
 }
 
-build_pre_switch_admission_cmd() {
+build_pre_switch_preparation_cmd() {
 	emit_remote_function_command \
 		$'_remote_pre_switch_system_failed_state_reset\n_remote_pre_switch_repair_logind_user_managers\n_remote_pre_switch_user_failed_state_report' \
 		_remote_pre_switch_system_failed_state_reset \
@@ -9748,15 +9776,46 @@ build_pre_switch_admission_cmd() {
 		_remote_pre_switch_user_failed_state_report
 }
 
-run_pre_switch_admission() {
-	local admission_cmd=""
+run_pre_switch_preparation() {
+	local preparation_cmd=""
 
 	if [ "${DRY_RUN}" -eq 1 ]; then
 		return 0
 	fi
 
-	admission_cmd="$(build_pre_switch_admission_cmd)"
-	run_prepared_root_command "${admission_cmd}"
+	preparation_cmd="$(build_pre_switch_preparation_cmd)"
+	run_prepared_root_command "${preparation_cmd}"
+}
+
+run_candidate_generation_admission() {
+	local system_path="$1" admission_cmd="" admission_output="" admission_rc=0
+
+	CANDIDATE_ACQUISITION_DEFERRED=0
+
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		return 0
+	fi
+
+	admission_cmd="$(
+		nixbot_generation_admission_command "${system_path}" "${GOAL}" normal 1
+	)" || return "$?"
+	if admission_output="$(run_prepared_root_command "${admission_cmd}")"; then
+		admission_rc=0
+	else
+		admission_rc="$?"
+	fi
+	if [ "${admission_rc}" -ne 0 ]; then
+		[ -z "${admission_output}" ] || printf '%s\n' "${admission_output}"
+		return "${admission_rc}"
+	fi
+	case "${admission_output}" in
+	*"nixbot-candidate-acquisition=deferred"*)
+		CANDIDATE_ACQUISITION_DEFERRED=1
+		return 0
+		;;
+	esac
+	[ -z "${admission_output}" ] || printf '%s\n' "${admission_output}"
+	return 0
 }
 
 command_failure_is_host_key_verification() {
@@ -10489,10 +10548,59 @@ build_pre_activation_podman_image_pulls_cmd() {
 run_pre_activation_podman_image_pulls() {
 	local node="$1" system_path="$2" pull_cmd=""
 
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		echo "DRY-RUN: skipping pre-activation Podman image pulls on ${node}" >&2
+		return 0
+	fi
+	if [ "${CANDIDATE_ACQUISITION_DEFERRED:-0}" -eq 1 ]; then
+		echo "[generation-admission] deferring Podman image pulls on ${node} until activation" >&2
+		return 0
+	fi
+
 	pull_cmd="$(build_pre_activation_podman_image_pulls_cmd "${system_path}")"
 	run_prepared_root_command_with_retry \
 		"Pre-activation Podman image pulls on ${node}" \
 		"${pull_cmd}"
+}
+
+_remote_pre_activation_ai_model_prefetch() {
+	local system_path="$1" runner=""
+
+	runner="${system_path}/sw/bin/ai-model-prefetch-all"
+
+	if [ ! -x "${runner}" ]; then
+		return 0
+	fi
+
+	echo "[pre-activation] caching declared AI models with ${runner}" >&2
+	"${runner}"
+}
+
+build_pre_activation_ai_model_prefetch_cmd() {
+	local system_path="$1" invoke_cmd=""
+
+	printf -v invoke_cmd '_remote_pre_activation_ai_model_prefetch %q' "${system_path}"
+	emit_remote_function_command \
+		"${invoke_cmd}" \
+		_remote_pre_activation_ai_model_prefetch
+}
+
+run_pre_activation_ai_model_prefetch() {
+	local node="$1" system_path="$2" prefetch_cmd=""
+
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		echo "DRY-RUN: skipping pre-activation AI model prefetch on ${node}" >&2
+		return 0
+	fi
+	if [ "${CANDIDATE_ACQUISITION_DEFERRED:-0}" -eq 1 ]; then
+		echo "[generation-admission] deferring AI model prefetch on ${node} until activation" >&2
+		return 0
+	fi
+
+	prefetch_cmd="$(build_pre_activation_ai_model_prefetch_cmd "${system_path}")"
+	run_prepared_root_command_with_retry \
+		"Pre-activation AI model prefetch on ${node}" \
+		"${prefetch_cmd}"
 }
 
 activate_prepared_system_path() {
@@ -10672,6 +10780,11 @@ validate_build_host_closure_on_prepared_target() {
 prepare_remote_build_system_path_on_prepared_target() {
 	local node="$1" system_path="$2" cache_rc=0 cache_url="" trusted_public_keys=""
 
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		echo "DRY-RUN: skipping remote-build closure distribution to ${node}: ${system_path}" >&2
+		return 0
+	fi
+
 	if build_host_shares_store_with_node "${node}"; then
 		ensure_remote_build_output_available "${node}" "${system_path}" &&
 			validate_build_host_closure_on_prepared_target "${node}" "${system_path}"
@@ -10771,11 +10884,22 @@ deploy_remote_build_host_path() {
 		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
 	fi
 
-	run_pre_switch_admission || return 1
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		prepare_remote_build_system_path_on_prepared_target "${node}" "${built_out_path}" &&
+			run_pre_switch_preparation &&
+			run_candidate_generation_admission "${built_out_path}" &&
+			run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
+			run_pre_activation_ai_model_prefetch "${node}" "${built_out_path}" &&
+			activate_prepared_system_path "${node}" "${built_out_path}"
+		return "$?"
+	fi
 
 	register_active_deploy "${node}"
 	if prepare_remote_build_system_path_on_prepared_target "${node}" "${built_out_path}" &&
+		run_pre_switch_preparation &&
+		run_candidate_generation_admission "${built_out_path}" &&
 		run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
+		run_pre_activation_ai_model_prefetch "${node}" "${built_out_path}" &&
 		mark_deploy_activation_started "${node}" &&
 		activate_prepared_system_path "${node}" "${built_out_path}"; then
 		deploy_rc=0
@@ -10833,16 +10957,20 @@ deploy_host() {
 		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
 	fi
 
-	run_pre_switch_admission || return 1
-
 	if [ "${DRY_RUN}" -eq 1 ]; then
 		copy_system_path_from_local_to_prepared_target "${node}" "${built_out_path}" &&
+			run_pre_switch_preparation &&
+			run_candidate_generation_admission "${built_out_path}" &&
 			run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
+			run_pre_activation_ai_model_prefetch "${node}" "${built_out_path}" &&
 			activate_prepared_system_path "${node}" "${built_out_path}"
 	else
 		register_active_deploy "${node}"
 		if copy_system_path_from_local_to_prepared_target "${node}" "${built_out_path}" &&
+			run_pre_switch_preparation &&
+			run_candidate_generation_admission "${built_out_path}" &&
 			run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
+			run_pre_activation_ai_model_prefetch "${node}" "${built_out_path}" &&
 			mark_deploy_activation_started "${node}" &&
 			activate_prepared_system_path "${node}" "${built_out_path}"; then
 			deploy_rc=0

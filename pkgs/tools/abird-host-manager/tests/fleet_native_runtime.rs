@@ -1160,12 +1160,14 @@ esac
         .lines()
         .filter(|line| !line.contains("-O exit"))
         .collect::<Vec<_>>();
+    // Snapshot probing may use the operator fallback, but distribution and
+    // admission must both stay on the primary target.
     assert_eq!(
         operational
             .iter()
             .filter(|line| line.contains("root@app.invalid"))
             .count(),
-        2,
+        3,
         "{}\n{}",
         ssh_commands,
         String::from_utf8_lossy(&output.stderr)

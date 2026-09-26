@@ -19,13 +19,21 @@
     cpu = "CPU";
   };
   deviceLabel = device: deviceLabels.${device} or "llama.cpp";
+  runtimeLabels = {
+    default = "llama.cpp";
+    prism = "Prism";
+  };
+  endpointLabel = endpoint: let
+    runtime = endpoint.runtime or "default";
+  in "${runtimeLabels.${runtime} or runtime} ${deviceLabel endpoint.device}";
   # One custom-endpoint shape, reused for the primary Ollama endpoint and each
-  # configured llama.cpp device class; `librechatConfig` is rendered to YAML.
-  customEndpoint = name: baseURL: {
+  # configured llama.cpp runtime/device pair; `librechatConfig` is rendered to
+  # YAML.
+  customEndpoint = name: baseURL: modelIds: {
     inherit name baseURL;
     apiKey = "ollama";
     models = {
-      default = chatModelIds;
+      default = modelIds;
       fetch = true;
     };
     titleConvo = true;
@@ -34,31 +42,23 @@
     summaryModel = "current_model";
     modelDisplayLabel = name;
   };
+  embeddingModelId = ai.catalog.${ai.roles.embedding}.id;
+  chatModelIdsFor = endpoint:
+    builtins.filter (modelId: modelId != embeddingModelId) endpoint.modelIds;
+  ollamaEndpoint = builtins.head consumers.ollama.endpoints;
   librechatConfig = {
     version = "1.2.8";
     endpoints.custom =
-      [(customEndpoint "Pvl Ollama" consumers.ollama.openaiDefault)]
+      [(customEndpoint "Pvl Ollama" "${ollamaEndpoint.url}/v1" (chatModelIdsFor ollamaEndpoint))]
       ++ builtins.map
       (endpoint:
         customEndpoint
-        "Pvl llama.cpp ${deviceLabel endpoint.device}"
-        "${endpoint.url}/v1")
+        "Pvl ${endpointLabel endpoint}"
+        "${endpoint.url}/v1"
+        (chatModelIdsFor endpoint))
       consumers.llama.endpoints;
   };
   ollamaNoProxy = "localhost,127.0.0.1,::1,mongodb,meilisearch,${containerHost}";
-  embeddingKey = ai.roles.embedding;
-  # Only models the Ollama endpoint can actually serve: entries with an
-  # `ollama` tag, excluding the embedding model.
-  chatModelIds =
-    builtins.map
-    (key: ai.catalog.${key}.id)
-    (builtins.filter (
-        key:
-          key
-          != embeddingKey
-          && (ai.catalog.${key} ? ollama)
-      )
-      ai.resolvedModels);
   containerOwner = {
     user = 1000;
     group = 1000;

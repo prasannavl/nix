@@ -10,32 +10,31 @@ Two related changes landed together so the ternary Bonsai 2 27B preview can run
 on `pvl-a1` without disturbing the existing models:
 
 1. **Model membership is derived from the catalog schema.** `services.ai.models`
-   is the only selection list. A selected catalog entry joins a backend exactly
-   when it carries that backend's reference field (`ollama`, `llama`), so
-   `services.ai.backends.ollama.models` and
+   is the only host admission list. An admitted catalog entry joins a backend
+   exactly when it carries that backend's reference field (`ollama`, `llama`),
+   so `services.ai.backends.ollama.models` and
    `services.ai.backends.llamaRouter.models` are gone. An entry with no backend
    reference is a configuration error (`unserved` assertion) instead of a
    silently unserved model, and Ollama is never asked to hold a model that has
    no `ollama` ref.
-2. **llama.cpp engines are named and isolated.** `llama.runtime` on the catalog
-   `llama` ref selects the engine (`default`, the upstream build, by default;
-   `prism` for the fork). Each declared runtime under
-   `backends.llamaRouter.runtimes.<name>` owns its own deployments, cache
-   directory, reconciler state file, reconciler units, `preservedModels`, and
-   `idleTimeoutSeconds`. An `llama.runtime` naming an undeclared engine fails
-   evaluation.
+2. **llama.cpp engines are named and isolated.** Catalog `llama.runtimes` lists
+   every compatible engine (`default`, the upstream build, by default; `prism`
+   for the fork). Flat `backends.llamaRouter.deployments` choose the engine,
+   cache, model placement, and idle policy, with shared values under `defaults`.
+   Deployments of one runtime form one cache/state/reconciler ownership domain;
+   different runtimes remain isolated.
 
 ## Membership-by-ref API
 
 Catalog entry shape (unchanged fields, new semantics):
 
 ```nix
-bonsai-2-27b = {
+bonsai2-27b = {
   id = "bonsai2:27b";
   hf = "prism-ml/Ternary-Bonsai-2-27B"; # informational (vLLM/SGLang)
   llama = {
     ref = "prism-ml/Ternary-Bonsai-2-27B-gguf:PTQ1_0";
-    runtime = "prism";
+    runtimes = ["prism"];
     preset.jinja = "true";
   };
 };
@@ -46,10 +45,10 @@ bonsai-2-27b = {
 - `unknownLlamaRuntime` only fires when the host declares at least one runtime,
   so an Ollama-only host (`pvl-x2`) that never deploys a router is not flagged
   for merely carrying `llama` refs in the shared catalog.
-- `runtimesInfo.<runtime>` is a read-only projection (`urls`, `ports`,
-  `portsByName`, `serviceNames`, `readyTarget`, `requiredModels`,
-  `modelPresets`, `cacheDir`, `active`). Hosts read resolved cache paths from it
-  instead of recomputing them.
+- `deploymentsInfo.<instance>` is the read-only effective service projection:
+  runtime, cache, catalog keys, GGUF refs, presets, idle timeout, service name,
+  URL, and port. Hosts read resolved cache paths from it instead of recomputing
+  them.
 
 Per-runtime naming (the `default` runtime keeps the historical names for
 compatibility):
@@ -59,14 +58,14 @@ compatibility):
 | default  | `<stack>-llama-router-models`        | `...-models-load`        | `llama-router.json`        | `/var/lib/<stack>/ai/llama-router`        |
 | `<name>` | `<stack>-llama-router-<name>-models` | `...-<name>-models-load` | `llama-router-<name>.json` | `/var/lib/<stack>/ai/llama-router-<name>` |
 
-`idleTimeoutSeconds` is now per runtime and renders as the models.ini `[*]`
-section for that engine only.
+`idleTimeoutSeconds` is per deployment and renders as that service's models.ini
+`[*]` section. `null` inherits the backend default and `false` disables it.
 
 ### Module-evaluation gotcha
 
 The module's reconciler bindings cannot be assembled with a `mkMerge` list
 derived from `config` at the top level: resolving the merge's definition paths
-would force `config.services.ai.backends.llamaRouter.runtimes` before the
+would force `config.services.ai.backends.llamaRouter.deployments` before the
 configuration fixpoint exists (`infinite recursion encountered`). The fix keeps
 the content keys static and forces the runtime list only inside option values:
 
@@ -109,18 +108,20 @@ would close a second cycle.
 
 `pvl-a1` (`hosts/pvl-a1/services/{ai,llama-router}.nix`):
 
-- `runtimes.default`: `llama-router` auto (ROCm, `11000`) +
-  `llama-router-nvidia` manual (CUDA, `12000`), `idleTimeoutSeconds = 300`.
-- `runtimes.prism`: `llama-router-prism` auto (ROCm, `11001`) +
-  `llama-router-prism-nvidia` manual (CUDA, `12001`),
-  `idleTimeoutSeconds = 300`; both mount the fork over `/app` and use a separate
-  cache, so the default engine never scans ternary GGUFs. The ports are a
-  declared service contract also consumed by the mutable Pi and OpenCode Prism
-  providers; transient client forwards must yield to them.
-- `models` adds `bonsai-2-27b`.
+- Default-runtime deployments: `llama-router` auto (ROCm, `11000`) +
+  `llama-router-nvidia` manual (CUDA, `12000`).
+- Prism deployments select `runtime = "prism"`: `llama-router-prism` auto (ROCm,
+  `11001`) + `llama-router-prism-nvidia` manual (CUDA, `12001`). Backend
+  defaults set `idleTimeoutSeconds = 300`; both Prism services mount the fork
+  over `/app` and use a separate cache, so the default engine never scans
+  ternary GGUFs. The ports are a declared service contract also consumed by the
+  mutable Pi and OpenCode Prism providers; transient client forwards must yield
+  to them.
+- `models` adds `bonsai2-27b`.
 
-`pvl-l5` uses `runtimes.default` only (no prism runtime, no Bonsai); `pvl-x2` is
-Ollama-only and needed no change.
+The current `pvl-a1`, `pvl-l5`, and `pvl-x2` policies use flat default and Prism
+deployments; older host details below are retained as historical rollout
+context.
 
 ## Validation
 
@@ -163,8 +164,8 @@ How to do (c) later if desired:
    presence. Re-run the `libllama.so` token diff against the then current
    catalog and stock image.
 2. Point the `default` runtime at the fork overlay and delete the `prism`
-   runtime, the stock image pair, and `runtime = "prism"` on `bonsai-2-27b`.
-   Bonsai then binds to `default` like every other llama model.
+   runtime, the stock image pair, and `llama.runtimes = [ "prism" ]` on
+   `bonsai2-27b`. Bonsai then binds to `default` like every other llama model.
 3. Keep the generic `runtimes` option: it still isolates state/cache if another
    engine is added later.
 

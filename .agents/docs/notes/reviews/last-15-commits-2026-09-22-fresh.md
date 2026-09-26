@@ -233,7 +233,7 @@ resolvePolicy = { catalog, models, roles, backends }: {
 
 Alternatives: if the handoff is not actually needed across repositories, delete
 `aiServices` and have consumers call `resolvePolicy`/`mkProjection` directly;
-the module already exposes the per-backend `requiredModels`/`runtimesInfo`
+the module already exposes the per-backend `requiredModels`/`deploymentsInfo`
 views. That is simpler than maintaining a second, partial policy surface.
 
 ## Validation evidence

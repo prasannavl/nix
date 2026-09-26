@@ -100,6 +100,30 @@ struct DeployTaskOutcome {
     rollback_failed: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CandidateAcquisition {
+    Approved,
+    Deferred,
+}
+
+fn execute_candidate_deploy_pipeline<C, R>(
+    context: &mut C,
+    distribute: impl FnOnce(&mut C) -> Result<()>,
+    prepare: impl FnOnce(&mut C) -> Result<()>,
+    admit: impl FnOnce(&mut C) -> Result<CandidateAcquisition>,
+    pull_images: impl FnOnce(&mut C) -> Result<()>,
+    prefetch_models: impl FnOnce(&mut C) -> Result<()>,
+    activate: impl FnOnce(&mut C) -> Result<R>,
+) -> Result<R> {
+    distribute(context)?;
+    prepare(context)?;
+    if admit(context)? == CandidateAcquisition::Approved {
+        pull_images(context)?;
+        prefetch_models(context)?;
+    }
+    activate(context)
+}
+
 impl<'a> NativeFleetEffects<'a> {
     pub fn new(
         invocation: &'a Invocation,
@@ -1995,51 +2019,109 @@ impl<'a> NativeFleetEffects<'a> {
             }
             super::deploy::DeployDecision::Deploy { .. } => {}
         }
-        self.distribute_for_deploy(host, &closure)?;
         let resolved = resolve_host(self.inventory, host, &self.invocation.options)?;
         let target = self.execution_target(&resolved)?;
-        self.ensure_host_age_identity(&resolved, &target)?;
-        let image_pull = super::deploy::pre_activation_image_pull_command(&desired);
-        let image_pull = CommandSpec::new(image_pull.program, image_pull.args);
-        let pulled = self.host_runtime.execute_remote_command(
-            &target,
-            &image_pull,
-            EffectKind::Mutation,
-            "pre-activation-image-pull",
+        let activation_execution = execute_candidate_deploy_pipeline(
+            self,
+            |effects| effects.distribute_for_deploy(host, &closure),
+            |effects| {
+                effects.ensure_host_age_identity(&resolved, &target)?;
+                // Prepare failed-unit and user-manager state. Candidate
+                // generation admission is the next, distinct stage and uses
+                // the authoritative current dispatcher.
+                let prepared = effects
+                    .host_runtime
+                    .prepare_switch(&target, &super::deploy::pre_switch_preparation_command())?;
+                if !prepared.succeeded() {
+                    bail!(
+                        "pre-switch preparation failed for {host}: {}",
+                        prepared.stderr.trim()
+                    );
+                }
+                Ok(())
+            },
+            |effects| {
+                let goal = deploy_goal(effects.invocation.options.goal);
+                let admission = super::deploy::generation_admission_command(&desired, goal);
+                let admitted = effects.host_runtime.admit_generation(&target, &admission)?;
+                if admitted.succeeded()
+                    && admitted.stdout.lines().any(|line| {
+                        line == super::deploy::GENERATION_ADMISSION_ACQUISITION_DEFERRED_MARKER
+                    })
+                {
+                    eprintln!(
+                        "[{host}] deploy | candidate acquisition deferred until first activation establishes generation authority"
+                    );
+                    Ok(CandidateAcquisition::Deferred)
+                } else if admitted.succeeded() {
+                    Ok(CandidateAcquisition::Approved)
+                } else {
+                    bail!(
+                        "generation admission failed for {host}: {}",
+                        admitted.stderr.trim()
+                    );
+                }
+            },
+            |effects| {
+                let image_pull = super::deploy::pre_activation_image_pull_command(&desired);
+                let image_pull = CommandSpec::new(image_pull.program, image_pull.args);
+                let pulled = effects.host_runtime.execute_remote_command(
+                    &target,
+                    &image_pull,
+                    EffectKind::Mutation,
+                    "pre-activation-image-pull",
+                )?;
+                if !pulled.succeeded() {
+                    bail!(
+                        "pre-activation image pull failed for {host}: {}",
+                        pulled.stderr.trim()
+                    );
+                }
+                Ok(())
+            },
+            |effects| {
+                let model_prefetch = super::deploy::pre_activation_model_prefetch_command(&desired);
+                let model_prefetch = CommandSpec::new(model_prefetch.program, model_prefetch.args);
+                let prefetched = effects.host_runtime.execute_remote_command(
+                    &target,
+                    &model_prefetch,
+                    EffectKind::Mutation,
+                    "pre-activation-model-prefetch",
+                )?;
+                if !prefetched.succeeded() {
+                    bail!(
+                        "pre-activation AI model prefetch failed for {host}: {}",
+                        prefetched.stderr.trim()
+                    );
+                }
+                Ok(())
+            },
+            |effects| {
+                let goal = deploy_goal(effects.invocation.options.goal);
+                let boot_environment = effects.boot_environment(host)?;
+                let activation =
+                    super::deploy::activation_command(super::deploy::ActivationCommand {
+                        run_id: effects.invocation_id.to_string(),
+                        host: host.to_owned(),
+                        attempt: 1,
+                        generation: desired.clone(),
+                        goal,
+                        boot_environment,
+                        restart_managed: effects.invocation.options.restart_managed,
+                        runtime_max: Duration::from_secs(
+                            effects.settings.remote_activation_runtime_max_seconds,
+                        ),
+                        stop_timeout: Duration::from_secs(
+                            effects.settings.remote_activation_stop_timeout_seconds,
+                        ),
+                        lock_wait: Duration::from_secs(effects.settings.state_lock_timeout_seconds),
+                    });
+                effects
+                    .host_runtime
+                    .activate(&target, &activation, &desired, goal, "activation")
+            },
         )?;
-        if !pulled.succeeded() {
-            bail!(
-                "pre-activation image pull failed for {host}: {}",
-                pulled.stderr.trim()
-            );
-        }
-        let admitted = self
-            .host_runtime
-            .pre_switch(&target, &super::deploy::pre_switch_admission_command())?;
-        if !admitted.succeeded() {
-            bail!(
-                "pre-switch admission failed for {host}: {}",
-                admitted.stderr.trim()
-            );
-        }
-        let goal = deploy_goal(self.invocation.options.goal);
-        let boot_environment = self.boot_environment(host)?;
-        let activation = super::deploy::activation_command(super::deploy::ActivationCommand {
-            run_id: self.invocation_id.to_string(),
-            host: host.to_owned(),
-            attempt: 1,
-            generation: desired.clone(),
-            goal,
-            boot_environment,
-            restart_managed: self.invocation.options.restart_managed,
-            runtime_max: Duration::from_secs(self.settings.remote_activation_runtime_max_seconds),
-            stop_timeout: Duration::from_secs(self.settings.remote_activation_stop_timeout_seconds),
-            lock_wait: Duration::from_secs(self.settings.state_lock_timeout_seconds),
-        });
-        match self
-            .host_runtime
-            .activate(&target, &activation, &desired, goal, "activation")?
-        {
+        match activation_execution {
             ActivationExecution::Succeeded | ActivationExecution::SucceededAfterVerification => {
                 self.activated.insert(host.to_owned());
                 self.successful.insert(host.to_owned());
@@ -2815,7 +2897,6 @@ pub fn action_needs_inventory(action: &Action) -> bool {
         Action::Run | Action::Deploy | Action::Build | Action::DevBuild | Action::CheckBootstrap
     )
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2833,5 +2914,128 @@ mod tests {
                 "{selector} was not removed"
             );
         }
+    }
+
+    #[test]
+    fn candidate_deploy_pipeline_runs_each_stage_in_order() -> anyhow::Result<()> {
+        let mut stages = Vec::new();
+
+        let activated = execute_candidate_deploy_pipeline(
+            &mut stages,
+            |stages| {
+                stages.push("distribute");
+                Ok(())
+            },
+            |stages| {
+                stages.push("prepare");
+                Ok(())
+            },
+            |stages| {
+                stages.push("admit-generation");
+                Ok(CandidateAcquisition::Approved)
+            },
+            |stages| {
+                stages.push("pull-images");
+                Ok(())
+            },
+            |stages| {
+                stages.push("prefetch-models");
+                Ok(())
+            },
+            |stages| {
+                stages.push("activate");
+                Ok(true)
+            },
+        )?;
+
+        assert!(activated);
+        assert_eq!(
+            stages,
+            [
+                "distribute",
+                "prepare",
+                "admit-generation",
+                "pull-images",
+                "prefetch-models",
+                "activate"
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_deploy_pipeline_stops_before_later_mutations_on_failure() {
+        let mut stages = Vec::new();
+
+        let error = execute_candidate_deploy_pipeline(
+            &mut stages,
+            |stages| {
+                stages.push("distribute");
+                Ok(())
+            },
+            |stages| {
+                stages.push("prepare");
+                Ok(())
+            },
+            |stages| {
+                stages.push("admit-generation");
+                Err(anyhow::anyhow!("admission failed"))
+            },
+            |stages| {
+                stages.push("pull-images");
+                Ok(())
+            },
+            |stages| {
+                stages.push("prefetch-models");
+                Ok(())
+            },
+            |stages| {
+                stages.push("activate");
+                Ok(())
+            },
+        )
+        .expect_err("admission failure must stop the deploy pipeline");
+
+        assert_eq!(error.to_string(), "admission failed");
+        assert_eq!(stages, ["distribute", "prepare", "admit-generation"]);
+    }
+
+    #[test]
+    fn candidate_deploy_pipeline_defers_acquisition_until_first_activation() -> anyhow::Result<()> {
+        let mut stages = Vec::new();
+
+        execute_candidate_deploy_pipeline(
+            &mut stages,
+            |stages| {
+                stages.push("distribute");
+                Ok(())
+            },
+            |stages| {
+                stages.push("prepare");
+                Ok(())
+            },
+            |stages| {
+                stages.push("defer-acquisition");
+                Ok(CandidateAcquisition::Deferred)
+            },
+            |stages| {
+                stages.push("unexpected-image-pull");
+                Ok(())
+            },
+            |stages| {
+                stages.push("unexpected-model-prefetch");
+                Ok(())
+            },
+            |stages| {
+                stages.push("activate");
+                Ok(())
+            },
+        )?;
+
+        assert_eq!(
+            stages,
+            ["distribute", "prepare", "defer-acquisition", "activate"]
+        );
+        Ok(())
     }
 }

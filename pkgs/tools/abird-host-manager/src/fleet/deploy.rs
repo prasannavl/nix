@@ -26,6 +26,8 @@ const HOST_LOCAL_ACTIVATION_LOCK: &str = "/dev/shm/nixbot-host-local.lock.d";
 const HOST_AGENT_CONFIG_DIR: &str = "/etc/abird-host-agent";
 const HOST_AGENT_STATE_DIR: &str = "/var/lib/abird-host-agent";
 const HOST_AGENT_RUNTIME_DIR: &str = "/run/abird-host-agent";
+pub const GENERATION_ADMISSION_ACQUISITION_DEFERRED_MARKER: &str =
+    "nixbot-candidate-acquisition=deferred";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandSpec {
@@ -235,6 +237,27 @@ NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN="$plan" "$runner"
     )
 }
 
+pub fn pre_activation_model_prefetch_command(generation: &SystemGeneration) -> CommandSpec {
+    const SCRIPT: &str = r#"set -Eeuo pipefail
+system_path="$1"
+runner="${system_path}/sw/bin/ai-model-prefetch-all"
+if [ ! -x "$runner" ]; then
+    exit 0
+fi
+echo "[pre-activation] caching declared AI models with $runner" >&2
+"$runner"
+"#;
+    CommandSpec::new(
+        SYSTEM_BASH,
+        [
+            "-c".to_owned(),
+            SCRIPT.to_owned(),
+            "nixbot-pre-activation-model-prefetch".to_owned(),
+            generation.as_str().to_owned(),
+        ],
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ActivationGoal {
     Switch,
@@ -339,7 +362,7 @@ pub fn rollback_unit_name(runtime_work_dir: &str, host: &str) -> String {
     host_unit_name("rollback-to-configuration", runtime_work_dir, host)
 }
 
-const PRE_SWITCH_ADMISSION_SCRIPT: &str = r#"set -Eeuo pipefail
+const PRE_SWITCH_PREPARATION_SCRIPT: &str = r#"set -Eeuo pipefail
 reset_system_failed_state() {
     failed_output="$(systemctl list-units --failed --no-legend --plain 2>/dev/null || true)"
     [ -n "$failed_output" ] || return 0
@@ -418,13 +441,13 @@ pub struct RemoteCommand {
     pub observer_script: Option<String>,
 }
 
-pub fn pre_switch_admission_command() -> RemoteCommand {
+pub fn pre_switch_preparation_command() -> RemoteCommand {
     RemoteCommand {
         program: SYSTEM_BASH.to_owned(),
         args: vec!["-s".to_owned()],
         environment: Vec::new(),
         unit: String::new(),
-        script: PRE_SWITCH_ADMISSION_SCRIPT.to_owned(),
+        script: PRE_SWITCH_PREPARATION_SCRIPT.to_owned(),
         observer_script: None,
     }
 }
@@ -615,6 +638,48 @@ export ABIRD_HOST_AGENT_GENERATION_ADMISSION_MODE="${{admission_mode}}"
         host_agent_state_dir = shell_single_quote(&paths.host_agent_state_dir),
         host_agent_runtime_dir = shell_single_quote(&paths.host_agent_runtime_dir),
     )
+}
+
+/// Re-run the current generation's authoritative admission dispatcher before
+/// any candidate-owned acquisition. Activation embeds the same script under
+/// the host-local activation lock, so this early pass is an optimization and a
+/// fail-fast boundary rather than a replacement for race-safe admission.
+pub fn generation_admission_command(
+    target: &SystemGeneration,
+    goal: ActivationGoal,
+) -> RemoteCommand {
+    let mut script = format!(
+        "set -Eeuo pipefail\n{}",
+        generation_admission_script(
+            target.as_str(),
+            goal,
+            ActivationAdmissionMode::Normal,
+            &GenerationAdmissionPaths::default(),
+        )
+    );
+    script.push_str(&format!(
+        r#"
+if [ "${{#admission_programs[@]}}" -eq 0 ]; then
+    for evidence in \
+        "${{system_path}}/sw/bin/abird-host-agent-generation-preflight" \
+        "${{system_path}}/etc/abird-host-agent/generation-admission-registry.json"; do
+        if [ -e "${{evidence}}" ] || [ -L "${{evidence}}" ]; then
+            echo '[generation-admission] current authority is absent; deferring candidate acquisition until first activation' >&2
+            printf '%s\n' '{GENERATION_ADMISSION_ACQUISITION_DEFERRED_MARKER}'
+            exit 0
+        fi
+    done
+fi
+"#
+    ));
+    RemoteCommand {
+        program: SYSTEM_BASH.to_owned(),
+        args: vec!["-s".to_owned()],
+        environment: Vec::new(),
+        unit: String::new(),
+        script,
+        observer_script: None,
+    }
 }
 
 fn activation_script(

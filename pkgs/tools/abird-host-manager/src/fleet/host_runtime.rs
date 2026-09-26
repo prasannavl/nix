@@ -1365,7 +1365,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
         }
     }
 
-    pub fn pre_switch(
+    pub fn prepare_switch(
         &mut self,
         target: &HostExecutionTarget,
         command: &RemoteCommand,
@@ -1374,7 +1374,21 @@ impl<R: ProcessRunner> HostRuntime<R> {
             target,
             command,
             EffectKind::Mutation,
-            "pre-switch-admission",
+            "pre-switch-preparation",
+        )?;
+        self.run(request)
+    }
+
+    pub fn admit_generation(
+        &mut self,
+        target: &HostExecutionTarget,
+        command: &RemoteCommand,
+    ) -> Result<ProcessOutput> {
+        let request = self.deploy_request(
+            target,
+            command,
+            EffectKind::Mutation,
+            "generation-admission-preflight",
         )?;
         self.run(request)
     }
@@ -1541,10 +1555,10 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 rollback_generation,
             } => rollback_generation,
         };
-        let admitted = self.pre_switch(target, admission)?;
-        if !admitted.succeeded() {
+        let prepared = self.prepare_switch(target, admission)?;
+        if !prepared.succeeded() {
             return Ok(DeployOutcome::FailedBeforeActivation(command_status(
-                admitted.status,
+                prepared.status,
             )));
         }
         let activated =

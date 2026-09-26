@@ -213,8 +213,8 @@ Verified against `lib/services/ai/module.nix`:
   runtime.
 - Deployment instance names, resolved service names, and API ports are asserted
   globally unique; the new names and ports satisfy this.
-- `runtimesInfo.default.*` picks up a third entry and renumbers from
-  `exposedPorts`.
+- `deploymentsInfo.<instance>.port` picks up the CPU entry and every deployment
+  port follows its compose `exposedPorts` value.
 - The AI module stages `files."models.ini"` into every deployment of an active
   runtime, so the CPU container receives the preset file with no extra wiring.
 
@@ -270,7 +270,7 @@ Integration boundaries for the later phase:
 - **Catalog.** Add explicit `vllm` and `sglang` reference fields (string or
   `{ref, ...}` attrset), mirroring `ollama` and `llama`, so membership and
   duplicate checks stay backend-explicit. `hf` remains the canonical HF repo for
-  `catalogById`/Web UI consumers.
+  `hfCatalogById`/Web UI consumers.
 - **Backends.** Add `services.ai.backends.vllm.deployments` and
   `services.ai.backends.sglang.deployments`, reusing `deploymentType`. Because
   each deployment serves one model, extend the deployment shape with the served
@@ -293,9 +293,9 @@ Integration boundaries for the later phase:
   llama.cpp's `POST /models`. The existing Ollama/llama reconciler does not map
   directly. Proposed v1: one shared HF cache (`/var/lib/pvl/ai/hf`, mounted
   read-write by vLLM and SGLang) with acquisition-on-demand and **no deletion
-  authority**; add an ownership manifest only if a pre-pull helper
-  (`hf download <repo> --revision <rev>`) is introduced, and never delete HF
-  cache repos from inventory scans.
+  authority**. The later shared pre-activation implementation now uses
+  `hf download <repo> --revision <rev>` against this cache, remains additive,
+  and never deletes HF cache repositories from inventory scans.
 - **Health/readiness.** vLLM `GET /health`; SGLang `GET /health` or
   `GET /v1/models`. The podman-compose module already generates a local HTTP
   probe for instances exposing an `http` port, which covers first-pass
@@ -309,7 +309,8 @@ Integration boundaries for the later phase:
   mapping is identical to llama.cpp: ROCm `/dev/kfd` + `/dev/dri`, NVIDIA CDI
   reservation. Pin image tags and let the Podman image updater track them.
 - **Consumers.** Both expose OpenAI-compatible `/v1`, so Open WebUI can add
-  `OPENAI_API_BASE_URLS` later; `catalogById` already produces the id→hf map.
+  `OPENAI_API_BASE_URLS` later; `hfCatalogById` already produces the id-to-HF
+  map while omitting valid public entries without an HF source.
 - **Lib scope.** Adding backends is a `lib/services/ai` change shared with
   abird: `backends.nix`, `projection.nix` (`resolvePolicy` membership,
   diagnostics, roles, projections), `module.nix` (options, projections,
@@ -556,9 +557,10 @@ forward in the VS Code Ports view before hand-starting a deployment.
 ## Verification
 
 1. Evaluate both host closures (`pvl-a1`, `pvl-l5`); no assertion fails.
-2. Confirm `runtimesInfo.default.portsByName` is
-   `{ llama-cpu = 11000; llama-rocm = 12000; llama-nvidia = 13000; }`, and
-   `ports`/`urls` match.
+2. Confirm `deploymentsInfo.llama-cpu.port = 11000`,
+   `deploymentsInfo.llama-rocm.port = 12000`, and
+   `deploymentsInfo.llama-nvidia.port = 13000`; confirm the consumer endpoint
+   URLs match in declaration order.
 3. Confirm PrismML ports are `12001`/`13001` on `pvl-a1`.
 4. Render the compose stack and confirm three services for the default runtime,
    each mounting the same staged `models.ini`, with `11000:8080` on the CPU

@@ -17,8 +17,9 @@ use deploy::{
     GenerationSnapshot, LockContentionEvidence, SnapshotRequirement, SystemGeneration,
     VerificationDecision, activation_command, activation_verification_command,
     boot_is_container_command, classify_deploy_failure, deploy_unit_name,
-    generation_admission_script, parent_readiness_commands, pre_activation_image_pull_command,
-    pre_switch_admission_command, rollback_command, rollback_unit_name, rollback_waves,
+    generation_admission_command, generation_admission_script, parent_readiness_commands,
+    pre_activation_image_pull_command, pre_activation_model_prefetch_command,
+    pre_switch_preparation_command, rollback_command, rollback_unit_name, rollback_waves,
     snapshot_command, verify_activation,
 };
 use test_support::write_executable;
@@ -235,8 +236,8 @@ fn unit_names_are_stable_sanitized_and_attempt_scoped() {
 }
 
 #[test]
-fn pre_switch_admission_resets_failed_state_repairs_user_managers_and_reports_failures() {
-    let command = pre_switch_admission_command();
+fn pre_switch_preparation_resets_failed_state_repairs_user_managers_and_reports_failures() {
+    let command = pre_switch_preparation_command();
     assert_eq!(command.program, "/run/current-system/sw/bin/bash");
     assert!(command.script.contains("systemctl reset-failed"));
     assert!(command.script.contains("loginctl list-users"));
@@ -1019,4 +1020,37 @@ fn pre_activation_image_pull_uses_the_built_generation_plan() {
     assert!(command.args[1].contains("share/podman-compose/image-pulls.json"));
     assert!(command.args[1].contains("podman-compose-image-pull-all"));
     assert_bash_syntax(&command.args[1]);
+}
+
+#[test]
+fn pre_activation_model_prefetch_uses_the_built_generation_runner() {
+    let generation = generation("app");
+    let command = pre_activation_model_prefetch_command(&generation);
+    assert_eq!(command.program, "/run/current-system/sw/bin/bash");
+    assert_eq!(command.args.last().unwrap(), generation.as_str());
+    assert!(command.args[1].contains("ai-model-prefetch-all"));
+    assert!(!command.args[1].contains("AI_MODEL_PREFETCH_PLAN"));
+    assert_bash_syntax(&command.args[1]);
+}
+
+#[test]
+fn candidate_generation_admission_uses_the_current_dispatcher_without_switching() {
+    let generation = generation("app");
+    let command = generation_admission_command(&generation, ActivationGoal::Switch);
+
+    assert_eq!(command.program, "/run/current-system/sw/bin/bash");
+    assert_eq!(command.args, ["-s"]);
+    assert!(command.script.contains(generation.as_str()));
+    assert!(
+        command
+            .script
+            .contains("abird-host-agent-generation-preflight")
+    );
+    assert!(!command.script.contains("switch-to-configuration"));
+    assert!(
+        command
+            .script
+            .contains("nixbot-candidate-acquisition=deferred")
+    );
+    assert_bash_syntax(&command.script);
 }

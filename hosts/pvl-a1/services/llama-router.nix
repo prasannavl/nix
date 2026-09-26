@@ -4,8 +4,8 @@
   ...
 }: let
   ai = config.services.ai;
-  defaultCache = ai.backends.llamaRouter.runtimesInfo.default.cacheDir;
-  prismCache = ai.backends.llamaRouter.runtimesInfo.prism.cacheDir;
+  defaultCache = ai.backends.llamaRouter.deploymentsInfo.llama-rocm.cacheDir;
+  prismCache = ai.backends.llamaRouter.deploymentsInfo.llama-prism-rocm.cacheDir;
 in {
   # Container definitions only: image, devices, and cache bind. Model pulls,
   # models.ini, lifecycle, and cache dirs are owned by services.ai.

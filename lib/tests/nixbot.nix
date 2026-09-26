@@ -35,8 +35,7 @@
   serviceScript = pkgs.writeText "nixbot-repo-z-ready-script" service.script;
   gitSshCommand = pkgs.writeText "nixbot-repo-z-git-ssh-command" cfg.repos.z.gitSshCommand;
   knownHostsFile = "/var/lib/nixbot/.ssh/known_hosts-z-${builtins.substring 0 16 (builtins.hashString "sha256" cfg.repos.z.url)}";
-in
-  assert service.environment.NIXBOT_REPO_URL == "ssh://git@example.invalid/abird/z";
+  moduleTest = assert service.environment.NIXBOT_REPO_URL == "ssh://git@example.invalid/abird/z";
   assert service.environment.NIXBOT_REPO_PATH == "/var/lib/nixbot/nix";
   assert service.environment.NIXBOT_REPO_KNOWN_HOSTS_FILE == knownHostsFile;
   assert service.environment.NIXBOT_REPO_SSH_KEY_PATHS == "/var/lib/nixbot/.ssh/id_ed25519_z";
@@ -49,4 +48,12 @@ in
       grep -F -- '/var/lib/nixbot/.ssh/id_ed25519_z' ${gitSshCommand}
       grep -F -- 'IdentitiesOnly=yes' ${gitSshCommand}
       touch "$out"
-    ''
+    '';
+  nixbot = import ../../pkgs/tools/nixbot {inherit pkgs;};
+in
+  pkgs.runCommand "lib-nixbot-test" {} ''
+    test -e ${moduleTest}
+    test -e ${nixbot.passthru.tests.helper}
+    test -e ${nixbot.passthru.tests.runtime}
+    touch "$out"
+  ''

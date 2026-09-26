@@ -8,6 +8,8 @@
   inherit (lib) mkIf mkMerge mkOption types;
 
   defaultCatalog = import ./catalog.nix;
+  backendLib = import ./backends.nix;
+  prefetchLib = import ./prefetch.nix;
   projectionLib = import ./projection.nix;
   catalog = cfg.catalog;
 
@@ -16,10 +18,9 @@
   # fixed point between policy admission and rendered runtime projections.
   policyBackends = {
     ollama.deployments = cfg.backends.ollama.deployments;
-    llamaRouter.runtimes =
-      builtins.mapAttrs
-      (_: runtime: {deployments = runtime.deployments;})
-      cfg.backends.llamaRouter.runtimes;
+    llamaRouter = {
+      inherit (cfg.backends.llamaRouter) defaults deployments;
+    };
   };
   policy = projectionLib.resolvePolicy {
     inherit catalog;
@@ -52,48 +53,106 @@
     ollama = "ollama";
     llamaRouter = "llama-router";
   };
-  deploymentType = types.submodule {
+  deploymentOptions = {
+    instance = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        Podman-compose instance backing this deployment. Defaults to the
+        backend's canonical instance name.
+      '';
+    };
+    portName = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        Exposed-port name carrying the backend API. May be omitted when the
+        compose instance exposes exactly one port.
+      '';
+    };
+    lifecycle = mkOption {
+      type = types.enum ["auto" "manual" "stopped"];
+      default = "auto";
+      description = ''
+        auto: started at boot and kept up by the stack.
+        manual: never auto-started; survives if started by hand.
+        stopped: declaratively stopped; the stack keeps it down.
+      '';
+    };
+    host = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        Reachable host/address for this deployment as seen by consumers.
+        null uses the consumer default host passed to
+        `services.ai.consumersFor`. Set it when a deployment lives on a
+        different host from its backend's other deployments.
+      '';
+    };
+  };
+  deploymentType = types.submodule {options = deploymentOptions;};
+  runtimeNameType = types.addCheck types.str backendLib.validRuntimeName;
+  llamaDeploymentType = types.submodule {
+    options =
+      deploymentOptions
+      // {
+        runtime = mkOption {
+          type = types.nullOr runtimeNameType;
+          default = null;
+          description = "llama.cpp engine for this service; null inherits llamaRouter.defaults.runtime.";
+        };
+        cacheDir = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "Model cache mounted by this service; null inherits the backend default or the runtime-derived path.";
+        };
+        models = mkOption {
+          type = types.nullOr (types.listOf types.str);
+          default = null;
+          description = "Exact catalog-key subset for this service; null inherits llamaRouter.defaults.models.";
+        };
+        idleTimeoutSeconds = mkOption {
+          type = types.nullOr (types.either (types.enum [false]) types.ints.positive);
+          default = null;
+          description = "Per-service idle unload timeout; null inherits the backend default and false disables an inherited timeout.";
+        };
+        preservedModels = mkOption {
+          type = types.listOf types.str;
+          default = [];
+          description = ''
+            Exact managed GGUF references to retain while relinquishing
+            ownership in this deployment's runtime cache. Deployments sharing
+            a runtime contribute to one preserved-model union.
+          '';
+        };
+      };
+  };
+  hfPrefetchExpandedSelectionType = types.submodule {
     options = {
-      instance = mkOption {
-        type = types.nullOr types.str;
+      base = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Whether to download the model's base Hugging Face source.";
+      };
+      artifacts = mkOption {
+        type = types.nullOr (types.either types.bool (types.listOf types.str));
         default = null;
         description = ''
-          Podman-compose instance backing this deployment. Defaults to the
-          backend's canonical instance name.
-        '';
-      };
-      portName = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = ''
-          Exposed-port name carrying the backend API. May be omitted when the
-          compose instance exposes exactly one port.
-        '';
-      };
-      lifecycle = mkOption {
-        type = types.enum ["auto" "manual" "stopped"];
-        default = "auto";
-        description = ''
-          auto: started at boot and kept up by the stack.
-          manual: never auto-started; survives if started by hand.
-          stopped: declaratively stopped; the stack keeps it down.
-        '';
-      };
-      host = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = ''
-          Reachable host/address for this deployment as seen by consumers.
-          null uses the consumer default host passed to
-          `services.ai.consumersFor`. Set it when a deployment lives on a
-          different host from its backend's other deployments.
+          Nested artifact selection. null inherits the backend-wide artifacts
+          default, true selects all artifacts, false selects none, and a list
+          selects exactly the named artifacts.
         '';
       };
     };
   };
+  hfPrefetchSelectionType = types.oneOf [
+    types.bool
+    (types.listOf types.str)
+    hfPrefetchExpandedSelectionType
+  ];
 
-  # Ordered consumer-facing endpoint descriptor: the resolved instance, its
-  # API port, and an optional host override (`null` = consumer default host).
+  # Ordered consumer-facing endpoint descriptor: resolved instance/API address,
+  # optional host override, and exact admitted client model IDs.
   endpointType = types.submodule {
     options = {
       instance = mkOption {type = types.str;};
@@ -105,6 +164,10 @@
       device = mkOption {
         type = types.nullOr types.str;
         default = null;
+      };
+      modelIds = mkOption {
+        type = types.listOf types.str;
+        description = "Exact ordered client model IDs admitted to this endpoint.";
       };
     };
   };
@@ -119,29 +182,43 @@
     then "cpu"
     else null;
 
-  consumerEndpointType = types.submodule {
-    options = {
-      instance = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-      };
-      device = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-      };
-      host = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-      };
-      port = mkOption {
-        type = types.nullOr types.port;
-        default = null;
-      };
-      url = mkOption {type = types.str;};
+  consumerEndpointOptions = {
+    instance = mkOption {
+      type = types.nullOr types.str;
+      default = null;
     };
+    device = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+    };
+    host = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+    };
+    port = mkOption {
+      type = types.nullOr types.port;
+      default = null;
+    };
+    modelIds = mkOption {
+      type = types.listOf types.str;
+      default = [];
+      description = "Exact ordered client model IDs admitted to this endpoint.";
+    };
+    url = mkOption {type = types.str;};
   };
-  consumerBackendOptions = {
-    endpoints = mkOption {type = types.listOf consumerEndpointType;};
+  consumerEndpointType = types.submodule {options = consumerEndpointOptions;};
+  consumerLlamaEndpointType = types.submodule {
+    options =
+      consumerEndpointOptions
+      // {
+        runtime = mkOption {
+          type = types.nullOr runtimeNameType;
+          default = null;
+        };
+      };
+  };
+  consumerBackendOptionsFor = endpoint: {
+    endpoints = mkOption {type = types.listOf endpoint;};
     urls = mkOption {type = types.listOf types.str;};
     openaiUrls = mkOption {type = types.listOf types.str;};
     default = mkOption {type = types.str;};
@@ -149,9 +226,12 @@
     byDevice = mkOption {type = types.attrsOf (types.listOf types.str);};
     openaiByDevice = mkOption {type = types.attrsOf (types.listOf types.str);};
   };
+  consumerBackendOptions = consumerBackendOptionsFor consumerEndpointType;
   consumerBackendType = types.submodule {options = consumerBackendOptions;};
   consumerLlamaType = types.submodule {
-    options = consumerBackendOptions // {apiKeys = mkOption {type = types.listOf types.str;};};
+    options =
+      consumerBackendOptionsFor consumerLlamaEndpointType
+      // {apiKeys = mkOption {type = types.listOf types.str;};};
   };
   consumerType = types.submodule {
     options = {
@@ -159,78 +239,98 @@
       llama = mkOption {type = consumerLlamaType;};
     };
   };
-
-  # A named llama.cpp engine. Each runtime owns its deployments, cache, and
-  # reconciler, so a fork engine can never inherit another engine's models.
-  # Catalog entries opt in with `llama.runtime`; `default` (upstream llama.cpp)
-  # is the default engine.
-  llamaRuntimeType = types.submodule ({...}: {
+  llamaDefaultsType = types.submodule {
     options = {
-      deployments = mkOption {
-        type = types.listOf deploymentType;
-        default = [];
-        description = "Container deployments running this llama.cpp engine.";
+      runtime = mkOption {
+        type = runtimeNameType;
+        default = "default";
+        description = "Default llama.cpp engine for deployments that do not select one.";
       };
       cacheDir = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = ''
-          Download cache for this engine's GGUF files. null selects the
-          per-runtime default (see runtimesInfo.<name>.cacheDir). Runtimes get
-          a distinct directory so one engine's cache scan cannot surface
-          another engine's models.
+          Default model cache for deployments. null derives a distinct path
+          from each deployment's runtime.
         '';
+      };
+      models = mkOption {
+        type = types.nullOr (types.listOf types.str);
+        default = null;
+        description = "Default deployment model filter; null selects every admitted model compatible with the runtime.";
       };
       idleTimeoutSeconds = mkOption {
         type = types.nullOr types.ints.positive;
         default = null;
         description = ''
-          Seconds of continuous model idleness after which this engine's
-          workers release their resident model and KV cache
-          (llama.cpp --sleep-idle-seconds). Emitted as the models.ini [*]
-          section so it reaches managed and cache-scanned models alike.
-          null keeps models resident until LRU eviction.
-        '';
-      };
-      preservedModels = mkOption {
-        type = types.listOf types.str;
-        default = [];
-        description = ''
-          Exact managed GGUF references to retain while relinquishing
-          ownership. Ad-hoc cache entries are unowned and always untouched.
+          Default per-service idle unload timeout. null emits no global
+          models.ini timeout; deployments may set a positive value or false to
+          disable an inherited timeout.
         '';
       };
     };
-  });
-  llamaRuntimeInfoType = types.submodule {
+  };
+  llamaDeploymentInfoType = types.submodule {
     options = {
-      active = mkOption {type = types.bool;};
-      serviceNames = mkOption {type = types.listOf types.str;};
-      urls = mkOption {type = types.listOf types.str;};
-      ports = mkOption {type = types.listOf types.port;};
-      portsByName = mkOption {type = types.attrsOf types.port;};
-      endpoints = mkOption {type = types.listOf endpointType;};
-      readyTarget = mkOption {type = types.nullOr types.str;};
+      runtime = mkOption {type = runtimeNameType;};
+      cacheDir = mkOption {type = types.nullOr types.str;};
+      models = mkOption {type = types.listOf types.str;};
+      modelIds = mkOption {type = types.listOf types.str;};
       requiredModels = mkOption {type = types.listOf types.str;};
       modelPresets = mkOption {type = types.attrsOf (types.attrsOf types.str);};
-      cacheDir = mkOption {type = types.nullOr types.str;};
+      preservedModels = mkOption {type = types.listOf types.str;};
+      idleTimeoutSeconds = mkOption {type = types.nullOr types.ints.positive;};
+      serviceName = mkOption {type = types.str;};
+      url = mkOption {type = types.nullOr types.str;};
+      port = mkOption {type = types.nullOr types.port;};
     };
   };
 
   ollamaDeployments = cfg.backends.ollama.deployments;
-  llamaRuntimes = cfg.backends.llamaRouter.runtimes;
-  llamaRuntimeNames = builtins.attrNames llamaRuntimes;
-  llamaRuntimeCfg = runtime: llamaRuntimes.${runtime};
-  runtimeDeployments = runtime: (llamaRuntimeCfg runtime).deployments;
-  configuredLlamaRuntimeNames = builtins.filter (runtime: runtimeDeployments runtime != []) llamaRuntimeNames;
-  # Resolved per-runtime cache dir. The option default is null so option
-  # evaluation never reads config; the effective path is derived here.
-  resolvedCacheDir = runtime: let
-    cacheDir = (llamaRuntimeCfg runtime).cacheDir;
+  llamaDeployments = cfg.backends.llamaRouter.deployments;
+  llamaDefaults = cfg.backends.llamaRouter.defaults;
+  resolvedRuntime = deployment:
+    backendLib.effectiveDeploymentValue llamaDefaults deployment "runtime" "default";
+  resolvedDeploymentCacheDir = deployment:
+    backendLib.effectiveDeploymentValue
+    llamaDefaults
+    deployment
+    "cacheDir"
+    (defaultLlamaCacheDirFor (resolvedRuntime deployment));
+  resolvedIdleTimeout = deployment: let
+    value = backendLib.effectiveDeploymentValue llamaDefaults deployment "idleTimeoutSeconds" null;
   in
-    if cacheDir != null
-    then cacheDir
-    else defaultLlamaCacheDirFor runtime;
+    if value == false
+    then null
+    else value;
+  llamaDeploymentRecords =
+    builtins.genList
+    (index: let
+      deployment = builtins.elemAt llamaDeployments index;
+    in {
+      inherit deployment index;
+      cacheDir = resolvedDeploymentCacheDir deployment;
+      idleTimeoutSeconds = resolvedIdleTimeout deployment;
+      policy = builtins.elemAt policy.llama.deployments index;
+      runtime = resolvedRuntime deployment;
+    })
+    (builtins.length llamaDeployments);
+  llamaRuntimeNames = builtins.attrNames (builtins.listToAttrs (builtins.map
+    (record: {
+      name = record.runtime;
+      value = true;
+    })
+    (builtins.filter (record: backendLib.validRuntimeName record.runtime) llamaDeploymentRecords)));
+  runtimeRecords = runtime: builtins.filter (record: record.runtime == runtime) llamaDeploymentRecords;
+  runtimeDeployments = runtime: builtins.map (record: record.deployment) (runtimeRecords runtime);
+  runtimePreserved = runtime:
+    lib.unique (builtins.concatMap (record: record.deployment.preservedModels) (runtimeRecords runtime));
+  resolvedCacheDir = runtime: let
+    cacheDirs = lib.unique (builtins.map (record: record.cacheDir) (runtimeRecords runtime));
+  in
+    if cacheDirs == []
+    then defaultLlamaCacheDirFor runtime
+    else builtins.head cacheDirs;
 
   # A backend only emits anything once the stack identity is known and the
   # selection is fully resolvable; otherwise the assertions below report the
@@ -289,16 +389,32 @@
     then (instanceConfig backend deployment).exposedPorts.${deploymentPortName backend deployment}.port
     else null;
 
+  llamaModelIdsByInstance = builtins.listToAttrs (builtins.map
+    (record: {
+      name = depInstance "llamaRouter" record.deployment;
+      value = record.policy.modelIds;
+    })
+    llamaDeploymentRecords);
+  deploymentModelIds = backend: deployment:
+    if backend == "ollama"
+    then policy.ollama.models
+    else llamaModelIdsByInstance.${depInstance backend deployment} or [];
+
   backendProjections = backend: deployments: let
     names = builtins.map (depInstance backend) deployments;
     autos = builtins.filter (deployment: deployment.lifecycle == "auto") deployments;
     users = lib.unique (builtins.map (deploymentUser backend) deployments);
-    resolvedEndpoints = builtins.filter (entry: entry.port != null) (builtins.map (deployment: {
+    resolvedEndpoints = builtins.filter (entry: entry.port != null) (builtins.map (deployment:
+      {
         name = depInstance backend deployment;
         port = deploymentPort backend deployment;
         host = deployment.host;
+        modelIds = deploymentModelIds backend deployment;
+      }
+      // lib.optionalAttrs (backend == "llamaRouter") {
+        runtime = resolvedRuntime deployment;
       })
-      deployments);
+    deployments);
   in {
     inherit names autos;
     user =
@@ -315,13 +431,14 @@
       resolvedEndpoints);
     # Ordered consumer descriptors; `host` is null unless the deployment
     # overrides it, and `device` is derived from the instance name.
-    endpoints =
-      builtins.map (entry: {
+    endpoints = builtins.map (entry:
+      {
         instance = entry.name;
         device = deviceFor entry.name;
-        inherit (entry) port host;
-      })
-      resolvedEndpoints;
+        inherit (entry) port host modelIds;
+      }
+      // lib.optionalAttrs (entry ? runtime) {runtime = entry.runtime;})
+    resolvedEndpoints;
     readyTarget =
       if autos == []
       then null
@@ -329,29 +446,24 @@
   };
 
   ollamaProjection = backendProjections "ollama" ollamaDeployments;
+  llamaProjection = backendProjections "llamaRouter" llamaDeployments;
   runtimeProjection = runtime: backendProjections "llamaRouter" (runtimeDeployments runtime);
+  warmableRuntimeDeployments = runtime:
+    builtins.filter (deployment: deployment.lifecycle != "stopped") (runtimeDeployments runtime);
+  warmableRuntimeProjection = runtime:
+    backendProjections "llamaRouter" (warmableRuntimeDeployments runtime);
+  warmableLlamaRuntimeNames =
+    builtins.filter (runtime: warmableRuntimeDeployments runtime != []) llamaRuntimeNames;
 
   ollamaRequired = policy.ollama.requiredModels;
   runtimeRequired = runtime: policy.runtimes.${runtime}.requiredModels;
   runtimeModelPresets = runtime: policy.runtimes.${runtime}.modelPresets;
-  # Router-wide preset defaults (the models.ini [*] section). llama.cpp
-  # cascades these onto every model child, including cache-scanned entries,
-  # so idle sleep applies to managed and ad-hoc models alike.
-  runtimeGlobalPreset = runtime:
-    if (llamaRuntimeCfg runtime).idleTimeoutSeconds == null
+  deploymentGlobalPreset = record:
+    if record.idleTimeoutSeconds == null
     then {}
     else {
-      sleep-idle-seconds = toString (llamaRuntimeCfg runtime).idleTimeoutSeconds;
+      sleep-idle-seconds = toString record.idleTimeoutSeconds;
     };
-
-  allUsers = builtins.filter (user: user != null) (
-    lib.optional (ollamaProjection.user != null) ollamaProjection.user
-    ++ builtins.map (runtime: (runtimeProjection runtime).user) llamaRuntimeNames
-  );
-  aiStorageUser =
-    if allUsers == []
-    then null
-    else builtins.head (lib.unique allUsers);
 
   legacyStateFile = backend: projection:
     if projection.user == null
@@ -369,11 +481,10 @@
   ollamaReconciler = import ../ollama {inherit lib pkgs;};
   llamaReconciler = import ../llama-router {inherit lib pkgs;};
 
-  runtimeModelsPresetIni = runtime:
+  deploymentModelsPresetIni = record:
     llamaReconciler.renderModelsPresetIni {
-      globalPreset = runtimeGlobalPreset runtime;
-      modelPresets = runtimeModelPresets runtime;
-      requiredModels = runtimeRequired runtime;
+      globalPreset = deploymentGlobalPreset record;
+      inherit (record.policy) modelPresets requiredModels;
     };
 
   ollamaBinding = ollamaReconciler.mkModelReconciler {
@@ -399,11 +510,11 @@
     llamaReconciler.mkModelReconciler {
       backendServices = projection.serviceNames;
       conditionUser = projection.user;
-      globalPreset = runtimeGlobalPreset runtime;
+      globalPreset = {};
       managedTarget = "${lib.strings.sanitizeDerivationName projection.user}-managed";
       modelPresets = runtimeModelPresets runtime;
       name = name;
-      preservedModels = (llamaRuntimeCfg runtime).preservedModels;
+      preservedModels = runtimePreserved runtime;
       readyTarget = projection.readyTarget;
       requiredModels = runtimeRequired runtime;
       routerUrls = projection.urls;
@@ -419,12 +530,182 @@
       inherit deployment;
     })
     ollamaDeployments
-    ++ builtins.concatMap (runtime:
-      builtins.map (deployment: {
-        backend = "llamaRouter";
-        inherit runtime deployment;
-      }) (runtimeDeployments runtime))
+    ++ builtins.map (record: {
+      backend = "llamaRouter";
+      inherit (record) deployment runtime;
+    })
+    llamaDeploymentRecords;
+  hfPrefetchResolution = prefetchLib.resolveHf {
+    inherit catalog;
+    artifactsByDefault = cfg.backends.hf.prefetchDefaults.artifacts;
+    selections = cfg.backends.hf.prefetch;
+  };
+  hfOwnerName =
+    if cfg.backends.hf.user != null
+    then cfg.backends.hf.user
+    else if stackReady
+    then composeStack.user
+    else null;
+  hfOwnerConfig =
+    if hfOwnerName != null && config.users.users ? ${hfOwnerName}
+    then config.users.users.${hfOwnerName}
+    else {};
+  hfOwnerGroupName = let
+    configuredGroup = hfOwnerConfig.group or null;
+  in
+    if configuredGroup != null && configuredGroup != ""
+    then configuredGroup
+    else hfOwnerName;
+  hfOwnerUid = hfOwnerConfig.uid or null;
+  hfOwnerGid =
+    if hfOwnerGroupName != null && config.users.groups ? ${hfOwnerGroupName}
+    then config.users.groups.${hfOwnerGroupName}.gid or null
+    else null;
+  validPrefetchIdentityId = value:
+    builtins.isInt value
+    && value >= 0
+    && value <= 2147483647;
+  hfCacheConfigured = cfg.backends.hf.cacheDir != null;
+  hfCachePathValid = hfCacheConfigured && backendLib.validStoragePath cfg.backends.hf.cacheDir;
+  hfTokenPathValid = cfg.backends.hf.tokenFile == null || backendLib.validStoragePath cfg.backends.hf.tokenFile;
+  hfOwnerDeclared =
+    hfOwnerName
+    != null
+    && hfOwnerName != ""
+    && config.users.users ? ${hfOwnerName};
+  hfOwnerGroupDeclared =
+    hfOwnerGroupName
+    != null
+    && hfOwnerGroupName != ""
+    && config.users.groups ? ${hfOwnerGroupName};
+  hfRequested = hfPrefetchResolution.units != [];
+  hfPlanConfigValid =
+    hfCachePathValid
+    && hfTokenPathValid
+    && hfOwnerDeclared
+    && hfOwnerGroupDeclared
+    && validPrefetchIdentityId hfOwnerUid
+    && validPrefetchIdentityId hfOwnerGid;
+  hfPlan =
+    if !hfRequested || !hfPlanConfigValid
+    then []
+    else
+      prefetchLib.mkHfPlan {
+        cacheDir = cfg.backends.hf.cacheDir;
+        owner = {
+          name = hfOwnerName;
+          uid = hfOwnerUid;
+          group = hfOwnerGroupName;
+          gid = hfOwnerGid;
+        };
+        resolved = hfPrefetchResolution;
+        tokenFile = cfg.backends.hf.tokenFile;
+      };
+  ollamaPlan = lib.optionals cfg.backends.ollama.prefetch (builtins.map (model: {
+      id = "ollama:${model}";
+      type = "ollama";
+      inherit model;
+      endpoints = ollamaProjection.urls;
+      user = ollamaProjection.user;
+      policy = "best-effort";
+    })
+    ollamaRequired);
+  llamaPlan = lib.optionals cfg.backends.llamaRouter.prefetch (builtins.concatMap (runtime:
+    builtins.map (model: {
+      id = "llama:${runtime}:${model}";
+      type = "llama";
+      inherit model;
+      endpoints = (warmableRuntimeProjection runtime).urls;
+      user = (warmableRuntimeProjection runtime).user;
+      policy = "best-effort";
+    })
+    (runtimeRequired runtime))
+  warmableLlamaRuntimeNames);
+  # Submit short llama.cpp cache requests before an Ollama pull can consume the
+  # shared best-effort deadline. Required direct downloads still run first.
+  modelPrefetchPlan = hfPlan ++ llamaPlan ++ ollamaPlan;
+  modelPrefetchPlanFile = pkgs.writeText "ai-model-prefetch.json" (builtins.toJSON modelPrefetchPlan);
+  modelPrefetchCachePreparer = pkgs.writeText "ai-model-prefetch-cache.py" (builtins.readFile ./model-prefetch-cache.py);
+  modelPrefetchPackage = pkgs.writeShellApplication {
+    name = "ai-model-prefetch-all";
+    excludeShellChecks = [
+      "SC1091"
+      "SC2034"
+    ];
+    runtimeInputs =
+      [
+        pkgs.coreutils
+        pkgs.curl
+        pkgs.getent
+        pkgs.jq
+        pkgs.util-linux
+      ]
+      ++ lib.optionals (hfPlan != []) [
+        pkgs.python3
+        pkgs.python3Packages.huggingface-hub
+      ];
+    text = ''
+      plan="''${AI_MODEL_PREFETCH_PLAN:-${modelPrefetchPlanFile}}"
+      cache_preparer=${lib.escapeShellArg (
+        if hfPlan != []
+        then modelPrefetchCachePreparer
+        else ""
+      )}
+      source ${./model-prefetch.sh}
+      main "$@"
+    '';
+  };
+  ollamaModelsDirConfigured = cfg.backends.ollama.modelsDir != null;
+  ollamaModelsDirValid =
+    !ollamaModelsDirConfigured
+    || backendLib.validStoragePath cfg.backends.ollama.modelsDir;
+  llamaStorageAssignments =
+    builtins.map
+    (runtime: {
+      label = "llama.${runtime}";
+      path = resolvedCacheDir runtime;
+    })
     llamaRuntimeNames;
+  managedStorageAssignments =
+    lib.optional hfCachePathValid {
+      label = "hf";
+      path = cfg.backends.hf.cacheDir;
+    }
+    ++ lib.optional (ollamaModelsDirConfigured && ollamaModelsDirValid) {
+      label = "ollama";
+      path = cfg.backends.ollama.modelsDir;
+    }
+    ++ builtins.filter (assignment: backendLib.validStoragePath assignment.path) llamaStorageAssignments;
+  storageConflictPairs =
+    builtins.filter
+    (pair: backendLib.storagePathsOverlap pair.left.path pair.right.path)
+    (backendLib.indexedPairs managedStorageAssignments);
+  renderedStoragePaths =
+    lib.optional
+    (hfCachePathValid && hfOwnerDeclared && hfOwnerGroupDeclared)
+    cfg.backends.hf.cacheDir
+    ++ lib.optional
+    (ollamaProjection.user != null && ollamaModelsDirConfigured && ollamaModelsDirValid)
+    cfg.backends.ollama.modelsDir
+    ++ builtins.concatMap (runtime: let
+      projection = runtimeProjection runtime;
+      cacheDir = resolvedCacheDir runtime;
+    in
+      lib.optional
+      (projection.user != null && backendLib.validStoragePath cacheDir)
+      cacheDir)
+    llamaRuntimeNames;
+  aiStorageRoot =
+    if stackReady
+    then "/var/lib/${stackName}/ai"
+    else null;
+  aiStorageRootNeeded =
+    aiStorageRoot
+    != null
+    && !(builtins.elem aiStorageRoot renderedStoragePaths)
+    && builtins.any
+    (path: path != aiStorageRoot && backendLib.storagePathContains aiStorageRoot path)
+    renderedStoragePaths;
   backendWorkerName = backend: runtime:
     if backend == "ollama"
     then "${stackName}-ollama-models-pull"
@@ -461,10 +742,13 @@ in {
       description = ''
         Managed catalog keys for this host, in deterministic selection order.
         Explicit lists preserve caller order; null uses sorted catalog-key
-        order. This is the only selection list; each backend serves exactly the
-        selected models that carry its reference field, and a model carrying no
-        backend reference is a configuration error. null (the default) selects
-        every model servable by the declared backends.
+        order. This is the only admission list. Backends serve admitted models
+        that carry their reference field; llama.cpp deployments may narrow
+        placement but cannot expand admission. Explicit lists may also admit a
+        Hugging Face-backed model for a host-owned runtime such as vLLM or
+        SGLang. A model carrying no usable backend reference is a configuration
+        error. null (the default) selects every model servable by the declared
+        Ollama and llama.cpp deployments.
       '';
     };
 
@@ -508,89 +792,151 @@ in {
       '';
     };
 
-    backends.ollama = {
-      deployments = mkOption {
-        type = types.listOf deploymentType;
-        default = [];
-        description = "Ollama container deployments serving this host's model selection.";
+    backends = {
+      hf = {
+        cacheDir = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "Shared HF_HOME used by prefetch and Hugging Face-backed runtimes such as vLLM and SGLang.";
+        };
+        user = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "Owner of the shared Hugging Face cache; null inherits the compose stack user.";
+        };
+        tokenFile = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "Optional runtime Hugging Face token file; its contents never enter the Nix store or process arguments.";
+        };
+        prefetch = mkOption {
+          type = types.attrsOf hfPrefetchSelectionType;
+          default = {};
+          description = ''
+            Catalog-keyed Hugging Face prefetch policy. `true` downloads the
+            model and, by default, all nested artifacts; a list downloads the
+            model plus exactly those artifact names; an empty list downloads only
+            the model; false disables an inherited selection. An expanded
+            selection independently controls `base` and `artifacts`, including
+            artifact-only downloads with `base = false`. Set `artifacts = false`
+            on an expanded per-model selection to exclude nested artifacts; an
+            expanded selection must still select at least one unit. Use the
+            literal `false` to disable a selection completely.
+            Expanded selections compose across modules; scalar and list
+            shorthands are atomic values. Prefetch is acquisition policy and is
+            intentionally independent from services.ai.models admission.
+          '';
+        };
+        prefetchDefaults.artifacts = mkOption {
+          type = types.bool;
+          default = true;
+          description = ''
+            Whether model selections without an explicit nested-artifact choice
+            also download all catalog artifacts.
+          '';
+        };
       };
-      modelsDir = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = ''
-          Shared models directory mounted read-write into deployments:
-          pulls run through the backend API, so blobs land here regardless
-          of which deployment performs them. When set, a tmpfiles rule creates
-          it with the deployment user's ownership.
-        '';
-      };
-      preservedModels = mkOption {
-        type = types.listOf types.str;
-        default = [];
-        description = ''
-          Exact managed tags to retain while relinquishing ownership. Models
-          downloaded outside reconciliation need not be listed: they are
-          unowned and always left untouched.
-        '';
-      };
-      active = mkOption {
-        type = types.bool;
-        readOnly = true;
-      };
-      serviceNames = mkOption {
-        type = types.listOf types.str;
-        readOnly = true;
-      };
-      urls = mkOption {
-        type = types.listOf types.str;
-        readOnly = true;
-      };
-      ports = mkOption {
-        type = types.listOf types.port;
-        readOnly = true;
-      };
-      portsByName = mkOption {
-        type = types.attrsOf types.port;
-        readOnly = true;
-      };
-      endpoints = mkOption {
-        type = types.listOf endpointType;
-        readOnly = true;
-      };
-      readyTarget = mkOption {
-        type = types.nullOr types.str;
-        readOnly = true;
-      };
-      requiredModels = mkOption {
-        type = types.listOf types.str;
-        readOnly = true;
-      };
-    };
 
-    backends.llamaRouter = {
-      runtimes = mkOption {
-        type = types.attrsOf llamaRuntimeType;
-        default = {};
-        description = ''
-          Named llama.cpp engines, keyed by runtime. Catalog entries select an
-          engine with llama.runtime (default `default`, the upstream build).
-          Each engine owns its
-          deployments, cache, and reconciler so fork builds never serve
-          another engine's models.
-        '';
+      ollama = {
+        prefetch = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Warm selected Ollama models through a running pre-activation backend when available.";
+        };
+        deployments = mkOption {
+          type = types.listOf deploymentType;
+          default = [];
+          description = "Ollama container deployments serving this host's model selection.";
+        };
+        modelsDir = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            Shared models directory mounted read-write into deployments:
+            pulls run through the backend API, so blobs land here regardless
+            of which deployment performs them. When set, a tmpfiles rule creates
+            it with the deployment user's ownership.
+          '';
+        };
+        preservedModels = mkOption {
+          type = types.listOf types.str;
+          default = [];
+          description = ''
+            Exact managed tags to retain while relinquishing ownership. Models
+            downloaded outside reconciliation need not be listed: they are
+            unowned and always left untouched.
+          '';
+        };
+        active = mkOption {
+          type = types.bool;
+          readOnly = true;
+        };
+        serviceNames = mkOption {
+          type = types.listOf types.str;
+          readOnly = true;
+        };
+        urls = mkOption {
+          type = types.listOf types.str;
+          readOnly = true;
+        };
+        ports = mkOption {
+          type = types.listOf types.port;
+          readOnly = true;
+        };
+        portsByName = mkOption {
+          type = types.attrsOf types.port;
+          readOnly = true;
+        };
+        endpoints = mkOption {
+          type = types.listOf endpointType;
+          readOnly = true;
+        };
+        readyTarget = mkOption {
+          type = types.nullOr types.str;
+          readOnly = true;
+        };
+        requiredModels = mkOption {
+          type = types.listOf types.str;
+          readOnly = true;
+        };
       };
-      active = mkOption {
-        type = types.bool;
-        readOnly = true;
-      };
-      runtimesInfo = mkOption {
-        type = types.attrsOf llamaRuntimeInfoType;
-        readOnly = true;
-        description = ''
-          Evaluated per-runtime projections keyed by runtime name: urls, ports,
-          portsByName, endpoints, serviceNames, readyTarget, requiredModels,
-          modelPresets, cacheDir, and active.
-        '';
+
+      llamaRouter = {
+        prefetch = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Warm selected GGUF models through a running llama.cpp router when available.";
+        };
+        defaults = mkOption {
+          type = llamaDefaultsType;
+          default = {};
+          description = ''
+            Shared runtime, cache, model-filter, and idle-timeout defaults for
+            llama.cpp deployments. Deployment values override these defaults.
+          '';
+        };
+        deployments = mkOption {
+          type = types.listOf llamaDeploymentType;
+          default = [];
+          description = ''
+            llama.cpp service deployments. Each deployment selects one runtime
+            and an optional catalog-key model subset; deployments of one runtime
+            share its cache ownership and reconciler.
+          '';
+        };
+        active = mkOption {
+          type = types.bool;
+          readOnly = true;
+        };
+        deploymentsInfo = mkOption {
+          type = types.attrsOf llamaDeploymentInfoType;
+          readOnly = true;
+          description = ''
+            Effective deployment projections keyed by compose instance: runtime,
+            cache, selected catalog models, client model IDs, exact GGUF refs,
+            presets, idle timeout, service name, URL, and port.
+          '';
+        };
       };
     };
   };
@@ -603,10 +949,7 @@ in {
           projectionLib.mkConsumers {
             inherit defaultHost;
             ollamaEndpoints = ollamaProjection.endpoints;
-            llamaEndpoints =
-              if cfg.backends.llamaRouter.runtimes ? default
-              then (runtimeProjection "default").endpoints
-              else [];
+            llamaEndpoints = llamaProjection.endpoints;
           };
         backends.ollama = {
           active = ollamaDeployments != [];
@@ -620,22 +963,34 @@ in {
         };
         backends.llamaRouter = {
           active = activeLlamaRuntimes != [];
-          runtimesInfo = lib.genAttrs llamaRuntimeNames (runtime: let
-            projection = runtimeProjection runtime;
-          in {
-            active = llamaActiveFor runtime;
-            serviceNames = projection.serviceNames;
-            urls = projection.urls;
-            ports = projection.ports;
-            portsByName = projection.portsByName;
-            endpoints = projection.endpoints;
-            readyTarget = projection.readyTarget;
-            requiredModels = runtimeRequired runtime;
-            modelPresets = runtimeModelPresets runtime;
-            cacheDir = resolvedCacheDir runtime;
-          });
+          deploymentsInfo = builtins.listToAttrs (builtins.map (record: let
+              deployment = record.deployment;
+              port = deploymentPort "llamaRouter" deployment;
+            in {
+              name = depInstance "llamaRouter" deployment;
+              value = {
+                inherit port;
+                inherit (record) cacheDir idleTimeoutSeconds runtime;
+                inherit (record.policy) modelIds modelPresets models requiredModels;
+                preservedModels = runtimePreserved record.runtime;
+                serviceName = "${deploymentServiceName "llamaRouter" deployment}.service";
+                url =
+                  if port == null
+                  then null
+                  else "http://127.0.0.1:${toString port}";
+              };
+            })
+            llamaDeploymentRecords);
         };
       };
+    }
+
+    {
+      environment.systemPackages = lib.optional (modelPrefetchPlan != []) modelPrefetchPackage;
+      system.systemBuilderCommands = lib.optionalString (modelPrefetchPlan != []) ''
+        install -Dm0444 ${lib.escapeShellArg modelPrefetchPlanFile} "$out/share/ai/model-prefetch.json"
+      '';
+      system.build.aiModelPrefetchPlan = modelPrefetchPlanFile;
     }
 
     # Reconciler wiring. The default runtime keeps the historical
@@ -654,13 +1009,11 @@ in {
     (mkIf
       (stackReady && policy.valid)
       {
-        services.podman-compose.${stackName}.instances = builtins.listToAttrs (builtins.concatMap (runtime:
-          builtins.map (deployment: {
-            name = depInstance "llamaRouter" deployment;
-            value.files."models.ini".text = runtimeModelsPresetIni runtime;
+        services.podman-compose.${stackName}.instances = builtins.listToAttrs (builtins.map (record: {
+            name = depInstance "llamaRouter" record.deployment;
+            value.files."models.ini".text = deploymentModelsPresetIni record;
           })
-          (runtimeDeployments runtime))
-        activeLlamaRuntimes);
+          (builtins.filter (record: runtimeEnabled record.runtime) llamaDeploymentRecords));
       })
 
     # Deployment lifecycle: podman-compose instances keep owning container
@@ -693,23 +1046,25 @@ in {
       })
 
     # Storage locations. Container files bind-mount these paths; tmpfiles
-    # guarantees they exist with stack ownership. The AI parent is explicit so
-    # tmpfiles never creates a root-owned intermediate directory below the
-    # stack-owned data root.
+    # guarantees they exist with stack ownership. Emit the conventional AI
+    # parent only when an actual managed path is nested below it.
     {
       systemd.tmpfiles.rules = lib.unique (
         lib.optional
-        (stackReady && aiStorageUser != null)
-        "d /var/lib/${stackName}/ai 0755 ${aiStorageUser} ${aiStorageUser} -"
+        aiStorageRootNeeded
+        "d ${aiStorageRoot} 0755 ${composeStack.user} ${composeStack.user} -"
         ++ lib.optional
-        (ollamaProjection.user != null && cfg.backends.ollama.modelsDir != null)
+        (hfCachePathValid && hfOwnerDeclared && hfOwnerGroupDeclared)
+        "d ${cfg.backends.hf.cacheDir} 0750 ${hfOwnerName} ${hfOwnerGroupName} -"
+        ++ lib.optional
+        (ollamaProjection.user != null && ollamaModelsDirConfigured && ollamaModelsDirValid)
         "d ${cfg.backends.ollama.modelsDir} 0755 ${ollamaProjection.user} ${ollamaProjection.user} -"
         ++ builtins.concatMap (runtime: let
           projection = runtimeProjection runtime;
           cacheDir = resolvedCacheDir runtime;
         in
           lib.optional
-          (projection.user != null && cacheDir != null)
+          (projection.user != null && backendLib.validStoragePath cacheDir)
           "d ${cacheDir} 0755 ${projection.user} ${projection.user} -")
         llamaRuntimeNames
       );
@@ -718,7 +1073,7 @@ in {
     # Eval-time invariants.
     {
       assertions = let
-        anyBackends = ollamaDeployments != [] || builtins.any (runtime: runtimeDeployments runtime != []) llamaRuntimeNames;
+        anyBackends = ollamaDeployments != [] || llamaDeployments != [];
         deploymentNames = builtins.map ({
           backend,
           deployment,
@@ -740,21 +1095,33 @@ in {
         }:
           deploymentServiceName backend deployment)
         allDeployments;
-        configuredCacheAssignments =
+        inconsistentCacheRuntimes =
+          builtins.filter
+          (runtime:
+            builtins.length (lib.unique (builtins.map (record: record.cacheDir) (runtimeRecords runtime))) != 1)
+          llamaRuntimeNames;
+        invalidLlamaCacheDeployments =
           builtins.map
-          (runtime: {
-            inherit runtime;
-            cacheDir = resolvedCacheDir runtime;
-          })
-          configuredLlamaRuntimeNames;
-        resolvedCacheAssignments = builtins.filter (assignment: assignment.cacheDir != null) configuredCacheAssignments;
-        configuredCacheDirs = builtins.map (assignment: assignment.cacheDir) resolvedCacheAssignments;
-        renderedCacheAssignments = builtins.map (assignment: "${assignment.runtime}=${assignment.cacheDir}") resolvedCacheAssignments;
+          (record: depInstance "llamaRouter" record.deployment)
+          (builtins.filter
+            (record: !backendLib.validStoragePath record.cacheDir)
+            llamaDeploymentRecords);
+        renderedStorageConflicts =
+          builtins.map
+          (pair: "${pair.left.label}=${pair.left.path} <-> ${pair.right.label}=${pair.right.path}")
+          storageConflictPairs;
         instanceDefined = backend: deployment:
           stackReady
           && composeStack.instances ? ${depInstance backend deployment}
           && ((instanceConfig backend deployment).source or null) != null;
         backendUsersValid = projection: projection.user != null;
+        inherit
+          (hfPrefetchResolution)
+          duplicateArtifacts
+          emptyModels
+          unknownArtifacts
+          unknownModels
+          ;
       in
         builtins.map
         (entry: {
@@ -780,17 +1147,77 @@ in {
             message = "services.ai: deployment API ports must be unique across backends and runtimes.";
           }
           {
-            assertion = builtins.length (lib.unique configuredCacheDirs) == builtins.length configuredCacheDirs;
-            message = "services.ai: configured llama runtimes must use distinct cache directories: ${lib.concatStringsSep ", " renderedCacheAssignments}";
+            assertion = storageConflictPairs == [];
+            message = "services.ai: managed backend storage paths must be pairwise non-overlapping: ${lib.concatStringsSep ", " renderedStorageConflicts}";
+          }
+          {
+            assertion = inconsistentCacheRuntimes == [];
+            message = "services.ai.backends.llamaRouter.deployments: deployments sharing a runtime must resolve to one cacheDir: ${lib.concatStringsSep ", " inconsistentCacheRuntimes}";
+          }
+          {
+            assertion = invalidLlamaCacheDeployments == [];
+            message = "services.ai.backends.llamaRouter.deployments: cacheDir must resolve to a canonical safe absolute path: ${lib.concatStringsSep ", " invalidLlamaCacheDeployments}";
+          }
+          {
+            assertion = ollamaModelsDirValid;
+            message = "services.ai.backends.ollama.modelsDir must be a canonical safe absolute path when configured.";
           }
           {
             assertion = ollamaDeployments == [] || backendUsersValid ollamaProjection;
             message = "services.ai.backends.ollama: deployments must resolve to one systemd user.";
           }
+          {
+            assertion = unknownModels == [];
+            message = "services.ai.backends.hf.prefetch: unknown catalog keys: ${lib.concatStringsSep ", " unknownModels}";
+          }
+          {
+            assertion = emptyModels == [];
+            message = "services.ai.backends.hf.prefetch: selections must resolve to a base hf source or nested hf artifact: ${lib.concatStringsSep ", " emptyModels}";
+          }
+          {
+            assertion = unknownArtifacts == [];
+            message = "services.ai.backends.hf.prefetch: unknown nested artifacts: ${lib.concatStringsSep ", " unknownArtifacts}";
+          }
+          {
+            assertion = duplicateArtifacts == [];
+            message = "services.ai.backends.hf.prefetch: artifact selections must be unique: ${lib.concatStringsSep ", " duplicateArtifacts}";
+          }
+          {
+            assertion = !hfRequested || hfCacheConfigured;
+            message = "services.ai.backends.hf.cacheDir must be configured when Hugging Face artifacts are selected for prefetch.";
+          }
+          {
+            assertion = !hfCacheConfigured || hfCachePathValid;
+            message = "services.ai.backends.hf.cacheDir must be a canonical safe absolute non-root path when configured.";
+          }
+          {
+            assertion = !hfCacheConfigured || (hfOwnerName != null && hfOwnerName != "");
+            message = "services.ai.backends.hf.user or the compose stack user must name the Hugging Face cache owner when cacheDir is configured.";
+          }
+          {
+            assertion = !hfCacheConfigured || hfOwnerName == null || hfOwnerName == "" || hfOwnerDeclared;
+            message = "the Hugging Face cache owner must name a declared users.users entry when cacheDir is configured.";
+          }
+          {
+            assertion = !hfCacheConfigured || !hfOwnerDeclared || hfOwnerGroupDeclared;
+            message = "the Hugging Face cache owner group must name a declared users.groups entry when cacheDir is configured.";
+          }
+          {
+            assertion = !hfRequested || !hfCacheConfigured || !hfOwnerDeclared || validPrefetchIdentityId hfOwnerUid;
+            message = "the Hugging Face cache owner must resolve to a fixed numeric users.users.<name>.uid in the supported 0..2147483647 range when artifacts are selected.";
+          }
+          {
+            assertion = !hfRequested || !hfCacheConfigured || !hfOwnerGroupDeclared || validPrefetchIdentityId hfOwnerGid;
+            message = "the Hugging Face cache owner group must resolve to a fixed numeric users.groups.<group>.gid in the supported 0..2147483647 range when artifacts are selected.";
+          }
+          {
+            assertion = hfTokenPathValid;
+            message = "services.ai.backends.hf.tokenFile must be a canonical safe absolute non-root path.";
+          }
         ]
         ++ builtins.map (runtime: {
           assertion = runtimeDeployments runtime == [] || backendUsersValid (runtimeProjection runtime);
-          message = "services.ai.backends.llamaRouter.runtimes.${runtime}: deployments must resolve to one systemd user.";
+          message = "services.ai.backends.llamaRouter.deployments: runtime ${runtime} must resolve to one systemd user.";
         })
         llamaRuntimeNames
         ++ builtins.map ({

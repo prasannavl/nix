@@ -61,7 +61,7 @@ use build::{
 };
 use deploy::{
     ActivationCommand, ActivationGoal, BootEnvironment, RemoteCommand, SnapshotRequirement,
-    SystemGeneration, activation_command, pre_switch_admission_command, rollback_command,
+    SystemGeneration, activation_command, pre_switch_preparation_command, rollback_command,
 };
 use health::{HealthDecision, HealthEvidence};
 use host_runtime::{
@@ -633,7 +633,7 @@ fn snapshot_admission_activation_observer_and_health_are_ordered() {
             &generation("new"),
             SnapshotRequirement::Required,
             true,
-            &pre_switch_admission_command(),
+            &pre_switch_preparation_command(),
             &activation(ActivationGoal::Switch),
             ActivationGoal::Switch,
             Some(&rollback_factory),
@@ -680,7 +680,7 @@ fn pre_switch_failure_does_not_cross_rollback_boundary() {
             &generation("new"),
             SnapshotRequirement::Required,
             true,
-            &pre_switch_admission_command(),
+            &pre_switch_preparation_command(),
             &activation(ActivationGoal::Switch),
             ActivationGoal::Switch,
             Some(&rollback_factory),
@@ -712,7 +712,7 @@ fn generation_admission_rejection_does_not_cross_rollback_boundary() {
             &generation("new"),
             SnapshotRequirement::Required,
             true,
-            &pre_switch_admission_command(),
+            &pre_switch_preparation_command(),
             &activation(ActivationGoal::Switch),
             ActivationGoal::Switch,
             Some(&rollback_factory),
@@ -758,7 +758,7 @@ fn failure_after_activation_admission_runs_rollback_submit_and_observer() {
             &generation("new"),
             SnapshotRequirement::Required,
             true,
-            &pre_switch_admission_command(),
+            &pre_switch_preparation_command(),
             &activation(ActivationGoal::Switch),
             ActivationGoal::Switch,
             Some(&rollback_factory),
@@ -841,7 +841,7 @@ fn dry_run_executes_evaluation_and_build_but_no_target_mutation() {
     );
     assert!(
         runtime
-            .pre_switch(&target(), &pre_switch_admission_command())
+            .prepare_switch(&target(), &pre_switch_preparation_command())
             .unwrap()
             .skipped
     );

@@ -45,8 +45,9 @@ can silently resolve to different definitions.
 
 The module also calls `mkProjection` with the evaluated `cfg.backends`, so its
 `projection.aiServices.backends` contains derived read-only fields such as
-`active`, `ports`, `serviceNames`, `requiredModels`, and `runtimesInfo`. An
-independent `lib.evalModules` round-trip failed on the first such field:
+`active`, `ports`, `serviceNames`, `requiredModels`, and the then-named
+`runtimesInfo` projection (now `deploymentsInfo`). An independent
+`lib.evalModules` round-trip failed on the first such field:
 `services.ai.backends.llamaRouter.active` was read-only but set multiple times.
 
 If an input handoff is required, it must be the exact declaration-only shape

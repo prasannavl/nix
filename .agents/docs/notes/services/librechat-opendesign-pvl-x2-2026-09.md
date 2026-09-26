@@ -19,19 +19,18 @@ the registry entries now owned by `config/pvl/registry.nix`.
 The abird originals (`hosts/abird-corp/services/{librechat,opendesign}.nix`) are
 coupled to abird-only infrastructure and were changed as follows:
 
-| Concern     | abird                                                  | pvl-x2                                                          |
-| ----------- | ------------------------------------------------------ | --------------------------------------------------------------- |
-| Auth        | Kanidm OIDC (`abird-id`, `OPENID_*`, client secret)    | local email/password; no IdM on pvl                             |
-| AI endpoint | `ai.mkApi registry` against `abird-srv`                | `http://host.containers.internal:12434` (`ollama-rocm`)         |
-| Model list  | `ai.modelCatalog` minus embedding                      | Ollama-tagged models from `config.services.ai`, minus embedding |
-| Storage     | `/var/lib/abird/...`                                   | `/var/lib/pvl/...`                                              |
-| Exposure    | `useUpstreamCsp` + registry subnet + Cloudflare tunnel | `nginxHostNames` only; no tunnel hostnames yet (LAN/tailnet)    |
-| Secrets     | Kanidm age secret + generated MEILI/CREDS/JWT          | generated MEILI/CREDS/JWT only                                  |
+| Concern     | abird                                                  | pvl-x2                                                       |
+| ----------- | ------------------------------------------------------ | ------------------------------------------------------------ |
+| Auth        | Kanidm OIDC (`abird-id`, `OPENID_*`, client secret)    | local email/password; no IdM on pvl                          |
+| AI endpoint | `ai.mkApi registry` against `abird-srv`                | Ollama plus every configured llama.cpp deployment            |
+| Model list  | `ai.modelCatalog` minus embedding                      | Exact per-deployment admitted IDs, minus embedding           |
+| Storage     | `/var/lib/abird/...`                                   | `/var/lib/pvl/...`                                           |
+| Exposure    | `useUpstreamCsp` + registry subnet + Cloudflare tunnel | `nginxHostNames` only; no tunnel hostnames yet (LAN/tailnet) |
+| Secrets     | Kanidm age secret + generated MEILI/CREDS/JWT          | generated MEILI/CREDS/JWT only                               |
 
-LibreChat uses the `custom` endpoint (OpenAI-compatible) with
-`apiKey: "ollama"`. The model list excludes entries without an `ollama`
-reference (so `bonsai-2-27b`, served only by the PrismML llama.cpp runtime, is
-not offered).
+LibreChat uses OpenAI-compatible `custom` endpoints with `apiKey: "ollama"`.
+Each endpoint receives only its deployment's admitted model IDs. The PrismML
+endpoint therefore offers `bonsai2:27b`; upstream llama.cpp and Ollama do not.
 
 OpenDesign runs the `pkgs.opendesign` image with a `managedByokProvider`
 override (`pvl-ai`, protocol `ollama`, model `qwen3.5:4b`) and an in-container
@@ -74,21 +73,22 @@ the CPU fallback is always last:
   CPU `11000`). The `pvl-x2` instance was also corrected from the legacy
   singular `OLLAMA_BASE_URL` on `127.0.0.1` to the plural `OLLAMA_BASE_URLS` on
   `host.containers.internal`.
-- **LibreChat** (`pvl-x2`): three `endpoints.custom` entries — Ollama,
-  `Pvl llama.cpp ROCm`, and `Pvl llama.cpp CPU` — each with both a
-  `models.default` array and `fetch: true`, with CPU last. `pvl-x2` has no
-  NVIDIA class, so it is omitted.
+- **LibreChat** (`pvl-x2`): four `endpoints.custom` entries — Ollama,
+  `Pvl llama.cpp ROCm`, `Pvl Prism ROCm`, and `Pvl llama.cpp CPU` — each with
+  both an exact per-deployment `models.default` array and `fetch: true`, with
+  CPU last. `pvl-x2` has no NVIDIA class, so it is omitted.
 - **OpenDesign** (`pvl-x2`): only one `managedByokProvider` is supported by the
   package, so it stays on the Ollama endpoint; it cannot list multiple backends.
 
 The lists come from `config.services.ai.consumersFor defaultHost`, a shared pure
 projection in `lib/services/ai` returning a per-backend view (`ollama`,
-`llama`): ordered `endpoints`, native `urls`, OpenAI `openaiUrls`, `default` /
-`openaiDefault` primaries, and `byDevice` / `openaiByDevice` lookups. Open WebUI
-joins `ollama.urls` / `llama.openaiUrls` / `llama.apiKeys`; LibreChat generates
-one custom endpoint per `llama.endpoints` entry and uses `ollama.openaiDefault`;
-OpenDesign uses `ollama.default` (guarded). The ordering (and CPU-last contract)
-lives in the projection.
+`llama`): ordered `endpoints` carrying exact `modelIds`, native `urls`, OpenAI
+`openaiUrls`, `default` / `openaiDefault` primaries, and `byDevice` /
+`openaiByDevice` lookups. Open WebUI joins `ollama.urls` / `llama.openaiUrls` /
+`llama.apiKeys`; LibreChat generates one custom endpoint per `llama.endpoints`
+entry and one from the primary Ollama descriptor; OpenDesign uses
+`ollama.default` (guarded). Ordering is deployment declaration order, with all
+GPU runtimes declared before the CPU fallback.
 
 ## Exposure
 
@@ -105,10 +105,11 @@ container exited 1 with `Invalid custom config file at /app/librechat.yaml` /
 `endpoints.custom[1].models.default: expected array, received undefined`.
 
 LibreChat validates every `endpoints.custom` entry and requires a
-`models.default` array; `fetch: true` alone is not enough. The llama.cpp entries
-now carry `models.default` (the same alias list as the Ollama endpoint, since
-the router serves the same model aliases) plus `fetch: true`. The
-mongo/meilisearch containers were healthy; only the api config was rejected.
+`models.default` array; `fetch: true` alone is not enough. Each entry now
+carries the exact model IDs admitted to its deployment plus `fetch: true`; this
+matters for side-by-side engines such as PrismML, which serves Bonsai but not
+the upstream llama.cpp set. The mongo/meilisearch containers were healthy; only
+the api config was rejected.
 
 Symptom pattern to remember: a compose `*-verify.service` failure with an
 `*-ready.target` inactive and a healthy-looking main service usually means the

@@ -46,8 +46,8 @@ newlines. Verified: a preset `threads = "a\nb"` yields `policy.valid == true`,
 no diagnostics, and `runtimes.default.modelPresets` contains the newline value.
 A malformed `models.ini` is only caught later by the reconciler's own
 `presetEntries` assertion for active runtimes (and never for an inactive runtime
-whose `runtimesInfo.modelPresets` is still exposed). Mirror the reconciler's
-non-empty/single-line/key-pattern checks in the resolver.
+whose `deploymentsInfo.<instance>.modelPresets` is still exposed). Mirror the
+reconciler's non-empty/single-line/key-pattern checks in the resolver.
 
 ### N3 (Medium, design decision to confirm): whole-catalog validation disables every host
 

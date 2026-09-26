@@ -7,23 +7,23 @@
   # which engine, and where.
   services.ai = {
     models = [
-      "nomic-embed-text"
+      "nomic-embed-text-v15-100m"
       "gemma4-e2b"
       "gemma4-e4b"
-      "qwen35-08b"
+      "qwen35-800m"
       "qwen35-2b"
       "qwen35-4b"
       "qwen35-9b"
       # Ternary preview: PTQ1_0 GGUFs need the PrismML llama.cpp fork, so
-      # this entry pins llama.runtime = "prism" and is served only by the
-      # prism runtime below.
-      "bonsai-2-27b"
+      # this entry supports only the prism runtime below.
+      "bonsai2-27b"
     ];
-    roles.embedding = "nomic-embed-text";
+    roles.embedding = "nomic-embed-text-v15-100m";
 
     # Deployment order is significant: consumer endpoint lists (Open WebUI,
-    # LibreChat) are built in this order, so keep ROCm, NVIDIA, CPU with CPU
-    # last. `ports`/`urls` projections preserve it.
+    # LibreChat) are built in this order. Keep every ROCm runtime first, then
+    # every NVIDIA runtime, and CPU last. `ports`/`urls` projections preserve
+    # the declaration order.
     backends = {
       ollama = {
         # Shared model store, mounted read-write by every Ollama container:
@@ -52,41 +52,34 @@
       # a model's weights/KV cache once it goes unused, so a large resident
       # model is swapped out like Ollama's keep_alive instead of waiting for a
       # fourth-model LRU eviction.
-      llamaRouter.runtimes = {
-        default = {
-          idleTimeoutSeconds = 300;
-          deployments = [
-            {
-              instance = "llama-rocm";
-              lifecycle = "auto";
-            }
-            {
-              instance = "llama-nvidia";
-              lifecycle = "manual";
-            }
-            {
-              instance = "llama-cpu";
-              lifecycle = "manual";
-            }
-          ];
-        };
-
-        # PrismML fork engine for the ternary Bonsai models. Separate cache and
-        # reconciler so the default (upstream) router never sees (or tries to
-        # load) these GGUFs.
-        prism = {
-          idleTimeoutSeconds = 300;
-          deployments = [
-            {
-              instance = "llama-prism-rocm";
-              lifecycle = "auto";
-            }
-            {
-              instance = "llama-prism-nvidia";
-              lifecycle = "manual";
-            }
-          ];
-        };
+      llamaRouter = {
+        defaults.idleTimeoutSeconds = 300;
+        deployments = [
+          {
+            instance = "llama-rocm";
+            lifecycle = "auto";
+          }
+          # PrismML fork deployments use the runtime-derived isolated cache so
+          # upstream llama.cpp never scans ternary-only GGUFs.
+          {
+            instance = "llama-prism-rocm";
+            runtime = "prism";
+            lifecycle = "auto";
+          }
+          {
+            instance = "llama-nvidia";
+            lifecycle = "manual";
+          }
+          {
+            instance = "llama-prism-nvidia";
+            runtime = "prism";
+            lifecycle = "manual";
+          }
+          {
+            instance = "llama-cpu";
+            lifecycle = "manual";
+          }
+        ];
       };
     };
   };
