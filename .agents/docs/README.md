@@ -575,6 +575,12 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/abird-post-278a2cba-audit-2026-09.md`: Complete
+  12-commit audit of `6fe3b63a..278a2cba`, the Abird mirror of Pvl-authored
+  shared work plus ledger/lint commits (PI fetcher v2, NVIDIA discovery, VS Code
+  1.139.0, projection-test neutrality,
+  `revdiff`/`pi-diff`/`agent-workspace-linux`, and AI model prefetch), and
+  byte/mode parity (584 common, 570 exact, 14 explained, no port required).
 - `.agents/docs/notes/tooling/abird-post-6fe3b63a-reaudit-2026-09.md`: Complete
   36-commit re-audit of `857ac6eb..6fe3b63a`, per-commit dispositions across the
   AI endpoint/projection series, memory docs, and Nix-native projection
