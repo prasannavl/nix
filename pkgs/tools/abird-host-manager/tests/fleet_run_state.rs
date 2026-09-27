@@ -56,6 +56,22 @@ fn allocation_is_private_unique_and_can_fall_back() {
             & 0o777,
         0o700
     );
+    for phase in [
+        "tf", "build", "snapshot", "acquire", "deploy", "rollback", "health",
+    ] {
+        assert!(
+            run.layout()
+                .diagnostic_dir
+                .join(format!("logs.{phase}"))
+                .is_dir()
+        );
+        assert!(
+            run.layout()
+                .diagnostic_dir
+                .join(format!("status.{phase}"))
+                .is_dir()
+        );
+    }
     assert!(
         RunState::allocate_with_id(
             runtime_roots.clone(),
@@ -98,6 +114,16 @@ fn layout_matches_nixbot_phase_and_runtime_paths_and_rejects_unsafe_names() {
         layout.diagnostic_dir.join("status.build/gap3.duration")
     );
     assert_eq!(build.artifact_dir, layout.run_dir.join("artifacts.build"));
+
+    let acquire = layout.phase_item("acquire", "gap3", None).unwrap();
+    assert_eq!(
+        acquire.log,
+        layout.diagnostic_dir.join("logs.acquire/gap3.log")
+    );
+    assert_eq!(
+        acquire.status,
+        layout.diagnostic_dir.join("status.acquire/gap3.rc")
+    );
 
     let tofu = layout
         .phase_item("tf", "apply", Some("cloudflare-dns"))

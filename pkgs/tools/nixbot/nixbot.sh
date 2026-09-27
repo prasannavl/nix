@@ -7581,14 +7581,23 @@ wait_for_prepared_host_age_identity_activation_visibility() {
 	done
 }
 
+build_remote_runtime_command() {
+	local target_cmd="$1"
+
+	# Automation payloads own their complete PATH and must not run as login
+	# shells. A payload that enables nounset would otherwise leak that option
+	# into /etc/bash_logout and turn a successful remote mutation into failure.
+	printf 'env PATH=%q %q -c %q\n' \
+		"${REMOTE_RUNTIME_PATH}" \
+		"${REMOTE_SYSTEM_BASH}" \
+		"${target_cmd}"
+}
+
 build_wrapped_root_command() {
 	local target_cmd="$1" deploy_user="$2" ask_sudo_password="$3"
 	local shell_cmd="" sudo_prefix=""
 
-	printf -v shell_cmd 'env PATH=%q %q -lc %q' \
-		"${REMOTE_RUNTIME_PATH}" \
-		"${REMOTE_SYSTEM_BASH}" \
-		"${target_cmd}"
+	shell_cmd="$(build_remote_runtime_command "${target_cmd}")"
 	if [ "${deploy_user}" = "root" ]; then
 		printf '%s\n' "${shell_cmd}"
 		return
@@ -8311,7 +8320,11 @@ resolve_deploy_phase_result() {
 	status=""
 
 	if ! status="$(read_status_file "${status_file}")"; then
-		result_kind="fail"
+		if host_optional_deploy_enabled "${node}"; then
+			result_kind="optional-fail"
+		else
+			result_kind="fail"
+		fi
 		printf '%s\n%s\n' "${result_kind}" "${status}"
 		return 0
 	fi
@@ -8478,7 +8491,6 @@ classify_completed_deploy_jobs() {
 	for node in "$@"; do
 		[ -n "${node}" ] || continue
 		status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
-		[ -s "${status_file}" ] || continue
 		{
 			read -r result_kind
 			read -r status
@@ -8600,25 +8612,56 @@ abort_deploy_on_signal() {
 		"$@"
 }
 
-log_snapshot_retry_transition() {
-	local snapshot_dir="$1" level_index="$2"
-	shift 2
+run_acquire_job() {
+	local node="$1" out_file="$2" status_file="$3" candidate_file="$4" log_file="${5:-}"
+	local built_out_path="" acquire_start_epoch="" duration_file="" duration_secs=""
+	local rc="" skip_marker=""
 
-	if ! wave_needs_snapshot_retry "${snapshot_dir}" "$@"; then
-		return 1
-	fi
-
-	log_section "Phase: Snapshot"
-	if [ "$#" -eq 1 ]; then
-		log_subsection "Snapshot Wave ${level_index}: $1"
-	else
-		log_subsection "Snapshot Wave ${level_index}: $(join_by_comma "$@")"
-	fi
-	return 0
+	wait_before_host_phase "${node}" "acquire"
+	duration_file="$(phase_dir_item_duration_file "$(dirname "${status_file}")" "${node}")"
+	(
+		set +e
+		skip_marker="${status_file}.skip"
+		rm -f "${skip_marker}" "${candidate_file}"
+		acquire_start_epoch="$(date +%s)"
+		if [ ! -s "${out_file}" ]; then
+			echo "Missing built output path for ${node}: ${out_file}" >&2
+			rc=1
+		else
+			built_out_path="$(cat "${out_file}")"
+			if run_streamed_host_command acquire "${node}" "${log_file}" acquire_host \
+				"${node}" "${built_out_path}" "${skip_marker}" "${candidate_file}"; then
+				rc=0
+			else
+				rc="$?"
+			fi
+		fi
+		if [ "${rc}" = "0" ] && [ -e "${skip_marker}" ]; then
+			write_status_file "${status_file}" "skip"
+		elif [ "${rc}" = "0" ]; then
+			if [ -s "${candidate_file}" ] &&
+				[ "$(<"${candidate_file}")" = "${built_out_path}" ]; then
+				write_status_file "${status_file}" 0
+			else
+				echo "Acquire completed without an exact candidate lease record for ${node}" >&2
+				rc=1
+				write_status_file "${status_file}" "${rc}"
+			fi
+		else
+			write_status_file "${status_file}" "${rc}"
+		fi
+		duration_secs="$(elapsed_seconds "${acquire_start_epoch}")"
+		write_duration_file "${duration_file}" "${duration_secs}"
+		log_host_phase_duration "${node}" acquire "${duration_secs}" "${log_file}"
+		log_group_end_host_stage "acquire"
+		rm -f "${skip_marker}"
+		exit "${rc}"
+	)
 }
 
 run_deploy_job() {
 	local node="$1" out_file="$2" status_file="$3" log_file="${4:-}"
+	local candidate_file="${5:-}"
 	local built_out_path="" deploy_start_epoch="" duration_file="" duration_secs=""
 	local rc="" skip_marker=""
 
@@ -8635,7 +8678,11 @@ run_deploy_job() {
 			rc=1
 		else
 			built_out_path="$(cat "${out_file}")"
-			if run_streamed_host_command deploy "${node}" "${log_file}" deploy_host "${node}" "${built_out_path}" "${skip_marker}"; then
+			if [ -z "${candidate_file}" ] || [ ! -s "${candidate_file}" ] ||
+				[ "$(cat "${candidate_file}" 2>/dev/null)" != "${built_out_path}" ]; then
+				echo "Missing or stale acquired candidate for ${node}: ${candidate_file}" >&2
+				rc=1
+			elif run_streamed_host_command deploy "${node}" "${log_file}" activate_acquired_host "${node}" "${built_out_path}"; then
 				rc=0
 			else
 				rc="$?"
@@ -8874,58 +8921,6 @@ run_snapshot_job() {
 		fi
 		exit "${rc}"
 	)
-}
-
-run_initial_snapshot_wave() {
-	local level_group="$1" snapshot_dir="$2" snapshot_log_dir="$3" snapshot_status_dir="$4"
-	local verify_parallel="${5:-0}" verify_parallel_jobs="${6:-1}"
-	local -a level_hosts=() snapshot_hosts=()
-	local node="" active_jobs=0 status_file="" log_file="" status=""
-
-	[ -n "${level_group}" ] || return 0
-
-	mapfile -t level_hosts < <(jq -r '.[]' <<<"${level_group}")
-	for node in "${level_hosts[@]}"; do
-		[ -n "${node}" ] || continue
-		if host_deploy_stage_skipped "${node}"; then
-			continue
-		fi
-		snapshot_hosts+=("${node}")
-	done
-
-	[ "${#snapshot_hosts[@]}" -gt 0 ] || return 0
-
-	log_subsection "Snapshot Wave 0: $(join_by_comma "${snapshot_hosts[@]}")"
-	for node in "${snapshot_hosts[@]}"; do
-		[ -n "${node}" ] || continue
-		if [ "${verify_parallel}" -eq 1 ]; then
-			status_file="$(phase_dir_item_status_file "${snapshot_status_dir}" "${node}")"
-			log_file="$(phase_dir_item_log_file "${snapshot_log_dir}" "${node}")"
-			run_snapshot_job "${node}" "${snapshot_dir}/${node}.path" "${status_file}" "${log_file}" &
-			active_jobs=$((active_jobs + 1))
-			wait_for_job_slot active_jobs "${verify_parallel_jobs}" || return "$?"
-			continue
-		fi
-
-		if ! run_snapshot_job "${node}" "${snapshot_dir}/${node}.path"; then
-			echo "Initial snapshot for ${node} failed; will retry when its deploy wave is reached" >&2
-		fi
-	done
-
-	if [ "${verify_parallel}" -eq 1 ]; then
-		drain_job_slots active_jobs || return "$?"
-		for node in "${snapshot_hosts[@]}"; do
-			[ -n "${node}" ] || continue
-			status_file="$(phase_dir_item_status_file "${snapshot_status_dir}" "${node}")"
-			if ! status="$(read_status_file "${status_file}" 2>/dev/null)"; then
-				echo "Initial snapshot for ${node} failed; will retry when its deploy wave is reached" >&2
-				continue
-			fi
-			if [ "${status}" != "0" ]; then
-				echo "Initial snapshot for ${node} failed; will retry when its deploy wave is reached" >&2
-			fi
-		done
-	fi
 }
 
 ensure_wave_snapshots() {
@@ -10603,6 +10598,87 @@ run_pre_activation_ai_model_prefetch() {
 		"${prefetch_cmd}"
 }
 
+candidate_lease_key() {
+	local node="$1" run_identity=""
+
+	run_identity="${RUNTIME_WORK_DIR:-${NIXBOT_DIAG_DIR:-nixbot}}"
+	printf '%s' "${run_identity}:${node}" | sha256sum | cut -d ' ' -f 1
+}
+
+# Native fleet implements the same target-side lease protocol in
+# acquire_candidate_lease_command/release_candidate_lease_command. Shell hashes
+# its per-run runtime directory with the host; native hashes its stable
+# invocation ID with the host.
+build_candidate_lease_cmd() {
+	local action="$1" node="$2" system_path="$3" lease_key=""
+
+	lease_key="$(candidate_lease_key "${node}")"
+	printf 'set -Eeuo pipefail\n'
+	printf 'lease_key=%q\n' "${lease_key}"
+	printf 'system_path=%q\n' "${system_path}"
+	case "${action}" in
+	acquire)
+		cat <<'EOF_ACQUIRE_CANDIDATE_LEASE'
+lease_dir=/run/nixbot/acquired-candidates
+lease_path="${lease_dir}/${lease_key}"
+[ -d "${system_path}" ] || {
+	echo "acquired candidate is unavailable: ${system_path}" >&2
+	exit 1
+}
+mkdir -p -- "${lease_dir}"
+if [ -L "${lease_path}" ]; then
+	[ "$(readlink -- "${lease_path}")" = "${system_path}" ]
+elif [ -e "${lease_path}" ]; then
+	echo "candidate lease path is not a symlink: ${lease_path}" >&2
+	exit 1
+else
+	/run/current-system/sw/bin/nix-store \
+		--add-root "${lease_path}" \
+		--indirect \
+		-r "${system_path}" >/dev/null
+	[ "$(readlink -- "${lease_path}")" = "${system_path}" ]
+fi
+EOF_ACQUIRE_CANDIDATE_LEASE
+		;;
+	release)
+		cat <<'EOF_RELEASE_CANDIDATE_LEASE'
+lease_dir=/run/nixbot/acquired-candidates
+lease_path="${lease_dir}/${lease_key}"
+if [ ! -e "${lease_path}" ] && [ ! -L "${lease_path}" ]; then
+	exit 0
+fi
+[ -L "${lease_path}" ] || {
+	echo "candidate lease path is not a symlink: ${lease_path}" >&2
+	exit 1
+}
+[ "$(readlink -- "${lease_path}")" = "${system_path}" ] || {
+	echo "candidate lease no longer names the acquired generation: ${lease_path}" >&2
+	exit 1
+}
+rm -f -- "${lease_path}"
+rmdir -- "${lease_dir}" 2>/dev/null || true
+rmdir -- /run/nixbot 2>/dev/null || true
+EOF_RELEASE_CANDIDATE_LEASE
+		;;
+	*)
+		die "Unsupported candidate lease action: ${action}"
+		;;
+	esac
+}
+
+set_candidate_lease() {
+	local action="$1" node="$2" system_path="$3" command=""
+
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		echo "DRY-RUN: skipping ${action} candidate lease on ${node}: ${system_path}" >&2
+		return 0
+	fi
+	command="$(build_candidate_lease_cmd "${action}" "${node}" "${system_path}")" || return "$?"
+	run_prepared_root_command_with_retry \
+		"${action^} candidate lease on ${node}" \
+		"${command}"
+}
+
 activate_prepared_system_path() {
 	local node="$1" system_path="$2" activate_cmd="" activation_observer="" activation_script="" activation_runner="" activation_unit="" systemd_run_properties=""
 	local post_promote_bootloader_goal="" persist_profile=0
@@ -10867,9 +10943,9 @@ copy_system_path_from_local_to_prepared_target() {
 	: "${copy_output}"
 }
 
-deploy_remote_build_host_path() {
-	local node="$1" built_out_path="$2"
-	local age_identity_key="" deploy_rc=0
+acquire_remote_build_host_path() {
+	local node="$1" built_out_path="$2" candidate_file="$3"
+	local age_identity_key="" lease_acquired=0 acquire_rc=0
 
 	run_parented_host_operation_with_retry \
 		"${node}" \
@@ -10884,38 +10960,34 @@ deploy_remote_build_host_path() {
 		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
 	fi
 
-	if [ "${DRY_RUN}" -eq 1 ]; then
-		prepare_remote_build_system_path_on_prepared_target "${node}" "${built_out_path}" &&
-			run_pre_switch_preparation &&
-			run_candidate_generation_admission "${built_out_path}" &&
-			run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
-			run_pre_activation_ai_model_prefetch "${node}" "${built_out_path}" &&
-			activate_prepared_system_path "${node}" "${built_out_path}"
+	prepare_remote_build_system_path_on_prepared_target "${node}" "${built_out_path}" || return "$?"
+	printf '%s\n' "${built_out_path}" >"${candidate_file}" || return "$?"
+	if set_candidate_lease acquire "${node}" "${built_out_path}"; then
+		lease_acquired=1
+	else
 		return "$?"
 	fi
-
-	register_active_deploy "${node}"
-	if prepare_remote_build_system_path_on_prepared_target "${node}" "${built_out_path}" &&
-		run_pre_switch_preparation &&
-		run_candidate_generation_admission "${built_out_path}" &&
+	if run_candidate_generation_admission "${built_out_path}" &&
 		run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
-		run_pre_activation_ai_model_prefetch "${node}" "${built_out_path}" &&
-		mark_deploy_activation_started "${node}" &&
-		activate_prepared_system_path "${node}" "${built_out_path}"; then
-		deploy_rc=0
+		run_pre_activation_ai_model_prefetch "${node}" "${built_out_path}"; then
+		acquire_rc=0
 	else
-		deploy_rc="$?"
+		acquire_rc="$?"
 	fi
-	unregister_active_deploy "${node}"
-	return "${deploy_rc}"
+	if [ "${acquire_rc}" -ne 0 ] && [ "${lease_acquired}" -eq 1 ]; then
+		if set_candidate_lease release "${node}" "${built_out_path}"; then
+			rm -f "${candidate_file}"
+		fi
+	fi
+	return "${acquire_rc}"
 }
 
-deploy_host() {
-	local node="$1" built_out_path="$2" skip_marker="${3:-}"
+acquire_host() {
+	local node="$1" built_out_path="$2" skip_marker="${3:-}" candidate_file="${4:-}"
 	local remote_current_path="" age_identity_key=""
-	local deploy_rc=0
+	local acquire_rc=0 lease_acquired=0
 
-	log_host_stage "deploy" "${node}" "${GOAL}"
+	log_host_stage "acquire" "${node}" "${GOAL}"
 	if [ -n "$(host_parent_for "${node}")" ]; then
 		clear_primary_ready "${node}"
 	fi
@@ -10938,7 +11010,7 @@ deploy_host() {
 	fi
 
 	if [ "${BUILD_HOST}" != "local" ]; then
-		deploy_remote_build_host_path "${node}" "${built_out_path}"
+		acquire_remote_build_host_path "${node}" "${built_out_path}" "${candidate_file}"
 		return "$?"
 	fi
 
@@ -10957,30 +11029,64 @@ deploy_host() {
 		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
 	fi
 
-	if [ "${DRY_RUN}" -eq 1 ]; then
-		copy_system_path_from_local_to_prepared_target "${node}" "${built_out_path}" &&
-			run_pre_switch_preparation &&
-			run_candidate_generation_admission "${built_out_path}" &&
-			run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
-			run_pre_activation_ai_model_prefetch "${node}" "${built_out_path}" &&
-			activate_prepared_system_path "${node}" "${built_out_path}"
+	copy_system_path_from_local_to_prepared_target "${node}" "${built_out_path}" || return "$?"
+	printf '%s\n' "${built_out_path}" >"${candidate_file}" || return "$?"
+	if set_candidate_lease acquire "${node}" "${built_out_path}"; then
+		lease_acquired=1
 	else
-		register_active_deploy "${node}"
-		if copy_system_path_from_local_to_prepared_target "${node}" "${built_out_path}" &&
-			run_pre_switch_preparation &&
-			run_candidate_generation_admission "${built_out_path}" &&
-			run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
-			run_pre_activation_ai_model_prefetch "${node}" "${built_out_path}" &&
-			mark_deploy_activation_started "${node}" &&
-			activate_prepared_system_path "${node}" "${built_out_path}"; then
-			deploy_rc=0
-		else
-			deploy_rc="$?"
-		fi
-
-		unregister_active_deploy "${node}"
-		return "${deploy_rc}"
+		return "$?"
 	fi
+	if run_candidate_generation_admission "${built_out_path}" &&
+		run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
+		run_pre_activation_ai_model_prefetch "${node}" "${built_out_path}"; then
+		acquire_rc=0
+	else
+		acquire_rc="$?"
+	fi
+	if [ "${acquire_rc}" -ne 0 ] && [ "${lease_acquired}" -eq 1 ]; then
+		if set_candidate_lease release "${node}" "${built_out_path}"; then
+			rm -f "${candidate_file}"
+		fi
+	fi
+	return "${acquire_rc}"
+}
+
+activate_acquired_host() {
+	local node="$1" built_out_path="$2" deploy_rc=0 age_identity_key=""
+
+	log_host_stage "deploy" "${node}" "${GOAL}"
+	if [ -n "$(host_parent_for "${node}")" ]; then
+		clear_primary_ready "${node}"
+	fi
+	run_parented_host_operation_with_retry \
+		"${node}" \
+		"deploy transport preparation" \
+		prepare_host_transport_for_deploy \
+		"${node}" \
+		1 || return 1
+	age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+	if [ -n "${age_identity_key}" ]; then
+		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
+	fi
+	# Verify or re-establish the exact acquisition lease before any activation preparation.
+	set_candidate_lease acquire "${node}" "${built_out_path}" || return "$?"
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		run_pre_switch_preparation && activate_prepared_system_path "${node}" "${built_out_path}"
+		return "$?"
+	fi
+
+	register_active_deploy "${node}"
+	if run_pre_switch_preparation &&
+		mark_deploy_activation_started "${node}" &&
+		activate_prepared_system_path "${node}" "${built_out_path}"; then
+		deploy_rc=0
+	else
+		deploy_rc="$?"
+	fi
+	set_candidate_lease release "${node}" "${built_out_path}" ||
+		echo "warning: candidate lease cleanup deferred for ${node}" >&2
+	unregister_active_deploy "${node}"
+	return "${deploy_rc}"
 }
 
 run_bootstrap_key_checks() {
@@ -11112,6 +11218,8 @@ init_run_dirs() {
 	local -n ird_build_out_dir_out_ref="$9" ird_snapshot_dir_out_ref="${10}"
 	local -n ird_rollback_log_dir_out_ref="${11}" ird_rollback_status_dir_out_ref="${12}"
 	local -n ird_health_log_dir_out_ref="${13}" ird_health_status_dir_out_ref="${14}"
+	local -n ird_acquire_log_dir_out_ref="${15}" ird_acquire_status_dir_out_ref="${16}"
+	local -n ird_candidate_dir_out_ref="${17}"
 
 	# shellcheck disable=SC2034
 	{
@@ -11127,13 +11235,16 @@ init_run_dirs() {
 		ird_rollback_status_dir_out_ref="$(phase_status_dir_path "${diag_dir}" "rollback")"
 		ird_health_log_dir_out_ref="$(phase_log_dir_path "${diag_dir}" "health")"
 		ird_health_status_dir_out_ref="$(phase_status_dir_path "${diag_dir}" "health")"
+		ird_acquire_log_dir_out_ref="$(phase_log_dir_path "${diag_dir}" "acquire")"
+		ird_acquire_status_dir_out_ref="$(phase_status_dir_path "${diag_dir}" "acquire")"
+		ird_candidate_dir_out_ref="${run_dir}/acquired-candidates"
 	}
 
-	ensure_phase_artifact_dirs "${diag_dir}" build snapshot deploy rollback health
-	for phase in build snapshot deploy rollback health; do
+	ensure_phase_artifact_dirs "${diag_dir}" build snapshot acquire deploy rollback health
+	for phase in build snapshot acquire deploy rollback health; do
 		mkdir -p "$(phase_artifact_dir_path "${run_dir}" "${phase}")"
 	done
-	mkdir -p "${ird_build_out_dir_out_ref}" "${ird_snapshot_dir_out_ref}"
+	mkdir -p "${ird_build_out_dir_out_ref}" "${ird_snapshot_dir_out_ref}" "${ird_candidate_dir_out_ref}"
 }
 
 phase_dir_path() {
@@ -11978,6 +12089,8 @@ log_host_phase_duration() {
 
 	case "${phase}" in
 	build) label="Build" ;;
+	snapshot) label="Snapshot" ;;
+	acquire) label="Acquire" ;;
 	deploy) label="Deploy" ;;
 	*) label="${phase}" ;;
 	esac
@@ -12127,10 +12240,7 @@ run_build_host_command_once() {
 	local -a ssh_opts=()
 
 	prepare_role_host_ssh_context "${BUILD_HOST}" ssh_target ssh_opts nix_sshopts || return 1
-	printf -v wrapped_cmd 'env PATH=%q %q -lc %q' \
-		"${REMOTE_RUNTIME_PATH}" \
-		"${REMOTE_SYSTEM_BASH}" \
-		"${target_cmd}"
+	wrapped_cmd="$(build_remote_runtime_command "${target_cmd}")"
 	# shellcheck disable=SC2029
 	ssh "${ssh_opts[@]}" "${ssh_target}" "${wrapped_cmd}"
 }
@@ -12903,11 +13013,10 @@ run_build_phase() {
 	local -n rbp_failed_hosts_out_ref="$8"
 
 	local node="" active_jobs=0 status_file="" out_file="" log_file=""
-	local host_grouping=0 phase_rc=0
+	local phase_rc=0
 	declare -A synchronous_build_set=()
 
 	if [ "${build_parallel}" -eq 0 ] && [ "${#rbp_build_hosts_in_ref[@]}" -gt 1 ]; then
-		host_grouping=1
 		log_grouped_phase_section "Phase: Build" "build" 1
 	else
 		log_grouped_phase_section "Phase: Build" "build" 0
@@ -13005,25 +13114,240 @@ run_build_phase() {
 	return 0
 }
 
+##### Snapshot Phase #####
+
+run_snapshot_phase() {
+	local snapshot_dir="$1" snapshot_log_dir="$2" snapshot_status_dir="$3"
+	local verify_parallel="$4" verify_parallel_jobs="$5"
+	local skipped_hosts_out_name="$7" snapshot_failed_hosts_out_name="$8" failed_hosts_out_name="$9"
+	local -n rsp_level_groups_in_ref="$6"
+	local level_group="" node="" wave_index=1
+	local -a level_hosts=() snapshot_hosts=()
+
+	[ "${DRY_RUN}" -eq 0 ] || return 0
+	[ "${ROLLBACK_ON_FAILURE}" -eq 1 ] || return 0
+	log_section "Phase: Snapshot"
+	for level_group in "${rsp_level_groups_in_ref[@]}"; do
+		mapfile -t level_hosts < <(jq -r '.[]' <<<"${level_group}")
+		snapshot_hosts=()
+		for node in "${level_hosts[@]}"; do
+			[ -n "${node}" ] || continue
+			host_deploy_stage_skipped "${node}" && continue
+			snapshot_hosts+=("${node}")
+		done
+		[ "${#snapshot_hosts[@]}" -gt 0 ] || continue
+		log_subsection "Snapshot Wave ${wave_index}: $(join_by_comma "${snapshot_hosts[@]}")"
+		if ! ensure_deploy_wave_parent_readiness "${snapshot_hosts[@]}"; then
+			for node in "${snapshot_hosts[@]}"; do
+				append_unique_array_item "${snapshot_failed_hosts_out_name}" "${node}"
+			done
+			return 1
+		fi
+		if ! ensure_wave_snapshots \
+			"${snapshot_dir}" "${snapshot_log_dir}" "${snapshot_status_dir}" \
+			"${verify_parallel}" "${verify_parallel_jobs}" "${snapshot_hosts[@]}"; then
+			if ! process_snapshot_wave_results \
+				"${snapshot_dir}" "${snapshot_failed_hosts_out_name}" "${failed_hosts_out_name}" \
+				"${skipped_hosts_out_name}" "${snapshot_hosts[@]}"; then
+				return 1
+			fi
+		fi
+		wave_index=$((wave_index + 1))
+	done
+	return 0
+}
+
+##### Acquire Phase #####
+
+release_acquired_candidates() {
+	local candidate_dir="$1" node="" system_path=""
+	shift
+	for node in "$@"; do
+		[ -n "${node}" ] || continue
+		[ -s "${candidate_dir}/${node}.path" ] || continue
+		system_path="$(cat "${candidate_dir}/${node}.path")"
+		if run_parented_host_operation_with_retry \
+			"${node}" \
+			"candidate lease cleanup" \
+			prepare_host_transport_for_deploy \
+			"${node}" \
+			1 && set_candidate_lease release "${node}" "${system_path}"; then
+			rm -f "${candidate_dir}/${node}.path"
+		else
+			echo "warning: candidate lease cleanup deferred for ${node}" >&2
+		fi
+	done
+}
+
+validate_acquired_candidate_records() {
+	local candidate_dir="$1" build_out_dir="$2" failed_hosts_out_name="$3"
+	local node="" candidate_file="" out_file="" candidate_path="" built_out_path=""
+	local invalid=0
+	shift 3
+
+	for node in "$@"; do
+		[ -n "${node}" ] || continue
+		candidate_file="${candidate_dir}/${node}.path"
+		out_file="${build_out_dir}/${node}.path"
+		candidate_path=""
+		built_out_path=""
+		if [ -s "${candidate_file}" ]; then
+			candidate_path="$(<"${candidate_file}")"
+		fi
+		if [ -s "${out_file}" ]; then
+			built_out_path="$(<"${out_file}")"
+		fi
+		if [ -n "${candidate_path}" ] && [ "${candidate_path}" = "${built_out_path}" ]; then
+			continue
+		fi
+		echo "Missing or stale acquired candidate for ${node}: ${candidate_file}" >&2
+		append_unique_array_item "${failed_hosts_out_name}" "${node}"
+		invalid=1
+	done
+
+	[ "${invalid}" -eq 0 ]
+}
+
+run_acquire_phase() {
+	local acquire_parallel="$1" acquire_parallel_jobs="$2"
+	local snapshot_dir="$3" acquire_log_dir="$4" acquire_status_dir="$5" build_out_dir="$6"
+	local candidate_dir="$7" acquired_hosts_out_name="$9"
+	local skipped_hosts_out_name="${10}" failed_hosts_out_name="${11}"
+	local -n rap_level_groups_in_ref="$8"
+	local -n rap_acquired_hosts_out_ref="${acquired_hosts_out_name}"
+	local -n rap_failed_hosts_out_ref="${failed_hosts_out_name}"
+	local level_group="" node="" active_jobs=0 phase_rc=0
+	local status_file="" out_file="" log_file="" candidate_file="" failure_mode="plain"
+	local -a level_hosts=() acquire_hosts=() started_hosts=()
+	local -a completed_hosts=() optional_failed=() required_failed=()
+
+	log_grouped_phase_section "Phase: Acquire" "acquire" "$([ "${acquire_parallel}" -eq 0 ] && printf 1 || printf 0)"
+	for level_group in "${rap_level_groups_in_ref[@]}"; do
+		mapfile -t level_hosts < <(jq -r '.[]' <<<"${level_group}")
+		acquire_hosts=()
+		for node in "${level_hosts[@]}"; do
+			[ -n "${node}" ] || continue
+			if host_deploy_stage_skipped "${node}"; then
+				append_unique_array_item "${skipped_hosts_out_name}" "${node}"
+				continue
+			fi
+			acquire_hosts+=("${node}")
+		done
+		mark_snapshot_matched_deploy_skips \
+			"${snapshot_dir}" "${build_out_dir}" "${acquire_status_dir}" \
+			"${skipped_hosts_out_name}" "${acquire_hosts[@]}"
+
+		completed_hosts=()
+		for node in "${acquire_hosts[@]}"; do
+			array_contains "${node}" "${OPTIONAL_DEPLOY_SNAPSHOT_SKIPPED_HOSTS[@]}" && continue
+			snapshot_deploy_skip_marked "${snapshot_dir}" "${node}" && continue
+			completed_hosts+=("${node}")
+		done
+		if [ "${#completed_hosts[@]}" -eq 0 ]; then
+			echo "Skipping: No changed hosts" >&2
+			continue
+		fi
+		if ! ensure_deploy_wave_parent_readiness "${completed_hosts[@]}"; then
+			rap_failed_hosts_out_ref+=("${completed_hosts[@]}")
+			print_host_failures \
+				"Acquire phase failed during parent readiness" \
+				plain "" "${completed_hosts[@]}"
+			release_acquired_candidates "${candidate_dir}" "${rap_acquired_hosts_out_ref[@]}"
+			log_group_scope_end
+			return 1
+		fi
+
+		log_subsection "Acquire Wave: $(join_by_comma "${completed_hosts[@]}")"
+		started_hosts=()
+		active_jobs=0
+		for node in "${completed_hosts[@]}"; do
+			status_file="$(phase_dir_item_status_file "${acquire_status_dir}" "${node}")"
+			out_file="${build_out_dir}/${node}.path"
+			candidate_file="${candidate_dir}/${node}.path"
+			log_file=""
+			[ "${acquire_parallel}" -eq 0 ] || log_file="$(phase_dir_item_log_file "${acquire_log_dir}" "${node}")"
+			run_acquire_job "${node}" "${out_file}" "${status_file}" "${candidate_file}" "${log_file}" &
+			register_deploy_job_pid "${node}" "$!"
+			started_hosts+=("${node}")
+			active_jobs=$((active_jobs + 1))
+			if wait_for_job_slot active_jobs "${acquire_parallel_jobs}"; then
+				:
+			else
+				phase_rc="$?"
+				release_acquired_candidates "${candidate_dir}" "${rap_acquired_hosts_out_ref[@]}" "${started_hosts[@]}"
+				log_group_scope_end
+				return "${phase_rc}"
+			fi
+		done
+		if drain_job_slots active_jobs; then
+			:
+		else
+			phase_rc="$?"
+			release_acquired_candidates "${candidate_dir}" "${rap_acquired_hosts_out_ref[@]}" "${started_hosts[@]}"
+			log_group_scope_end
+			return "${phase_rc}"
+		fi
+
+		optional_failed=()
+		required_failed=()
+		if classify_completed_deploy_jobs \
+			"${acquire_status_dir}" \
+			"${acquired_hosts_out_name}" \
+			"${skipped_hosts_out_name}" \
+			optional_failed \
+			required_failed \
+			"${started_hosts[@]}"; then
+			:
+		else
+			phase_rc="$?"
+			release_acquired_candidates "${candidate_dir}" "${rap_acquired_hosts_out_ref[@]}" "${started_hosts[@]}"
+			log_group_scope_end
+			return "${phase_rc}"
+		fi
+		for node in "${optional_failed[@]}"; do
+			[ -n "${node}" ] || continue
+			echo "Optional acquisition failed for ${node}; excluding it from activation" >&2
+		done
+		release_acquired_candidates \
+			"${candidate_dir}" "${optional_failed[@]}" "${required_failed[@]}"
+		for node in "${optional_failed[@]}"; do
+			[ -s "${candidate_dir}/${node}.path" ] || continue
+			echo "Candidate lease cleanup failed for optional host ${node}; aborting before activation" >&2
+			append_unique_array_item required_failed "${node}"
+		done
+		for node in "${required_failed[@]}"; do
+			[ -n "${node}" ] && append_unique_array_item "${failed_hosts_out_name}" "${node}"
+		done
+		if [ "${#required_failed[@]}" -gt 0 ]; then
+			[ "${acquire_parallel}" -eq 0 ] || failure_mode="deploy"
+			print_host_failures "Acquire phase failed" "${failure_mode}" "${acquire_log_dir}" "${required_failed[@]}"
+			release_acquired_candidates "${candidate_dir}" "${rap_acquired_hosts_out_ref[@]}"
+			log_group_scope_end
+			return 1
+		fi
+	done
+	log_group_scope_end
+	return 0
+}
+
 ##### Deploy Phase #####
 
 run_deploy_phase() {
 	local deploy_parallel="$1" deploy_parallel_jobs="$2"
-	local verify_parallel="$3" verify_parallel_jobs="$4" snapshot_dir="$5"
-	local snapshot_log_dir="$6" snapshot_status_dir="$7"
-	local deploy_log_dir="$8" deploy_status_dir="$9" build_out_dir="${10}"
-	local rollback_log_dir="${11}" rollback_status_dir="${12}"
-	local deploy_skipped_hosts_out_name="${15}" snapshot_failed_hosts_out_name="${16}"
-	local -n rdp_level_groups_in_ref="${13}"
+	local snapshot_dir="$3" deploy_log_dir="$4" deploy_status_dir="$5" build_out_dir="$6"
+	local rollback_log_dir="$7" rollback_status_dir="$8"
+	local deploy_skipped_hosts_out_name="${11}" candidate_dir="${13}"
+	local -n rdp_level_groups_in_ref="$9"
 	# shellcheck disable=SC2178
-	local -n rdp_deploy_failed_hosts_out_ref="${17}"
+	local -n rdp_deploy_failed_hosts_out_ref="${12}"
+	local -n rdp_acquired_hosts_in_ref="${14}"
 
-	local level_group="" node="" active_jobs="" level_index=0 failed_node="" deploy_job_pid=""
+	local level_group="" node="" active_jobs="" failed_node="" deploy_job_pid=""
 	local -a level_hosts=() deploy_level_hosts=() deploy_started_hosts=() completed_deploy_hosts=()
-	local status_file="" out_file="" log_file="" snapshot_retry_logged=0
-	local deploy_wave_failed=0 total_deploy_hosts=0 level_group_size=0 host_grouping=0 phase_rc=0
+	local status_file="" out_file="" log_file="" candidate_file=""
+	local deploy_wave_failed=0 total_deploy_hosts=0 level_group_size=0 phase_rc=0
 
-	local _success_hosts_out_name="${14}" _failed_hosts_out_name="${17}"
+	local _success_hosts_out_name="${10}" _failed_hosts_out_name="${12}"
 
 	# Invoke abort_deploy_on_signal with the fixed context for this deploy phase.
 	_try_abort_wave() {
@@ -13047,7 +13371,6 @@ run_deploy_phase() {
 	done
 
 	if [ "${deploy_parallel}" -eq 0 ] && [ "${total_deploy_hosts}" -gt 1 ]; then
-		host_grouping=1
 		log_grouped_phase_section "Phase: Deploy" "deploy" 1
 	else
 		log_grouped_phase_section "Phase: Deploy" "deploy" 0
@@ -13062,11 +13385,11 @@ run_deploy_phase() {
 				append_unique_array_item "${deploy_skipped_hosts_out_name}" "${node}"
 				continue
 			fi
+			array_contains "${node}" "${rdp_acquired_hosts_in_ref[@]}" || continue
 			deploy_level_hosts+=("${node}")
 		done
-		snapshot_retry_logged=0
-		if log_snapshot_retry_transition "${snapshot_dir}" "${level_index}" "${deploy_level_hosts[@]}"; then
-			snapshot_retry_logged=1
+		if [ "${#deploy_level_hosts[@]}" -eq 0 ]; then
+			continue
 		fi
 		if ! ensure_deploy_wave_parent_readiness "${deploy_level_hosts[@]}"; then
 			for node in "${deploy_level_hosts[@]}"; do
@@ -13076,43 +13399,19 @@ run_deploy_phase() {
 			log_group_scope_end
 			return 1
 		fi
-		if ! ensure_wave_snapshots \
-			"${snapshot_dir}" \
-			"${snapshot_log_dir}" \
-			"${snapshot_status_dir}" \
-			"${verify_parallel}" \
-			"${verify_parallel_jobs}" \
-			"${deploy_level_hosts[@]}"; then
-			if ! process_snapshot_wave_results "${snapshot_dir}" "${snapshot_failed_hosts_out_name}" "${_failed_hosts_out_name}" "${deploy_skipped_hosts_out_name}" "${deploy_level_hosts[@]}"; then
-				print_host_failures "Deploy phase failed" snapshot "" "${rdp_deploy_failed_hosts_out_ref[@]}"
-				log_group_scope_end
-				return 1
-			fi
-		fi
-		mark_snapshot_matched_deploy_skips \
-			"${snapshot_dir}" \
-			"${build_out_dir}" \
-			"${deploy_status_dir}" \
-			"${deploy_skipped_hosts_out_name}" \
-			"${deploy_level_hosts[@]}"
-		if [ "${snapshot_retry_logged}" -eq 1 ]; then
-			log_grouped_phase_section "Phase: Deploy" "deploy" "${host_grouping}"
-		fi
-
 		completed_deploy_hosts=()
 		for node in "${deploy_level_hosts[@]}"; do
 			[ -n "${node}" ] || continue
-			if array_contains "${node}" "${OPTIONAL_DEPLOY_SNAPSHOT_SKIPPED_HOSTS[@]}"; then
-				continue
-			fi
-			if snapshot_deploy_skip_marked "${snapshot_dir}" "${node}"; then
-				continue
+			if [ ! -s "${candidate_dir}/${node}.path" ]; then
+				echo "Acquired candidate record disappeared before deploy for ${node}" >&2
+				append_unique_array_item "${_failed_hosts_out_name}" "${node}"
+				log_group_scope_end
+				return 1
 			fi
 			completed_deploy_hosts+=("${node}")
 		done
 		if [ "${#completed_deploy_hosts[@]}" -eq 0 ]; then
 			echo "Skipping: No changed hosts" >&2
-			level_index=$((level_index + 1))
 			continue
 		fi
 
@@ -13127,11 +13426,12 @@ run_deploy_phase() {
 
 			status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
 			out_file="${build_out_dir}/${node}.path"
+			candidate_file="${candidate_dir}/${node}.path"
 			log_file=""
 			if [ "${deploy_parallel}" -eq 1 ]; then
 				log_file="$(phase_dir_item_log_file "${deploy_log_dir}" "${node}")"
 				mark_deploy_job_started
-				run_deploy_job "${node}" "${out_file}" "${status_file}" "${log_file}" &
+				run_deploy_job "${node}" "${out_file}" "${status_file}" "${log_file}" "${candidate_file}" &
 				deploy_job_pid="$!"
 				register_deploy_job_pid "${node}" "${deploy_job_pid}"
 				deploy_started_hosts+=("${node}")
@@ -13154,7 +13454,7 @@ run_deploy_phase() {
 			fi
 
 			mark_deploy_job_started
-			run_deploy_job "${node}" "${out_file}" "${status_file}" &
+			run_deploy_job "${node}" "${out_file}" "${status_file}" "" "${candidate_file}" &
 			deploy_job_pid="$!"
 			register_deploy_job_pid "${node}" "${deploy_job_pid}"
 			deploy_started_hosts+=("${node}")
@@ -13249,7 +13549,6 @@ run_deploy_phase() {
 			return 1
 		fi
 
-		level_index=$((level_index + 1))
 	done
 
 	log_group_scope_end
@@ -13290,13 +13589,14 @@ run_hosts() {
 	# shellcheck disable=SC2034
 	local -a snapshot_failed_hosts=() deploy_skipped_hosts=() deploy_failed_hosts=()
 	# shellcheck disable=SC2034
-	local -a build_hosts=() level_groups=() bootstrap_ok_hosts=() bootstrap_failed_hosts=()
+	local -a build_hosts=() level_groups=() bootstrap_ok_hosts=() bootstrap_failed_hosts=() acquired_hosts=()
 
 	local build_log_dir="" build_status_dir="" snapshot_log_dir="" snapshot_status_dir=""
 	local deploy_log_dir="" deploy_status_dir="" build_out_dir="" snapshot_dir=""
 	local rollback_log_dir="" rollback_status_dir="" health_log_dir="" health_status_dir=""
+	local acquire_log_dir="" acquire_status_dir="" candidate_dir=""
 	local levels_json="" final_rc=0 build_parallel=0 deploy_parallel=0 verify_parallel=0
-	local build_phase_start_epoch="" deploy_phase_start_epoch=""
+	local build_phase_start_epoch="" acquire_phase_start_epoch="" deploy_phase_start_epoch=""
 
 	FULLY_SKIPPED_HOSTS=()
 	# shellcheck disable=SC2034
@@ -13336,6 +13636,8 @@ run_hosts() {
 
 	levels_json="$(selected_host_levels_json "${runnable_selected_json}")"
 	levels_json="$(capacity_bound_host_levels_json "${levels_json}")"
+	# Passed by name to the phase helpers.
+	# shellcheck disable=SC2034
 	mapfile -t level_groups < <(jq -c '.[]' <<<"${levels_json}")
 	# shellcheck disable=SC2034
 	json_array_to_bash_array "${runnable_selected_json}" build_hosts
@@ -13366,7 +13668,10 @@ run_hosts() {
 		rollback_log_dir \
 		rollback_status_dir \
 		health_log_dir \
-		health_status_dir
+		health_status_dir \
+		acquire_log_dir \
+		acquire_status_dir \
+		candidate_dir
 	RUN_SUMMARY_BUILD_STATUS_DIR="${build_status_dir}"
 	RUN_SUMMARY_DEPLOY_STATUS_DIR="${deploy_status_dir}"
 	build_phase_start_epoch="$(date +%s)"
@@ -13453,32 +13758,62 @@ run_hosts() {
 		return "${final_rc}"
 	fi
 
-	# Snapshot phase.
-	if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ]; then
-		log_section "Phase: Snapshot"
-		if [ "${#level_groups[@]}" -gt 0 ]; then
-			run_initial_snapshot_wave \
-				"${level_groups[0]}" \
-				"${snapshot_dir}" \
-				"${snapshot_log_dir}" \
-				"${snapshot_status_dir}" \
-				"${verify_parallel}" \
-				"${NIXBOT_VERIFY_JOBS}"
-		fi
-	fi
-
 	failed_hosts=()
 	successful_hosts=()
+	if ! run_snapshot_phase \
+		"${snapshot_dir}" "${snapshot_log_dir}" "${snapshot_status_dir}" \
+		"${verify_parallel}" "${NIXBOT_VERIFY_JOBS}" level_groups \
+		deploy_skipped_hosts snapshot_failed_hosts deploy_failed_hosts; then
+		final_rc=1
+		stop_build_host_lease || true
+		capture_current_run_summary_state \
+			"${ACTION}" selected_hosts built_hosts failed_hosts snapshot_failed_hosts \
+			successful_hosts deploy_skipped_hosts deploy_failed_hosts
+		return "${final_rc}"
+	fi
+
+	acquire_phase_start_epoch="$(date +%s)"
+	if run_acquire_phase \
+		"${deploy_parallel}" \
+		"${NIXBOT_PARALLEL_JOBS}" \
+		"${snapshot_dir}" \
+		"${acquire_log_dir}" \
+		"${acquire_status_dir}" \
+		"${build_out_dir}" \
+		"${candidate_dir}" \
+		level_groups \
+		acquired_hosts \
+		deploy_skipped_hosts \
+		deploy_failed_hosts; then
+		:
+	else
+		final_rc="$?"
+		release_acquired_candidates "${candidate_dir}" "${acquired_hosts[@]}"
+		stop_build_host_lease || true
+		capture_current_run_summary_state \
+			"${ACTION}" selected_hosts built_hosts failed_hosts snapshot_failed_hosts \
+			successful_hosts deploy_skipped_hosts deploy_failed_hosts
+		return "${final_rc}"
+	fi
+	echo "Acquire phase duration: $(format_duration "$(elapsed_seconds "${acquire_phase_start_epoch}")")" >&2
+	if ! validate_acquired_candidate_records \
+		"${candidate_dir}" "${build_out_dir}" deploy_failed_hosts "${acquired_hosts[@]}"; then
+		release_acquired_candidates "${candidate_dir}" "${acquired_hosts[@]}"
+		stop_build_host_lease || true
+		capture_current_run_summary_state \
+			"${ACTION}" selected_hosts built_hosts failed_hosts snapshot_failed_hosts \
+			successful_hosts deploy_skipped_hosts deploy_failed_hosts
+		return 1
+	fi
+	# Every target candidate is now independently protected. No later phase
+	# depends on the remote builder lease.
+	stop_build_host_lease || true
 
 	deploy_phase_start_epoch="$(date +%s)"
 	if run_deploy_phase \
 		"${deploy_parallel}" \
 		"${NIXBOT_PARALLEL_JOBS}" \
-		"${verify_parallel}" \
-		"${NIXBOT_VERIFY_JOBS}" \
 		"${snapshot_dir}" \
-		"${snapshot_log_dir}" \
-		"${snapshot_status_dir}" \
 		"${deploy_log_dir}" \
 		"${deploy_status_dir}" \
 		"${build_out_dir}" \
@@ -13487,13 +13822,15 @@ run_hosts() {
 		level_groups \
 		successful_hosts \
 		deploy_skipped_hosts \
-		snapshot_failed_hosts \
-		deploy_failed_hosts; then
+		deploy_failed_hosts \
+		"${candidate_dir}" \
+		acquired_hosts; then
 		:
 	else
 		final_rc="$?"
 		if is_signal_exit_status "${final_rc}"; then
 			RUN_SUMMARY_DEPLOY_DURATION_SECS="$(elapsed_seconds "${deploy_phase_start_epoch}")"
+			release_acquired_candidates "${candidate_dir}" "${acquired_hosts[@]}"
 			capture_current_run_summary_state \
 				"${ACTION}" \
 				selected_hosts \
@@ -13508,7 +13845,7 @@ run_hosts() {
 		fi
 	fi
 	RUN_SUMMARY_DEPLOY_DURATION_SECS="$(elapsed_seconds "${deploy_phase_start_epoch}")"
-	stop_build_host_lease || true
+	release_acquired_candidates "${candidate_dir}" "${acquired_hosts[@]}"
 
 	# Health check phase: verify user services are healthy after deploy.
 	if [ "${DRY_RUN}" -eq 0 ] && [ "${#successful_hosts[@]}" -gt 0 ]; then
@@ -14517,7 +14854,7 @@ log_group_should_section() {
 	esac
 
 	case "${title}" in
-	"Phase: Build" | "Phase: Snapshot" | "Phase: Deploy" | "Phase: Health Check" | "Phase: Rollback" | "Phase: Bootstrap Key Check")
+	"Phase: Build" | "Phase: Snapshot" | "Phase: Acquire" | "Phase: Deploy" | "Phase: Health Check" | "Phase: Rollback" | "Phase: Bootstrap Key Check")
 		return 0
 		;;
 	"Phase: Terraform ("*)
@@ -14625,6 +14962,9 @@ log_group_host_stage_title() {
 	case "${phase}" in
 	build)
 		phase_title="Build"
+		;;
+	acquire)
+		phase_title="Acquire"
 		;;
 	deploy)
 		phase_title="Deploy"

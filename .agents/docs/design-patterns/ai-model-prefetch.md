@@ -248,6 +248,64 @@ manifests, changes model selection, starts a backend, or claims accelerator
 residency. The existing Ollama and llama.cpp reconcilers remain the only
 retirement authority.
 
+## Fleet acquisition barrier
+
+Fleet deployment is ordered as Build, Snapshot, Acquire, Deploy, then Health.
+Snapshot records every eligible host before Acquire begins. Acquire then
+distributes each changed candidate closure, protects that exact closure with a
+run-scoped target-side GC lease, asks the current generation to admit candidate
+acquisition, and runs the candidate generation's image and model acquisition
+tools. Every dependency wave completes Acquire before the first Deploy wave may
+start, so a slow model download cannot overlap another host's activation.
+
+Required acquisition failure fails the fleet before any activation marker or
+remote activation unit exists. Completed candidate leases are released, the
+remote-builder lease is retired after target protection is established, and a
+later deployment may start independently. Optional acquisition failure excludes
+only that host when its candidate lease is confirmed released; an unresolved
+cleanup instead fails the barrier before activation. Downloaded images and model
+blobs remain as resumable cache content; Acquire never tries to roll them back.
+
+Candidate leases are additive indirect GC roots under
+`/run/nixbot/acquired-candidates`. Their names are opaque hashes of the
+invocation and host, and cleanup removes a root only when it still resolves to
+the exact acquired generation. The controller records lease intent before the
+idempotent root operation, retains that record across ambiguous transport or
+acquisition failure, and retries cleanup before it can cross the fleet barrier.
+Leases never update a system profile, boot entry, or current generation.
+Separate invocations therefore do not replace each other's roots, and residue
+after an uncatchable process death is reboot-bounded and cannot block another
+invocation.
+
+Parent readiness is phase-local and scoped to hosts that will actually perform
+work. Snapshot reconciles a parent before recording its current generation;
+Acquire refreshes readiness only for changed candidates; Deploy refreshes it
+again because acquisition may have taken hours. Readiness is deliberately not
+cached across these boundaries.
+
+Deploy rechecks parent readiness and verifies or re-establishes the exact
+candidate lease before performing pre-switch preparation or starting activation.
+A first deployment that introduces generation-admission authority remains the
+explicit exception: the current generation may defer candidate-side image/model
+acquisition until the first activation establishes that authority, after which
+the steady-state reconcilers converge.
+
+Each completed activation outcome releases its exact candidate lease. A failed
+post-activation cleanup remains tracked for a bounded phase-end retry; it does
+not make an already completed activation fail. Pre-activation acquisition
+failure remains fail-closed until every affected lease is confirmed released.
+
+A required Deploy failure remains attributed to Deploy, rolls back every
+rollback-eligible failed attempt, and then continues only through Health so
+already successful siblings are still verified. A Health failure is preserved
+alongside the original Deploy failure and receives its own rollback pass. No
+later application or infrastructure phase runs after that verification boundary.
+
+Target-side automation runs through non-login Bash with an explicit runtime
+`PATH`. Payload shell options such as `set -u` therefore cannot leak into
+`/etc/bash_logout` and convert a successful candidate-lease mutation into a
+transport failure.
+
 A deploy dry run performs no image pull or model acquisition in either fleet
 engine. Shell Nixbot reports both skipped pre-activation actions; native fleet
 sends every candidate-side deployment action through its mutation-aware host
@@ -316,6 +374,6 @@ evaluation error.
 
 ## Cross-repository boundary
 
-The catalog, module, runner, deploy integration, and tests are shared
+The catalog, module, runner, fleet acquisition phase, and tests are shared
 byte-for-byte between Abird and Pvl. Host model selections, HF cache paths,
 users, tokens, and explicit runtime commands remain host-owned.

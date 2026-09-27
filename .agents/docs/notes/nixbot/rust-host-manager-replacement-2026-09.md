@@ -31,6 +31,12 @@ switch those callers and only then remove the Bash/Python implementation.
   when GC won the unprotected interval. Nixbot creates no persistent builder
   roots and never owns garbage collection. Diagnostic streams are raw,
   uncolored, mode `0600`, and retained only when useful.
+- Deploy workflows have a fleet-wide Acquire phase between Snapshot and Deploy.
+  It distributes and target-leases every changed candidate, runs admitted image
+  and model acquisition, and completes across all dependency waves before any
+  activation starts. Required failure remains outside the rollback boundary and
+  releases completed leases; optional failure excludes only that target after
+  its lease cleanup is confirmed, while unresolved cleanup fails the barrier.
 - The first `INT` or `TERM` waits for an admitted activation. Three signals
   within three seconds force remote cancellation. `HUP` terminates local work
   without claiming remote cancellation.
@@ -76,7 +82,7 @@ repository wrapper remain on Bash until a separate reviewed cutover.
 
 ## Parity and validation
 
-Both repositories carry the same 272 shared runtime characterization tests. Pvl
+Both repositories carry the same 306 shared runtime characterization tests. Pvl
 adds one inventory identity test. Abird separately adds one repository identity
 test that mechanically checks its source-owned
 `.agents/plans/**/TEST-DISPOSITION.md` parity ledger. Keeping that assertion in

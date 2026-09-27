@@ -264,7 +264,9 @@ impl RunState {
             ensure_directory(&self.layout.run_dir.join(relative), 0o700)?;
         }
         ensure_directory(&self.layout.diagnostic_dir.join("stderr"), 0o700)?;
-        for phase in ["tf", "build", "snapshot", "deploy", "rollback", "health"] {
+        for phase in [
+            "tf", "build", "snapshot", "acquire", "deploy", "rollback", "health",
+        ] {
             ensure_directory(
                 &self.layout.diagnostic_dir.join(format!("logs.{phase}")),
                 0o700,

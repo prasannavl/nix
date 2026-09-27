@@ -8,13 +8,22 @@ use abird_host_manager::fleet::plan::Phase;
 struct FakeEffects {
     calls: RefCell<Vec<String>>,
     fail: Option<Phase>,
+    continue_through: Option<Phase>,
 }
 
 impl FleetEffects for FakeEffects {
     fn run_phase(&mut self, phase: Phase) -> Result<(), PhaseFailure> {
         self.calls.borrow_mut().push(format!("phase:{phase:?}"));
         if self.fail == Some(phase) {
-            Err(PhaseFailure::new(phase, "injected failure"))
+            if let Some(continue_through) = self.continue_through {
+                Err(PhaseFailure::continuing_through(
+                    phase,
+                    "injected failure",
+                    continue_through,
+                ))
+            } else {
+                Err(PhaseFailure::new(phase, "injected failure"))
+            }
         } else {
             Ok(())
         }
@@ -46,6 +55,7 @@ fn full_run_executes_every_phase_in_the_legacy_order() {
             "phase:TerraformPlatform",
             "phase:Build",
             "phase:Snapshot",
+            "phase:Acquire",
             "phase:Deploy",
             "phase:Health",
             "phase:TerraformApps",
@@ -58,6 +68,7 @@ fn failure_stops_later_work_and_rolls_back_only_after_snapshot_boundary() {
     for (action, failed, rollback) in [
         (Action::Deploy, Phase::Build, false),
         (Action::Deploy, Phase::Snapshot, false),
+        (Action::Deploy, Phase::Acquire, false),
         (Action::Deploy, Phase::Deploy, true),
         (Action::Deploy, Phase::Health, true),
         (Action::Run, Phase::TerraformApps, false),
@@ -95,6 +106,161 @@ fn no_rollback_option_preserves_original_failure_without_rollback() {
             .borrow()
             .iter()
             .any(|call| call.starts_with("rollback:"))
+    );
+}
+
+#[test]
+fn deploy_failure_rolls_back_then_runs_health_before_returning_the_deploy_error() {
+    let mut effects = FakeEffects {
+        fail: Some(Phase::Deploy),
+        continue_through: Some(Phase::Health),
+        ..FakeEffects::default()
+    };
+
+    let error = execute(&invocation(Action::Run), &mut effects).unwrap_err();
+
+    assert!(error.to_string().contains("fleet phase Deploy failed"));
+    assert_eq!(
+        *effects.calls.borrow(),
+        [
+            "phase:TerraformDns",
+            "phase:TerraformPlatform",
+            "phase:Build",
+            "phase:Snapshot",
+            "phase:Acquire",
+            "phase:Deploy",
+            "rollback:Deploy",
+            "phase:Health",
+        ]
+    );
+}
+
+#[test]
+fn no_rollback_still_runs_health_after_a_continuing_deploy_failure() {
+    let mut effects = FakeEffects {
+        fail: Some(Phase::Deploy),
+        continue_through: Some(Phase::Health),
+        ..FakeEffects::default()
+    };
+    let mut request = invocation(Action::Deploy);
+    request.options.no_rollback = true;
+
+    let error = execute(&request, &mut effects).unwrap_err();
+
+    assert!(error.to_string().contains("fleet phase Deploy failed"));
+    assert_eq!(
+        *effects.calls.borrow(),
+        [
+            "phase:Build",
+            "phase:Snapshot",
+            "phase:Acquire",
+            "phase:Deploy",
+            "phase:Health",
+        ]
+    );
+}
+
+#[test]
+fn health_failure_is_preserved_after_a_continuing_deploy_failure() {
+    struct DeployAndHealthFailure {
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl FleetEffects for DeployAndHealthFailure {
+        fn run_phase(&mut self, phase: Phase) -> Result<(), PhaseFailure> {
+            self.calls.borrow_mut().push(format!("phase:{phase:?}"));
+            match phase {
+                Phase::Deploy => Err(PhaseFailure::continuing_through(
+                    phase,
+                    "deploy broke",
+                    Phase::Health,
+                )),
+                Phase::Health => Err(PhaseFailure::new(phase, "health broke")),
+                _ => Ok(()),
+            }
+        }
+
+        fn rollback(&mut self, failed_phase: Phase) -> anyhow::Result<()> {
+            self.calls
+                .borrow_mut()
+                .push(format!("rollback:{failed_phase:?}"));
+            Ok(())
+        }
+    }
+
+    let mut effects = DeployAndHealthFailure {
+        calls: RefCell::new(Vec::new()),
+    };
+    let error = execute(&invocation(Action::Deploy), &mut effects).unwrap_err();
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("fleet phase Deploy failed: deploy broke"));
+    assert!(rendered.contains("fleet phase Health failed: health broke"));
+    assert_eq!(
+        *effects.calls.borrow(),
+        [
+            "phase:Build",
+            "phase:Snapshot",
+            "phase:Acquire",
+            "phase:Deploy",
+            "rollback:Deploy",
+            "phase:Health",
+            "rollback:Health",
+        ]
+    );
+}
+
+#[test]
+fn health_rollback_failure_preserves_the_deferred_deploy_failure() {
+    struct DeployHealthAndRollbackFailure {
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl FleetEffects for DeployHealthAndRollbackFailure {
+        fn run_phase(&mut self, phase: Phase) -> Result<(), PhaseFailure> {
+            self.calls.borrow_mut().push(format!("phase:{phase:?}"));
+            match phase {
+                Phase::Deploy => Err(PhaseFailure::continuing_through(
+                    phase,
+                    "deploy broke",
+                    Phase::Health,
+                )),
+                Phase::Health => Err(PhaseFailure::new(phase, "health broke")),
+                _ => Ok(()),
+            }
+        }
+
+        fn rollback(&mut self, failed_phase: Phase) -> anyhow::Result<()> {
+            self.calls
+                .borrow_mut()
+                .push(format!("rollback:{failed_phase:?}"));
+            if failed_phase == Phase::Health {
+                anyhow::bail!("health rollback broke");
+            }
+            Ok(())
+        }
+    }
+
+    let mut effects = DeployHealthAndRollbackFailure {
+        calls: RefCell::new(Vec::new()),
+    };
+    let error = execute(&invocation(Action::Deploy), &mut effects).unwrap_err();
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("fleet phase Deploy failed: deploy broke"));
+    assert!(rendered.contains("fleet phase Health failed: health broke"));
+    assert!(rendered.contains("rollback also failed: health rollback broke"));
+    assert_eq!(
+        *effects.calls.borrow(),
+        [
+            "phase:Build",
+            "phase:Snapshot",
+            "phase:Acquire",
+            "phase:Deploy",
+            "rollback:Deploy",
+            "phase:Health",
+            "rollback:Health",
+        ]
     );
 }
 

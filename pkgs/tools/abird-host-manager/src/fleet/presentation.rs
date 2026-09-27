@@ -364,6 +364,7 @@ pub fn phase_label(phase: Phase, hosts: usize) -> String {
         Phase::Tofu => "Apply infrastructure project",
         Phase::Build => "Build systems",
         Phase::Snapshot => "Snapshot generations",
+        Phase::Acquire => "Acquire deployment artifacts",
         Phase::Deploy => "Deploy systems",
         Phase::Health => "Verify deployment health",
         Phase::DevelopmentBuild => "Build development system",
@@ -414,6 +415,10 @@ mod tests {
     #[test]
     fn phase_labels_are_short_and_include_fanout_size() {
         assert_eq!(phase_label(Phase::Build, 3), "Build systems · 3 hosts");
+        assert_eq!(
+            phase_label(Phase::Acquire, 2),
+            "Acquire deployment artifacts · 2 hosts"
+        );
         assert_eq!(
             phase_label(Phase::Health, 1),
             "Verify deployment health · 1 host"

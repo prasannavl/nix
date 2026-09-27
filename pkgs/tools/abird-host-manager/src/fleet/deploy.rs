@@ -258,6 +258,117 @@ echo "[pre-activation] caching declared AI models with $runner" >&2
     )
 }
 
+fn candidate_lease_key(run_id: &str, host: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(run_id.as_bytes());
+    digest.update([0]);
+    digest.update(host.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+// Shell Nixbot implements the same target-side lease protocol in
+// build_candidate_lease_cmd. Native hashes its stable invocation ID with the
+// host; shell hashes its per-run runtime directory with the host.
+
+/// Protect a distributed candidate from target-side garbage collection while
+/// the fleet-wide acquisition barrier is open. The run-scoped, candidate-bound
+/// root is additive and does not alter the active or booted generation.
+pub fn acquire_candidate_lease_command(
+    run_id: &str,
+    host: &str,
+    generation: &SystemGeneration,
+) -> CommandSpec {
+    const SCRIPT: &str = r#"set -Eeuo pipefail
+system_path="$1"
+lease_key="$2"
+case "$lease_key" in
+    ""|*[!A-Za-z0-9._-]*)
+        echo "invalid candidate lease key: $lease_key" >&2
+        exit 2
+        ;;
+esac
+lease_dir="/run/nixbot/acquired-candidates"
+lease_path="${lease_dir}/${lease_key}"
+[ -d "$system_path" ] || {
+    echo "acquired candidate is unavailable: $system_path" >&2
+    exit 1
+}
+mkdir -p -- "$lease_dir"
+if [ -L "$lease_path" ]; then
+    [ "$(readlink -- "$lease_path")" = "$system_path" ] || {
+        echo "candidate lease conflicts with another generation: $lease_path" >&2
+        exit 1
+    }
+    exit 0
+fi
+[ ! -e "$lease_path" ] || {
+    echo "candidate lease path is not a symlink: $lease_path" >&2
+    exit 1
+}
+"/run/current-system/sw/bin/nix-store" \
+    --add-root "$lease_path" \
+    --indirect \
+    -r "$system_path" >/dev/null
+[ "$(readlink -- "$lease_path")" = "$system_path" ]
+"#;
+    CommandSpec::new(
+        SYSTEM_BASH,
+        [
+            "-c".to_owned(),
+            SCRIPT.to_owned(),
+            "nixbot-acquire-candidate-lease".to_owned(),
+            generation.as_str().to_owned(),
+            candidate_lease_key(run_id, host),
+        ],
+    )
+}
+
+/// Release only the exact candidate lease created by this invocation. A
+/// mismatched root is never removed, which makes cleanup safe across retries
+/// and concurrent deploy invocations.
+pub fn release_candidate_lease_command(
+    run_id: &str,
+    host: &str,
+    generation: &SystemGeneration,
+) -> CommandSpec {
+    const SCRIPT: &str = r#"set -Eeuo pipefail
+system_path="$1"
+lease_key="$2"
+case "$lease_key" in
+    ""|*[!A-Za-z0-9._-]*)
+        echo "invalid candidate lease key: $lease_key" >&2
+        exit 2
+        ;;
+esac
+lease_dir="/run/nixbot/acquired-candidates"
+lease_path="${lease_dir}/${lease_key}"
+if [ ! -e "$lease_path" ] && [ ! -L "$lease_path" ]; then
+    exit 0
+fi
+[ -L "$lease_path" ] || {
+    echo "candidate lease path is not a symlink: $lease_path" >&2
+    exit 1
+}
+[ "$(readlink -- "$lease_path")" = "$system_path" ] || {
+    echo "candidate lease no longer names the acquired generation: $lease_path" >&2
+    exit 1
+}
+rm -f -- "$lease_path"
+rmdir -- "$lease_dir" 2>/dev/null || true
+rmdir -- "/run/nixbot" 2>/dev/null || true
+"#;
+    CommandSpec::new(
+        SYSTEM_BASH,
+        [
+            "-c".to_owned(),
+            SCRIPT.to_owned(),
+            "nixbot-release-candidate-lease".to_owned(),
+            generation.as_str().to_owned(),
+            candidate_lease_key(run_id, host),
+        ],
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ActivationGoal {
     Switch,

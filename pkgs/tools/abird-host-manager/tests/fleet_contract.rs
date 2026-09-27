@@ -649,6 +649,7 @@ fn workflow_plans_preserve_nixbot_phase_order() {
             Phase::TerraformPlatform,
             Phase::Build,
             Phase::Snapshot,
+            Phase::Acquire,
             Phase::Deploy,
             Phase::Health,
             Phase::TerraformApps,
@@ -656,7 +657,13 @@ fn workflow_plans_preserve_nixbot_phase_order() {
     );
     assert_eq!(
         WorkflowPlan::for_action(&Action::Deploy).phases,
-        [Phase::Build, Phase::Snapshot, Phase::Deploy, Phase::Health]
+        [
+            Phase::Build,
+            Phase::Snapshot,
+            Phase::Acquire,
+            Phase::Deploy,
+            Phase::Health
+        ]
     );
     assert_eq!(
         WorkflowPlan::for_action(&Action::Build).phases,

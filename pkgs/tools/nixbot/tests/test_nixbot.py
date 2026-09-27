@@ -974,10 +974,69 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             result.stderr,
         )
 
-    def test_deploy_host_distributes_then_admits_and_prepulls_before_activation(self):
+    def test_candidate_lease_commands_are_candidate_bound_and_valid_bash(self):
         result = self.run_script(
             """
             init_vars
+            RUNTIME_WORK_DIR=/dev/shm/nixbot/run-test
+            acquire="$(build_candidate_lease_cmd acquire app /nix/store/new-system)"
+            release="$(build_candidate_lease_cmd release app /nix/store/new-system)"
+            bash -n <<<"$acquire"
+            bash -n <<<"$release"
+            grep -F '/run/nixbot/acquired-candidates' <<<"$acquire"
+            grep -F 'acquired candidate is unavailable' <<<"$acquire"
+            grep -F 'candidate lease no longer names the acquired generation' <<<"$release"
+            """
+        )
+
+        self.assertEqual(3, len(result.stdout.splitlines()))
+
+    def test_automation_wrappers_are_non_login_so_nounset_cannot_break_logout(self):
+        result = self.run_script(
+            """
+            init_vars
+            REMOTE_SYSTEM_BASH=/run/current-system/sw/bin/bash
+            root_command="$(build_wrapped_root_command 'set -Eeuo pipefail; true' root 0)"
+            BUILD_HOST=builder
+            prepare_role_host_ssh_context() {
+              printf -v "$2" '%s' root@builder
+              local -n opts_ref="$3"
+              opts_ref=()
+              printf -v "$4" '%s' ''
+            }
+            ssh() { printf '%s\n' "${*: -1}"; }
+            build_command="$(run_build_host_command_once 'set -Eeuo pipefail; true')"
+            printf '%s\n%s\n' "$root_command" "$build_command"
+            """
+        )
+
+        commands = result.stdout.splitlines()
+        self.assertEqual(2, len(commands))
+        for command in commands:
+            self.assertIn("/run/current-system/sw/bin/bash -c ", command)
+            self.assertNotIn(" -lc ", command)
+
+    def test_acquire_and_snapshot_labels_are_human_readable(self):
+        result = self.run_script(
+            """
+            init_vars
+            FORCE_PREFIX_HOST_LOGS=0
+            log_group_host_stage_title acquire app
+            log_host_phase_duration app acquire 2
+            log_host_phase_duration app snapshot 3
+            """
+        )
+
+        self.assertEqual("Phase: Acquire / app", result.stdout.strip())
+        self.assertIn("Acquire duration: 2s", result.stderr)
+        self.assertIn("Snapshot duration: 3s", result.stderr)
+
+    def test_host_acquisition_completes_before_activation(self):
+        result = self.run_script(
+            """
+            init_vars
+            candidate_file="${TMPDIR:-/tmp}/nixbot-test-candidate.$$"
+            trap 'rm -f "$candidate_file"' EXIT
             DRY_RUN=1
             BUILD_HOST=local
             NIXBOT_IF_CHANGED=0
@@ -1001,27 +1060,33 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             copy_system_path_from_local_to_prepared_target() { printf 'copy:%s:%s\\n' "$1" "$2"; }
             run_pre_activation_podman_image_pulls() { printf 'prepull:%s:%s\\n' "$1" "$2"; }
             run_pre_activation_ai_model_prefetch() { printf 'prefetch:%s:%s\\n' "$1" "$2"; }
+            set_candidate_lease() { printf 'lease:%s:%s:%s\\n' "$1" "$2" "$3"; }
             activate_prepared_system_path() { printf 'activate:%s:%s\\n' "$1" "$2"; }
-            deploy_host app /nix/store/new-system
+            acquire_host app /nix/store/new-system '' "$candidate_file"
+            activate_acquired_host app /nix/store/new-system
             """
         )
 
         self.assertEqual(
             [
                 "copy:app:/nix/store/new-system",
-                "prepare",
+                "lease:acquire:app:/nix/store/new-system",
                 "admit-generation:/nix/store/new-system",
                 "prepull:app:/nix/store/new-system",
                 "prefetch:app:/nix/store/new-system",
+                "lease:acquire:app:/nix/store/new-system",
+                "prepare",
                 "activate:app:/nix/store/new-system",
             ],
             result.stdout.splitlines(),
         )
 
-    def test_remote_build_deploy_uses_the_same_pre_activation_order(self):
+    def test_remote_build_acquisition_and_activation_use_the_same_barrier(self):
         result = self.run_script(
             """
             init_vars
+            candidate_file="${TMPDIR:-/tmp}/nixbot-test-candidate.$$"
+            trap 'rm -f "$candidate_file"' EXIT
             PREP_DEPLOY_AGE_IDENTITY_KEY=
             run_parented_host_operation_with_retry() {
               shift 2
@@ -1043,29 +1108,62 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             run_candidate_generation_admission() { printf 'admit-generation:%s\\n' "$1"; }
             run_pre_activation_podman_image_pulls() { printf 'prepull:%s:%s\\n' "$1" "$2"; }
             run_pre_activation_ai_model_prefetch() { printf 'prefetch:%s:%s\\n' "$1" "$2"; }
+            set_candidate_lease() { printf 'lease:%s:%s:%s\\n' "$1" "$2" "$3"; }
             mark_deploy_activation_started() { printf 'mark:%s\\n' "$1"; }
             activate_prepared_system_path() { printf 'activate:%s:%s\\n' "$1" "$2"; }
-            deploy_remote_build_host_path app /nix/store/new-system
+            acquire_remote_build_host_path app /nix/store/new-system "$candidate_file"
+            activate_acquired_host app /nix/store/new-system
             """
         )
 
         self.assertEqual(
             [
                 "distribute:app:/nix/store/new-system",
-                "prepare",
+                "lease:acquire:app:/nix/store/new-system",
                 "admit-generation:/nix/store/new-system",
                 "prepull:app:/nix/store/new-system",
                 "prefetch:app:/nix/store/new-system",
+                "lease:acquire:app:/nix/store/new-system",
+                "prepare",
                 "mark:app",
                 "activate:app:/nix/store/new-system",
+                "lease:release:app:/nix/store/new-system",
             ],
             result.stdout.splitlines(),
+        )
+
+    def test_candidate_lease_intent_survives_ambiguous_acquire_failure(self):
+        result = self.run_script(
+            """
+            init_vars
+            candidate_file="${TMPDIR:-/tmp}/nixbot-test-candidate.$$"
+            trap 'rm -f "$candidate_file"' EXIT
+            PREP_DEPLOY_AGE_IDENTITY_KEY=
+            run_parented_host_operation_with_retry() {
+              shift 2
+              "$@"
+            }
+            prepare_host_transport_for_deploy() { return 0; }
+            prepare_remote_build_system_path_on_prepared_target() { return 0; }
+            set_candidate_lease() { return 23; }
+            set +e
+            acquire_remote_build_host_path app /nix/store/new-system "$candidate_file"
+            printf 'rc:%s\n' "$?"
+            set -e
+            cat "$candidate_file"
+            """
+        )
+
+        self.assertEqual(
+            ["rc:23", "/nix/store/new-system"], result.stdout.splitlines()
         )
 
     def test_generation_admission_failure_stops_candidate_acquisition(self):
         result = self.run_script(
             """
             init_vars
+            candidate_file="${TMPDIR:-/tmp}/nixbot-test-candidate.$$"
+            trap 'rm -f "$candidate_file"' EXIT
             DRY_RUN=0
             BUILD_HOST=local
             NIXBOT_IF_CHANGED=0
@@ -1087,7 +1185,7 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             register_active_deploy() { :; }
             unregister_active_deploy() { :; }
             copy_system_path_from_local_to_prepared_target() { printf 'copy\\n'; }
-            run_pre_switch_preparation() { printf 'prepare\\n'; }
+            set_candidate_lease() { printf 'lease:%s\\n' "$1"; }
             run_candidate_generation_admission() {
               printf 'admit-generation\\n'
               return 23
@@ -1096,7 +1194,7 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             run_pre_activation_ai_model_prefetch() { printf 'unexpected-model-prefetch\\n'; }
             mark_deploy_activation_started() { printf 'unexpected-mark\\n'; }
             activate_prepared_system_path() { printf 'unexpected-activate\\n'; }
-            if deploy_host app /nix/store/new-system; then
+            if acquire_host app /nix/store/new-system '' "$candidate_file"; then
               printf 'unexpected-success\\n'
             else
               printf 'rc:%s\\n' "$?"
@@ -1105,7 +1203,7 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
         )
 
         self.assertEqual(
-            ["copy", "prepare", "admit-generation", "rc:23"],
+            ["copy", "lease:acquire", "admit-generation", "lease:release", "rc:23"],
             result.stdout.splitlines(),
         )
         self.assertNotIn("unexpected-", result.stdout)
@@ -1114,6 +1212,8 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
         result = self.run_script(
             """
             init_vars
+            candidate_file="${TMPDIR:-/tmp}/nixbot-test-candidate.$$"
+            trap 'rm -f "$candidate_file"' EXIT
             DRY_RUN=1
             PREP_DEPLOY_AGE_IDENTITY_KEY=
             run_parented_host_operation_with_retry() {
@@ -1133,8 +1233,10 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             copy_system_path_from_build_cache_to_prepared_target() { printf 'unexpected-cache-copy\n'; }
             copy_system_path_from_build_cache_via_local_to_prepared_target() { printf 'unexpected-relay\n'; }
             mark_deploy_activation_started() { printf 'unexpected-mark\n'; }
+            run_candidate_generation_admission() { return 0; }
             activate_prepared_system_path() { printf 'activate:%s:%s\n' "$1" "$2"; }
-            deploy_remote_build_host_path app /nix/store/new-system
+            acquire_remote_build_host_path app /nix/store/new-system "$candidate_file"
+            activate_acquired_host app /nix/store/new-system
             """
         )
 
@@ -3197,6 +3299,10 @@ EOF_UNITS
             ln -s "$(command -v tee)" "{remote_bin}/tee"
             REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
             REMOTE_SYSTEM_BASH="{remote_bin}/bash"
+            REMOTE_CURRENT_SYSTEM_PATH="{self.work_dir}/unmanaged-current-system"
+            REMOTE_HOST_AGENT_CONFIG_DIR="{self.work_dir}/unmanaged-agent/config"
+            REMOTE_HOST_AGENT_STATE_DIR="{self.work_dir}/unmanaged-agent/state"
+            REMOTE_HOST_AGENT_RUNTIME_DIR="{self.work_dir}/unmanaged-agent/runtime"
             NIXBOT_REMOTE_ACTIVATION_RESULT_DIR="{self.work_dir}/activation-results"
             mkdir -p "{fake_system}/bin"
             touch "{fake_system}/nixos-version"
@@ -7740,7 +7846,99 @@ EOF_SCRIPT
         self.assertEqual(["optional"], json.loads(lines[6]))
         self.assertEqual(["required"], json.loads(lines[7]))
 
-    def test_deploy_phase_skips_hosts_already_at_snapshot_generation(self):
+    def test_phase_job_classification_fails_closed_when_status_is_missing(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_HOSTS_JSON='{{"required":{{}},"optional":{{"deploy":"optional"}}}}'
+            status_dir={self.work_dir / "status"}
+            mkdir -p "$status_dir"
+            success=()
+            skipped=()
+            optional_failed=()
+            required_failed=()
+            classify_completed_deploy_jobs \
+              "$status_dir" success skipped optional_failed required_failed \
+              required optional
+            bash_args_to_json_array "${{success[@]}}"
+            bash_args_to_json_array "${{skipped[@]}}"
+            bash_args_to_json_array "${{optional_failed[@]}}"
+            bash_args_to_json_array "${{required_failed[@]}}"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual([], json.loads(lines[0]))
+        self.assertEqual([], json.loads(lines[1]))
+        self.assertEqual(["optional"], json.loads(lines[2]))
+        self.assertEqual(["required"], json.loads(lines[3]))
+
+    def test_snapshot_phase_records_every_wave_before_acquisition(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=1
+            snapshot_dir={self.work_dir / "snapshot"}
+            snapshot_log_dir={self.work_dir / "snapshot-log"}
+            snapshot_status_dir={self.work_dir / "snapshot-status"}
+            mkdir -p "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir"
+            level_groups=('["parent"]' '["child"]')
+            skipped=()
+            snapshot_failed=()
+            failed=()
+            ensure_deploy_wave_parent_readiness() {{ return 0; }}
+            ensure_wave_snapshots() {{
+              local target_dir="$1"
+              shift 5
+              local node=""
+              for node in "$@"; do
+                printf '/nix/store/%s-nixos-system-%s\n' "$node" "$node" >"$target_dir/$node.path"
+                printf 'snapshot:%s\n' "$node"
+              done
+            }}
+            run_snapshot_phase \
+              "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
+              0 1 level_groups skipped snapshot_failed failed
+            """
+        )
+
+        self.assertEqual(["snapshot:parent", "snapshot:child"], result.stdout.splitlines())
+
+    def test_snapshot_parent_readiness_failure_is_attributed_to_snapshot(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=1
+            snapshot_dir={self.work_dir / "snapshot"}
+            snapshot_log_dir={self.work_dir / "snapshot-log"}
+            snapshot_status_dir={self.work_dir / "snapshot-status"}
+            mkdir -p "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir"
+            level_groups=('["app"]')
+            skipped=()
+            snapshot_failed=()
+            deploy_failed=()
+            ensure_deploy_wave_parent_readiness() {{ return 1; }}
+            ensure_wave_snapshots() {{ printf 'unexpected-snapshot\n'; return 0; }}
+            set +e
+            run_snapshot_phase \
+              "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
+              0 1 level_groups skipped snapshot_failed deploy_failed
+            printf 'rc:%s\n' "$?"
+            set -e
+            bash_args_to_json_array "${{snapshot_failed[@]}}"
+            bash_args_to_json_array "${{deploy_failed[@]}}"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("rc:1", lines[0])
+        self.assertEqual(["app"], json.loads(lines[1]))
+        self.assertEqual([], json.loads(lines[2]))
+        self.assertNotIn("unexpected-snapshot", result.stdout)
+
+    def test_acquire_phase_skips_hosts_already_at_snapshot_generation(self):
         result = self.run_script(
             f"""
             init_vars
@@ -7752,43 +7950,43 @@ EOF_SCRIPT
             snapshot_dir={self.work_dir / "snapshot"}
             snapshot_log_dir={self.work_dir / "snapshot-log"}
             snapshot_status_dir={self.work_dir / "snapshot-status"}
-            deploy_log_dir={self.work_dir / "deploy-log"}
-            deploy_status_dir={self.work_dir / "deploy-status"}
+            acquire_log_dir={self.work_dir / "acquire-log"}
+            acquire_status_dir={self.work_dir / "acquire-status"}
+            candidate_dir={self.work_dir / "candidates"}
             build_out_dir={self.work_dir / "build-out"}
             rollback_log_dir={self.work_dir / "rollback-log"}
             rollback_status_dir={self.work_dir / "rollback-status"}
             mkdir -p "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
-              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$acquire_log_dir" "$acquire_status_dir" "$candidate_dir" "$build_out_dir" \
               "$rollback_log_dir" "$rollback_status_dir"
             printf '/nix/store/same-nixos-system-same-26.05\n' >"$snapshot_dir/same.path"
             printf '/nix/store/same-nixos-system-same-26.05\n' >"$build_out_dir/same.path"
             printf '/nix/store/old-nixos-system-changed-26.05\n' >"$snapshot_dir/changed.path"
             printf '/nix/store/new-nixos-system-changed-26.05\n' >"$build_out_dir/changed.path"
             level_groups=('["same","changed"]')
-            success=()
+            acquired=()
             skipped=()
             snapshot_failed=()
             failed=()
             ensure_deploy_wave_parent_readiness() {{ return 0; }}
-            run_deploy_job() {{
-              printf 'deploy:%s\n' "$1"
+            run_acquire_job() {{
+              printf 'acquire:%s\n' "$1"
+              printf '%s\n' "$(cat "$2")" >"$4"
               write_status_file "$3" 0
             }}
-            run_deploy_phase \
-              0 1 0 1 \
-              "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
-              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
-              "$rollback_log_dir" "$rollback_status_dir" \
-              level_groups success skipped snapshot_failed failed
-            bash_args_to_json_array "${{success[@]}}"
+            run_acquire_phase \
+              0 1 "$snapshot_dir" \
+              "$acquire_log_dir" "$acquire_status_dir" "$build_out_dir" "$candidate_dir" \
+              level_groups acquired skipped failed
+            bash_args_to_json_array "${{acquired[@]}}"
             bash_args_to_json_array "${{skipped[@]}}"
             bash_args_to_json_array "${{failed[@]}}"
-            printf 'same-status:%s\n' "$(cat "$deploy_status_dir/same.rc")"
+            printf 'same-status:%s\n' "$(cat "$acquire_status_dir/same.rc")"
             """
         )
 
         lines = result.stdout.splitlines()
-        self.assertEqual("deploy:changed", lines[0])
+        self.assertEqual("acquire:changed", lines[0])
         self.assertEqual(["changed"], json.loads(lines[1]))
         self.assertEqual(["same"], json.loads(lines[2]))
         self.assertEqual([], json.loads(lines[3]))
@@ -7796,7 +7994,7 @@ EOF_SCRIPT
         self.assertIn("| same | skip deploy: gen up-to-date", result.stderr)
         self.assertNotIn("deploy skip (current generation already matches built output)", result.stderr)
 
-    def test_deploy_phase_logs_when_entire_wave_is_skipped(self):
+    def test_acquire_phase_logs_when_entire_wave_is_skipped(self):
         result = self.run_script(
             f"""
             init_vars
@@ -7807,35 +8005,34 @@ EOF_SCRIPT
             snapshot_dir={self.work_dir / "snapshot"}
             snapshot_log_dir={self.work_dir / "snapshot-log"}
             snapshot_status_dir={self.work_dir / "snapshot-status"}
-            deploy_log_dir={self.work_dir / "deploy-log"}
-            deploy_status_dir={self.work_dir / "deploy-status"}
+            acquire_log_dir={self.work_dir / "acquire-log"}
+            acquire_status_dir={self.work_dir / "acquire-status"}
+            candidate_dir={self.work_dir / "candidates"}
             build_out_dir={self.work_dir / "build-out"}
             rollback_log_dir={self.work_dir / "rollback-log"}
             rollback_status_dir={self.work_dir / "rollback-status"}
             mkdir -p "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
-              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$acquire_log_dir" "$acquire_status_dir" "$candidate_dir" "$build_out_dir" \
               "$rollback_log_dir" "$rollback_status_dir"
             printf '/nix/store/same-nixos-system-same-26.05\n' >"$snapshot_dir/same.path"
             printf '/nix/store/same-nixos-system-same-26.05\n' >"$build_out_dir/same.path"
             printf '/nix/store/same2-nixos-system-same2-26.05\n' >"$snapshot_dir/same2.path"
             printf '/nix/store/same2-nixos-system-same2-26.05\n' >"$build_out_dir/same2.path"
             level_groups=('["same","same2"]')
-            success=()
+            acquired=()
             skipped=()
             snapshot_failed=()
             failed=()
-            ensure_deploy_wave_parent_readiness() {{ return 0; }}
-            run_deploy_job() {{
-              printf 'unexpected-deploy:%s\n' "$1"
+            ensure_deploy_wave_parent_readiness() {{ printf 'unexpected-readiness\n'; return 1; }}
+            run_acquire_job() {{
+              printf 'unexpected-acquire:%s\n' "$1"
               return 1
             }}
-            run_deploy_phase \
-              0 1 0 1 \
-              "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
-              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
-              "$rollback_log_dir" "$rollback_status_dir" \
-              level_groups success skipped snapshot_failed failed
-            bash_args_to_json_array "${{success[@]}}"
+            run_acquire_phase \
+              0 1 "$snapshot_dir" \
+              "$acquire_log_dir" "$acquire_status_dir" "$build_out_dir" "$candidate_dir" \
+              level_groups acquired skipped failed
+            bash_args_to_json_array "${{acquired[@]}}"
             bash_args_to_json_array "${{skipped[@]}}"
             """
         )
@@ -7843,10 +8040,51 @@ EOF_SCRIPT
         lines = result.stdout.splitlines()
         self.assertEqual([], json.loads(lines[0]))
         self.assertEqual(["same", "same2"], json.loads(lines[1]))
-        self.assertNotIn("unexpected-deploy", result.stdout)
+        self.assertNotIn("unexpected-acquire", result.stdout)
+        self.assertNotIn("unexpected-readiness", result.stdout)
         self.assertIn("Skipping: No changed hosts", result.stderr)
 
-    def test_force_keeps_deploying_snapshot_matched_hosts(self):
+    def test_acquire_parent_readiness_failure_prints_the_affected_hosts(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=0
+            NIXBOT_IF_CHANGED=0
+            NIXBOT_HOSTS_JSON='{{"app":{{}}}}'
+            snapshot_dir={self.work_dir / "snapshot"}
+            acquire_log_dir={self.work_dir / "acquire-log"}
+            acquire_status_dir={self.work_dir / "acquire-status"}
+            candidate_dir={self.work_dir / "candidates"}
+            build_out_dir={self.work_dir / "build-out"}
+            mkdir -p "$snapshot_dir" "$acquire_log_dir" "$acquire_status_dir" \
+              "$candidate_dir" "$build_out_dir"
+            printf '/nix/store/new-app\n' >"$build_out_dir/app.path"
+            level_groups=('["app"]')
+            acquired=()
+            skipped=()
+            failed=()
+            ensure_deploy_wave_parent_readiness() {{ return 1; }}
+            set +e
+            run_acquire_phase \
+              0 1 "$snapshot_dir" \
+              "$acquire_log_dir" "$acquire_status_dir" "$build_out_dir" "$candidate_dir" \
+              level_groups acquired skipped failed
+            printf 'rc:%s\n' "$?"
+            set -e
+            bash_args_to_json_array "${{failed[@]}}"
+            """
+        )
+
+        self.assertEqual("rc:1", result.stdout.splitlines()[0])
+        self.assertEqual(["app"], json.loads(result.stdout.splitlines()[1]))
+        self.assertIn(
+            "Acquire phase failed during parent readiness for 1 host(s):",
+            result.stderr,
+        )
+        self.assertIn("  - app", result.stderr)
+
+    def test_force_keeps_acquiring_snapshot_matched_hosts(self):
         result = self.run_script(
             f"""
             init_vars
@@ -7857,41 +8095,85 @@ EOF_SCRIPT
             snapshot_dir={self.work_dir / "snapshot"}
             snapshot_log_dir={self.work_dir / "snapshot-log"}
             snapshot_status_dir={self.work_dir / "snapshot-status"}
-            deploy_log_dir={self.work_dir / "deploy-log"}
-            deploy_status_dir={self.work_dir / "deploy-status"}
+            acquire_log_dir={self.work_dir / "acquire-log"}
+            acquire_status_dir={self.work_dir / "acquire-status"}
+            candidate_dir={self.work_dir / "candidates"}
             build_out_dir={self.work_dir / "build-out"}
             rollback_log_dir={self.work_dir / "rollback-log"}
             rollback_status_dir={self.work_dir / "rollback-status"}
             mkdir -p "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
-              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$acquire_log_dir" "$acquire_status_dir" "$candidate_dir" "$build_out_dir" \
               "$rollback_log_dir" "$rollback_status_dir"
             printf '/nix/store/same-nixos-system-same-26.05\n' >"$snapshot_dir/same.path"
             printf '/nix/store/same-nixos-system-same-26.05\n' >"$build_out_dir/same.path"
             level_groups=('["same"]')
-            success=()
+            acquired=()
             skipped=()
             snapshot_failed=()
             failed=()
             ensure_deploy_wave_parent_readiness() {{ return 0; }}
-            run_deploy_job() {{
-              printf 'deploy:%s\n' "$1"
+            run_acquire_job() {{
+              printf 'acquire:%s\n' "$1"
+              printf '%s\n' "$(cat "$2")" >"$4"
               write_status_file "$3" 0
             }}
-            run_deploy_phase \
-              0 1 0 1 \
-              "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
-              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
-              "$rollback_log_dir" "$rollback_status_dir" \
-              level_groups success skipped snapshot_failed failed
-            bash_args_to_json_array "${{success[@]}}"
+            run_acquire_phase \
+              0 1 "$snapshot_dir" \
+              "$acquire_log_dir" "$acquire_status_dir" "$build_out_dir" "$candidate_dir" \
+              level_groups acquired skipped failed
+            bash_args_to_json_array "${{acquired[@]}}"
             bash_args_to_json_array "${{skipped[@]}}"
             """
         )
 
         lines = result.stdout.splitlines()
-        self.assertEqual("deploy:same", lines[0])
+        self.assertEqual("acquire:same", lines[0])
         self.assertEqual(["same"], json.loads(lines[1]))
         self.assertEqual([], json.loads(lines[2]))
+
+    def test_optional_acquisition_cleanup_failure_aborts_before_activation(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=0
+            NIXBOT_IF_CHANGED=0
+            NIXBOT_HOSTS_JSON='{{"optional":{{"deploy":"optional"}}}}'
+            snapshot_dir={self.work_dir / "snapshot"}
+            acquire_log_dir={self.work_dir / "acquire-log"}
+            acquire_status_dir={self.work_dir / "acquire-status"}
+            candidate_dir={self.work_dir / "candidates"}
+            build_out_dir={self.work_dir / "build-out"}
+            mkdir -p "$snapshot_dir" "$acquire_log_dir" "$acquire_status_dir" \
+              "$candidate_dir" "$build_out_dir"
+            printf '/nix/store/new-optional\n' >"$build_out_dir/optional.path"
+            level_groups=('["optional"]')
+            acquired=()
+            skipped=()
+            failed=()
+            ensure_deploy_wave_parent_readiness() {{ return 0; }}
+            run_acquire_job() {{
+              printf '%s\n' "$(cat "$2")" >"$4"
+              write_status_file "$3" 1
+            }}
+            release_acquired_candidates() {{ return 0; }}
+            set +e
+            run_acquire_phase \
+              0 1 "$snapshot_dir" \
+              "$acquire_log_dir" "$acquire_status_dir" "$build_out_dir" "$candidate_dir" \
+              level_groups acquired skipped failed
+            printf 'rc:%s\n' "$?"
+            set -e
+            bash_args_to_json_array "${{acquired[@]}}"
+            bash_args_to_json_array "${{failed[@]}}"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("rc:1", lines[0])
+        self.assertEqual([], json.loads(lines[1]))
+        self.assertEqual(["optional"], json.loads(lines[2]))
+        self.assertIn("cleanup failed", result.stderr)
 
     def test_deploy_failure_preserves_successful_hosts_for_health(self):
         body = f"""
@@ -7905,15 +8187,19 @@ EOF_SCRIPT
             snapshot_status_dir={self.work_dir / "snapshot-status"}-$ROLLBACK_MODE
             deploy_log_dir={self.work_dir / "deploy-log"}-$ROLLBACK_MODE
             deploy_status_dir={self.work_dir / "deploy-status"}-$ROLLBACK_MODE
+            candidate_dir={self.work_dir / "candidates"}-$ROLLBACK_MODE
             build_out_dir={self.work_dir / "build-out"}-$ROLLBACK_MODE
             rollback_log_dir={self.work_dir / "rollback-log"}-$ROLLBACK_MODE
             rollback_status_dir={self.work_dir / "rollback-status"}-$ROLLBACK_MODE
             mkdir -p "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
-              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$deploy_log_dir" "$deploy_status_dir" "$candidate_dir" "$build_out_dir" \
               "$rollback_log_dir" "$rollback_status_dir"
             printf '/nix/store/old-ok\n' >"$snapshot_dir/ok.path"
             printf '/nix/store/new-ok\n' >"$build_out_dir/ok.path"
+            printf '/nix/store/new-ok\n' >"$candidate_dir/ok.path"
+            printf '/nix/store/new-blocked\n' >"$candidate_dir/blocked.path"
             level_groups=('["ok"]' '["blocked"]')
+            acquired=(ok blocked)
             success=()
             skipped=()
             snapshot_failed=()
@@ -7924,11 +8210,10 @@ EOF_SCRIPT
             maybe_rollback_successful_hosts() {{ printf 'unexpected rollback\n'; return 1; }}
             set +e
             run_deploy_phase \
-              0 1 0 1 \
-              "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
+              0 1 "$snapshot_dir" \
               "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
               "$rollback_log_dir" "$rollback_status_dir" \
-              level_groups success skipped snapshot_failed failed
+              level_groups success skipped failed "$candidate_dir" acquired
             printf 'rc:%s\n' "$?"
             set -e
             bash_args_to_json_array "${{success[@]}}"
@@ -7943,6 +8228,72 @@ EOF_SCRIPT
         self.assertEqual("rc:1", no_rollback.stdout.splitlines()[0])
         self.assertEqual(["ok"], json.loads(no_rollback.stdout.splitlines()[1]))
         self.assertNotIn("unexpected rollback", no_rollback.stdout)
+
+    def test_deploy_phase_refuses_a_missing_acquired_candidate_record(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=0
+            NIXBOT_HOSTS_JSON='{{"app":{{}}}}'
+            snapshot_dir={self.work_dir / "snapshot"}
+            deploy_log_dir={self.work_dir / "deploy-log"}
+            deploy_status_dir={self.work_dir / "deploy-status"}
+            candidate_dir={self.work_dir / "candidates"}
+            build_out_dir={self.work_dir / "build-out"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            mkdir -p "$snapshot_dir" "$deploy_log_dir" "$deploy_status_dir" \
+              "$candidate_dir" "$build_out_dir" "$rollback_log_dir" "$rollback_status_dir"
+            printf '/nix/store/new-app\n' >"$build_out_dir/app.path"
+            level_groups=('["app"]')
+            acquired=(app)
+            success=()
+            skipped=()
+            failed=()
+            ensure_deploy_wave_parent_readiness() {{ return 0; }}
+            run_deploy_job() {{ printf 'unexpected-deploy\n'; return 0; }}
+            set +e
+            run_deploy_phase \
+              0 1 "$snapshot_dir" \
+              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$rollback_log_dir" "$rollback_status_dir" \
+              level_groups success skipped failed "$candidate_dir" acquired
+            printf 'rc:%s\n' "$?"
+            set -e
+            printf 'failed:%s\n' "$failed"
+            """
+        )
+
+        self.assertEqual(["rc:1", "failed:app"], result.stdout.splitlines())
+        self.assertNotIn("unexpected-deploy", result.stdout)
+
+    def test_deploy_phase_skips_readiness_for_a_wave_without_acquired_hosts(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            NIXBOT_HOSTS_JSON='{{"app":{{}}}}'
+            level_groups=('["app"]')
+            acquired=()
+            success=()
+            skipped=()
+            failed=()
+            ensure_deploy_wave_parent_readiness() {{ printf 'unexpected-readiness\n'; return 1; }}
+            run_deploy_job() {{ printf 'unexpected-deploy\n'; return 1; }}
+            run_deploy_phase \
+              0 1 {self.work_dir / "snapshot"} \
+              {self.work_dir / "deploy-log"} {self.work_dir / "deploy-status"} \
+              {self.work_dir / "build-out"} \
+              {self.work_dir / "rollback-log"} {self.work_dir / "rollback-status"} \
+              level_groups success skipped failed {self.work_dir / "candidates"} acquired
+            printf 'rc:%s\n' "$?"
+            """
+        )
+
+        self.assertEqual(["rc:0"], result.stdout.splitlines())
+        self.assertNotIn("unexpected-readiness", result.stdout)
+        self.assertNotIn("unexpected-deploy", result.stdout)
 
     def test_failed_deploy_rolls_back_only_after_activation_admission(self):
         result = self.run_script(
@@ -8344,8 +8695,15 @@ EOF_SCRIPT
               built_ref=(app db)
               return 0
             }}
+            run_snapshot_phase() {{ return 0; }}
+            run_acquire_phase() {{
+              local -n acquired_ref="${{9}}"
+              acquired_ref=(app db)
+              return 0
+            }}
+            validate_acquired_candidate_records() {{ return 0; }}
             run_deploy_phase() {{
-              local -n successful_ref="${{14}}"
+              local -n successful_ref="${{10}}"
               successful_ref=(app db)
               return 0
             }}
@@ -8368,6 +8726,83 @@ EOF_SCRIPT
             ["start:app", "start:db", "finish:db", "finish:app"],
             result.stdout.splitlines(),
         )
+
+    def test_run_hosts_completes_fleet_acquisition_before_any_deploy(self):
+        order_file = self.work_dir / "phase-order"
+        result = self.run_script(
+            f"""
+            init_vars
+            ACTION=deploy
+            HOST_ACTION=deploy
+            VERIFY_AFTER_DEPLOY=0
+            ROLLBACK_ON_FAILURE=0
+            NIXBOT_VERIFY_JOBS=1
+            NIXBOT_PARALLEL_JOBS=2
+            BUILD_JOBS=1
+            DRY_RUN=0
+            selected='{{"required":{{"app":{{}},"db":{{}}}},"optional":{{}},"signaled":{{}},"canceled":{{}}}}'
+            selected_host_levels_json() {{ printf '%s\n' '[["app","db"]]'; }}
+            prepare_build_plan() {{ return 0; }}
+            run_build_phase() {{
+              local -n built_ref="$7"
+              built_ref=(app db)
+              return 0
+            }}
+            run_snapshot_phase() {{ return 0; }}
+            run_acquire_phase() {{
+              local -n acquired_ref="${{9}}"
+              printf 'acquire:app\nacquire:db\n' >>{order_file}
+              acquired_ref=(app db)
+              return 0
+            }}
+            validate_acquired_candidate_records() {{ return 0; }}
+            run_deploy_phase() {{
+              local -n successful_ref="${{10}}"
+              printf 'deploy:app\ndeploy:db\n' >>{order_file}
+              successful_ref=(app db)
+              return 0
+            }}
+            run_hosts "$selected"
+            cat {order_file}
+            """
+        )
+
+        self.assertEqual(
+            ["acquire:app", "acquire:db", "deploy:app", "deploy:db"],
+            result.stdout.splitlines(),
+        )
+
+    def test_run_hosts_acquisition_failure_prevents_every_activation(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            HOST_ACTION=deploy
+            VERIFY_AFTER_DEPLOY=0
+            ROLLBACK_ON_FAILURE=0
+            NIXBOT_VERIFY_JOBS=1
+            NIXBOT_PARALLEL_JOBS=2
+            BUILD_JOBS=1
+            DRY_RUN=0
+            selected='{"required":{"app":{},"db":{}},"optional":{},"signaled":{},"canceled":{}}'
+            selected_host_levels_json() { printf '%s\n' '[["app","db"]]'; }
+            prepare_build_plan() { return 0; }
+            run_build_phase() {
+              local -n built_ref="$7"
+              built_ref=(app db)
+              return 0
+            }
+            run_snapshot_phase() { return 0; }
+            run_acquire_phase() { return 23; }
+            run_deploy_phase() { printf 'unexpected-deploy\n'; return 0; }
+            set +e
+            run_hosts "$selected"
+            printf 'rc:%s\n' "$?"
+            """
+        )
+
+        self.assertEqual(["rc:23"], result.stdout.splitlines())
+        self.assertNotIn("unexpected-deploy", result.stdout)
 
     def test_deploy_failure_detection_ignores_optional_signal_and_pre_activation_cancel(self):
         result = self.run_script(

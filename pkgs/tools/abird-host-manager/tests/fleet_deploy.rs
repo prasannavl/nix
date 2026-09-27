@@ -15,11 +15,12 @@ use deploy::{
     ActivationResult, ActivationSample, ActivationStatus, BootEnvironment, CancellationAction,
     CancellationController, DeployDecision, DeployFailureAction, GenerationAdmissionPaths,
     GenerationSnapshot, LockContentionEvidence, SnapshotRequirement, SystemGeneration,
-    VerificationDecision, activation_command, activation_verification_command,
-    boot_is_container_command, classify_deploy_failure, deploy_unit_name,
-    generation_admission_command, generation_admission_script, parent_readiness_commands,
-    pre_activation_image_pull_command, pre_activation_model_prefetch_command,
-    pre_switch_preparation_command, rollback_command, rollback_unit_name, rollback_waves,
+    VerificationDecision, acquire_candidate_lease_command, activation_command,
+    activation_verification_command, boot_is_container_command, classify_deploy_failure,
+    deploy_unit_name, generation_admission_command, generation_admission_script,
+    parent_readiness_commands, pre_activation_image_pull_command,
+    pre_activation_model_prefetch_command, pre_switch_preparation_command,
+    release_candidate_lease_command, rollback_command, rollback_unit_name, rollback_waves,
     snapshot_command, verify_activation,
 };
 use test_support::write_executable;
@@ -1031,6 +1032,34 @@ fn pre_activation_model_prefetch_uses_the_built_generation_runner() {
     assert!(command.args[1].contains("ai-model-prefetch-all"));
     assert!(!command.args[1].contains("AI_MODEL_PREFETCH_PLAN"));
     assert_bash_syntax(&command.args[1]);
+}
+
+#[test]
+fn candidate_lease_commands_are_run_scoped_candidate_bound_and_syntax_valid() {
+    let generation = generation("app");
+    let acquire = acquire_candidate_lease_command("run-42", "app.example", &generation);
+    let release = release_candidate_lease_command("run-42", "app.example", &generation);
+    let other_host = acquire_candidate_lease_command("run-42", "db.example", &generation);
+    let other_run = acquire_candidate_lease_command("run-43", "app.example", &generation);
+
+    for command in [&acquire, &release] {
+        assert_eq!(command.program, "/run/current-system/sw/bin/bash");
+        assert_eq!(command.args[3], generation.as_str());
+        assert_eq!(command.args[4].len(), 64);
+        assert!(
+            command.args[4]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+        assert!(command.args[1].contains("/run/nixbot/acquired-candidates"));
+        assert!(command.args[1].contains("readlink"));
+        assert_bash_syntax(&command.args[1]);
+    }
+    assert_eq!(acquire.args[4], release.args[4]);
+    assert_ne!(acquire.args[4], other_host.args[4]);
+    assert_ne!(acquire.args[4], other_run.args[4]);
+    assert!(acquire.args[1].contains("nix-store"));
+    assert!(release.args[1].contains("rm -f"));
 }
 
 #[test]

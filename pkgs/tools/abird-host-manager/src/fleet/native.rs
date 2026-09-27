@@ -67,6 +67,8 @@ pub struct NativeFleetEffects<'a> {
     derivations: BTreeMap<String, NixStorePath>,
     closures: BTreeMap<String, NixStorePath>,
     snapshots: BTreeMap<String, super::deploy::GenerationSnapshot>,
+    candidate_leases: BTreeMap<String, NixStorePath>,
+    acquired: BTreeMap<String, NixStorePath>,
     activated: BTreeSet<String>,
     successful: BTreeSet<String>,
     deploy_skipped: BTreeSet<String>,
@@ -93,11 +95,23 @@ struct DeployTaskOutcome {
     activated: bool,
     successful: bool,
     pending_rollback: bool,
-    deploy_skipped: bool,
-    optional_snapshot_skipped: bool,
     deploy_failed: bool,
     rollback_succeeded: bool,
     rollback_failed: bool,
+}
+
+struct AcquireTaskOutcome {
+    host: String,
+    policy: DeployMode,
+    result: Result<()>,
+    candidate_lease: Option<NixStorePath>,
+    acquired: Option<NixStorePath>,
+}
+
+#[derive(Clone)]
+struct AcquisitionTarget {
+    closure: NixStorePath,
+    generation: super::deploy::SystemGeneration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -106,22 +120,21 @@ enum CandidateAcquisition {
     Deferred,
 }
 
-fn execute_candidate_deploy_pipeline<C, R>(
+fn execute_candidate_acquisition_pipeline<C>(
     context: &mut C,
     distribute: impl FnOnce(&mut C) -> Result<()>,
-    prepare: impl FnOnce(&mut C) -> Result<()>,
+    protect: impl FnOnce(&mut C) -> Result<()>,
     admit: impl FnOnce(&mut C) -> Result<CandidateAcquisition>,
     pull_images: impl FnOnce(&mut C) -> Result<()>,
     prefetch_models: impl FnOnce(&mut C) -> Result<()>,
-    activate: impl FnOnce(&mut C) -> Result<R>,
-) -> Result<R> {
+) -> Result<()> {
     distribute(context)?;
-    prepare(context)?;
+    protect(context)?;
     if admit(context)? == CandidateAcquisition::Approved {
         pull_images(context)?;
         prefetch_models(context)?;
     }
-    activate(context)
+    Ok(())
 }
 
 impl<'a> NativeFleetEffects<'a> {
@@ -214,6 +227,8 @@ impl<'a> NativeFleetEffects<'a> {
             derivations: BTreeMap::new(),
             closures: BTreeMap::new(),
             snapshots: BTreeMap::new(),
+            candidate_leases: BTreeMap::new(),
+            acquired: BTreeMap::new(),
             activated: BTreeSet::new(),
             successful: BTreeSet::new(),
             deploy_skipped: BTreeSet::new(),
@@ -1700,46 +1715,63 @@ impl<'a> NativeFleetEffects<'a> {
     }
 
     fn run_snapshot_phase(&mut self) -> Result<()> {
-        let mut tasks = Vec::new();
-        let snapshot_order = self.selection.ordered.clone();
-        for host in &snapshot_order {
-            let policy = self.inventory.hosts[host].deploy;
-            if policy == DeployMode::Skip
-                || self.invocation.options.dry_run
-                || self.invocation.options.no_rollback
-            {
+        if self.invocation.options.dry_run || self.invocation.options.no_rollback {
+            for host in &self.selection.ordered {
                 self.snapshots.insert(
                     host.clone(),
                     super::deploy::GenerationSnapshot::not_requested(),
                 );
+            }
+            return Ok(());
+        }
+
+        let mut failures = Vec::new();
+        for wave in self.selection.waves.clone() {
+            let mut runnable = Vec::new();
+            for host in wave {
+                let policy = self.inventory.hosts[&host].deploy;
+                if policy == DeployMode::Skip {
+                    self.snapshots
+                        .insert(host, super::deploy::GenerationSnapshot::not_requested());
+                    continue;
+                }
+                runnable.push(host);
+            }
+            if runnable.is_empty() {
                 continue;
             }
-            let resolved = resolve_host(self.inventory, host, &self.invocation.options)?;
-            let target = self.execution_target(&resolved)?;
-            tasks.push((host.clone(), policy, target));
-        }
-        let repository = self.repository.to_path_buf();
-        let progress = self.progress.clone();
-        let snapshots = super::orchestration::bounded_parallel_map(
-            tasks,
-            self.invocation.options.deploy_jobs,
-            |(host, policy, target)| -> Result<_> {
-                let mut runtime = HostRuntime::new(
-                    reporting_process_runner(&progress),
-                    repository.clone(),
-                    DryRun::No,
-                )?;
-                Ok((host, policy, runtime.snapshot(&target)?))
-            },
-        )?;
-        let mut failures = Vec::new();
-        for snapshot in snapshots {
-            let (host, policy, snapshot) = snapshot?;
-            if snapshot.generation().is_none() && policy == DeployMode::Strict {
-                failures.push(host.clone());
-                self.snapshot_failed.insert(host.clone());
+            self.ensure_wave_parent_readiness(&runnable)
+                .context("snapshot parent readiness failed")?;
+
+            let mut tasks = Vec::with_capacity(runnable.len());
+            for host in runnable {
+                let policy = self.inventory.hosts[&host].deploy;
+                let resolved = resolve_host(self.inventory, &host, &self.invocation.options)?;
+                let target = self.execution_target(&resolved)?;
+                tasks.push((host, policy, target));
             }
-            self.snapshots.insert(host, snapshot);
+            let repository = self.repository.to_path_buf();
+            let progress = self.progress.clone();
+            let snapshots = super::orchestration::bounded_parallel_map(
+                tasks,
+                self.invocation.options.deploy_jobs,
+                |(host, policy, target)| -> Result<_> {
+                    let mut runtime = HostRuntime::new(
+                        reporting_process_runner(&progress),
+                        repository.clone(),
+                        DryRun::No,
+                    )?;
+                    Ok((host, policy, runtime.snapshot(&target)?))
+                },
+            )?;
+            for snapshot in snapshots {
+                let (host, policy, snapshot) = snapshot?;
+                if snapshot.generation().is_none() && policy == DeployMode::Strict {
+                    failures.push(host.clone());
+                    self.snapshot_failed.insert(host.clone());
+                }
+                self.snapshots.insert(host, snapshot);
+            }
         }
         if !failures.is_empty() {
             bail!(
@@ -1981,7 +2013,72 @@ impl<'a> NativeFleetEffects<'a> {
         Ok(())
     }
 
-    fn deploy_one(&mut self, host: &str) -> Result<()> {
+    fn set_candidate_lease(
+        &mut self,
+        host: &str,
+        target: &HostExecutionTarget,
+        generation: &super::deploy::SystemGeneration,
+        acquire: bool,
+    ) -> Result<()> {
+        let command = if acquire {
+            super::deploy::acquire_candidate_lease_command(
+                &self.invocation_id.to_string(),
+                host,
+                generation,
+            )
+        } else {
+            super::deploy::release_candidate_lease_command(
+                &self.invocation_id.to_string(),
+                host,
+                generation,
+            )
+        };
+        let operation = if acquire {
+            "acquire-candidate-lease"
+        } else {
+            "release-candidate-lease"
+        };
+        let output = self.host_runtime.execute_remote_command(
+            target,
+            &CommandSpec::new(command.program, command.args),
+            EffectKind::Mutation,
+            operation,
+        )?;
+        if !output.succeeded() {
+            bail!("{operation} failed for {host}: {}", output.stderr.trim());
+        }
+        Ok(())
+    }
+
+    fn release_candidate_lease(&mut self, host: &str, generation: &NixStorePath) -> Result<()> {
+        let desired = super::deploy::SystemGeneration::parse(generation.as_str())?;
+        let resolved = resolve_host(self.inventory, host, &self.invocation.options)?;
+        let target = self.execution_target(&resolved)?;
+        self.set_candidate_lease(host, &target, &desired, false)
+    }
+
+    fn release_all_candidate_leases(&mut self) {
+        let leases = std::mem::take(&mut self.candidate_leases);
+        for (host, generation) in leases {
+            if let Err(error) = self.release_candidate_lease(&host, &generation) {
+                self.progress.message(format!(
+                    "Candidate lease cleanup deferred · {host} · {error:#}"
+                ));
+                self.candidate_leases.insert(host, generation);
+            }
+        }
+    }
+
+    fn release_tracked_candidate_lease(&mut self, host: &str) -> Result<()> {
+        let Some(generation) = self.candidate_leases.get(host).cloned() else {
+            return Ok(());
+        };
+        self.release_candidate_lease(host, &generation)?;
+        self.candidate_leases.remove(host);
+        Ok(())
+    }
+
+    fn candidate_for_acquisition(&mut self, host: &str) -> Result<Option<AcquisitionTarget>> {
         let policy = self.inventory.hosts[host].deploy;
         let closure = self
             .closures
@@ -2008,50 +2105,49 @@ impl<'a> NativeFleetEffects<'a> {
         ) {
             super::deploy::DeployDecision::SkipUnchanged => {
                 self.deploy_skipped.insert(host.to_owned());
-                return Ok(());
+                Ok(None)
             }
             super::deploy::DeployDecision::SkipOptionalMissing => {
                 self.optional_snapshot_skipped.insert(host.to_owned());
-                return Ok(());
+                Ok(None)
             }
             super::deploy::DeployDecision::RefuseRequiredMissing => {
                 bail!("required generation snapshot is unavailable for {host}")
             }
-            super::deploy::DeployDecision::Deploy { .. } => {}
+            super::deploy::DeployDecision::Deploy { .. } => Ok(Some(AcquisitionTarget {
+                closure,
+                generation: desired,
+            })),
         }
+    }
+
+    fn acquire_one(&mut self, host: &str, candidate: &AcquisitionTarget) -> Result<()> {
         let resolved = resolve_host(self.inventory, host, &self.invocation.options)?;
         let target = self.execution_target(&resolved)?;
-        let activation_execution = execute_candidate_deploy_pipeline(
+        let acquisition = execute_candidate_acquisition_pipeline(
             self,
-            |effects| effects.distribute_for_deploy(host, &closure),
+            |effects| effects.distribute_for_deploy(host, &candidate.closure),
             |effects| {
                 effects.ensure_host_age_identity(&resolved, &target)?;
-                // Prepare failed-unit and user-manager state. Candidate
-                // generation admission is the next, distinct stage and uses
-                // the authoritative current dispatcher.
-                let prepared = effects
-                    .host_runtime
-                    .prepare_switch(&target, &super::deploy::pre_switch_preparation_command())?;
-                if !prepared.succeeded() {
-                    bail!(
-                        "pre-switch preparation failed for {host}: {}",
-                        prepared.stderr.trim()
-                    );
-                }
+                effects
+                    .candidate_leases
+                    .insert(host.to_owned(), candidate.closure.clone());
+                effects.set_candidate_lease(host, &target, &candidate.generation, true)?;
                 Ok(())
             },
             |effects| {
                 let goal = deploy_goal(effects.invocation.options.goal);
-                let admission = super::deploy::generation_admission_command(&desired, goal);
+                let admission =
+                    super::deploy::generation_admission_command(&candidate.generation, goal);
                 let admitted = effects.host_runtime.admit_generation(&target, &admission)?;
                 if admitted.succeeded()
                     && admitted.stdout.lines().any(|line| {
                         line == super::deploy::GENERATION_ADMISSION_ACQUISITION_DEFERRED_MARKER
                     })
                 {
-                    eprintln!(
-                        "[{host}] deploy | candidate acquisition deferred until first activation establishes generation authority"
-                    );
+                    effects.progress.message(format!(
+                        "Candidate acquisition deferred until first activation · {host}"
+                    ));
                     Ok(CandidateAcquisition::Deferred)
                 } else if admitted.succeeded() {
                     Ok(CandidateAcquisition::Approved)
@@ -2063,64 +2159,112 @@ impl<'a> NativeFleetEffects<'a> {
                 }
             },
             |effects| {
-                let image_pull = super::deploy::pre_activation_image_pull_command(&desired);
-                let image_pull = CommandSpec::new(image_pull.program, image_pull.args);
-                let pulled = effects.host_runtime.execute_remote_command(
+                let command =
+                    super::deploy::pre_activation_image_pull_command(&candidate.generation);
+                let output = effects.host_runtime.execute_remote_command(
                     &target,
-                    &image_pull,
+                    &CommandSpec::new(command.program, command.args),
                     EffectKind::Mutation,
                     "pre-activation-image-pull",
                 )?;
-                if !pulled.succeeded() {
+                if !output.succeeded() {
                     bail!(
                         "pre-activation image pull failed for {host}: {}",
-                        pulled.stderr.trim()
+                        output.stderr.trim()
                     );
                 }
                 Ok(())
             },
             |effects| {
-                let model_prefetch = super::deploy::pre_activation_model_prefetch_command(&desired);
-                let model_prefetch = CommandSpec::new(model_prefetch.program, model_prefetch.args);
-                let prefetched = effects.host_runtime.execute_remote_command(
+                let command =
+                    super::deploy::pre_activation_model_prefetch_command(&candidate.generation);
+                let output = effects.host_runtime.execute_remote_command(
                     &target,
-                    &model_prefetch,
+                    &CommandSpec::new(command.program, command.args),
                     EffectKind::Mutation,
                     "pre-activation-model-prefetch",
                 )?;
-                if !prefetched.succeeded() {
+                if !output.succeeded() {
                     bail!(
                         "pre-activation AI model prefetch failed for {host}: {}",
-                        prefetched.stderr.trim()
+                        output.stderr.trim()
                     );
                 }
                 Ok(())
             },
-            |effects| {
-                let goal = deploy_goal(effects.invocation.options.goal);
-                let boot_environment = effects.boot_environment(host)?;
-                let activation =
-                    super::deploy::activation_command(super::deploy::ActivationCommand {
-                        run_id: effects.invocation_id.to_string(),
-                        host: host.to_owned(),
-                        attempt: 1,
-                        generation: desired.clone(),
-                        goal,
-                        boot_environment,
-                        restart_managed: effects.invocation.options.restart_managed,
-                        runtime_max: Duration::from_secs(
-                            effects.settings.remote_activation_runtime_max_seconds,
-                        ),
-                        stop_timeout: Duration::from_secs(
-                            effects.settings.remote_activation_stop_timeout_seconds,
-                        ),
-                        lock_wait: Duration::from_secs(effects.settings.state_lock_timeout_seconds),
-                    });
-                effects
-                    .host_runtime
-                    .activate(&target, &activation, &desired, goal, "activation")
-            },
-        )?;
+        );
+        if let Err(error) = acquisition {
+            if let Some(generation) = self.candidate_leases.get(host).cloned() {
+                if let Err(cleanup) = self.release_candidate_lease(host, &generation) {
+                    return Err(anyhow::anyhow!(
+                        "{error:#}; candidate lease cleanup also failed: {cleanup:#}"
+                    ));
+                }
+                self.candidate_leases.remove(host);
+            }
+            return Err(error);
+        }
+        self.acquired
+            .insert(host.to_owned(), candidate.closure.clone());
+        Ok(())
+    }
+
+    fn deploy_one(&mut self, host: &str) -> Result<()> {
+        let closure = self
+            .closures
+            .get(host)
+            .cloned()
+            .with_context(|| format!("missing built closure for {host}"))?;
+        let acquired = self
+            .acquired
+            .get(host)
+            .with_context(|| format!("missing acquired candidate for {host}"))?;
+        if acquired != &closure {
+            bail!(
+                "acquired candidate for {host} is {}, expected {}",
+                acquired.as_str(),
+                closure.as_str()
+            );
+        }
+        let desired = super::deploy::SystemGeneration::parse(closure.as_str())?;
+        let resolved = resolve_host(self.inventory, host, &self.invocation.options)?;
+        let target = self.execution_target(&resolved)?;
+        // Verify or re-establish the exact target-side GC root before making
+        // any activation preparation changes.
+        self.set_candidate_lease(host, &target, &desired, true)?;
+        let prepared = self
+            .host_runtime
+            .prepare_switch(&target, &super::deploy::pre_switch_preparation_command())?;
+        if !prepared.succeeded() {
+            return Err(anyhow::anyhow!(
+                "pre-switch preparation failed for {host}: {}",
+                prepared.stderr.trim()
+            ));
+        }
+
+        let activation_execution = (|| {
+            let goal = deploy_goal(self.invocation.options.goal);
+            let boot_environment = self.boot_environment(host)?;
+            let activation = super::deploy::activation_command(super::deploy::ActivationCommand {
+                run_id: self.invocation_id.to_string(),
+                host: host.to_owned(),
+                attempt: 1,
+                generation: desired.clone(),
+                goal,
+                boot_environment,
+                restart_managed: self.invocation.options.restart_managed,
+                runtime_max: Duration::from_secs(
+                    self.settings.remote_activation_runtime_max_seconds,
+                ),
+                stop_timeout: Duration::from_secs(
+                    self.settings.remote_activation_stop_timeout_seconds,
+                ),
+                lock_wait: Duration::from_secs(self.settings.state_lock_timeout_seconds),
+            });
+            self.host_runtime
+                .activate(&target, &activation, &desired, goal, "activation")
+        })();
+        let activation_execution = activation_execution?;
         match activation_execution {
             ActivationExecution::Succeeded | ActivationExecution::SucceededAfterVerification => {
                 self.activated.insert(host.to_owned());
@@ -2144,33 +2288,39 @@ impl<'a> NativeFleetEffects<'a> {
         Ok(())
     }
 
-    fn run_deploy_phase(&mut self) -> Result<()> {
+    fn run_acquire_phase(&mut self) -> Result<()> {
         if self.invocation.options.dry_run {
             return Ok(());
         }
         'waves: for wave in self.selection.waves.clone() {
-            if let Err(error) = self.ensure_wave_parent_readiness(&wave) {
-                self.deploy_failures
-                    .push(format!("parent readiness: {error:#}"));
-                break;
+            let mut runnable = Vec::new();
+            for host in wave {
+                if self.inventory.hosts[&host].deploy == DeployMode::Skip {
+                    continue;
+                }
+                if let Some(candidate) = self.candidate_for_acquisition(&host)? {
+                    runnable.push((host, candidate));
+                }
             }
-            let runnable = wave
-                .into_iter()
-                .filter(|host| self.inventory.hosts[host].deploy != DeployMode::Skip)
+            if runnable.is_empty() {
+                continue;
+            }
+            let readiness_hosts = runnable
+                .iter()
+                .map(|(host, _)| host.clone())
                 .collect::<Vec<_>>();
+            if let Err(error) = self.ensure_wave_parent_readiness(&readiness_hosts) {
+                self.release_all_candidate_leases();
+                self.builder_lease.release();
+                return Err(error.context("acquisition parent readiness failed"));
+            }
             for chunk in runnable.chunks(self.invocation.options.deploy_jobs) {
                 let tasks = chunk
                     .iter()
-                    .map(|host| {
+                    .map(|(host, candidate)| {
                         Ok((
                             host.clone(),
-                            self.closures
-                                .get(host)
-                                .cloned()
-                                .with_context(|| format!("missing built closure for {host}"))?,
-                            self.snapshots.get(host).cloned().with_context(|| {
-                                format!("missing generation snapshot for {host}")
-                            })?,
+                            candidate.clone(),
                             self.builder_closures.get(host).cloned(),
                         ))
                     })
@@ -2186,7 +2336,142 @@ impl<'a> NativeFleetEffects<'a> {
                 let outcomes = super::orchestration::bounded_parallel_map(
                     tasks,
                     self.invocation.options.deploy_jobs,
-                    |(host, closure, snapshot, builder_closure)| {
+                    |(host, candidate, builder_closure)| {
+                        let policy = inventory.hosts[&host].deploy;
+                        let mut worker = match NativeFleetEffects::new_with_diagnostics(
+                            invocation,
+                            nix_program,
+                            repository,
+                            inventory,
+                            selection,
+                            diagnostic_dir.as_deref(),
+                        ) {
+                            Ok(worker) => worker,
+                            Err(error) => {
+                                return AcquireTaskOutcome {
+                                    host,
+                                    policy,
+                                    result: Err(error),
+                                    candidate_lease: None,
+                                    acquired: None,
+                                };
+                            }
+                        };
+                        worker.invocation_id = invocation_id.clone();
+                        worker.builder_lease = Arc::clone(&builder_lease);
+                        if let Some(builder_closure) = builder_closure {
+                            worker
+                                .builder_closures
+                                .insert(host.clone(), builder_closure);
+                        }
+                        let result = worker.acquire_one(&host, &candidate);
+                        AcquireTaskOutcome {
+                            candidate_lease: worker.candidate_leases.get(&host).cloned(),
+                            acquired: worker.acquired.get(&host).cloned(),
+                            host,
+                            policy,
+                            result,
+                        }
+                    },
+                )?;
+                let mut required_failed = false;
+                for outcome in outcomes {
+                    if let Some(generation) = outcome.candidate_lease {
+                        self.candidate_leases
+                            .insert(outcome.host.clone(), generation);
+                    }
+                    if let Some(generation) = outcome.acquired {
+                        self.acquired.insert(outcome.host.clone(), generation);
+                    }
+                    if let Err(error) = outcome.result {
+                        self.deploy_failed.insert(outcome.host.clone());
+                        if let Some(generation) = self.candidate_leases.get(&outcome.host).cloned()
+                        {
+                            match self.release_candidate_lease(&outcome.host, &generation) {
+                                Ok(()) => {
+                                    self.candidate_leases.remove(&outcome.host);
+                                }
+                                Err(cleanup) => {
+                                    self.deploy_failures.push(format!(
+                                        "{} candidate lease cleanup: {cleanup:#}",
+                                        outcome.host
+                                    ));
+                                    required_failed = true;
+                                }
+                            }
+                        }
+                        if outcome.policy == DeployMode::Optional {
+                            self.progress.message(format!(
+                                "Optional acquisition failed · {} · {error:#}",
+                                outcome.host
+                            ));
+                        } else {
+                            self.deploy_failures
+                                .push(format!("{} acquisition: {error:#}", outcome.host));
+                            required_failed = true;
+                        }
+                    }
+                }
+                if required_failed {
+                    break 'waves;
+                }
+            }
+        }
+        // Every completed target has independently verified its closure. Any
+        // later activation therefore does not depend on the remote builder.
+        self.builder_lease.release();
+        if self.deploy_failures.is_empty() {
+            Ok(())
+        } else {
+            self.release_all_candidate_leases();
+            bail!("{}", self.deploy_failures.join("; "))
+        }
+    }
+
+    fn run_deploy_phase(&mut self) -> Result<()> {
+        if self.invocation.options.dry_run {
+            return Ok(());
+        }
+        'waves: for wave in self.selection.waves.clone() {
+            let runnable = wave
+                .into_iter()
+                .filter(|host| self.acquired.contains_key(host))
+                .collect::<Vec<_>>();
+            if runnable.is_empty() {
+                continue;
+            }
+            if let Err(error) = self.ensure_wave_parent_readiness(&runnable) {
+                self.deploy_failures
+                    .push(format!("parent readiness: {error:#}"));
+                break;
+            }
+            for chunk in runnable.chunks(self.invocation.options.deploy_jobs) {
+                let tasks = chunk
+                    .iter()
+                    .map(|host| {
+                        Ok((
+                            host.clone(),
+                            self.closures
+                                .get(host)
+                                .cloned()
+                                .with_context(|| format!("missing built closure for {host}"))?,
+                            self.acquired.get(host).cloned().with_context(|| {
+                                format!("missing acquired candidate for {host}")
+                            })?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let invocation = self.invocation;
+                let nix_program = self.nix_program;
+                let repository = self.repository;
+                let inventory = self.inventory;
+                let selection = self.selection;
+                let invocation_id = self.invocation_id.clone();
+                let diagnostic_dir = self.diagnostic_dir.clone();
+                let outcomes = super::orchestration::bounded_parallel_map(
+                    tasks,
+                    self.invocation.options.deploy_jobs,
+                    |(host, closure, acquired)| {
                         let policy = inventory.hosts[&host].deploy;
                         let mut worker = match NativeFleetEffects::new_with_diagnostics(
                             invocation,
@@ -2205,8 +2490,6 @@ impl<'a> NativeFleetEffects<'a> {
                                     activated: false,
                                     successful: false,
                                     pending_rollback: false,
-                                    deploy_skipped: false,
-                                    optional_snapshot_skipped: false,
                                     deploy_failed: true,
                                     rollback_succeeded: false,
                                     rollback_failed: false,
@@ -2214,14 +2497,8 @@ impl<'a> NativeFleetEffects<'a> {
                             }
                         };
                         worker.invocation_id = invocation_id.clone();
-                        worker.builder_lease = Arc::clone(&builder_lease);
                         worker.closures.insert(host.clone(), closure);
-                        if let Some(builder_closure) = builder_closure {
-                            worker
-                                .builder_closures
-                                .insert(host.clone(), builder_closure);
-                        }
-                        worker.snapshots.insert(host.clone(), snapshot);
+                        worker.acquired.insert(host.clone(), acquired);
                         let mut result = worker.deploy_one(&host);
                         if result.is_err()
                             && policy == DeployMode::Optional
@@ -2238,10 +2515,6 @@ impl<'a> NativeFleetEffects<'a> {
                             activated: worker.activated.contains(&host),
                             successful: worker.successful.contains(&host),
                             pending_rollback: worker.pending_rollback.contains(&host),
-                            deploy_skipped: worker.deploy_skipped.contains(&host),
-                            optional_snapshot_skipped: worker
-                                .optional_snapshot_skipped
-                                .contains(&host),
                             deploy_failed: result.is_err(),
                             rollback_succeeded: worker.rollback_succeeded.contains(&host),
                             rollback_failed: worker.rollback_failed.contains(&host),
@@ -2253,41 +2526,38 @@ impl<'a> NativeFleetEffects<'a> {
                 )?;
                 let mut required_failed = false;
                 for outcome in outcomes {
+                    let host = outcome.host.clone();
                     if outcome.activated {
-                        self.activated.insert(outcome.host.clone());
+                        self.activated.insert(host.clone());
                     }
                     if outcome.successful {
-                        self.successful.insert(outcome.host.clone());
+                        self.successful.insert(host.clone());
                     }
                     if outcome.pending_rollback {
-                        self.pending_rollback.insert(outcome.host.clone());
-                    }
-                    if outcome.deploy_skipped {
-                        self.deploy_skipped.insert(outcome.host.clone());
-                    }
-                    if outcome.optional_snapshot_skipped {
-                        self.optional_snapshot_skipped.insert(outcome.host.clone());
+                        self.pending_rollback.insert(host.clone());
                     }
                     if outcome.deploy_failed {
-                        self.deploy_failed.insert(outcome.host.clone());
+                        self.deploy_failed.insert(host.clone());
                     }
                     if outcome.rollback_succeeded {
-                        self.rollback_succeeded.insert(outcome.host.clone());
+                        self.rollback_succeeded.insert(host.clone());
                     }
                     if outcome.rollback_failed {
-                        self.rollback_failed.insert(outcome.host.clone());
+                        self.rollback_failed.insert(host.clone());
                     }
                     if let Err(error) = outcome.result {
                         if outcome.policy == DeployMode::Optional {
-                            self.progress.message(format!(
-                                "Optional deploy failed · {} · {error:#}",
-                                outcome.host
-                            ));
+                            self.progress
+                                .message(format!("Optional deploy failed · {} · {error:#}", host));
                         } else {
-                            self.deploy_failures
-                                .push(format!("{}: {error:#}", outcome.host));
+                            self.deploy_failures.push(format!("{host}: {error:#}"));
                             required_failed = true;
                         }
+                    }
+                    if let Err(error) = self.release_tracked_candidate_lease(&host) {
+                        self.progress.message(format!(
+                            "Candidate lease cleanup deferred · {host} · {error:#}"
+                        ));
                     }
                 }
                 if required_failed {
@@ -2295,15 +2565,19 @@ impl<'a> NativeFleetEffects<'a> {
                 }
             }
         }
-        // Every completed target has independently verified its closure. Any
-        // remaining host causes this invocation to fail rather than depending
-        // on the builder during health or rollback.
-        self.builder_lease.release();
-        Ok(())
+        self.release_all_candidate_leases();
+        if self.deploy_failures.is_empty() {
+            Ok(())
+        } else {
+            bail!(
+                "fleet deployment failed: {}",
+                self.deploy_failures.join("; ")
+            )
+        }
     }
 
     fn run_health_phase(&mut self) -> Result<()> {
-        let mut failures = self.deploy_failures.clone();
+        let mut failures = Vec::new();
         if !self.invocation.options.no_verify && !self.invocation.options.dry_run {
             let mut tasks = Vec::new();
             for host in self.successful.clone() {
@@ -2833,7 +3107,21 @@ impl FleetEffects for NativeFleetEffects<'_> {
             }
             Phase::Build => self.run_build_phase(false),
             Phase::Snapshot => self.run_snapshot_phase(),
-            Phase::Deploy => self.run_deploy_phase(),
+            Phase::Acquire => {
+                let result = self.run_acquire_phase();
+                if result.is_err() {
+                    self.builder_lease.release();
+                    self.release_all_candidate_leases();
+                }
+                result
+            }
+            Phase::Deploy => {
+                let result = self.run_deploy_phase();
+                if result.is_err() {
+                    self.release_all_candidate_leases();
+                }
+                result
+            }
             Phase::Health => self.run_health_phase(),
             Phase::DevelopmentBuild => self.run_build_phase(true),
             Phase::BootstrapCheck => self.run_bootstrap_check_phase(),
@@ -2849,7 +3137,15 @@ impl FleetEffects for NativeFleetEffects<'_> {
                 let message = format!("{error:#}");
                 self.progress
                     .phase_failed(phase, host_count, started.elapsed(), &message);
-                Err(PhaseFailure::new(phase, message))
+                if phase == Phase::Deploy {
+                    Err(PhaseFailure::continuing_through(
+                        phase,
+                        message,
+                        Phase::Health,
+                    ))
+                } else {
+                    Err(PhaseFailure::new(phase, message))
+                }
             }
         }
     }
@@ -2917,17 +3213,17 @@ mod tests {
     }
 
     #[test]
-    fn candidate_deploy_pipeline_runs_each_stage_in_order() -> anyhow::Result<()> {
+    fn candidate_acquisition_pipeline_runs_each_stage_in_order() -> anyhow::Result<()> {
         let mut stages = Vec::new();
 
-        let activated = execute_candidate_deploy_pipeline(
+        execute_candidate_acquisition_pipeline(
             &mut stages,
             |stages| {
                 stages.push("distribute");
                 Ok(())
             },
             |stages| {
-                stages.push("prepare");
+                stages.push("protect");
                 Ok(())
             },
             |stages| {
@@ -2942,39 +3238,33 @@ mod tests {
                 stages.push("prefetch-models");
                 Ok(())
             },
-            |stages| {
-                stages.push("activate");
-                Ok(true)
-            },
         )?;
 
-        assert!(activated);
         assert_eq!(
             stages,
             [
                 "distribute",
-                "prepare",
+                "protect",
                 "admit-generation",
                 "pull-images",
-                "prefetch-models",
-                "activate"
+                "prefetch-models"
             ]
         );
         Ok(())
     }
 
     #[test]
-    fn candidate_deploy_pipeline_stops_before_later_mutations_on_failure() {
+    fn candidate_acquisition_pipeline_stops_before_later_mutations_on_failure() {
         let mut stages = Vec::new();
 
-        let error = execute_candidate_deploy_pipeline(
+        let error = execute_candidate_acquisition_pipeline(
             &mut stages,
             |stages| {
                 stages.push("distribute");
                 Ok(())
             },
             |stages| {
-                stages.push("prepare");
+                stages.push("protect");
                 Ok(())
             },
             |stages| {
@@ -2989,29 +3279,25 @@ mod tests {
                 stages.push("prefetch-models");
                 Ok(())
             },
-            |stages| {
-                stages.push("activate");
-                Ok(())
-            },
         )
-        .expect_err("admission failure must stop the deploy pipeline");
+        .expect_err("admission failure must stop candidate acquisition");
 
         assert_eq!(error.to_string(), "admission failed");
-        assert_eq!(stages, ["distribute", "prepare", "admit-generation"]);
+        assert_eq!(stages, ["distribute", "protect", "admit-generation"]);
     }
 
     #[test]
-    fn candidate_deploy_pipeline_defers_acquisition_until_first_activation() -> anyhow::Result<()> {
+    fn candidate_acquisition_pipeline_honors_first_activation_deferral() -> anyhow::Result<()> {
         let mut stages = Vec::new();
 
-        execute_candidate_deploy_pipeline(
+        execute_candidate_acquisition_pipeline(
             &mut stages,
             |stages| {
                 stages.push("distribute");
                 Ok(())
             },
             |stages| {
-                stages.push("prepare");
+                stages.push("protect");
                 Ok(())
             },
             |stages| {
@@ -3026,16 +3312,9 @@ mod tests {
                 stages.push("unexpected-model-prefetch");
                 Ok(())
             },
-            |stages| {
-                stages.push("activate");
-                Ok(())
-            },
         )?;
 
-        assert_eq!(
-            stages,
-            ["distribute", "prepare", "defer-acquisition", "activate"]
-        );
+        assert_eq!(stages, ["distribute", "protect", "defer-acquisition"]);
         Ok(())
     }
 }
