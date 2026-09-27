@@ -3,6 +3,38 @@ set -Eeuo pipefail
 
 ZERO="0000000000000000000000000000000000000000"
 
+# Git exports GIT_DIR into hooks for linked-worktree pushes. Linted tooling that
+# creates its own repositories would then write into this checkout, so hand lint
+# a plain shell's repository environment.
+GIT_REPOSITORY_ENVIRONMENT=(
+	GIT_ALTERNATE_OBJECT_DIRECTORIES
+	GIT_COMMON_DIR
+	GIT_DIR
+	GIT_GRAFT_FILE
+	GIT_IMPLICIT_WORK_TREE
+	GIT_INDEX_FILE
+	GIT_NAMESPACE
+	GIT_OBJECT_DIRECTORY
+	GIT_PREFIX
+	GIT_SHALLOW_FILE
+	GIT_WORK_TREE
+)
+
+run_diff_lint() {
+	local range_start="$1"
+	local -a scrub_arguments=()
+	local variable
+
+	for variable in "${GIT_REPOSITORY_ENVIRONMENT[@]}"; do
+		scrub_arguments+=(-u "${variable}")
+	done
+
+	# Keep the outer lint entrypoint Git-backed; `path:.#lint` snapshots
+	# ignored build output like `target/` and `tmp/` into the store.
+	env "${scrub_arguments[@]}" nix --option allow-import-from-derivation false \
+		run .#lint -- --diff --base "${range_start}" --system all
+}
+
 require_clean_worktree() {
 	if [ -n "$(git status --porcelain=v1 --untracked-files=normal)" ]; then
 		printf '[pre-push] Refusing to lint a dirty worktree.\n' >&2
@@ -60,10 +92,7 @@ main() {
 		printf '[pre-push] Linting files changed across %d commit(s) on %s\n' \
 			"${commit_count}" "${local_ref}" >&2
 
-		# Keep the outer lint entrypoint Git-backed; `path:.#lint` snapshots
-		# ignored build output like `target/` and `tmp/` into the store.
-		nix --option allow-import-from-derivation false run .#lint -- \
-			--diff --base "${range_start}" --system all
+		run_diff_lint "${range_start}"
 	done
 }
 
