@@ -1020,6 +1020,7 @@ fn pre_activation_image_pull_uses_the_built_generation_plan() {
     assert_eq!(command.args.last().unwrap(), generation.as_str());
     assert!(command.args[1].contains("share/podman-compose/image-pulls.json"));
     assert!(command.args[1].contains("podman-compose-image-pull-all"));
+    assert!(command.args[1].contains("[prefetch-podman-image] start"));
     assert_bash_syntax(&command.args[1]);
 }
 
@@ -1031,6 +1032,7 @@ fn pre_activation_model_prefetch_uses_the_built_generation_runner() {
     assert_eq!(command.args.last().unwrap(), generation.as_str());
     assert!(command.args[1].contains("ai-model-prefetch-all"));
     assert!(!command.args[1].contains("AI_MODEL_PREFETCH_PLAN"));
+    assert!(!command.args[1].contains("caching declared AI models with"));
     assert_bash_syntax(&command.args[1]);
 }
 

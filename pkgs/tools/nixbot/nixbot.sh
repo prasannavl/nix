@@ -10527,7 +10527,7 @@ _remote_pre_activation_podman_image_pulls() {
 		return 1
 	fi
 
-	echo "[pre-activation] pulling declared Podman Compose images from ${plan}" >&2
+	echo "[prefetch-podman-image] start" >&2
 	NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN="${plan}" "${runner}"
 }
 
@@ -10544,17 +10544,17 @@ run_pre_activation_podman_image_pulls() {
 	local node="$1" system_path="$2" pull_cmd=""
 
 	if [ "${DRY_RUN}" -eq 1 ]; then
-		echo "DRY-RUN: skipping pre-activation Podman image pulls on ${node}" >&2
+		echo "[prefetch-podman-image] skipped node=${node} reason=dry-run" >&2
 		return 0
 	fi
 	if [ "${CANDIDATE_ACQUISITION_DEFERRED:-0}" -eq 1 ]; then
-		echo "[generation-admission] deferring Podman image pulls on ${node} until activation" >&2
+		echo "[prefetch-podman-image] deferred node=${node} reason=first-activation" >&2
 		return 0
 	fi
 
 	pull_cmd="$(build_pre_activation_podman_image_pulls_cmd "${system_path}")"
 	run_prepared_root_command_with_retry \
-		"Pre-activation Podman image pulls on ${node}" \
+		"Prefetch Podman images on ${node}" \
 		"${pull_cmd}"
 }
 
@@ -10567,7 +10567,6 @@ _remote_pre_activation_ai_model_prefetch() {
 		return 0
 	fi
 
-	echo "[pre-activation] caching declared AI models with ${runner}" >&2
 	"${runner}"
 }
 
@@ -10584,17 +10583,17 @@ run_pre_activation_ai_model_prefetch() {
 	local node="$1" system_path="$2" prefetch_cmd=""
 
 	if [ "${DRY_RUN}" -eq 1 ]; then
-		echo "DRY-RUN: skipping pre-activation AI model prefetch on ${node}" >&2
+		echo "[prefetch-ai-model] skipped node=${node} reason=dry-run" >&2
 		return 0
 	fi
 	if [ "${CANDIDATE_ACQUISITION_DEFERRED:-0}" -eq 1 ]; then
-		echo "[generation-admission] deferring AI model prefetch on ${node} until activation" >&2
+		echo "[prefetch-ai-model] deferred node=${node} reason=first-activation" >&2
 		return 0
 	fi
 
 	prefetch_cmd="$(build_pre_activation_ai_model_prefetch_cmd "${system_path}")"
 	run_prepared_root_command_with_retry \
-		"Pre-activation AI model prefetch on ${node}" \
+		"Prefetch AI models on ${node}" \
 		"${prefetch_cmd}"
 }
 
@@ -15085,7 +15084,7 @@ format_host_console_logs() {
 	}
 
 	function color_for(line) {
-		if (red != "" && line ~ /(^|[[:space:]])(FAILED|Failed|failed)([[:space:]:;.,'\''")]|$)|state=failed\/|result=failed|Active: failed|status=[0-9]+\/FAILURE|unhealthy|Health check failed|health check failed|Deploy failed|deploy failed|Rollback failed|rollback failed|Failed with result|failed with result|warning: .*failed|× /) {
+		if (red != "" && line ~ /(^|[[:space:]])(FAILED|Failed|failed)([[:space:]:;.,'\''")]|$)|\[prefetch-ai-model\].*failed=[1-9][0-9]*|state=failed\/|result=failed|Active: failed|status=[0-9]+\/FAILURE|unhealthy|Health check failed|health check failed|Deploy failed|deploy failed|Rollback failed|rollback failed|Failed with result|failed with result|warning: .*failed|× /) {
 			return red
 		}
 		if (yellow != "" && line ~ /warning:|pending\/failed|still settling|system_jobs=[1-9][0-9]*|result=exit-code|auto-restart|restart-queued|start-limit|transport (closed|unavailable)|Connection timed out|heartbeat probe failed|\(starting\)/) {
@@ -15186,7 +15185,7 @@ format_host_console_logs() {
 			next
 		}
 		if (line ~ /^\[pre-activation\] pulling declared Podman Compose images from \/nix\/store\//) {
-			emit("[pre-activation] pulling declared Podman Compose images", "")
+			emit("[prefetch-podman-image] start", "")
 			next
 		}
 		if (line == "Checking switch inhibitors... done") {

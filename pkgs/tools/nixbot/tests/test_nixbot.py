@@ -934,6 +934,7 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
         self.assertIn('${system_path}/share/podman-compose/image-pulls.json', command)
         self.assertIn('${system_path}/sw/bin/podman-compose-image-pull-all', command)
         self.assertIn("NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN", command)
+        self.assertIn("[prefetch-podman-image] start", command)
 
     def test_pre_activation_ai_model_command_uses_built_system_runner(self):
         result = self.run_script(
@@ -949,6 +950,7 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
         self.assertIn("_remote_pre_activation_ai_model_prefetch /nix/store/new-system", command)
         self.assertIn('${system_path}/sw/bin/ai-model-prefetch-all', command)
         self.assertNotIn("AI_MODEL_PREFETCH_PLAN", command)
+        self.assertNotIn("caching declared AI models with", command)
 
     def test_dry_run_skips_pre_activation_downloads(self):
         result = self.run_script(
@@ -966,11 +968,11 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
 
         self.assertEqual("", result.stdout)
         self.assertIn(
-            "DRY-RUN: skipping pre-activation Podman image pulls on app",
+            "[prefetch-podman-image] skipped node=app reason=dry-run",
             result.stderr,
         )
         self.assertIn(
-            "DRY-RUN: skipping pre-activation AI model prefetch on app",
+            "[prefetch-ai-model] skipped node=app reason=dry-run",
             result.stderr,
         )
 
@@ -1249,11 +1251,11 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             result.stderr,
         )
         self.assertIn(
-            "DRY-RUN: skipping pre-activation Podman image pulls on app",
+            "[prefetch-podman-image] skipped node=app reason=dry-run",
             result.stderr,
         )
         self.assertIn(
-            "DRY-RUN: skipping pre-activation AI model prefetch on app",
+            "[prefetch-ai-model] skipped node=app reason=dry-run",
             result.stderr,
         )
         self.assertNotIn("unexpected-", result.stdout)
@@ -2857,8 +2859,14 @@ EOF_UNITS
 
         self.assertEqual("deferred:1", result.stdout.strip())
         self.assertNotIn("unexpected-acquisition", result.stdout)
-        self.assertIn("deferring Podman image pulls", result.stderr)
-        self.assertIn("deferring AI model prefetch", result.stderr)
+        self.assertIn(
+            "[prefetch-podman-image] deferred node=app reason=first-activation",
+            result.stderr,
+        )
+        self.assertIn(
+            "[prefetch-ai-model] deferred node=app reason=first-activation",
+            result.stderr,
+        )
 
     def test_boot_activation_dispatches_admission_before_persisting(self):
         root = self.work_dir / "boot-admission"
@@ -9247,6 +9255,8 @@ EOF_SCRIPT
               "Copying built closure to abird-gondor-corp: /nix/store/psw1cvrrrs924vw8mrgl9il3d9aps7xw-nixos-system-abird-corp-lxc-26.05.20260710.8f0500b" \
               "/nix/store/gqxs5gf3playfnikij13ram6831xnlrn-nixos-system-abird-proxy-lxc" \
               "[pre-activation] pulling declared Podman Compose images from /nix/store/def456-nixos-system/share/podman-compose/image-pulls.json" \
+              "[prefetch-ai-model] start total=2" \
+              "[prefetch-ai-model] ok=1/2 deferred=1 failed=0" \
               "Checking switch inhibitors... done" \
               "activating the configuration..." \
               "setting up /etc..." |
@@ -9260,7 +9270,9 @@ EOF_SCRIPT
                 "[copy] brbx9p0njc68if6ifnzj5xj8l9galn1x-unit-abird-nginx.service",
                 "[copy] built closure psw1cvrrrs924vw8mrgl9il3d9aps7xw-nixos-system-abird-corp-lxc-26.05.20260710.8f0500b",
                 "[store] gqxs5gf3playfnikij13ram6831xnlrn-nixos-system-abird-proxy-lxc",
-                "[pre-activation] pulling declared Podman Compose images",
+                "[prefetch-podman-image] start",
+                "[prefetch-ai-model] start total=2",
+                "[prefetch-ai-model] ok=1/2 deferred=1 failed=0",
                 "[switch] inhibitors ok",
                 "[switch] activating configuration",
                 "[switch] updating /etc",
@@ -9383,6 +9395,7 @@ EOF_SCRIPT
             NIXBOT_FORCE_COLOR=1
             printf '%s\n' \
               '[health-check] FAILED service failures detected after deploy' \
+              '[prefetch-ai-model] ok=0/1 deferred=0 failed=1' \
               'warning: Target-side build-cache copy to app did not complete in auto mode; relaying through local client' \
               'starting graphiti_neo4j_1 Up 44 seconds (starting)' |
               format_host_console_logs app health
@@ -9391,9 +9404,10 @@ EOF_SCRIPT
 
         lines = result.stdout.splitlines()
         self.assertIn("\x1b[31m", lines[0])
-        self.assertIn("\x1b[38;5;178m", lines[1])
-        self.assertNotIn("\x1b[31m", lines[1])
+        self.assertIn("\x1b[31m", lines[1])
         self.assertIn("\x1b[38;5;178m", lines[2])
+        self.assertNotIn("\x1b[31m", lines[2])
+        self.assertIn("\x1b[38;5;178m", lines[3])
 
     def test_format_host_console_logs_colors_systemd_failure_shapes(self):
         result = self.run_script(

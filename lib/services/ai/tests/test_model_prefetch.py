@@ -170,6 +170,41 @@ main "$@"
             log.read_text().splitlines(),
         )
 
+    def test_default_output_folds_entries_into_one_summary(self):
+        self.executable("hf", "exit 0\n")
+        self.executable("curl", "printf 'probe noise\\n' >&2\nexit 7\n")
+
+        result = self.run_plan([self.hf_entry(), self.ollama_entry()])
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            [
+                "[prefetch-ai-model] start total=2",
+                "[prefetch-ai-model] ok=1/2 deferred=1 failed=0",
+            ],
+            result.stderr.splitlines(),
+        )
+
+    def test_verbose_output_keeps_per_entry_diagnostics(self):
+        self.executable("hf", "exit 0\n")
+        self.executable("curl", "exit 7\n")
+
+        result = self.run_plan(
+            [self.hf_entry(), self.ollama_entry()],
+            {"AI_MODEL_PREFETCH_VERBOSE": "1"},
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("ok backend=hf model=Qwen/example", result.stderr)
+        self.assertIn("deferred id=ollama:test", result.stderr)
+        self.assertIn("ok=1/2 deferred=1 failed=0", result.stderr)
+
+    def test_verbose_output_setting_is_boolean(self):
+        result = self.run_plan([], {"AI_MODEL_PREFETCH_VERBOSE": "yes"})
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("AI_MODEL_PREFETCH_VERBOSE must be 0 or 1", result.stderr)
+
     def test_missing_huggingface_token_file_fails_before_download(self):
         log = self.root / "hf.log"
         self.executable("hf", f'printf called > "{log}"\n')
@@ -254,7 +289,8 @@ main "$@"
         self.executable("hf", "exit 7\n")
         result = self.run_plan([self.hf_entry()])
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("required prefetch failed", result.stderr)
+        self.assertIn("[prefetch-ai-model] failed id=hf:qwen", result.stderr)
+        self.assertIn("ok=0/1 deferred=0 failed=1", result.stderr)
 
     def test_required_huggingface_has_finite_configurable_deadline(self):
         self.executable("hf", "exec sleep 5\n")
@@ -302,7 +338,7 @@ main "$@"
         self.executable("curl", "exit 7\n")
         result = self.run_plan([self.ollama_entry()])
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("best-effort prefetch deferred", result.stderr)
+        self.assertIn("ok=0/1 deferred=1 failed=0", result.stderr)
 
     def test_one_global_best_effort_budget_bounds_http(self):
         self.executable("curl", "exec sleep 5\n")
@@ -314,13 +350,13 @@ main "$@"
         elapsed = time.monotonic() - started
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertLess(elapsed, 3, result.stderr)
-        self.assertEqual(2, result.stderr.count("best-effort prefetch deferred"))
+        self.assertIn("ok=0/2 deferred=2 failed=0", result.stderr)
 
     def test_invalid_ollama_api_json_is_deferred(self):
         self.executable("curl", "printf 'not-json\\n'\n")
         result = self.run_plan([self.ollama_entry()])
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("best-effort prefetch deferred", result.stderr)
+        self.assertIn("ok=0/1 deferred=1 failed=0", result.stderr)
 
     def test_llama_cached_model_needs_no_download(self):
         log = self.root / "curl.log"
@@ -365,7 +401,7 @@ main "$@"
         )
         result = self.run_plan([self.llama_entry()])
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("best-effort prefetch deferred", result.stderr)
+        self.assertIn("ok=0/1 deferred=1 failed=0", result.stderr)
 
     def test_invalid_llama_api_json_is_deferred_without_post(self):
         log = self.root / "curl.log"
@@ -375,7 +411,7 @@ main "$@"
         )
         result = self.run_plan([self.llama_entry()])
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("best-effort prefetch deferred", result.stderr)
+        self.assertIn("ok=0/1 deferred=1 failed=0", result.stderr)
         self.assertNotIn("--request POST", log.read_text())
 
     def test_whole_plan_schema_is_validated_before_mutation(self):

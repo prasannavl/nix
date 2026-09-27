@@ -2165,11 +2165,11 @@ impl<'a> NativeFleetEffects<'a> {
                     &target,
                     &CommandSpec::new(command.program, command.args),
                     EffectKind::Mutation,
-                    "pre-activation-image-pull",
+                    "prefetch-podman-image",
                 )?;
                 if !output.succeeded() {
                     bail!(
-                        "pre-activation image pull failed for {host}: {}",
+                        "Podman image prefetch failed for {host}: {}",
                         output.stderr.trim()
                     );
                 }
@@ -2182,11 +2182,11 @@ impl<'a> NativeFleetEffects<'a> {
                     &target,
                     &CommandSpec::new(command.program, command.args),
                     EffectKind::Mutation,
-                    "pre-activation-model-prefetch",
+                    "prefetch-ai-model",
                 )?;
                 if !output.succeeded() {
                     bail!(
-                        "pre-activation AI model prefetch failed for {host}: {}",
+                        "AI model prefetch failed for {host}: {}",
                         output.stderr.trim()
                     );
                 }

@@ -223,7 +223,7 @@ if [ ! -x "$runner" ]; then
     echo "podman compose image-pull plan exists but runner is missing: $runner" >&2
     exit 1
 fi
-echo "[pre-activation] pulling declared Podman Compose images from $plan" >&2
+echo "[prefetch-podman-image] start" >&2
 NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN="$plan" "$runner"
 "#;
     CommandSpec::new(
@@ -244,7 +244,6 @@ runner="${system_path}/sw/bin/ai-model-prefetch-all"
 if [ ! -x "$runner" ]; then
     exit 0
 fi
-echo "[pre-activation] caching declared AI models with $runner" >&2
 "$runner"
 "#;
     CommandSpec::new(

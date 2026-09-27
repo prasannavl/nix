@@ -228,6 +228,15 @@ seconds to connect each HTTP request, and 21,600 seconds for the complete
 required HF phase. The runner exposes matching `AI_MODEL_PREFETCH_*` environment
 overrides for bounded operational testing; normal deploys use the defaults.
 
+Interactive output uses stage-first names shared by both deploy engines:
+`[prefetch-podman-image]` for image acquisition and `[prefetch-ai-model]` for
+model acquisition. Model prefetch emits one start record and one aggregate
+`ok=X/N deferred=Y failed=Z` result instead of one line per endpoint and model.
+Best-effort endpoint misses are normal deferrals and do not print raw connection
+errors. Set `AI_MODEL_PREFETCH_VERBOSE=1` for per-entry backend, model,
+endpoint, and deferral diagnostics when troubleshooting; required failures
+remain explicit in compact mode.
+
 The runner validates the complete JSON array and every backend-specific entry
 before creating directories or contacting a service. An empty endpoint list is a
 malformed adapter entry, not a best-effort outage. A malformed plan, include

@@ -57,7 +57,12 @@ def valid_entry:
 '
 
 model_log() {
-	printf '%s\n' "ai-model-prefetch-all: $*" >&2
+	printf '[prefetch-ai-model] %s\n' "$*" >&2
+}
+
+model_detail() {
+	[[ "${AI_MODEL_PREFETCH_VERBOSE:-0}" == 1 ]] || return 0
+	model_log "$@"
 }
 
 positive_integer() {
@@ -68,6 +73,7 @@ validate_runtime_settings() {
 	: "${AI_MODEL_PREFETCH_BEST_EFFORT_SECONDS:=300}"
 	: "${AI_MODEL_PREFETCH_HTTP_CONNECT_SECONDS:=5}"
 	: "${AI_MODEL_PREFETCH_HF_TIMEOUT_SECONDS:=21600}"
+	: "${AI_MODEL_PREFETCH_VERBOSE:=0}"
 
 	if ! positive_integer "${AI_MODEL_PREFETCH_BEST_EFFORT_SECONDS}" ||
 		! positive_integer "${AI_MODEL_PREFETCH_HTTP_CONNECT_SECONDS}" ||
@@ -75,9 +81,14 @@ validate_runtime_settings() {
 		model_log "prefetch timeout settings must be positive integer seconds"
 		return 1
 	fi
+	if [[ "${AI_MODEL_PREFETCH_VERBOSE}" != 0 && "${AI_MODEL_PREFETCH_VERBOSE}" != 1 ]]; then
+		model_log "AI_MODEL_PREFETCH_VERBOSE must be 0 or 1"
+		return 1
+	fi
 	export AI_MODEL_PREFETCH_BEST_EFFORT_SECONDS
 	export AI_MODEL_PREFETCH_HTTP_CONNECT_SECONDS
 	export AI_MODEL_PREFETCH_HF_TIMEOUT_SECONDS
+	export AI_MODEL_PREFETCH_VERBOSE
 }
 
 validate_plan() {
@@ -215,7 +226,7 @@ acquire_huggingface() {
 	); then
 		return 1
 	fi
-	model_log "cached Hugging Face model ${model}${revision:+ at ${revision}}"
+	model_detail "ok backend=hf model=${model}${revision:+ revision=${revision}}"
 }
 
 acquire_ollama() {
@@ -226,16 +237,15 @@ acquire_ollama() {
 
 	for ((index = 0; index < endpoint_count; index += 1)); do
 		endpoint="$(entry_value "${entry}" ".endpoints[${index}]")"
-		if response="$(best_effort_curl --fail --silent --show-error \
+		if response="$(best_effort_curl --fail --silent \
 			--header 'Content-Type: application/json' \
 			--data-binary "${request}" \
-			"${endpoint%/}/api/pull")" &&
+			"${endpoint%/}/api/pull" 2>/dev/null)" &&
 			jq -e 'type == "object" and .status == "success"' <<<"${response}" >/dev/null; then
-			model_log "cached Ollama model ${model} through ${endpoint}"
+			model_detail "ok backend=ollama model=${model} endpoint=${endpoint}"
 			return 0
 		fi
 	done
-	model_log "no running Ollama endpoint could cache ${model}"
 	return 1
 }
 
@@ -283,7 +293,7 @@ acquire_llama_at() {
 			return 1
 		fi
 		if ! jq -e 'type == "object" and ((.error? // null) == null)' <<<"${response}" >/dev/null; then
-			model_log "llama.cpp endpoint rejected the request or returned malformed JSON: ${endpoint}"
+			model_detail "rejected backend=llama model=${model} endpoint=${endpoint}"
 			return 1
 		fi
 		# Preactivation reports only requests explicitly accepted by the current
@@ -304,11 +314,10 @@ acquire_llama() {
 	for ((index = 0; index < endpoint_count; index += 1)); do
 		endpoint="$(entry_value "${entry}" ".endpoints[${index}]")"
 		if acquire_llama_at "${endpoint}" "${model}"; then
-			model_log "cached llama.cpp model ${model} through ${endpoint}"
+			model_detail "ok backend=llama model=${model} endpoint=${endpoint}"
 			return 0
 		fi
 	done
-	model_log "no running llama.cpp endpoint could cache ${model}"
 	return 1
 }
 
@@ -473,10 +482,11 @@ run_entry_as_owner() {
 }
 
 run_plan() {
-	local entry policy id count failures=0 index
+	local entry policy id count succeeded=0 deferred=0 failures=0 index
 	validate_plan || return 1
 	validate_required_prerequisites || return 1
 	count="$(jq -er 'length' "${plan}")"
+	model_log "start total=${count}"
 	for ((index = 0; index < count; index += 1)); do
 		if ! entry="$(jq -cer --argjson index "${index}" '.[$index]' "${plan}")"; then
 			model_log "could not read validated model-prefetch entry ${index}"
@@ -490,16 +500,18 @@ run_plan() {
 			ensure_hf_deadline || return 1
 		fi
 		if run_entry_as_owner "${entry}"; then
+			((succeeded += 1))
 			continue
 		fi
 		if [[ "${policy}" == "best-effort" ]]; then
-			model_log "best-effort prefetch deferred for ${id}"
+			((deferred += 1))
+			model_detail "deferred id=${id}"
 		else
-			model_log "required prefetch failed for ${id}"
+			model_log "failed id=${id}"
 			((failures += 1))
 		fi
 	done
-	model_log "processed ${count} model prefetch entries"
+	model_log "ok=${succeeded}/${count} deferred=${deferred} failed=${failures}"
 	((failures == 0))
 }
 
