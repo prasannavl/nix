@@ -12493,7 +12493,9 @@ esac
     fn cleanup_recovery_requires_the_exact_adoption_successor() {
         let temp = tempfile::tempdir().unwrap();
         let run_git = |arguments: &[&str]| {
-            let output = ProcessCommand::new("git")
+            let mut command = ProcessCommand::new("git");
+            clear_git_repository_environment(&mut command);
+            let output = command
                 .arg("-C")
                 .arg(temp.path())
                 .args(arguments)

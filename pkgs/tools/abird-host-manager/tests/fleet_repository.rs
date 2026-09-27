@@ -11,7 +11,16 @@ use abird_host_manager::fleet::repository::{
     decode_argv, encode_argv, plan_ci_trigger, plan_installed_execution, read_staged_patch_stdin,
     repo_git_ssh_command, select_repository_root, ssh_repository_endpoint,
 };
+use abird_host_manager::programs::clear_git_repository_environment;
 use anyhow::Result;
+
+/// A `git` command that ignores the ambient repository environment, so a test
+/// repository is never re-resolved onto the caller's checkout.
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    clear_git_repository_environment(&mut command);
+    command
+}
 
 fn run(command: &mut Command) -> String {
     let output = command.output().unwrap();
@@ -24,11 +33,11 @@ fn run(command: &mut Command) -> String {
 }
 
 fn git(repo: &Path, args: &[&str]) -> String {
-    run(Command::new("git").arg("-C").arg(repo).args(args))
+    run(git_command().arg("-C").arg(repo).args(args))
 }
 
 fn init_repo(path: &Path) -> String {
-    run(Command::new("git").args(["init", "-q"]).arg(path));
+    run(git_command().args(["init", "-q"]).arg(path));
     git(path, &["config", "user.name", "Fleet Test"]);
     git(path, &["config", "user.email", "fleet@example.invalid"]);
     git(path, &["config", "commit.gpgsign", "false"]);
@@ -140,20 +149,17 @@ fn managed_repository_clones_reconciles_fetches_and_tracks_default_ref() {
     let remote = temp.path().join("remote.git");
     let seed = temp.path().join("seed");
     let mirror = temp.path().join("mirror");
-    run(Command::new("git")
-        .args(["init", "-q", "--bare"])
-        .arg(&remote));
+    run(git_command().args(["init", "-q", "--bare"]).arg(&remote));
     let first = init_repo(&seed);
     git(
         &seed,
         &["remote", "add", "origin", remote.to_str().unwrap()],
     );
     git(&seed, &["push", "-q", "origin", "HEAD:main"]);
-    run(Command::new("git").arg("-C").arg(&remote).args([
-        "symbolic-ref",
-        "HEAD",
-        "refs/heads/main",
-    ]));
+    run(git_command()
+        .arg("-C")
+        .arg(&remote)
+        .args(["symbolic-ref", "HEAD", "refs/heads/main"]));
 
     let mut manager = manager();
     let first_sync = manager
@@ -172,9 +178,7 @@ fn managed_repository_clones_reconciles_fetches_and_tracks_default_ref() {
     assert_eq!(git(&mirror, &["status", "--porcelain=v1"]), "");
 
     let wrong = temp.path().join("wrong.git");
-    run(Command::new("git")
-        .args(["init", "-q", "--bare"])
-        .arg(&wrong));
+    run(git_command().args(["init", "-q", "--bare"]).arg(&wrong));
     git(
         &mirror,
         &["remote", "set-url", "origin", wrong.to_str().unwrap()],
@@ -239,7 +243,7 @@ fn detached_worktree_lifecycle_keeps_the_source_checkout_unchanged() {
         .unwrap();
     assert_eq!(worktree.commit.as_str(), head);
     assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), head);
-    let symbolic = Command::new("git")
+    let symbolic = git_command()
         .arg("-C")
         .arg(&checkout)
         .args(["symbolic-ref", "--quiet", "HEAD"])

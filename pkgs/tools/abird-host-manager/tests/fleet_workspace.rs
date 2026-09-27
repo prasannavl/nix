@@ -8,6 +8,15 @@ use abird_host_manager::fleet::repository::{
 use abird_host_manager::fleet::workspace::{
     ExecutionWorkspaceRequest, cleanup_execution_workspace, prepare_execution_workspace,
 };
+use abird_host_manager::programs::clear_git_repository_environment;
+
+/// A `git` command that ignores the ambient repository environment, so a test
+/// repository is never re-resolved onto the caller's checkout.
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    clear_git_repository_environment(&mut command);
+    command
+}
 
 fn run(command: &mut Command) -> String {
     let output = command.output().unwrap();
@@ -20,11 +29,11 @@ fn run(command: &mut Command) -> String {
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
-    run(Command::new("git").arg("-C").arg(root).args(args))
+    run(git_command().arg("-C").arg(root).args(args))
 }
 
 fn init_repo(root: &Path) -> String {
-    run(Command::new("git").args(["init", "-q"]).arg(root));
+    run(git_command().args(["init", "-q"]).arg(root));
     git(root, &["config", "user.name", "Fleet Test"]);
     git(root, &["config", "user.email", "fleet@example.invalid"]);
     git(root, &["config", "commit.gpgsign", "false"]);
@@ -61,7 +70,7 @@ fn local_execution_uses_an_isolated_detached_worktree_and_cleans_it() {
     assert!(workspace.owned);
     assert_eq!(git(&workspace.root, &["rev-parse", "HEAD"]), head);
     assert!(
-        !Command::new("git")
+        !git_command()
             .arg("-C")
             .arg(&workspace.root)
             .args(["symbolic-ref", "--quiet", "HEAD"])
@@ -83,7 +92,7 @@ fn staged_patch_is_applied_only_inside_execution_tree_and_base_is_checked() {
     let head = init_repo(&source);
     fs::write(source.join("state"), "two\n").unwrap();
     git(&source, &["add", "state"]);
-    let patch = Command::new("git")
+    let patch = git_command()
         .arg("-C")
         .arg(&source)
         .args(["diff", "--cached", "--binary", "--full-index"])
@@ -177,19 +186,16 @@ fn managed_request_uses_declared_repository_contract_before_worktree_creation() 
     let mirror = temp.path().join("mirror");
     let execution = temp.path().join("run/repo");
     let head = init_repo(&seed);
-    run(Command::new("git")
-        .args(["init", "-q", "--bare"])
-        .arg(&remote));
+    run(git_command().args(["init", "-q", "--bare"]).arg(&remote));
     git(
         &seed,
         &["remote", "add", "origin", remote.to_str().unwrap()],
     );
     git(&seed, &["push", "-q", "origin", "HEAD:master"]);
-    run(Command::new("git").arg("-C").arg(&remote).args([
-        "symbolic-ref",
-        "HEAD",
-        "refs/heads/master",
-    ]));
+    run(git_command()
+        .arg("-C")
+        .arg(&remote)
+        .args(["symbolic-ref", "HEAD", "refs/heads/master"]));
     let mut manager = RepositoryManager::new("git", ProcessCommandRunner);
 
     let workspace = prepare_execution_workspace(

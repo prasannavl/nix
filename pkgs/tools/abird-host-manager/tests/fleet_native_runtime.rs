@@ -3,9 +3,19 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use abird_host_manager::programs::clear_git_repository_environment;
+
 #[path = "../src/test_support.rs"]
 mod test_support;
 use test_support::write_executable;
+
+/// A `git` command that ignores the ambient repository environment, so a test
+/// repository is never re-resolved onto the caller's checkout.
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    clear_git_repository_environment(&mut command);
+    command
+}
 
 fn run(command: &mut Command) -> String {
     let output = command.output().unwrap();
@@ -18,7 +28,7 @@ fn run(command: &mut Command) -> String {
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
-    run(Command::new("git").arg("-C").arg(root).args(args))
+    run(git_command().arg("-C").arg(root).args(args))
 }
 
 fn control_paths(log: &str) -> Vec<String> {
@@ -47,7 +57,7 @@ fn compatibility_build_runs_the_native_evaluate_and_build_pipeline() {
     )
     .unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -232,7 +242,7 @@ fn deploy_skips_an_external_host_without_a_native_build_plan() {
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -336,7 +346,7 @@ fn use_repo_script_reexecutes_the_rust_app_from_the_exact_worktree() {
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts.app = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -412,7 +422,7 @@ fn interrupt_stops_a_running_build_process_group_and_preserves_exit_status() {
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts.app = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -501,7 +511,7 @@ fn parallel_build_failure_keeps_the_host_label() {
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -578,7 +588,7 @@ fn dry_deploy_builds_the_plan_without_contacting_deploy_targets() {
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts.app = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -667,7 +677,7 @@ fn remote_build_holds_gc_lease_and_returns_verified_closure_to_local_store() {
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -797,9 +807,9 @@ esac
     assert!(!paths.is_empty(), "no SSH ControlPath was emitted");
     for path in paths {
         assert!(
-            path.as_bytes().len() < 108,
+            path.len() < 108,
             "ControlPath is too long ({} bytes): {path}",
-            path.as_bytes().len()
+            path.len()
         );
         assert!(path.starts_with(runtime_root.to_str().unwrap()), "{path}");
         assert!(path.contains("/run-"), "{path}");
@@ -832,7 +842,7 @@ fn parallel_remote_builds_share_semantic_lease_authority_with_materialized_ident
     fs::write(&age_identity, "AGE-SECRET-KEY-FIXTURE\n").unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -986,7 +996,7 @@ fn forced_bootstrap_streams_keys_and_keeps_deploy_on_the_operator_route() {
     fs::write(&operator, "OPERATOR-FIXTURE\n").unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts.app = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -1114,7 +1124,7 @@ fn automatic_transport_uses_forced_command_evidence_before_operator_fallback() {
     fs::write(&operator, "OPERATOR-FIXTURE\n").unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts.app = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -1234,7 +1244,7 @@ fn failed_trimmed_route_retries_the_complete_configured_proxy_chain() {
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -1368,7 +1378,7 @@ fn local_relay_preserves_primary_target_failure_instead_of_using_operator_fallba
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -1522,7 +1532,7 @@ fn terraform_phase_uses_native_secret_safe_planner_and_executor() {
         "terraform { backend \"s3\" {} }\n",
     )
     .unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -1610,7 +1620,7 @@ fn required_host_coverage_is_checked_before_native_build_or_host_effects() {
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
         &repository,
@@ -1739,7 +1749,7 @@ fn native_health_uses_inventory_policy_instead_of_ssh_alias() {
         fs::create_dir_all(&tools).unwrap();
         fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
         fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-        run(Command::new("git").args(["init", "-q"]).arg(&repository));
+        run(git_command().args(["init", "-q"]).arg(&repository));
         git(&repository, &["config", "user.name", "Fleet Test"]);
         git(
             &repository,
