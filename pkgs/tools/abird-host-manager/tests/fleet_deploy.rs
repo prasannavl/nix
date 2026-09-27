@@ -268,6 +268,7 @@ fn activation_is_a_supervised_detached_attempt_with_an_authoritative_marker() {
         runtime_max: Duration::from_secs(1800),
         stop_timeout: Duration::from_secs(120),
         lock_wait: Duration::from_secs(900),
+        acquire_host_lock: true,
     });
 
     assert_eq!(command.program, "systemd-run");
@@ -326,6 +327,29 @@ fn activation_is_a_supervised_detached_attempt_with_an_authoritative_marker() {
 }
 
 #[test]
+fn self_target_activation_reuses_the_controller_action_mutex() {
+    let command = activation_command(ActivationCommand {
+        run_id: "run-self".into(),
+        host: "pvl-l5".into(),
+        attempt: 1,
+        generation: generation("new"),
+        goal: ActivationGoal::Switch,
+        boot_environment: BootEnvironment::Physical,
+        restart_managed: false,
+        runtime_max: Duration::from_secs(60),
+        stop_timeout: Duration::from_secs(10),
+        lock_wait: Duration::from_secs(30),
+        acquire_host_lock: false,
+    });
+
+    assert!(!command.script.contains("flock -w"));
+    assert!(command.script.contains("Admitted=0"));
+    assert!(command.script.contains("Admitted=1"));
+    assert!(command.script.contains("switch-to-configuration switch"));
+    assert_bash_syntax(&command.script);
+}
+
+#[test]
 fn test_activation_does_not_persist_or_touch_the_bootloader_or_managed_services() {
     let command = activation_command(ActivationCommand {
         run_id: "r".into(),
@@ -338,6 +362,7 @@ fn test_activation_does_not_persist_or_touch_the_bootloader_or_managed_services(
         runtime_max: Duration::from_secs(10),
         stop_timeout: Duration::from_secs(2),
         lock_wait: Duration::from_secs(3),
+        acquire_host_lock: true,
     });
     assert!(command.script.contains("switch-to-configuration test"));
     assert!(!command.script.contains("nix-env"));
@@ -355,6 +380,7 @@ fn rollback_is_switch_activation_with_projection_admission_and_profile_persisten
         Duration::from_secs(90),
         Duration::from_secs(10),
         Duration::from_secs(30),
+        true,
     );
     assert_eq!(command.program, "systemd-run");
     assert!(
@@ -898,6 +924,27 @@ fn activation_samples_reject_duplicate_or_malformed_authoritative_fields() {
     assert!(ActivationSample::parse("Result=success\nResult=exit-code\n").is_err());
     assert!(ActivationSample::parse("OutcomeSource=marker\nExecMainStatus=nope\n").is_err());
     assert!(ActivationSample::parse("OutcomeSource=other\n").is_err());
+    assert!(ActivationSample::parse("Admitted=maybe\n").is_err());
+    assert_eq!(
+        ActivationSample::parse("OutcomeSource=marker\nAdmitted=0\n")
+            .unwrap()
+            .admitted,
+        Some(false)
+    );
+}
+
+#[test]
+fn activation_observer_marker_is_framed_complete_and_uses_the_last_frame() {
+    let sample = ActivationSample::parse_observer_marker(
+        "Admitted=0\n--- abird-activation-result begin ---\nOutcomeSource=marker\nResult=exit-code\nExecMainStatus=1\nAdmitted=1\n--- abird-activation-result end ---\n",
+    )
+    .unwrap();
+    assert_eq!(sample.admitted, Some(true));
+    assert!(ActivationSample::parse_observer_marker("Admitted=0\n").is_err());
+    assert!(ActivationSample::parse_observer_marker(
+        "--- abird-activation-result begin ---\nOutcomeSource=marker\nAdmitted=0\n--- abird-activation-result end ---\n"
+    )
+    .is_err());
 }
 
 #[test]
@@ -1043,6 +1090,7 @@ fn activation_execution_is_injectable_and_does_not_hide_status() {
         runtime_max: Duration::from_secs(10),
         stop_timeout: Duration::from_secs(2),
         lock_wait: Duration::from_secs(3),
+        acquire_host_lock: true,
     });
     let mut executor = FakeExecutor {
         results: VecDeque::from([ActivationResult {

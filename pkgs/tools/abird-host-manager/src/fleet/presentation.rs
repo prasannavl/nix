@@ -10,16 +10,19 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::progress::{ProgressReporter, command_reporter, format_duration};
+use crate::terminal_style::Tone;
 
 use super::cli::{LogFormat, Options};
 use super::host_runtime::{ProcessCompletion, ProcessEventObserver, ProcessRequest, ProcessStream};
 use super::plan::Phase;
 
 static FLEET_FAILURE_PRESENTED: AtomicBool = AtomicBool::new(false);
+static FLEET_WARNING_PRESENTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkflowResult {
     Success,
+    SuccessWithWarnings,
     Failure,
     Interrupted,
 }
@@ -28,6 +31,7 @@ impl WorkflowResult {
     fn label(self) -> &'static str {
         match self {
             Self::Success => "success",
+            Self::SuccessWithWarnings => "success with warnings",
             Self::Failure => "failure",
             Self::Interrupted => "interrupted",
         }
@@ -79,14 +83,39 @@ impl FleetProgress {
         Ok(self)
     }
 
-    pub fn phase_started(&self, phase: Phase, hosts: usize, position: Option<(usize, usize)>) {
-        let label = phase_label(phase, hosts, position);
+    pub fn phase_started(&self, phase: Phase, hosts: &[String], position: Option<(usize, usize)>) {
+        let label = phase_label(phase, hosts.len(), position);
         self.reporter.begin_task_scope();
         if self.github_actions {
             self.reporter.message(format!("::group::{label}"));
         } else {
             self.reporter.started(label);
+            self.reporter.begin_host_dashboard(hosts);
         }
+    }
+
+    pub fn phase_schedule(
+        &self,
+        stage: impl Into<String>,
+        wave: Option<(usize, usize)>,
+        concurrency: usize,
+    ) {
+        self.reporter.host_schedule(stage, wave, concurrency);
+    }
+
+    pub fn host_completed(&self, host: &str, summary: impl Into<String>) {
+        self.reporter
+            .host_finished(host, true, None, safe_host_summary(&summary.into()));
+    }
+
+    pub fn host_failed(&self, host: &str, summary: impl Into<String>) {
+        self.reporter
+            .host_finished(host, false, None, safe_host_summary(&summary.into()));
+    }
+
+    pub fn host_skipped(&self, host: &str, summary: impl Into<String>) {
+        self.reporter
+            .host_skipped(host, safe_host_summary(&summary.into()));
     }
 
     pub fn phase_completed(
@@ -115,6 +144,7 @@ impl FleetProgress {
         elapsed: Duration,
         error: &str,
     ) {
+        let error = safe_error_excerpt(error);
         let label = if self.reporter.shows_recent_updates() {
             format!(
                 "{} · phase elapsed {}",
@@ -132,15 +162,44 @@ impl FleetProgress {
             self.reporter.message(format!(
                 "::error::{}: {}",
                 github_command_value(&label),
-                github_command_value(error)
+                github_command_value(&error)
             ));
             self.reporter.report_failure_output();
             self.reporter.message("::endgroup::");
         } else {
-            self.reporter.fail_active(label, error);
+            self.reporter.fail_active(label, &error);
         }
         self.reporter.end_task_scope();
         FLEET_FAILURE_PRESENTED.store(true, Ordering::Release);
+    }
+
+    pub fn phase_warning(
+        &self,
+        phase: Phase,
+        hosts: usize,
+        position: Option<(usize, usize)>,
+        elapsed: Duration,
+        warning: &str,
+    ) {
+        let warning = safe_error_excerpt(warning);
+        let label = format!(
+            "{} · completed with warnings · phase elapsed {}",
+            phase_label(phase, hosts, position),
+            format_duration(elapsed)
+        );
+        if self.github_actions {
+            self.reporter.message(format!(
+                "::warning::{}: {}",
+                github_command_value(&label),
+                github_command_value(&warning)
+            ));
+            self.reporter.report_failure_output();
+            self.reporter.message("::endgroup::");
+        } else {
+            self.reporter.warning_active(label, &warning);
+        }
+        self.reporter.end_task_scope();
+        FLEET_WARNING_PRESENTED.store(true, Ordering::Release);
     }
 
     pub fn phase_interrupted(
@@ -229,14 +288,33 @@ impl FleetProgress {
             self.reporter.message("Phases:");
         }
         for (phase, status) in phases {
-            self.reporter.message(format!("  {phase} · {status}"));
+            let tone = if status.starts_with("FAIL") {
+                Tone::Failure
+            } else if status.starts_with("WARN") || status.starts_with("interrupted") {
+                Tone::Warning
+            } else {
+                Tone::Success
+            };
+            self.reporter
+                .message_tone(tone, format!("  {phase} · {status}"));
         }
         let hosts = hosts.into_iter().collect::<Vec<_>>();
         if !hosts.is_empty() {
             self.reporter.message("Hosts:");
         }
         for (host, status) in hosts {
-            self.reporter.message(format!("  {host} · {status}"));
+            let tone = if status.contains("FAIL")
+                || status.contains("failed")
+                || status.contains("rollback failed")
+            {
+                Tone::Failure
+            } else if status.contains("skip") || status.contains("optional") {
+                Tone::Warning
+            } else {
+                Tone::Success
+            };
+            self.reporter
+                .message_tone(tone, format!("  {host} · {status}"));
         }
         let terraform = terraform.into_iter().collect::<Vec<_>>();
         if !terraform.is_empty() {
@@ -278,6 +356,10 @@ pub fn take_failure_presented() -> bool {
     FLEET_FAILURE_PRESENTED.swap(false, Ordering::AcqRel)
 }
 
+pub fn take_warning_presented() -> bool {
+    FLEET_WARNING_PRESENTED.swap(false, Ordering::AcqRel)
+}
+
 #[derive(Clone, Debug)]
 struct FleetProcessObserver {
     reporter: ProgressReporter,
@@ -293,8 +375,13 @@ impl ProcessEventObserver for FleetProcessObserver {
         if let Some(diagnostics) = &self.diagnostics {
             diagnostics.started(request);
         }
-        self.reporter
-            .task_started(request.label.clone(), process_label(&request.label));
+        let label = process_label(&request.label);
+        if let Some(host) = &request.host {
+            self.reporter
+                .host_task_started(host, &request.label, &label);
+        } else {
+            self.reporter.task_started(request.label.clone(), label);
+        }
     }
 
     fn output(&self, request: &ProcessRequest, stream: ProcessStream, chunk: &str) {
@@ -307,8 +394,14 @@ impl ProcessEventObserver for FleetProcessObserver {
             };
             let label = process_label(&request.label);
             self.reporter
-                .task_output(request.label.clone(), &label, failure_line);
-            if let Some(line) = format_dashboard_line(line) {
+                .task_output(request.label.clone(), &label, failure_line.clone());
+            if let Some(host) = &request.host {
+                if let Some(line) =
+                    format_dashboard_line(line).or_else(|| format_failure_dashboard_line(line))
+                {
+                    self.reporter.host_task_output(host, &request.label, line);
+                }
+            } else if let Some(line) = format_dashboard_line(line) {
                 self.reporter
                     .task_live_output(request.label.clone(), &label, line);
             }
@@ -338,12 +431,23 @@ impl ProcessEventObserver for FleetProcessObserver {
             );
             return;
         }
-        self.reporter.task_finished(
-            request.label.clone(),
-            process_label(&request.label),
-            elapsed,
-            completion == ProcessCompletion::Succeeded,
-        );
+        let label = process_label(&request.label);
+        if let Some(host) = &request.host {
+            self.reporter.host_task_finished(
+                host,
+                &request.label,
+                &label,
+                elapsed,
+                completion == ProcessCompletion::Succeeded,
+            );
+        } else {
+            self.reporter.task_finished(
+                request.label.clone(),
+                label,
+                elapsed,
+                completion == ProcessCompletion::Succeeded,
+            );
+        }
     }
 
     fn heartbeat_interval(&self, request: &ProcessRequest) -> Option<Duration> {
@@ -357,11 +461,16 @@ impl ProcessEventObserver for FleetProcessObserver {
     }
 
     fn heartbeat(&self, request: &ProcessRequest, elapsed: Duration) {
-        self.reporter.task_heartbeat(
-            request.label.clone(),
-            process_label(&request.label),
-            elapsed,
-        );
+        if let Some(host) = &request.host {
+            self.reporter
+                .host_task_heartbeat(host, &request.label, &process_label(&request.label));
+        } else {
+            self.reporter.task_heartbeat(
+                request.label.clone(),
+                process_label(&request.label),
+                elapsed,
+            );
+        }
     }
 }
 
@@ -552,6 +661,43 @@ fn format_dashboard_line(line: &str) -> Option<String> {
     Some(normalized.to_owned())
 }
 
+fn format_failure_dashboard_line(line: &str) -> Option<String> {
+    let line = terminal_safe_line(line);
+    if line.is_empty() || sensitive_output(&line) {
+        return None;
+    }
+    let lowercase = line.to_ascii_lowercase();
+    [
+        "error",
+        "failed",
+        "failure",
+        "denied",
+        "unavailable",
+        "timeout",
+        "timed out",
+        "connection",
+        "refused",
+        "closed",
+        "reset",
+        "no route",
+        "could not",
+        "cannot",
+        "exit",
+        "signal",
+        "rejected",
+        "missing",
+        "not found",
+        "command not found",
+        "start-limit",
+        "status=",
+        "result=",
+    ]
+    .iter()
+    .any(|needle| lowercase.contains(needle))
+    .then(|| format_failure_line(&line))
+    .flatten()
+}
+
 fn dashboard_status_prefix(line: &str) -> Option<&str> {
     [
         "[agenix]",
@@ -589,6 +735,27 @@ fn github_command_value(value: &str) -> String {
         .replace('%', "%25")
         .replace('\r', "%0D")
         .replace('\n', "%0A")
+}
+
+fn safe_error_excerpt(value: &str) -> String {
+    let lines = value
+        .lines()
+        .filter_map(format_failure_line)
+        .take(10)
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        "command failed without output".to_owned()
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn safe_host_summary(value: &str) -> String {
+    value
+        .lines()
+        .filter_map(format_failure_line)
+        .find(|line| !line.is_empty())
+        .unwrap_or_else(|| "no details".to_owned())
 }
 
 fn quoted_store_path<'a>(line: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
@@ -654,11 +821,22 @@ fn sensitive_output(line: &str) -> bool {
         "passwd",
         "token",
         "secret",
+        "api_key",
+        "api-key",
+        "apikey",
+        "access_key",
+        "access-key",
+        "client_secret",
+        "client-secret",
         "private_key",
         "private-key",
+        "private key",
+        "-----begin",
         "credential",
         "authorization:",
         "bearer ",
+        "cookie:",
+        "set-cookie:",
     ]
     .iter()
     .any(|needle| lowercase.contains(needle));
@@ -749,6 +927,14 @@ mod tests {
             None
         );
         assert_eq!(format_dashboard_line("arbitrary subprocess chatter"), None);
+        assert_eq!(
+            format_failure_dashboard_line("arbitrary subprocess chatter"),
+            None
+        );
+        assert_eq!(
+            format_failure_dashboard_line("error: connection closed by peer"),
+            Some("error: connection closed by peer".to_owned())
+        );
         assert_eq!(format_dashboard_line("\t\r"), None);
     }
 
@@ -762,6 +948,8 @@ mod tests {
             "TOKEN='abc def' still-secret",
             r#"{\"token\":\"abc def\"}"#,
             "Authorization: Bearer abc",
+            "OPENAI_API_KEY=abc",
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
             "fetch https://user:password@example.test/path",
         ] {
             assert_eq!(
@@ -775,6 +963,19 @@ mod tests {
                 "{secret}"
             );
         }
+    }
+
+    #[test]
+    fn host_summaries_are_single_line_bounded_and_redacted() {
+        assert_eq!(
+            safe_host_summary("first failure\nsecond failure\x1b[31m"),
+            "first failure"
+        );
+        assert_eq!(
+            safe_host_summary("OPENAI_API_KEY=abc\nconnection closed"),
+            "[sensitive output redacted]"
+        );
+        assert!(safe_host_summary(&"x".repeat(600)).chars().count() <= 500);
     }
 
     #[test]
@@ -817,6 +1018,7 @@ mod tests {
             stdin: Some("secret-input-is-not-logged".to_owned()),
             effect: super::super::host_runtime::EffectKind::ReadOnly,
             label: "build alpha".to_owned(),
+            host: None,
         };
         observer.started(&request);
         observer.output(&request, ProcessStream::Stdout, "plain output\n");

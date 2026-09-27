@@ -241,6 +241,7 @@ fn activation(goal: ActivationGoal) -> RemoteCommand {
         runtime_max: Duration::from_secs(30),
         stop_timeout: Duration::from_secs(5),
         lock_wait: Duration::from_secs(35),
+        acquire_host_lock: true,
     })
 }
 
@@ -257,6 +258,7 @@ fn rollback_for(generation: SystemGeneration) -> RemoteCommand {
         Duration::from_secs(30),
         Duration::from_secs(5),
         Duration::from_secs(35),
+        true,
     )
 }
 
@@ -1255,6 +1257,46 @@ fn failure_after_activation_admission_runs_rollback_submit_and_observer() {
 }
 
 #[test]
+fn explicit_pre_admission_failure_does_not_trigger_verification_or_rollback() {
+    let runner = FakeRunner::with_outputs([
+        success(""),
+        failure(
+            1,
+            "--- abird-activation-result begin ---\nOutcomeSource=marker\nResult=exit-code\nExecMainStatus=1\nAdmitted=0\n--- abird-activation-result end ---\n",
+        ),
+    ]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+
+    assert_eq!(
+        runtime
+            .activate(
+                &target(),
+                &activation(ActivationGoal::Switch),
+                &generation("new"),
+                ActivationGoal::Switch,
+                "activation",
+            )
+            .unwrap(),
+        ActivationExecution::Failed {
+            status: CommandStatus::Exit(1),
+            admitted: false,
+        }
+    );
+    let requests = runtime.into_runner().requests;
+    assert_eq!(requests.len(), 2);
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.label.contains("verify"))
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.label.contains("rollback"))
+    );
+}
+
+#[test]
 fn transport_loss_after_submission_can_be_recovered_by_authoritative_verification() {
     let marker = "OutcomeSource=marker\nResult=success\nExecMainStatus=0\nCurrentSystemPath=/nix/store/abc-nixos-system-new\nSystemProfilePath=/nix/store/abc-nixos-system-new\n";
     let runner = FakeRunner::with_outputs([
@@ -1682,6 +1724,7 @@ fn reporting_process_runner_streams_both_channels_and_retains_exact_output() {
             stdin: None,
             effect: EffectKind::ReadOnly,
             label: "probe alpha".to_owned(),
+            host: None,
         })
         .unwrap();
 
@@ -1709,6 +1752,7 @@ fn git_environment_request(clear_git_repository_environment: bool) -> ProcessReq
         stdin: None,
         effect: EffectKind::ReadOnly,
         label: "repository-environment".to_owned(),
+        host: None,
     }
 }
 
@@ -1759,6 +1803,7 @@ fn reporting_process_runner_emits_configured_heartbeats_for_quiet_commands() {
             stdin: None,
             effect: EffectKind::ReadOnly,
             label: "heartbeat".to_owned(),
+            host: None,
         })
         .unwrap();
     assert!(output.succeeded());
@@ -1817,6 +1862,7 @@ fn reporting_process_runner_terminates_the_complete_child_process_group() {
             stdin: None,
             effect: EffectKind::ReadOnly,
             label: "long probe".to_owned(),
+            host: None,
         })
         .unwrap();
     assert!(started.elapsed() < Duration::from_secs(3));

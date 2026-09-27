@@ -69,6 +69,19 @@ impl TerminalStyle {
         }
     }
 
+    /// Give host identities a stable, non-bold color so parallel rows remain
+    /// easy to track without confusing identity with status.
+    pub fn paint_host(self, host: &str) -> String {
+        if !self.enabled {
+            return host.to_owned();
+        }
+        const HOST_COLORS: [&str; 3] = ["\x1b[34m", "\x1b[35m", "\x1b[94m"];
+        let hash = host.bytes().fold(0usize, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(usize::from(byte))
+        });
+        format!("{}{host}{RESET}", HOST_COLORS[hash % HOST_COLORS.len()])
+    }
+
     pub fn semantic_document(self, document: &str) -> String {
         self.semantic_text_with_heading(document, true)
     }

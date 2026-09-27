@@ -71,6 +71,14 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Self-target deploys should execute locally only when the current runtime user
   is already the deploy user. Local operator runs should preserve the normal
   `nixbot` SSH trust boundary.
+- Physical self-target identity is separate from permission to execute locally.
+  When an operator run holds the controller host-local action mutex but reaches
+  that same machine over the normal `nixbot` SSH boundary, its supervised
+  activation and rollback must reuse the outer mutex rather than recursively
+  acquiring the identical target lock, but only when the controller owns the
+  canonical target-lock inode. Custom controller lock paths, external targets,
+  and runs using `--skip-global-lock` still acquire the target-side activation
+  lock.
 - Generated proxy wrappers must preserve per-hop SSH users and identity files
   and emit IPv6-safe forwarding targets.
 - Host config may use `proxyCommand` for explicit transports such as Cloudflare

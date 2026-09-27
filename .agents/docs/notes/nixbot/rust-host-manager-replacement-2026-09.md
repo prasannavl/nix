@@ -182,16 +182,48 @@ transient `Broken pipe` in the unchanged
 release test, complete direct release suite, and packaged retry all passed.
 
 The September 27 progress and incident follow-up exposes deploy phase position
-(`1/5` through `5/5`) and records successful, failed, interrupted, and not-run
-phases in the final summary. The default interactive dashboard keeps a bounded
-ten-line window with at most two allowlisted progress lines per task. Failed
-commands separately retain three terminal-safe lines so useful evidence is
-printed after TTY, redirected, and GitHub Actions failures even if later
-parallel activity evicted the live card. `--verbose` retains the original safe
-line and full store path; potential credential-bearing lines are replaced
+(`1/5` through `5/5`) and records successful, warning, failed, interrupted, and
+not-run phases in the final summary. Each interactive phase owns a stable
+full-host dashboard. Its heading reports the current stage, dependency wave,
+batch when a wave is chunked, configured concurrency, and running/done/pending
+counts. Every active or failed host retains its latest five terminal-safe output
+lines; successful and skipped hosts collapse to one semantic row, while failures
+remain expanded at phase close. Optional-host failures make the phase and
+overall workflow yellow `WARN`/`success with
+warnings`, retain diagnostics, and
+keep a red failed host row even when policy allows exit zero. Generic non-host
+work retains the bounded recent-task window. `--verbose` retains the original
+safe line and full store path; potential credential-bearing lines are replaced
 wholesale, and raw streams remain in private diagnostics. Remote-build labels
 include both the workload host and builder, avoiding shared-builder task and
-diagnostic collisions.
+diagnostic collisions. Default host tails admit only structured lifecycle lines
+and a bounded set of failure signals; arbitrary child output is available only
+through verbose mode and private diagnostics. The renderer detects terminal
+dimensions, distributes available tail rows across active hosts, truncates rows
+before they wrap, and uses rate-limited scrolling snapshots when the complete
+host roster cannot fit safely. Host result summaries pass through the same
+single-line redaction and length boundary before terminal rendering.
+
+The `pvl-l5` optional activation failure was a deterministic self-deploy lock
+recursion, not a failed NixOS switch. The Rust controller held the fleet-wide
+host-local action mutex, preserved the normal `nixbot` SSH trust boundary
+because the invoking operator was `pvl`, and then asked the remote activation
+unit on the same physical machine to acquire that exact mutex again. Its
+`flock -w 30` timed out before `switch-to-configuration` ran. Physical
+self-target identity is now distinct from permission to execute locally:
+operator runs may still SSH as `nixbot`, but supervised activation and rollback
+reuse the already-held controller mutex instead of recursively locking it. That
+reuse applies only when the controller owns the canonical target-lock inode. A
+custom `NIXBOT_HOST_LOCAL_LOCK_PATH`, external targets, and invocations that
+skip the controller mutex continue to take the target-side lock.
+
+That failure also exposed two rollback-boundary defects. Parallel deploy workers
+now receive the generation snapshot captured before acquisition, so an admitted
+optional failure can actually roll back. Activation result markers carry an
+explicit `Admitted=0|1` inside a framed, complete observer record. Ordinary
+activation output cannot impersonate that record; a lock, preparation, or
+admission failure before the switch therefore cannot be misclassified as
+rollback-eligible merely because its observer exited unsuccessfully.
 
 Two false failure paths were repaired. First, authoritative activation markers
 do not carry systemd `ActiveState`; terminal `Result=success` or `exit-code`

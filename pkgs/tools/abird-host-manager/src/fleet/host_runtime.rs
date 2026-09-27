@@ -71,6 +71,10 @@ pub struct ProcessRequest {
     pub stdin: Option<String>,
     pub effect: EffectKind,
     pub label: String,
+    /// Inventory host whose progress this command advances. Commands that
+    /// belong to the phase as a whole (for example the build-plan probe) use
+    /// `None`.
+    pub host: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -645,6 +649,7 @@ pub fn build_ssh_request(
         stdin: Some(encoded_remote_script(argv, environment)?),
         effect,
         label: label.to_owned(),
+        host: Some(target.route.endpoint.node.clone()),
     })
 }
 
@@ -852,6 +857,7 @@ pub fn control_master_exit_request(target: &HostExecutionTarget) -> Result<Optio
         stdin: None,
         effect: EffectKind::Mutation,
         label: "ssh-control-master-exit".to_owned(),
+        host: Some(target.route.endpoint.node.clone()),
     }))
 }
 
@@ -910,6 +916,7 @@ pub fn build_ssh_upload_request(
         stdin: Some(contents),
         effect: EffectKind::Mutation,
         label: label.to_owned(),
+        host: Some(target.route.endpoint.node.clone()),
     })
 }
 
@@ -1068,6 +1075,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             stdin,
             effect,
             label,
+            host,
         } = request;
         let mut timeout_args = vec![
             "--foreground".to_owned(),
@@ -1086,6 +1094,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             stdin,
             effect,
             label,
+            host,
         })
     }
 
@@ -1104,6 +1113,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             stdin: None,
             effect,
             label: label.to_owned(),
+            host: None,
         }
     }
 
@@ -1130,6 +1140,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
         if target.local {
             Ok(ProcessRequest {
                 cwd: target.cwd.clone(),
+                host: Some(target.route.endpoint.node.clone()),
                 ..self.local_request(command, effect, &label)
             })
         } else {
@@ -1163,6 +1174,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 stdin: None,
                 effect,
                 label,
+                host: Some(target.route.endpoint.node.clone()),
             })
         } else {
             build_ssh_request(target, &argv, &[], effect, &label)
@@ -1230,6 +1242,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 stdin,
                 effect,
                 label,
+                host: Some(target.route.endpoint.node.clone()),
             })
         } else {
             build_ssh_request(target, &argv, &[], effect, &label)
@@ -1249,6 +1262,21 @@ impl<R: ProcessRunner> HostRuntime<R> {
         label: &str,
     ) -> Result<Execution<NixStorePath>> {
         let request = self.local_request(command, EffectKind::ReadOnly, label);
+        let output = self.run(request)?;
+        require_success(&output, "build-plan evaluation")?;
+        Ok(Execution::Executed(NixStorePath::derivation(
+            &output.stdout,
+        )?))
+    }
+
+    pub fn evaluate_build_plan_labeled_for_host(
+        &mut self,
+        command: &CommandSpec,
+        label: &str,
+        host: &str,
+    ) -> Result<Execution<NixStorePath>> {
+        let mut request = self.local_request(command, EffectKind::ReadOnly, label);
+        request.host = Some(host.to_owned());
         let output = self.run(request)?;
         require_success(&output, "build-plan evaluation")?;
         Ok(Execution::Executed(NixStorePath::derivation(
@@ -1276,6 +1304,24 @@ impl<R: ProcessRunner> HostRuntime<R> {
         )?))
     }
 
+    pub fn local_build_labeled_for_host(
+        &mut self,
+        command: &CommandSpec,
+        label: &str,
+        host: &str,
+    ) -> Result<Execution<NixStorePath>> {
+        let mut request = self.local_request(command, EffectKind::Build, label);
+        request.host = Some(host.to_owned());
+        let output = self.run(request)?;
+        if output.skipped {
+            return Ok(Execution::DryRun);
+        }
+        require_success(&output, "local build")?;
+        Ok(Execution::Executed(NixStorePath::closure_output(
+            &output.stdout,
+        )?))
+    }
+
     pub fn execute_local_command(
         &mut self,
         command: &CommandSpec,
@@ -1283,6 +1329,18 @@ impl<R: ProcessRunner> HostRuntime<R> {
         label: &str,
     ) -> Result<ProcessOutput> {
         let request = self.local_request(command, effect, label);
+        self.run(request)
+    }
+
+    pub fn execute_local_command_for_host(
+        &mut self,
+        command: &CommandSpec,
+        effect: EffectKind,
+        label: &str,
+        host: &str,
+    ) -> Result<ProcessOutput> {
+        let mut request = self.local_request(command, effect, label);
+        request.host = Some(host.to_owned());
         self.run(request)
     }
 
@@ -1297,6 +1355,19 @@ impl<R: ProcessRunner> HostRuntime<R> {
         self.run(request)
     }
 
+    pub fn execute_remote_command_for_host(
+        &mut self,
+        target: &HostExecutionTarget,
+        command: &CommandSpec,
+        effect: EffectKind,
+        label: &str,
+        host: &str,
+    ) -> Result<ProcessOutput> {
+        let mut request = self.remote_command_request(target, command, effect, label)?;
+        request.host = Some(host.to_owned());
+        self.run(request)
+    }
+
     pub fn execute_remote_root_command(
         &mut self,
         target: &HostExecutionTarget,
@@ -1305,6 +1376,19 @@ impl<R: ProcessRunner> HostRuntime<R> {
         label: &str,
     ) -> Result<ProcessOutput> {
         let request = self.remote_root_command_request(target, command, effect, label)?;
+        self.run(request)
+    }
+
+    pub fn execute_remote_root_command_for_host(
+        &mut self,
+        target: &HostExecutionTarget,
+        command: &CommandSpec,
+        effect: EffectKind,
+        label: &str,
+        host: &str,
+    ) -> Result<ProcessOutput> {
+        let mut request = self.remote_root_command_request(target, command, effect, label)?;
+        request.host = Some(host.to_owned());
         self.run(request)
     }
 
@@ -1354,17 +1438,22 @@ impl<R: ProcessRunner> HostRuntime<R> {
 
     pub fn remote_build(&mut self, request: RemoteBuildRequest) -> Result<RemoteBuildExecution> {
         let copy_label = format!("build-{}-copy-derivation", request.subject);
-        let copied =
-            self.execute_local_command(&request.copy_derivation, EffectKind::Build, &copy_label)?;
+        let copied = self.execute_local_command_for_host(
+            &request.copy_derivation,
+            EffectKind::Build,
+            &copy_label,
+            &request.subject,
+        )?;
         require_success(&copied, "remote build derivation copy")?;
         let mut tracker = RetryTracker::new(request.retry);
         let action_attempt = loop {
-            let process = self.remote_command_request(
+            let mut process = self.remote_command_request(
                 &request.target,
                 &request.build,
                 EffectKind::Build,
                 &format!("build-{}-via", request.subject),
             )?;
+            process.host = Some(request.subject.clone());
             let output = self.run(process)?;
             let attempt = command_attempt(&output);
             match tracker.observe(attempt.clone()) {
@@ -1505,6 +1594,10 @@ impl<R: ProcessRunner> HostRuntime<R> {
             let local_pull = cache_pull_command(cache, closure);
             let label = format!("relay-cache-to-local-{}", target.route.endpoint.node);
             let request = self.local_request(&local_pull, EffectKind::Mutation, &label);
+            let request = ProcessRequest {
+                host: Some(target.route.endpoint.node.clone()),
+                ..request
+            };
             let pulled = self.run(request)?;
             return if pulled.succeeded() {
                 self.verify_target_closure(target, closure)
@@ -1529,6 +1622,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
         let mut tracker = RetryTracker::new(retry);
         let relayed = loop {
             let mut request = self.local_request(&relay, EffectKind::Mutation, &label);
+            request.host = Some(endpoint.node.clone());
             request
                 .environment
                 .push(("NIX_SSHOPTS".to_owned(), nix_sshopts.clone()));
@@ -1658,6 +1752,15 @@ impl<R: ProcessRunner> HostRuntime<R> {
             return Ok(ActivationExecution::Succeeded);
         }
         let observer_command_status = command_status(observer_status.status);
+        let marker_admitted = ActivationSample::parse_observer_marker(&observer_status.stderr)
+            .ok()
+            .and_then(|sample| sample.admitted);
+        if marker_admitted == Some(false) {
+            return Ok(ActivationExecution::Failed {
+                status: observer_command_status,
+                admitted: false,
+            });
+        }
         let failure = deploy::classify_deploy_failure(
             observer_command_status.code(),
             &observer_status.combined_output(),
@@ -1676,7 +1779,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
         {
             return Ok(ActivationExecution::Failed {
                 status: observer_command_status,
-                admitted: true,
+                admitted: marker_admitted.unwrap_or(true),
             });
         }
 
@@ -1696,7 +1799,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
         }
         Ok(ActivationExecution::Failed {
             status: observer_command_status,
-            admitted: true,
+            admitted: marker_admitted.unwrap_or(true),
         })
     }
 
@@ -1827,6 +1930,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             stdin: None,
             effect: EffectKind::ReadOnly,
             label: "check-bootstrap".to_owned(),
+            host: None,
         })
     }
 }

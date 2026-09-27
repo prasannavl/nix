@@ -311,6 +311,16 @@ fn self_target_requires_both_a_match_and_local_user_authority() {
         SelfTargetDecision::Remote(SelfTargetRemoteReason::UnauthorizedUser)
     );
 
+    let different_host = SelfTargetEvidence {
+        alias_matches: false,
+        address_matches: false,
+        ..matching.clone()
+    };
+    assert_eq!(
+        plan_self_target(SelfTargetMode::On, &different_host),
+        SelfTargetDecision::Remote(SelfTargetRemoteReason::NotThisHost)
+    );
+
     let root = SelfTargetEvidence {
         effective_uid: 0,
         current_user: "root".to_owned(),

@@ -1245,8 +1245,9 @@ fn failed_trimmed_route_retries_the_complete_configured_proxy_chain() {
     git(&repository, &["commit", "-qm", "fixture"]);
 
     let current_user = run(Command::new("id").arg("-un"));
+    let current_host = run(Command::new("hostname").arg("-s"));
     let inventory = format!(
-        r#"{{"hosts":{{"relay":{{"target":"relay.invalid","user":"{current_user}","knownHosts":"relay.invalid ssh-ed25519 AAAA"}},"app":{{"target":"app.invalid","user":"root","proxyJump":"relay","knownHosts":"app.invalid ssh-ed25519 AAAA","groups":["all"]}}}},"config":{{}}}}"#
+        r#"{{"hosts":{{"relay":{{"target":"{current_host}","user":"{current_user}","knownHosts":"{current_host} ssh-ed25519 AAAA"}},"app":{{"target":"app.invalid","user":"root","proxyJump":"relay","knownHosts":"app.invalid ssh-ed25519 AAAA","groups":["all"]}}}},"config":{{}}}}"#
     );
     let nix = tools.join("nix");
     write_executable(
@@ -1337,7 +1338,7 @@ exit 1
     assert!(operational.len() >= 3, "{commands}");
     assert!(!operational[0].contains("ProxyCommand="), "{commands}");
     assert!(operational[1].contains("ProxyCommand="), "{commands}");
-    assert!(operational[1].contains("relay.invalid"), "{commands}");
+    assert!(operational[1].contains(&current_host), "{commands}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Logs kept at:"), "{stderr}");
     let retained = fs::read_dir(temporary.path().join("diagnostics"))

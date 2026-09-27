@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
@@ -222,14 +222,35 @@ pub fn run(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
     let _mutex = if !invocation.options.skip_global_lock
         && super::run_state::action_needs_local_mutex(action_name)
     {
-        let path = env::var_os("NIXBOT_HOST_LOCAL_LOCK_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/dev/shm/nixbot-host-local.lock.d"));
+        let path = host_local_action_lock_path();
         Some(acquire_action_mutex(&path, action_name)?)
     } else {
         None
     };
     run_unlocked(invocation, runtime)
+}
+
+pub(super) fn host_local_action_lock_path() -> PathBuf {
+    env::var_os("NIXBOT_HOST_LOCAL_LOCK_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(super::deploy::HOST_LOCAL_ACTIVATION_LOCK))
+}
+
+pub(super) fn action_mutex_covers_target_lock() -> bool {
+    same_file(
+        &host_local_action_lock_path(),
+        Path::new(super::deploy::HOST_LOCAL_ACTIVATION_LOCK),
+    )
+}
+
+fn same_file(left: &Path, right: &Path) -> bool {
+    let Ok(controller) = std::fs::metadata(left) else {
+        return false;
+    };
+    let Ok(target) = std::fs::metadata(right) else {
+        return false;
+    };
+    controller.dev() == target.dev() && controller.ino() == target.ino()
 }
 
 fn acquire_action_mutex(path: &Path, action: &str) -> Result<super::run_state::ActionMutex> {
@@ -355,7 +376,7 @@ fn run_auxiliary_phase<T>(
 ) -> Result<T> {
     let progress = FleetProgress::from_options(&invocation.options);
     let started = Instant::now();
-    progress.phase_started(phase, 0, None);
+    progress.phase_started(phase, &[], None);
     match operation() {
         Ok(value) => {
             progress.phase_completed(phase, 0, None, started.elapsed());
@@ -700,7 +721,8 @@ fn allocate_run_state(runtime: &RuntimeConfig) -> Result<RunState> {
 }
 
 fn finish_run_state<T>(state: RunState, action: Result<T>) -> Result<T> {
-    let succeeded = action.is_ok();
+    let warned = super::presentation::take_warning_presented();
+    let succeeded = action.is_ok() && !warned;
     let cleanup = state.normal_cleanup(CleanupOptions {
         succeeded,
         keep_diagnostics: false,
@@ -1093,5 +1115,25 @@ fn print_hosts(inventory: &Inventory, selection: &Selection) {
             annotations.push(format!("parent: {parent}"));
         }
         eprintln!("  - {name} ({})", annotations.join(", "));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    use super::same_file;
+
+    #[test]
+    fn same_file_matches_equivalent_lock_path_spellings() {
+        let temporary = tempfile::tempdir().unwrap();
+        let lock = temporary.path().join("lock.d");
+        let alias = temporary.path().join("lock-alias.d");
+        fs::create_dir(&lock).unwrap();
+        symlink(&lock, &alias).unwrap();
+
+        assert!(same_file(&lock, &alias));
+        assert!(same_file(&temporary.path().join(".").join("lock.d"), &lock));
     }
 }

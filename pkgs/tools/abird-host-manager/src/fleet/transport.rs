@@ -479,8 +479,9 @@ pub fn plan_self_target(mode: SelfTargetMode, evidence: &SelfTargetEvidence) -> 
         SelfTargetMode::Off => {
             return SelfTargetDecision::Remote(SelfTargetRemoteReason::Disabled);
         }
-        SelfTargetMode::On => true,
-        SelfTargetMode::Auto => evidence.alias_matches || evidence.address_matches,
+        SelfTargetMode::On | SelfTargetMode::Auto => {
+            evidence.alias_matches || evidence.address_matches
+        }
     };
     if !matches {
         return SelfTargetDecision::Remote(SelfTargetRemoteReason::NotThisHost);

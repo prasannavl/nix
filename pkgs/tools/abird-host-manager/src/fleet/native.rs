@@ -114,6 +114,7 @@ pub struct NativeFleetEffects<'a> {
     bootstrap_failed: BTreeSet<String>,
     terraform_status: Vec<(String, bool)>,
     phase_results: Vec<PhaseResult>,
+    workflow_warnings: Vec<WorkflowWarning>,
     pending_rollback: BTreeSet<String>,
     deploy_failures: Vec<String>,
     bootstrap_prepared: BTreeSet<String>,
@@ -125,6 +126,7 @@ pub struct NativeFleetEffects<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PhaseResultKind {
     Succeeded,
+    Warning,
     Failed,
     Interrupted,
 }
@@ -134,6 +136,12 @@ struct PhaseResult {
     phase: Phase,
     kind: PhaseResultKind,
     elapsed: Duration,
+}
+
+#[derive(Clone, Debug)]
+struct WorkflowWarning {
+    host: String,
+    detail: String,
 }
 
 struct DeployTaskOutcome {
@@ -300,6 +308,7 @@ impl<'a> NativeFleetEffects<'a> {
             bootstrap_failed: BTreeSet::new(),
             terraform_status: Vec::new(),
             phase_results: Vec::new(),
+            workflow_warnings: Vec::new(),
             pending_rollback: BTreeSet::new(),
             deploy_failures: Vec::new(),
             bootstrap_prepared: BTreeSet::new(),
@@ -422,6 +431,7 @@ impl<'a> NativeFleetEffects<'a> {
                                 "{} · {}",
                                 match result.kind {
                                     PhaseResultKind::Succeeded => "ok",
+                                    PhaseResultKind::Warning => "WARN",
                                     PhaseResultKind::Failed => "FAIL",
                                     PhaseResultKind::Interrupted => "interrupted",
                                 },
@@ -443,7 +453,9 @@ impl<'a> NativeFleetEffects<'a> {
             terraform
                 .iter()
                 .map(|(project, status)| (project.as_str(), status.as_str())),
-            if outcome.is_ok() {
+            if outcome.is_ok() && !self.workflow_warnings.is_empty() {
+                WorkflowResult::SuccessWithWarnings
+            } else if outcome.is_ok() {
                 WorkflowResult::Success
             } else if interrupted {
                 WorkflowResult::Interrupted
@@ -566,6 +578,7 @@ impl<'a> NativeFleetEffects<'a> {
             requested_plan_jobs,
             self.selection.ordered.len(),
         )?;
+        self.progress.phase_schedule("plan probe", Some((1, 1)), 1);
         let probe_args = if probe_jobs > 1 {
             vec![
                 "--option".to_owned(),
@@ -605,6 +618,8 @@ impl<'a> NativeFleetEffects<'a> {
                 &configuration,
             ) {
                 self.progress.task_skipped(format!("build-plan-{host}"));
+                self.progress
+                    .host_skipped(host, "build plan unavailable; skipped");
                 continue;
             }
             planned_hosts.push((host.clone(), configuration));
@@ -615,6 +630,8 @@ impl<'a> NativeFleetEffects<'a> {
 
         let plan_jobs =
             super::build::effective_build_plan_jobs(requested_plan_jobs, planned_hosts.len())?;
+        self.progress
+            .phase_schedule("evaluate plans", Some((1, 1)), plan_jobs);
         let plan_args = if plan_jobs > 1 {
             vec![
                 "--option".to_owned(),
@@ -657,7 +674,11 @@ impl<'a> NativeFleetEffects<'a> {
                     DryRun::No,
                 )?;
                 let derivation = runtime
-                    .evaluate_build_plan_labeled(&plan, &format!("build-plan-{host}"))?
+                    .evaluate_build_plan_labeled_for_host(
+                        &plan,
+                        &format!("build-plan-{host}"),
+                        &host,
+                    )?
                     .executed()
                     .context("build-plan evaluation was unexpectedly suppressed")?;
                 Ok((host, configuration, derivation, cache_path))
@@ -677,7 +698,13 @@ impl<'a> NativeFleetEffects<'a> {
             self.invocation.options.build_jobs,
             &control_plane,
         )?;
-        for batch in schedule.batches {
+        let batch_count = schedule.batches.len();
+        for (batch_index, batch) in schedule.batches.into_iter().enumerate() {
+            self.progress.phase_schedule(
+                "build",
+                Some((batch_index + 1, batch_count)),
+                self.invocation.options.build_jobs,
+            );
             match batch {
                 BuildBatch::Parallel(hosts) => {
                     self.build_parallel_batch(hosts, development, &build_args)?;
@@ -689,7 +716,8 @@ impl<'a> NativeFleetEffects<'a> {
                         .cloned()
                         .with_context(|| format!("missing evaluated derivation for {host}"))?;
                     let closure = self.build_one(&host, development, &derivation, &build_args)?;
-                    self.closures.insert(host, closure);
+                    self.closures.insert(host.clone(), closure);
+                    self.progress.host_completed(&host, "built");
                 }
             }
         }
@@ -750,8 +778,9 @@ impl<'a> NativeFleetEffects<'a> {
                 Ok((host, closure, builder_closure)) => {
                     self.closures.insert(host.clone(), closure);
                     if let Some(builder_closure) = builder_closure {
-                        self.builder_closures.insert(host, builder_closure);
+                        self.builder_closures.insert(host.clone(), builder_closure);
                     }
+                    self.progress.host_completed(&host, "built");
                 }
                 Err(error) => failures.push(format!("{error:#}")),
             }
@@ -792,7 +821,7 @@ impl<'a> NativeFleetEffects<'a> {
         };
         if development || build_host == "local" {
             self.host_runtime
-                .local_build_labeled(&command, &format!("build-{host}"))?
+                .local_build_labeled_for_host(&command, &format!("build-{host}"), host)?
                 .executed()
                 .context("local build was unexpectedly suppressed")
         } else {
@@ -953,18 +982,20 @@ impl<'a> NativeFleetEffects<'a> {
                 ),
                 &target,
             )?;
-            let output = self.host_runtime.execute_local_command(
+            let output = self.host_runtime.execute_local_command_for_host(
                 &pull,
                 EffectKind::Build,
                 "remote-build-copy-closure-local",
+                host,
             )?;
             if !output.succeeded() {
                 bail!("copy remote build closure to local store failed for {host}");
             }
-            let verified = self.host_runtime.execute_local_command(
+            let verified = self.host_runtime.execute_local_command_for_host(
                 &closure_verification_command(&self.nix_program.to_string_lossy(), &closure),
                 EffectKind::ReadOnly,
                 "remote-build-verify-local-closure",
+                host,
             )?;
             if !verified.succeeded() {
                 bail!("verify copied remote build closure failed for {host}");
@@ -1650,9 +1681,27 @@ impl<'a> NativeFleetEffects<'a> {
             LocalSelfTarget::On => SelfTargetMode::On,
             LocalSelfTarget::Off => SelfTargetMode::Off,
         };
-        if mode == SelfTargetMode::Off {
-            return Ok(false);
-        }
+        let evidence = self.self_target_evidence(host)?;
+        Ok(plan_self_target(mode, &evidence) == SelfTargetDecision::Local)
+    }
+
+    fn physical_self_target(&self, host: &ResolvedHost) -> Result<bool> {
+        let mode = match self.settings.local_self_target {
+            LocalSelfTarget::Auto => SelfTargetMode::Auto,
+            LocalSelfTarget::On => SelfTargetMode::On,
+            LocalSelfTarget::Off => SelfTargetMode::Off,
+        };
+        let evidence = self.self_target_evidence(host)?;
+        Ok(mode != SelfTargetMode::Off && (evidence.alias_matches || evidence.address_matches))
+    }
+
+    fn controller_mutex_covers_target(&self, host: &ResolvedHost) -> Result<bool> {
+        Ok(!self.invocation.options.skip_global_lock
+            && self.physical_self_target(host)?
+            && super::runtime::action_mutex_covers_target_lock())
+    }
+
+    fn self_target_evidence(&self, host: &ResolvedHost) -> Result<SelfTargetEvidence> {
         let mut aliases = BTreeSet::from([
             "localhost".to_owned(),
             "127.0.0.1".to_owned(),
@@ -1700,9 +1749,9 @@ impl<'a> NativeFleetEffects<'a> {
         let uid = run_output(self.repository, &CommandSpec::new("id", ["-u".to_owned()]))?;
         let user = run_output(self.repository, &CommandSpec::new("id", ["-un".to_owned()]))?;
         if !uid.status.success() || !user.status.success() {
-            return Ok(false);
+            bail!("could not determine local user identity for self-target planning");
         }
-        let evidence = SelfTargetEvidence {
+        Ok(SelfTargetEvidence {
             alias_matches,
             address_matches,
             effective_uid: String::from_utf8_lossy(&uid.stdout)
@@ -1711,8 +1760,7 @@ impl<'a> NativeFleetEffects<'a> {
                 .context("local effective uid is not an unsigned integer")?,
             current_user: String::from_utf8_lossy(&user.stdout).trim().to_owned(),
             deploy_user: host.user.clone(),
-        };
-        Ok(plan_self_target(mode, &evidence) == SelfTargetDecision::Local)
+        })
     }
 
     fn materialize_declared_key(
@@ -1878,18 +1926,35 @@ impl<'a> NativeFleetEffects<'a> {
                     host.clone(),
                     super::deploy::GenerationSnapshot::not_requested(),
                 );
+                self.progress.host_skipped(
+                    host,
+                    if self.invocation.options.dry_run {
+                        "dry run"
+                    } else {
+                        "rollback disabled"
+                    },
+                );
             }
             return Ok(());
         }
 
         let mut failures = Vec::new();
-        for wave in self.selection.waves.clone() {
+        let wave_count = self.selection.waves.len();
+        for (wave_index, wave) in self.selection.waves.clone().into_iter().enumerate() {
+            self.progress.phase_schedule(
+                "snapshot",
+                Some((wave_index + 1, wave_count)),
+                self.invocation.options.deploy_jobs,
+            );
             let mut runnable = Vec::new();
             for host in wave {
                 let policy = self.inventory.hosts[&host].deploy;
                 if policy == DeployMode::Skip {
-                    self.snapshots
-                        .insert(host, super::deploy::GenerationSnapshot::not_requested());
+                    self.snapshots.insert(
+                        host.clone(),
+                        super::deploy::GenerationSnapshot::not_requested(),
+                    );
+                    self.progress.host_skipped(&host, "deployment skipped");
                     continue;
                 }
                 runnable.push(host);
@@ -1926,6 +1991,13 @@ impl<'a> NativeFleetEffects<'a> {
                 if snapshot.generation().is_none() && policy == DeployMode::Strict {
                     failures.push(host.clone());
                     self.snapshot_failed.insert(host.clone());
+                    self.progress
+                        .host_failed(&host, "generation snapshot unavailable");
+                } else if snapshot.generation().is_none() {
+                    self.progress
+                        .host_skipped(&host, "optional snapshot unavailable");
+                } else {
+                    self.progress.host_completed(&host, "snapshot captured");
                 }
                 self.snapshots.insert(host, snapshot);
             }
@@ -2159,7 +2231,7 @@ impl<'a> NativeFleetEffects<'a> {
                 let command = CommandSpec::new(command.program.clone(), command.args.clone());
                 let output = self
                     .host_runtime
-                    .execute_remote_root_command(&target, &command, effect, label)?;
+                    .execute_remote_root_command_for_host(&target, &command, effect, label, host)?;
                 if !output.succeeded() {
                     bail!(
                         "{label} failed for {host} through {parent}: {}",
@@ -2196,11 +2268,12 @@ impl<'a> NativeFleetEffects<'a> {
         } else {
             "release-candidate-lease"
         };
-        let output = self.host_runtime.execute_remote_root_command(
+        let output = self.host_runtime.execute_remote_root_command_for_host(
             target,
             &CommandSpec::new(command.program, command.args),
             EffectKind::Mutation,
             operation,
+            host,
         )?;
         if !output.succeeded() {
             bail!("{operation} failed for {host}: {}", output.stderr.trim());
@@ -2386,6 +2459,7 @@ impl<'a> NativeFleetEffects<'a> {
         }
         let desired = super::deploy::SystemGeneration::parse(closure.as_str())?;
         let resolved = resolve_host(self.inventory, host, &self.invocation.options)?;
+        let acquire_host_lock = !self.controller_mutex_covers_target(&resolved)?;
         let target = self.execution_target(&resolved)?;
         // Verify or re-establish the exact target-side GC root before making
         // any activation preparation changes.
@@ -2418,6 +2492,7 @@ impl<'a> NativeFleetEffects<'a> {
                     self.settings.remote_activation_stop_timeout_seconds,
                 ),
                 lock_wait: Duration::from_secs(self.settings.state_lock_timeout_seconds),
+                acquire_host_lock,
             });
             self.host_runtime
                 .activate(&target, &activation, &desired, goal, "activation")
@@ -2448,16 +2523,29 @@ impl<'a> NativeFleetEffects<'a> {
 
     fn run_acquire_phase(&mut self) -> Result<()> {
         if self.invocation.options.dry_run {
+            for host in &self.selection.ordered {
+                self.progress.host_skipped(host, "dry run");
+            }
             return Ok(());
         }
-        'waves: for wave in self.selection.waves.clone() {
+        let wave_count = self.selection.waves.len();
+        'waves: for (wave_index, wave) in self.selection.waves.clone().into_iter().enumerate() {
+            self.progress.phase_schedule(
+                "acquire",
+                Some((wave_index + 1, wave_count)),
+                self.invocation.options.deploy_jobs,
+            );
             let mut runnable = Vec::new();
             for host in wave {
                 if self.inventory.hosts[&host].deploy == DeployMode::Skip {
+                    self.progress.host_skipped(&host, "deployment skipped");
                     continue;
                 }
                 if let Some(candidate) = self.candidate_for_acquisition(&host)? {
                     runnable.push((host, candidate));
+                } else {
+                    self.progress
+                        .host_skipped(&host, "no artifact acquisition required");
                 }
             }
             if runnable.is_empty() {
@@ -2472,7 +2560,16 @@ impl<'a> NativeFleetEffects<'a> {
                 self.builder_lease.release();
                 return Err(error.context("acquisition parent readiness failed"));
             }
-            for chunk in runnable.chunks(self.invocation.options.deploy_jobs) {
+            let batch_count = runnable.len().div_ceil(self.invocation.options.deploy_jobs);
+            for (batch_index, chunk) in runnable
+                .chunks(self.invocation.options.deploy_jobs)
+                .enumerate()
+            {
+                self.progress.phase_schedule(
+                    format!("acquire · batch {}/{}", batch_index + 1, batch_count),
+                    Some((wave_index + 1, wave_count)),
+                    self.invocation.options.deploy_jobs,
+                );
                 let tasks = chunk
                     .iter()
                     .map(|(host, candidate)| {
@@ -2540,6 +2637,8 @@ impl<'a> NativeFleetEffects<'a> {
                     }
                     if let Some(generation) = outcome.acquired {
                         self.acquired.insert(outcome.host.clone(), generation);
+                        self.progress
+                            .host_completed(&outcome.host, "artifacts acquired");
                     }
                     if let Err(error) = outcome.result {
                         self.deploy_failed.insert(outcome.host.clone());
@@ -2559,11 +2658,17 @@ impl<'a> NativeFleetEffects<'a> {
                             }
                         }
                         if outcome.policy == DeployMode::Optional {
-                            self.progress.message(format!(
-                                "Optional acquisition failed · {} · {error:#}",
-                                outcome.host
-                            ));
+                            let detail = format!("acquisition failed: {error:#}");
+                            self.progress.host_failed(&outcome.host, &detail);
+                            self.workflow_warnings.push(WorkflowWarning {
+                                host: outcome.host.clone(),
+                                detail,
+                            });
                         } else {
+                            self.progress.host_failed(
+                                &outcome.host,
+                                format!("acquisition failed: {error:#}"),
+                            );
                             self.deploy_failures
                                 .push(format!("{} acquisition: {error:#}", outcome.host));
                             required_failed = true;
@@ -2588,9 +2693,30 @@ impl<'a> NativeFleetEffects<'a> {
 
     fn run_deploy_phase(&mut self) -> Result<()> {
         if self.invocation.options.dry_run {
+            for host in &self.selection.ordered {
+                self.progress.host_skipped(host, "dry run");
+            }
             return Ok(());
         }
-        'waves: for wave in self.selection.waves.clone() {
+        for host in &self.selection.ordered {
+            if !self.acquired.contains_key(host) {
+                self.progress.host_skipped(
+                    host,
+                    if self.inventory.hosts[host].deploy == DeployMode::Skip {
+                        "deployment skipped"
+                    } else {
+                        "artifacts not acquired"
+                    },
+                );
+            }
+        }
+        let wave_count = self.selection.waves.len();
+        'waves: for (wave_index, wave) in self.selection.waves.clone().into_iter().enumerate() {
+            self.progress.phase_schedule(
+                "deploy",
+                Some((wave_index + 1, wave_count)),
+                self.invocation.options.deploy_jobs,
+            );
             let runnable = wave
                 .into_iter()
                 .filter(|host| self.acquired.contains_key(host))
@@ -2603,7 +2729,16 @@ impl<'a> NativeFleetEffects<'a> {
                     .push(format!("parent readiness: {error:#}"));
                 break;
             }
-            for chunk in runnable.chunks(self.invocation.options.deploy_jobs) {
+            let batch_count = runnable.len().div_ceil(self.invocation.options.deploy_jobs);
+            for (batch_index, chunk) in runnable
+                .chunks(self.invocation.options.deploy_jobs)
+                .enumerate()
+            {
+                self.progress.phase_schedule(
+                    format!("deploy · batch {}/{}", batch_index + 1, batch_count),
+                    Some((wave_index + 1, wave_count)),
+                    self.invocation.options.deploy_jobs,
+                );
                 let tasks = chunk
                     .iter()
                     .map(|host| {
@@ -2616,6 +2751,7 @@ impl<'a> NativeFleetEffects<'a> {
                             self.acquired.get(host).cloned().with_context(|| {
                                 format!("missing acquired candidate for {host}")
                             })?,
+                            self.snapshots.get(host).cloned(),
                         ))
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -2629,7 +2765,7 @@ impl<'a> NativeFleetEffects<'a> {
                 let outcomes = super::orchestration::bounded_parallel_map(
                     tasks,
                     self.invocation.options.deploy_jobs,
-                    |(host, closure, acquired)| {
+                    |(host, closure, acquired, snapshot)| {
                         let policy = inventory.hosts[&host].deploy;
                         let mut worker = match NativeFleetEffects::new_with_diagnostics(
                             invocation,
@@ -2657,6 +2793,9 @@ impl<'a> NativeFleetEffects<'a> {
                         worker.invocation_id = invocation_id.clone();
                         worker.closures.insert(host.clone(), closure);
                         worker.acquired.insert(host.clone(), acquired);
+                        if let Some(snapshot) = snapshot {
+                            worker.snapshots.insert(host.clone(), snapshot);
+                        }
                         let mut result = worker.deploy_one(&host);
                         if result.is_err()
                             && policy == DeployMode::Optional
@@ -2703,11 +2842,17 @@ impl<'a> NativeFleetEffects<'a> {
                     if outcome.rollback_failed {
                         self.rollback_failed.insert(host.clone());
                     }
+                    let mut host_failure = None;
                     if let Err(error) = outcome.result {
                         if outcome.policy == DeployMode::Optional {
-                            self.progress
-                                .message(format!("Optional deploy failed · {} · {error:#}", host));
+                            let detail = format!("activation failed: {error:#}");
+                            self.workflow_warnings.push(WorkflowWarning {
+                                host: host.clone(),
+                                detail: detail.clone(),
+                            });
+                            host_failure = Some(detail);
                         } else {
+                            host_failure = Some(format!("activation failed: {error:#}"));
                             self.deploy_failures.push(format!("{host}: {error:#}"));
                             required_failed = true;
                         }
@@ -2716,6 +2861,11 @@ impl<'a> NativeFleetEffects<'a> {
                         self.progress.message(format!(
                             "Candidate lease cleanup deferred · {host} · {error:#}"
                         ));
+                    }
+                    if let Some(detail) = host_failure {
+                        self.progress.host_failed(&host, detail);
+                    } else if outcome.successful {
+                        self.progress.host_completed(&host, "deployed");
                     }
                 }
                 if required_failed {
@@ -2736,6 +2886,13 @@ impl<'a> NativeFleetEffects<'a> {
 
     fn run_health_phase(&mut self) -> Result<()> {
         let mut failures = Vec::new();
+        self.progress
+            .phase_schedule("verify", Some((1, 1)), self.invocation.options.verify_jobs);
+        for host in &self.selection.ordered {
+            if !self.successful.contains(host) {
+                self.progress.host_skipped(host, "not deployed");
+            }
+        }
         if !self.invocation.options.no_verify && !self.invocation.options.dry_run {
             let mut tasks = Vec::new();
             for host in self.successful.clone() {
@@ -2754,6 +2911,8 @@ impl<'a> NativeFleetEffects<'a> {
                         tasks.push((host, target, ignored_system_units));
                     }
                     Err(error) => {
+                        self.progress
+                            .host_failed(&host, format!("health transport failed: {error:#}"));
                         failures.push(format!(
                             "{host}: post-switch health transport failed: {error:#}"
                         ));
@@ -2793,6 +2952,7 @@ impl<'a> NativeFleetEffects<'a> {
                         }
                         match &report.decision {
                             super::health::HealthDecision::Healthy { .. } => {
+                                self.progress.host_completed(&host, "healthy");
                                 self.progress.detail(format!(
                                     "{host} · health ok · {} attempt{}",
                                     report.attempts,
@@ -2800,6 +2960,7 @@ impl<'a> NativeFleetEffects<'a> {
                                 ));
                             }
                             super::health::HealthDecision::Settling { .. } => {
+                                self.progress.host_failed(&host, "health is still settling");
                                 self.health_failed.insert(host.clone());
                                 failures.push(health_failure_message(
                                     &host,
@@ -2808,6 +2969,7 @@ impl<'a> NativeFleetEffects<'a> {
                                 ));
                             }
                             super::health::HealthDecision::ServiceFailure { .. } => {
+                                self.progress.host_failed(&host, "service health failed");
                                 self.health_failed.insert(host.clone());
                                 failures.push(health_failure_message(
                                     &host,
@@ -2816,6 +2978,7 @@ impl<'a> NativeFleetEffects<'a> {
                                 ));
                             }
                             super::health::HealthDecision::StructuralFailure { .. } => {
+                                self.progress.host_failed(&host, "structural health failed");
                                 self.health_failed.insert(host.clone());
                                 failures.push(health_failure_message(
                                     &host,
@@ -2826,12 +2989,25 @@ impl<'a> NativeFleetEffects<'a> {
                         }
                     }
                     Err(error) => {
+                        self.progress
+                            .host_failed(&host, format!("health probe failed: {error:#}"));
                         self.health_failed.insert(host.clone());
                         failures.push(format!(
                             "{host}: post-switch health probe failed: {error:#}"
                         ));
                     }
                 }
+            }
+        } else {
+            for host in self.successful.clone() {
+                self.progress.host_skipped(
+                    &host,
+                    if self.invocation.options.dry_run {
+                        "dry run"
+                    } else {
+                        "health verification disabled"
+                    },
+                );
             }
         }
         if failures.is_empty() {
@@ -2931,6 +3107,7 @@ impl<'a> NativeFleetEffects<'a> {
                 };
                 let result = (|| {
                     let resolved = resolve_host(self.inventory, &host, &self.invocation.options)?;
+                    let acquire_host_lock = !self.controller_mutex_covers_target(&resolved)?;
                     let target = self.execution_target(&resolved)?;
                     let boot_environment = self.boot_environment(&host)?;
                     let command = super::deploy::rollback_command(
@@ -2941,6 +3118,7 @@ impl<'a> NativeFleetEffects<'a> {
                         Duration::from_secs(self.settings.remote_activation_runtime_max_seconds),
                         Duration::from_secs(self.settings.remote_activation_stop_timeout_seconds),
                         Duration::from_secs(self.settings.state_lock_timeout_seconds),
+                        acquire_host_lock,
                     );
                     match self.host_runtime.activate(
                         &target,
@@ -3354,7 +3532,9 @@ impl FleetEffects for NativeFleetEffects<'_> {
             .iter()
             .position(|candidate| *candidate == phase)
             .map(|index| (index + 1, plan.phases.len()));
-        self.progress.phase_started(phase, host_count, position);
+        let phase_hosts = self.selection.ordered.clone();
+        self.progress.phase_started(phase, &phase_hosts, position);
+        let warning_start = self.workflow_warnings.len();
         let result = match phase {
             Phase::TerraformDns | Phase::TerraformPlatform | Phase::TerraformApps | Phase::Tofu => {
                 self.run_terraform_phase(phase)
@@ -3384,13 +3564,29 @@ impl FleetEffects for NativeFleetEffects<'_> {
         match result {
             Ok(()) => {
                 let elapsed = started.elapsed();
+                let warnings = &self.workflow_warnings[warning_start..];
+                let kind = if warnings.is_empty() {
+                    PhaseResultKind::Succeeded
+                } else {
+                    PhaseResultKind::Warning
+                };
                 self.phase_results.push(PhaseResult {
                     phase,
-                    kind: PhaseResultKind::Succeeded,
+                    kind,
                     elapsed,
                 });
-                self.progress
-                    .phase_completed(phase, host_count, position, elapsed);
+                if warnings.is_empty() {
+                    self.progress
+                        .phase_completed(phase, host_count, position, elapsed);
+                } else {
+                    let warning = warnings
+                        .iter()
+                        .map(|warning| format!("{} · {}", warning.host, warning.detail))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    self.progress
+                        .phase_warning(phase, host_count, position, elapsed, &warning);
+                }
                 Ok(())
             }
             Err(error) => {

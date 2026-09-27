@@ -24,7 +24,9 @@ const SYSTEM_SYSTEMCTL: &str = "/run/current-system/sw/bin/systemctl";
 const SYSTEM_TEE: &str = "/run/current-system/sw/bin/tee";
 const ACTIVATION_RESULT_DIR: &str = "/var/lib/nixbot/activation-results";
 const ACTIVATION_LOCK: &str = "/run/nixos/switch-to-configuration.lock";
-const HOST_LOCAL_ACTIVATION_LOCK: &str = "/dev/shm/nixbot-host-local.lock.d";
+pub(super) const HOST_LOCAL_ACTIVATION_LOCK: &str = "/dev/shm/nixbot-host-local.lock.d";
+const ACTIVATION_MARKER_BEGIN: &str = "--- abird-activation-result begin ---";
+const ACTIVATION_MARKER_END: &str = "--- abird-activation-result end ---";
 const HOST_AGENT_CONFIG_DIR: &str = "/etc/abird-host-agent";
 const HOST_AGENT_STATE_DIR: &str = "/var/lib/abird-host-agent";
 const HOST_AGENT_RUNTIME_DIR: &str = "/run/abird-host-agent";
@@ -576,6 +578,7 @@ pub struct ActivationCommand {
     pub runtime_max: Duration,
     pub stop_timeout: Duration,
     pub lock_wait: Duration,
+    pub acquire_host_lock: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -802,6 +805,7 @@ fn activation_script(
     admission_mode: ActivationAdmissionMode,
     unit: &str,
     lock_wait: Duration,
+    acquire_host_lock: bool,
 ) -> String {
     let system = generation.as_str();
     let switch = format!("{system}/bin/switch-to-configuration");
@@ -809,9 +813,6 @@ fn activation_script(
     let log = format!("{ACTIVATION_RESULT_DIR}/{unit}.log");
     let mut body = format!(
         r#"set -Eeuo pipefail
-{SYSTEM_INSTALL} -d -m 0700 {ACTIVATION_RESULT_DIR}
-printf 'OutcomeSource=marker\nResult=running\nExecMainStatus=255\n' > {result}.tmp
-{SYSTEM_MV} -f {result}.tmp {result}
 if [ ! -x {switch} ]; then
     echo 'system path is not activatable: {system}' >&2
     exit 1
@@ -825,7 +826,7 @@ fi
         &GenerationAdmissionPaths::default(),
     ));
     body.push_str(&format!(
-        "NIXOS_INSTALL_BOOTLOADER=0 run_admitted_target_switch {switch} {}\n",
+        "printf 'OutcomeSource=marker\\nResult=running\\nExecMainStatus=255\\nAdmitted=1\\n' > {result}.tmp\n{SYSTEM_MV} -f {result}.tmp {result}\nNIXOS_INSTALL_BOOTLOADER=0 run_admitted_target_switch {switch} {}\n",
         goal.as_str()
     ));
     if goal.persists_profile() {
@@ -857,28 +858,41 @@ fi
         ));
     }
     body.push_str(&format!(
-        r#"printf 'OutcomeSource=marker\nResult=success\nExecMainStatus=0\n' > {result}.tmp
+        r#"printf 'OutcomeSource=marker\nResult=success\nExecMainStatus=0\nAdmitted=1\n' > {result}.tmp
 {SYSTEM_MV} -f {result}.tmp {result}
 "#
     ));
 
-    // The target-local unit owns both the activation lock and retained output.
-    // Its marker remains authoritative if the SSH observer disappears.
+    // A remote target owns its activation lock. A controller self-target must
+    // not reacquire the action mutex already held by this invocation.
+    let runner = if acquire_host_lock {
+        format!(
+            "{SYSTEM_INSTALL} -d -m 0755 {HOST_LOCAL_ACTIVATION_LOCK}\n{SYSTEM_FLOCK} -w {} {HOST_LOCAL_ACTIVATION_LOCK} {SYSTEM_BASH} -c {}",
+            lock_wait.as_secs(),
+            shell_single_quote(&body)
+        )
+    } else {
+        format!("{SYSTEM_BASH} -c {}", shell_single_quote(&body))
+    };
     format!(
         r#"set -o pipefail
 set +e
-{SYSTEM_INSTALL} -d -m 0755 {HOST_LOCAL_ACTIVATION_LOCK}
-{SYSTEM_FLOCK} -w {} {HOST_LOCAL_ACTIVATION_LOCK} {SYSTEM_BASH} -c {} 2>&1 | {SYSTEM_TEE} --output-error=warn-nopipe {log}
+{SYSTEM_INSTALL} -d -m 0700 {ACTIVATION_RESULT_DIR}
+printf 'OutcomeSource=marker\nResult=running\nExecMainStatus=255\nAdmitted=0\n' > {result}.tmp
+{SYSTEM_MV} -f {result}.tmp {result}
+{runner} 2>&1 | {SYSTEM_TEE} --output-error=warn-nopipe {log}
 pipeline_status=("${{PIPESTATUS[@]}}")
 rc="${{pipeline_status[0]}}"
 if [ "$rc" -ne 0 ]; then
-    printf 'OutcomeSource=marker\nResult=exit-code\nExecMainStatus=%s\n' "$rc" > {result}.tmp
+    admitted=0
+    while IFS= read -r marker; do
+        case "$marker" in Admitted=1) admitted=1 ;; esac
+    done < {result}
+    printf 'OutcomeSource=marker\nResult=exit-code\nExecMainStatus=%s\nAdmitted=%s\n' "$rc" "$admitted" > {result}.tmp
     {SYSTEM_MV} -f {result}.tmp {result}
 fi
 exit "$rc"
 "#,
-        lock_wait.as_secs(),
-        shell_single_quote(&body)
     )
 }
 
@@ -937,11 +951,13 @@ unit={unit}
 read_result() {{
     result=running
     exec_main_status=255
+    admitted=0
     if [ -s "$result_file" ]; then
         while IFS= read -r line; do
             case "$line" in
                 Result=*) result="${{line#Result=}}" ;;
                 ExecMainStatus=*) exec_main_status="${{line#ExecMainStatus=}}" ;;
+                Admitted=*) admitted="${{line#Admitted=}}" ;;
             esac
         done < "$result_file"
     fi
@@ -963,6 +979,7 @@ done
 # The unit may publish its terminal marker between the last poll and log
 # consumption. Do not return the stale running sentinel in that race.
 read_result
+printf '%s\nOutcomeSource=marker\nResult=%s\nExecMainStatus=%s\nAdmitted=%s\n%s\n' '{ACTIVATION_MARKER_BEGIN}' "$result" "$exec_main_status" "$admitted" '{ACTIVATION_MARKER_END}' >&2
 case "$exec_main_status" in ''|*[!0-9]*) exit 255 ;; *) exit "$exec_main_status" ;; esac
 "#
     )
@@ -978,6 +995,7 @@ pub fn activation_command(spec: ActivationCommand) -> RemoteCommand {
         ActivationAdmissionMode::Normal,
         &unit,
         spec.lock_wait,
+        spec.acquire_host_lock,
     );
     supervised_activation_command(unit, script, spec.runtime_max, spec.stop_timeout)
 }
@@ -990,6 +1008,7 @@ pub fn rollback_command(
     runtime_max: Duration,
     stop_timeout: Duration,
     lock_wait: Duration,
+    acquire_host_lock: bool,
 ) -> RemoteCommand {
     let unit = rollback_unit_name(run_id, host);
     let script = activation_script(
@@ -1000,6 +1019,7 @@ pub fn rollback_command(
         ActivationAdmissionMode::Rollback,
         &unit,
         lock_wait,
+        acquire_host_lock,
     );
     supervised_activation_command(unit, script, runtime_max, stop_timeout)
 }
@@ -1015,6 +1035,7 @@ pub struct ActivationSample {
     pub active_state: Option<String>,
     pub result: Option<String>,
     pub exec_main_status: Option<u8>,
+    pub admitted: Option<bool>,
     pub current_system: Option<SystemGeneration>,
     pub system_profile: Option<SystemGeneration>,
 }
@@ -1042,6 +1063,14 @@ impl ActivationSample {
                         .map_err(|_| anyhow::anyhow!("invalid ExecMainStatus: {value}"))?;
                     set_once(&mut sample.exec_main_status, status, key)?;
                 }
+                "Admitted" => {
+                    let admitted = match value {
+                        "0" => false,
+                        "1" => true,
+                        _ => bail!("activation Admitted is not 0 or 1"),
+                    };
+                    set_once(&mut sample.admitted, admitted, key)?;
+                }
                 "CurrentSystemPath" if !value.is_empty() => set_once(
                     &mut sample.current_system,
                     SystemGeneration::parse(value)?,
@@ -1054,6 +1083,24 @@ impl ActivationSample {
                 )?,
                 _ => {}
             }
+        }
+        Ok(sample)
+    }
+
+    pub fn parse_observer_marker(output: &str) -> Result<Self> {
+        let (_, framed) = output
+            .rsplit_once(ACTIVATION_MARKER_BEGIN)
+            .ok_or_else(|| anyhow::anyhow!("activation result marker is missing"))?;
+        let (marker, _) = framed
+            .split_once(ACTIVATION_MARKER_END)
+            .ok_or_else(|| anyhow::anyhow!("activation result marker is incomplete"))?;
+        let sample = Self::parse(marker.trim())?;
+        if sample.outcome_source.as_deref() != Some("marker")
+            || sample.result.is_none()
+            || sample.exec_main_status.is_none()
+            || sample.admitted.is_none()
+        {
+            bail!("activation result marker is incomplete");
         }
         Ok(sample)
     }

@@ -367,12 +367,13 @@ Use this index as the canonical map for `.agents/docs/**`.
 ### Nixbot
 
 - `.agents/docs/notes/nixbot/rust-host-manager-replacement-2026-09.md`: Native
-  Rust fleet architecture, Pvl inventory adaptations, rolling interactive
-  progress, restrained title-only bold styling, proxy-command host-key handling,
-  bounded control sockets, stable semantic builder leases, explicit root
-  target-control execution, proxy-capable signed cache relay, health failure
-  evidence, parity validation, and the staged landing boundary that retains the
-  active Bash Nixbot until explicit cutover.
+  Rust fleet architecture, Pvl inventory adaptations, full-host
+  phase/wave/concurrency progress with bounded live and failure tails,
+  restrained title-only bold styling, self-target lock ownership, proxy-command
+  host-key handling, bounded control sockets, stable semantic builder leases,
+  explicit root target-control execution, proxy-capable signed cache relay,
+  health failure evidence, parity validation, and the staged landing boundary
+  that retains the active Bash Nixbot until explicit cutover.
 - `.agents/docs/notes/nixbot/deploy-system.md`: Canonical `nixbot` deploy,
   bootstrap, SSH, worktree, Terraform, CI, and distinct group-scope, exact-host,
   and host-filter selection behavior.

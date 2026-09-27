@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -53,6 +53,14 @@ impl ProgressDestination {
             }
         }
     }
+
+    fn viewport(&self) -> Option<(usize, usize)> {
+        match self {
+            Self::Stderr => terminal_viewport(),
+            #[cfg(test)]
+            Self::Buffer(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -63,6 +71,7 @@ struct ProgressState {
     rendered_lines: usize,
     task_tails: VecDeque<TaskTail>,
     failed_task_tails: VecDeque<FailedTaskTail>,
+    scrolling_snapshot_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug)]
@@ -72,7 +81,53 @@ struct ActiveProgress {
     detail: Option<String>,
     detail_emitted_at: Option<Instant>,
     recent_updates: VecDeque<RecentUpdate>,
+    host_dashboard: Option<HostDashboard>,
     started: Instant,
+}
+
+#[derive(Clone, Debug, Default)]
+struct HostDashboard {
+    order: Vec<String>,
+    rows: BTreeMap<String, HostRow>,
+    stage: Option<String>,
+    wave: Option<(usize, usize)>,
+    concurrency: usize,
+}
+
+#[derive(Clone, Debug)]
+struct HostRow {
+    state: HostRowState,
+    task_key: Option<String>,
+    task: Option<String>,
+    task_started: Option<Instant>,
+    elapsed: Option<Duration>,
+    summary: Option<String>,
+    output: VecDeque<String>,
+    failure_output: VecDeque<String>,
+}
+
+impl Default for HostRow {
+    fn default() -> Self {
+        Self {
+            state: HostRowState::Pending,
+            task_key: None,
+            task: None,
+            task_started: None,
+            elapsed: None,
+            summary: None,
+            output: VecDeque::new(),
+            failure_output: VecDeque::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostRowState {
+    Pending,
+    Running,
+    Succeeded,
+    Skipped,
+    Failed,
 }
 
 #[derive(Clone, Debug)]
@@ -95,10 +150,11 @@ struct FailedTaskTail {
     output: VecDeque<String>,
 }
 
-const LIVE_OUTPUT_LINES_PER_TASK: usize = 2;
-const RETAINED_OUTPUT_LINES_PER_TASK: usize = 3;
+const LIVE_OUTPUT_LINES_PER_TASK: usize = 5;
+const RETAINED_OUTPUT_LINES_PER_TASK: usize = 5;
 const RETAINED_ACTIVE_TASK_TAILS: usize = 128;
 const RETAINED_FAILED_TASK_TAILS: usize = 8;
+const SCROLLING_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StepProgress {
@@ -150,6 +206,193 @@ impl ProgressReporter {
             state.task_tails.clear();
             state.failed_task_tails.clear();
         }
+    }
+
+    pub fn begin_host_dashboard(&self, hosts: &[String]) {
+        if !self.enabled() {
+            return;
+        }
+        let _output = self.output.lock().ok();
+        if let Ok(mut state) = self.state.lock()
+            && let Some(active) = state.stack.last_mut()
+        {
+            active.host_dashboard = Some(HostDashboard {
+                order: hosts.to_vec(),
+                rows: hosts
+                    .iter()
+                    .map(|host| (host.clone(), HostRow::default()))
+                    .collect(),
+                ..HostDashboard::default()
+            });
+        }
+        self.redraw_current();
+    }
+
+    pub fn host_schedule(
+        &self,
+        stage: impl Into<String>,
+        wave: Option<(usize, usize)>,
+        concurrency: usize,
+    ) {
+        if !self.enabled() {
+            return;
+        }
+        let _output = self.output.lock().ok();
+        if let Ok(mut state) = self.state.lock()
+            && let Some(dashboard) = state
+                .stack
+                .last_mut()
+                .and_then(|active| active.host_dashboard.as_mut())
+        {
+            dashboard.stage = Some(stage.into());
+            dashboard.wave = wave;
+            dashboard.concurrency = concurrency;
+        }
+        self.redraw_current();
+    }
+
+    pub fn host_task_started(&self, host: &str, key: &str, label: &str) {
+        self.start_task_tail(key);
+        if !self.shows_recent_updates() {
+            self.detail(format!("{host} · {label} · running"));
+            return;
+        }
+        self.update_host_row(host, |row| {
+            row.state = HostRowState::Running;
+            row.task_key = Some(key.to_owned());
+            row.task = Some(label.to_owned());
+            row.task_started = Some(Instant::now());
+            row.elapsed = None;
+            row.summary = None;
+            row.output.clear();
+        });
+    }
+
+    pub fn host_task_heartbeat(&self, host: &str, key: &str, label: &str) {
+        if !self.shows_recent_updates() {
+            return;
+        }
+        self.update_host_row(host, |row| {
+            if row.task_key.as_deref() == Some(key) {
+                row.task = Some(label.to_owned());
+            }
+        });
+    }
+
+    pub fn host_task_output(&self, host: &str, key: &str, line: String) {
+        if !self.shows_recent_updates() || line.is_empty() {
+            return;
+        }
+        self.update_host_row(host, |row| {
+            if row.task_key.as_deref() != Some(key) {
+                return;
+            }
+            if row.output.back() != Some(&line) {
+                row.output.push_back(line);
+            }
+            while row.output.len() > LIVE_OUTPUT_LINES_PER_TASK {
+                row.output.pop_front();
+            }
+        });
+    }
+
+    pub fn host_task_finished(
+        &self,
+        host: &str,
+        key: &str,
+        label: &str,
+        elapsed: Duration,
+        succeeded: bool,
+    ) {
+        self.finish_task_tail(
+            key,
+            format!(
+                "{host} · {label} · task elapsed {}",
+                format_duration(elapsed)
+            ),
+            succeeded,
+        );
+        if !self.shows_recent_updates() {
+            self.detail(format!(
+                "{host} · {label} · {} · {}",
+                if succeeded { "done" } else { "failed" },
+                format_duration(elapsed)
+            ));
+            return;
+        }
+        self.update_host_row(host, |row| {
+            if row.task_key.as_deref() != Some(key) {
+                return;
+            }
+            row.task = Some(label.to_owned());
+            row.task_started = None;
+            row.elapsed = Some(elapsed);
+            if succeeded {
+                row.state = HostRowState::Pending;
+                row.output.clear();
+            } else {
+                row.state = HostRowState::Failed;
+                for line in row.output.clone() {
+                    if row.failure_output.back() != Some(&line) {
+                        row.failure_output.push_back(line);
+                    }
+                    while row.failure_output.len() > RETAINED_OUTPUT_LINES_PER_TASK {
+                        row.failure_output.pop_front();
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn host_finished(
+        &self,
+        host: &str,
+        succeeded: bool,
+        elapsed: Option<Duration>,
+        summary: impl Into<String>,
+    ) {
+        let summary = summary.into();
+        self.update_host_row(host, |row| {
+            row.state = if succeeded {
+                HostRowState::Succeeded
+            } else {
+                HostRowState::Failed
+            };
+            row.elapsed = elapsed;
+            row.summary = (!summary.is_empty()).then_some(summary);
+            row.task_started = None;
+            if succeeded {
+                row.output.clear();
+                row.failure_output.clear();
+            } else {
+                row.output.clone_from(&row.failure_output);
+            }
+        });
+    }
+
+    pub fn host_skipped(&self, host: &str, summary: impl Into<String>) {
+        let summary = summary.into();
+        self.update_host_row(host, |row| {
+            row.state = HostRowState::Skipped;
+            row.summary = (!summary.is_empty()).then_some(summary);
+            row.task_started = None;
+            row.output.clear();
+            row.failure_output.clear();
+        });
+    }
+
+    fn update_host_row(&self, host: &str, update: impl FnOnce(&mut HostRow)) {
+        let _output = self.output.lock().ok();
+        if let Ok(mut state) = self.state.lock()
+            && let Some(dashboard) = state
+                .stack
+                .last_mut()
+                .and_then(|active| active.host_dashboard.as_mut())
+            && let Some(row) = dashboard.rows.get_mut(host)
+        {
+            update(row);
+        }
+        self.redraw_current();
     }
 
     pub fn end_task_scope(&self) {
@@ -546,8 +789,10 @@ impl ProgressReporter {
                 detail: None,
                 detail_emitted_at: None,
                 recent_updates: VecDeque::new(),
+                host_dashboard: None,
                 started: Instant::now(),
             });
+            state.scrolling_snapshot_at = None;
             active_id = Some(id);
         }
         if self.interactive {
@@ -599,6 +844,7 @@ impl ProgressReporter {
         }
         let _output = self.output.lock().ok();
         let recent_failures = self.recent_failure_output();
+        let host_failures = self.host_failure_output();
         self.finish_current();
         self.destination.write(&format!(
             "{}\n",
@@ -611,13 +857,60 @@ impl ProgressReporter {
                 self.style.paint(Tone::FailureDetail, format!("  {line}"))
             ));
         }
-        if !recent_failures.is_empty() {
+        if host_failures.is_empty() && !recent_failures.is_empty() {
             self.destination.write("  Recent command output:\n");
             for (task, output) in recent_failures {
                 self.destination.write(&format!("    {task}\n"));
                 for line in output {
                     self.destination.write(&format!("      {line}\n"));
                 }
+            }
+        }
+        for (host, summary, output) in host_failures {
+            self.destination.write(&format!(
+                "  {}  {}\n",
+                self.style.paint_host(&host),
+                self.style.paint(Tone::Failure, format!("✗ {summary}"))
+            ));
+            for line in output {
+                self.destination.write(&format!(
+                    "    {}\n",
+                    self.style.paint(Tone::FailureDetail, line)
+                ));
+            }
+        }
+        self.redraw_current();
+    }
+
+    pub fn warning_active(&self, label: impl Into<String>, warning: &str) {
+        if !self.enabled() {
+            return;
+        }
+        let _output = self.output.lock().ok();
+        let host_failures = self.host_failure_output();
+        self.finish_current();
+        self.destination.write(&format!(
+            "{}\n",
+            self.style
+                .paint(Tone::Warning, format!("◇ {}", label.into()))
+        ));
+        for line in warning.lines() {
+            self.destination.write(&format!(
+                "{}\n",
+                self.style.paint(Tone::Warning, format!("  {line}"))
+            ));
+        }
+        for (host, summary, output) in host_failures {
+            self.destination.write(&format!(
+                "  {}  {}\n",
+                self.style.paint_host(&host),
+                self.style.paint(Tone::Failure, format!("✗ {summary}"))
+            ));
+            for line in output {
+                self.destination.write(&format!(
+                    "    {}\n",
+                    self.style.paint(Tone::FailureDetail, line)
+                ));
             }
         }
         self.redraw_current();
@@ -657,6 +950,32 @@ impl ProgressReporter {
             .unwrap_or_default()
     }
 
+    fn host_failure_output(&self) -> Vec<(String, String, Vec<String>)> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.stack.last().cloned())
+            .and_then(|active| active.host_dashboard)
+            .map(|dashboard| {
+                dashboard
+                    .order
+                    .into_iter()
+                    .filter_map(|host| {
+                        let row = dashboard.rows.get(&host)?;
+                        (row.state == HostRowState::Failed).then(|| {
+                            let summary = row
+                                .summary
+                                .clone()
+                                .or_else(|| row.task.clone())
+                                .unwrap_or_else(|| "failed".to_owned());
+                            (host, summary, row.output.iter().cloned().collect())
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn interrupt_active(&self, label: impl Into<String>) {
         if !self.enabled() {
             return;
@@ -680,6 +999,19 @@ impl ProgressReporter {
         self.destination.write(&format!(
             "{}\n",
             self.style.semantic_text(&message.to_string())
+        ));
+        self.redraw_current();
+    }
+
+    pub fn message_tone(&self, tone: Tone, message: impl std::fmt::Display) {
+        if !self.enabled() {
+            return;
+        }
+        let _output = self.output.lock().ok();
+        self.clear_line();
+        self.destination.write(&format!(
+            "{}\n",
+            self.style.paint(tone, message.to_string())
         ));
         self.redraw_current();
     }
@@ -735,16 +1067,31 @@ impl ProgressReporter {
         }
         self.clear_line();
         if self.shows_recent_updates() {
+            let viewport = self.destination.viewport();
             let lines = self.state.lock().ok().and_then(|state| {
-                state
-                    .stack
-                    .last()
-                    .map(|active| dashboard_lines(self.style, active, active.started.elapsed()))
+                state.stack.last().map(|active| {
+                    dashboard_lines_with_viewport(
+                        self.style,
+                        active,
+                        active.started.elapsed(),
+                        viewport,
+                    )
+                })
             });
             if let Some(lines) = lines {
-                redraw_lines(&self.destination, &lines);
-                if let Ok(mut state) = self.state.lock() {
-                    state.rendered_lines = lines.len();
+                if viewport.is_some_and(|(rows, _)| lines.len() >= rows) {
+                    let should_render = self.state.lock().is_ok_and(|mut state| {
+                        claim_scrolling_snapshot(&mut state, Instant::now())
+                    });
+                    if should_render {
+                        self.destination.write(&format!("{}\n", lines.join("\n")));
+                    }
+                } else {
+                    redraw_lines(&self.destination, &lines);
+                    if let Ok(mut state) = self.state.lock() {
+                        state.rendered_lines = lines.len();
+                        state.scrolling_snapshot_at = None;
+                    }
                 }
             }
         } else {
@@ -800,13 +1147,22 @@ impl ProgressReporter {
                     continue;
                 };
                 if recent_update_limit > 0 {
+                    let viewport = destination.viewport();
                     let lines = state.lock().ok().and_then(|state| {
-                        state
-                            .stack
-                            .last()
-                            .map(|active| dashboard_lines(style, active, elapsed))
+                        state.stack.last().map(|active| {
+                            dashboard_lines_with_viewport(style, active, elapsed, viewport)
+                        })
                     });
                     if let Some(lines) = lines {
+                        if viewport.is_some_and(|(rows, _)| lines.len() >= rows) {
+                            let should_render = state.lock().is_ok_and(|mut state| {
+                                claim_scrolling_snapshot(&mut state, Instant::now())
+                            });
+                            if should_render {
+                                destination.write(&format!("{}\n", lines.join("\n")));
+                            }
+                            continue;
+                        }
                         let rendered_lines = state
                             .lock()
                             .ok()
@@ -815,6 +1171,7 @@ impl ProgressReporter {
                         redraw_lines(&destination, &lines);
                         if let Ok(mut state) = state.lock() {
                             state.rendered_lines = lines.len();
+                            state.scrolling_snapshot_at = None;
                         }
                     }
                 } else {
@@ -851,6 +1208,17 @@ fn push_recent_update(
     trim_recent_updates(updates, limit);
 }
 
+fn claim_scrolling_snapshot(state: &mut ProgressState, now: Instant) -> bool {
+    if state
+        .scrolling_snapshot_at
+        .is_some_and(|last| now.duration_since(last) < SCROLLING_SNAPSHOT_INTERVAL)
+    {
+        return false;
+    }
+    state.scrolling_snapshot_at = Some(now);
+    true
+}
+
 fn trim_recent_updates(updates: &mut VecDeque<RecentUpdate>, limit: usize) {
     while dashboard_update_line_count(updates) > limit {
         updates.pop_front();
@@ -864,11 +1232,24 @@ fn dashboard_update_line_count(updates: &VecDeque<RecentUpdate>) -> usize {
         .sum()
 }
 
+#[cfg(test)]
 fn dashboard_lines(
     style: TerminalStyle,
     active: &ActiveProgress,
     elapsed: Duration,
 ) -> Vec<String> {
+    dashboard_lines_with_viewport(style, active, elapsed, None)
+}
+
+fn dashboard_lines_with_viewport(
+    style: TerminalStyle,
+    active: &ActiveProgress,
+    elapsed: Duration,
+    viewport: Option<(usize, usize)>,
+) -> Vec<String> {
+    if let Some(dashboard) = &active.host_dashboard {
+        return host_dashboard_lines(style, active, dashboard, elapsed, viewport);
+    }
     let mut lines = vec![format!(
         "{} {}",
         style.paint(Tone::Emphasis, format!("● {}", active.label)),
@@ -892,6 +1273,246 @@ fn dashboard_lines(
         );
     }
     lines
+}
+
+fn host_dashboard_lines(
+    style: TerminalStyle,
+    active: &ActiveProgress,
+    dashboard: &HostDashboard,
+    elapsed: Duration,
+    viewport: Option<(usize, usize)>,
+) -> Vec<String> {
+    let running = dashboard
+        .rows
+        .values()
+        .filter(|row| row.state == HostRowState::Running)
+        .count();
+    let done = dashboard
+        .rows
+        .values()
+        .filter(|row| {
+            matches!(
+                row.state,
+                HostRowState::Succeeded | HostRowState::Skipped | HostRowState::Failed
+            )
+        })
+        .count();
+    let pending = dashboard.rows.len().saturating_sub(running + done);
+    let mut metadata = Vec::new();
+    if let Some(stage) = &dashboard.stage {
+        metadata.push(format!("stage {stage}"));
+    }
+    if let Some((current, total)) = dashboard.wave {
+        metadata.push(format!("wave {current}/{total}"));
+    }
+    if dashboard.concurrency > 0 {
+        metadata.push(format!("concurrency {}", dashboard.concurrency));
+    }
+    metadata.push(format!("running {running}"));
+    metadata.push(format!("done {done}/{}", dashboard.rows.len()));
+    metadata.push(format!("pending {pending}"));
+    metadata.push(format!("phase elapsed {}", format_duration(elapsed)));
+    let max_lines = viewport
+        .map(|(rows, _)| rows.saturating_sub(1).max(1))
+        .unwrap_or(usize::MAX);
+    let max_columns = viewport.map(|(_, columns)| columns.max(1));
+    let heading = format!("● {}", active.label);
+    let metadata = format!("· {}", metadata.join(" · "));
+    let metadata_width = max_columns
+        .map(|columns| columns.saturating_sub(heading.chars().count() + 1))
+        .unwrap_or(usize::MAX);
+    let heading = truncate_text(&heading, max_columns.unwrap_or(usize::MAX));
+    let metadata = truncate_text(&metadata, metadata_width);
+    let mut lines = vec![if metadata.is_empty() {
+        style.paint(Tone::Emphasis, heading)
+    } else {
+        format!(
+            "{} {}",
+            style.paint(Tone::Emphasis, heading),
+            style.paint(Tone::Muted, metadata)
+        )
+    }];
+
+    let base_lines = 1 + dashboard.order.len();
+    let available_detail_lines = max_lines.saturating_sub(base_lines);
+    let detailed_hosts = dashboard
+        .order
+        .iter()
+        .filter(|host| {
+            dashboard.rows.get(*host).is_some_and(|row| {
+                matches!(row.state, HostRowState::Running | HostRowState::Failed)
+                    && !row.output.is_empty()
+            })
+        })
+        .count();
+    let generic_budget = if viewport.is_some() {
+        available_detail_lines.saturating_sub(detailed_hosts).min(2)
+    } else {
+        usize::MAX
+    };
+    let mut generic_rendered = 0;
+    for update in &active.recent_updates {
+        if generic_rendered >= generic_budget {
+            break;
+        }
+        let text = truncate_text(
+            &update.text,
+            max_columns
+                .map(|columns| columns.saturating_sub(2))
+                .unwrap_or(usize::MAX),
+        );
+        lines.push(format!("  {}", style.paint(update.tone, text)));
+        generic_rendered += 1;
+        let start = update
+            .output
+            .len()
+            .saturating_sub(LIVE_OUTPUT_LINES_PER_TASK);
+        for line in update.output.iter().skip(start) {
+            if generic_rendered >= generic_budget {
+                break;
+            }
+            let line = truncate_text(
+                line,
+                max_columns
+                    .map(|columns| columns.saturating_sub(4))
+                    .unwrap_or(usize::MAX),
+            );
+            lines.push(format!("    {}", style.paint(Tone::Muted, line)));
+            generic_rendered += 1;
+        }
+    }
+    let host_detail_budget = available_detail_lines.saturating_sub(generic_rendered);
+    let base_host_detail_limit = if detailed_hosts == 0 {
+        0
+    } else {
+        (host_detail_budget / detailed_hosts).min(LIVE_OUTPUT_LINES_PER_TASK)
+    };
+    let extra_host_details = if base_host_detail_limit < LIVE_OUTPUT_LINES_PER_TASK {
+        host_detail_budget.saturating_sub(base_host_detail_limit * detailed_hosts)
+    } else {
+        0
+    };
+    let mut detailed_host_index = 0;
+    for host in &dashboard.order {
+        let Some(row) = dashboard.rows.get(host) else {
+            continue;
+        };
+        let (tone, status) = match row.state {
+            HostRowState::Pending => {
+                if let Some(task) = &row.task {
+                    (
+                        Tone::Muted,
+                        format!(
+                            "○ {task} · {}",
+                            row.elapsed
+                                .map(format_duration)
+                                .unwrap_or_else(|| "pending".to_owned())
+                        ),
+                    )
+                } else {
+                    (Tone::Muted, "○ pending".to_owned())
+                }
+            }
+            HostRowState::Running => {
+                let elapsed = row
+                    .task_started
+                    .map(|started| started.elapsed())
+                    .unwrap_or_default();
+                (
+                    Tone::Active,
+                    format!(
+                        "● {} · task elapsed {}",
+                        row.task.as_deref().unwrap_or("running"),
+                        format_duration(elapsed)
+                    ),
+                )
+            }
+            HostRowState::Succeeded => (
+                Tone::Success,
+                format!(
+                    "✓ {}{}",
+                    row.summary.as_deref().unwrap_or("complete"),
+                    row.elapsed
+                        .map(|elapsed| format!(" · {}", format_duration(elapsed)))
+                        .unwrap_or_default()
+                ),
+            ),
+            HostRowState::Skipped => (
+                Tone::Warning,
+                format!("◇ {}", row.summary.as_deref().unwrap_or("skipped")),
+            ),
+            HostRowState::Failed => (
+                Tone::Failure,
+                format!("✗ {}", row.summary.as_deref().unwrap_or("failed")),
+            ),
+        };
+        let host_width = max_columns
+            .map(|columns| columns.saturating_sub(4).min(host.chars().count()))
+            .unwrap_or_else(|| host.chars().count());
+        let host = truncate_text(host, host_width);
+        let status = truncate_text(
+            &status,
+            max_columns
+                .map(|columns| columns.saturating_sub(host.chars().count() + 4))
+                .unwrap_or(usize::MAX),
+        );
+        lines.push(format!(
+            "  {}  {}",
+            style.paint_host(&host),
+            style.paint(tone, status)
+        ));
+        if matches!(row.state, HostRowState::Running | HostRowState::Failed)
+            && !row.output.is_empty()
+        {
+            let limit = (base_host_detail_limit
+                + usize::from(detailed_host_index < extra_host_details))
+            .min(LIVE_OUTPUT_LINES_PER_TASK);
+            detailed_host_index += 1;
+            let start = row.output.len().saturating_sub(limit);
+            lines.extend(row.output.iter().skip(start).map(|line| {
+                let line = truncate_text(
+                    line,
+                    max_columns
+                        .map(|columns| columns.saturating_sub(6))
+                        .unwrap_or(usize::MAX),
+                );
+                format!("    │ {}", style.paint(Tone::Muted, line))
+            }));
+        }
+    }
+    lines
+}
+
+fn truncate_text(value: &str, max_columns: usize) -> String {
+    if value.chars().count() <= max_columns {
+        return value.to_owned();
+    }
+    if max_columns == 0 {
+        return String::new();
+    }
+    if max_columns == 1 {
+        return "…".to_owned();
+    }
+    let mut truncated = value.chars().take(max_columns - 1).collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
+fn terminal_viewport() -> Option<(usize, usize)> {
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: `size` is a valid writable winsize and STDERR_FILENO remains
+    // open for the duration of this synchronous ioctl call.
+    let result = unsafe { libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut size) };
+    if result == 0 && size.ws_row > 0 && size.ws_col > 0 {
+        Some((usize::from(size.ws_row), usize::from(size.ws_col)))
+    } else {
+        None
+    }
 }
 
 fn clear_rendered_lines(destination: &ProgressDestination, lines: usize) {
@@ -1109,6 +1730,7 @@ mod tests {
             detail: None,
             detail_emitted_at: None,
             recent_updates: updates,
+            host_dashboard: None,
             started: Instant::now(),
         };
         let lines = dashboard_lines(
@@ -1155,7 +1777,7 @@ mod tests {
     }
 
     #[test]
-    fn task_output_keeps_three_lines_and_renders_the_latest_two() {
+    fn task_output_keeps_and_renders_up_to_five_lines() {
         set_json_output(false);
         let reporter = ProgressReporter {
             enabled: true,
@@ -1184,7 +1806,7 @@ mod tests {
         let update = state.stack.last().unwrap().recent_updates.back().unwrap();
         assert_eq!(
             update.output.iter().map(String::as_str).collect::<Vec<_>>(),
-            ["two", "three", "four"]
+            ["one", "two", "three", "four"]
         );
         let lines = dashboard_lines(
             TerminalStyle::from_capabilities(false, false),
@@ -1193,7 +1815,211 @@ mod tests {
         );
         assert!(lines.iter().any(|line| line == "    three"), "{lines:?}");
         assert!(lines.iter().any(|line| line == "    four"), "{lines:?}");
-        assert!(!lines.iter().any(|line| line == "    two"), "{lines:?}");
+        assert!(lines.iter().any(|line| line == "    two"), "{lines:?}");
+    }
+
+    #[test]
+    fn host_dashboard_shows_schedule_full_inventory_and_bounded_failure_tail() {
+        set_json_output(false);
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::new(Mutex::new(Vec::new()))),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+        let hosts = (1..=11)
+            .map(|index| format!("host-{index}"))
+            .collect::<Vec<_>>();
+
+        reporter.started("Deploy systems · 11 hosts");
+        reporter.begin_host_dashboard(&hosts);
+        reporter.host_schedule("activate", Some((2, 3)), 4);
+        reporter.host_task_started("host-1", "activation-host-1", "Activation");
+        for index in 0..6 {
+            reporter.host_task_output("host-1", "activation-host-1", format!("line-{index}"));
+        }
+        reporter.host_task_finished(
+            "host-1",
+            "activation-host-1",
+            "Activation",
+            Duration::from_secs(2),
+            false,
+        );
+        reporter.host_task_started("host-1", "rollback-host-1", "Rollback");
+        reporter.host_task_output("host-1", "rollback-host-1", "rollback completed".to_owned());
+        reporter.host_task_finished(
+            "host-1",
+            "rollback-host-1",
+            "Rollback",
+            Duration::from_secs(1),
+            true,
+        );
+        reporter.host_finished("host-1", false, None, "activation failed");
+        reporter.host_task_started("host-2", "activation-host-2", "Activation");
+        reporter.host_task_output(
+            "host-2",
+            "activation-host-2",
+            "temporary success output".to_owned(),
+        );
+        reporter.host_finished("host-2", true, None, "deployed");
+
+        let state = reporter.state.lock().unwrap();
+        let lines = dashboard_lines(
+            TerminalStyle::from_capabilities(false, false),
+            state.stack.last().unwrap(),
+            Duration::from_secs(3),
+        );
+        let rendered = lines.join("\n");
+        assert!(rendered.contains("stage activate · wave 2/3 · concurrency 4"));
+        assert!(
+            hosts.iter().all(|host| rendered.contains(host)),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("line-0"), "{rendered}");
+        for index in 1..=5 {
+            assert!(rendered.contains(&format!("line-{index}")), "{rendered}");
+        }
+        assert!(!rendered.contains("temporary success output"), "{rendered}");
+        assert!(!rendered.contains("rollback completed"), "{rendered}");
+        assert!(rendered.contains("host-2  ✓ deployed"), "{rendered}");
+    }
+
+    #[test]
+    fn host_dashboard_bounds_parallel_tails_to_the_terminal_viewport() {
+        let hosts = (1..=11)
+            .map(|index| format!("host-{index}"))
+            .collect::<Vec<_>>();
+        let mut dashboard = HostDashboard {
+            order: hosts.clone(),
+            stage: Some("activate".to_owned()),
+            wave: Some((1, 2)),
+            concurrency: 11,
+            ..HostDashboard::default()
+        };
+        for host in &hosts {
+            let row = dashboard.rows.entry(host.clone()).or_default();
+            row.state = HostRowState::Running;
+            row.task = Some("Activation".to_owned());
+            row.task_started = Some(Instant::now());
+            row.output = (0..6)
+                .map(|index| format!("{host} log line {index} that stays bounded"))
+                .collect();
+        }
+        let active = ActiveProgress {
+            id: 1,
+            label: "Deploy systems · 11 hosts".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: Some(dashboard),
+            started: Instant::now(),
+        };
+        let lines = dashboard_lines_with_viewport(
+            TerminalStyle::from_capabilities(false, false),
+            &active,
+            Duration::from_secs(3),
+            Some((24, 80)),
+        );
+        let rendered = lines.join("\n");
+        assert!(lines.len() <= 23, "{} lines", lines.len());
+        assert!(lines.iter().all(|line| line.chars().count() <= 80));
+        assert!(hosts.iter().all(|host| rendered.contains(host)));
+        assert!(rendered.contains("wave 1/2"));
+        assert!(rendered.contains("concurrency 11"));
+    }
+
+    #[test]
+    fn scrolling_snapshots_are_rate_limited_and_narrow_rows_do_not_wrap() {
+        let started = Instant::now();
+        let mut state = ProgressState::default();
+        assert!(claim_scrolling_snapshot(&mut state, started));
+        assert!(!claim_scrolling_snapshot(
+            &mut state,
+            started + Duration::from_secs(1)
+        ));
+        assert!(claim_scrolling_snapshot(
+            &mut state,
+            started + SCROLLING_SNAPSHOT_INTERVAL
+        ));
+
+        let host = "host-with-a-very-long-name".to_owned();
+        let mut row = HostRow {
+            state: HostRowState::Failed,
+            summary: Some("a long failure summary that must be truncated".to_owned()),
+            ..HostRow::default()
+        };
+        row.output
+            .push_back("a long retained failure line".to_owned());
+        let active = ActiveProgress {
+            id: 1,
+            label: "Deploy systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: Some(HostDashboard {
+                order: vec![host.clone()],
+                rows: BTreeMap::from([(host, row)]),
+                ..HostDashboard::default()
+            }),
+            started,
+        };
+        let lines = dashboard_lines_with_viewport(
+            TerminalStyle::from_capabilities(false, false),
+            &active,
+            Duration::from_secs(1),
+            Some((24, 12)),
+        );
+        assert!(
+            lines.iter().all(|line| line.chars().count() <= 12),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn host_dashboard_keeps_generic_probe_status_before_hosts_start() {
+        let mut updates = VecDeque::new();
+        push_recent_update(
+            &mut updates,
+            10,
+            "build-plan-probe".to_owned(),
+            "● Build plan probe · running".to_owned(),
+            Tone::Active,
+        );
+        updates
+            .back_mut()
+            .unwrap()
+            .output
+            .push_back("[build] probing native plan attributes".to_owned());
+        let hosts = vec!["host-1".to_owned(), "host-2".to_owned()];
+        let dashboard = HostDashboard {
+            order: hosts.clone(),
+            rows: hosts
+                .into_iter()
+                .map(|host| (host, HostRow::default()))
+                .collect(),
+            ..HostDashboard::default()
+        };
+        let active = ActiveProgress {
+            id: 1,
+            label: "Build systems · 2 hosts".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: updates,
+            host_dashboard: Some(dashboard),
+            started: Instant::now(),
+        };
+        let rendered = dashboard_lines_with_viewport(
+            TerminalStyle::from_capabilities(false, false),
+            &active,
+            Duration::from_secs(1),
+            Some((24, 80)),
+        )
+        .join("\n");
+        assert!(rendered.contains("Build plan probe"), "{rendered}");
+        assert!(rendered.contains("probing native plan"), "{rendered}");
     }
 
     #[test]
@@ -1315,6 +2141,7 @@ mod tests {
             detail: None,
             detail_emitted_at: None,
             recent_updates: updates,
+            host_dashboard: None,
             started: Instant::now(),
         };
         assert_eq!(

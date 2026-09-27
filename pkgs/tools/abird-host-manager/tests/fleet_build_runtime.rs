@@ -715,6 +715,7 @@ done"#
         stdin: None,
         effect: EffectKind::ReadOnly,
         label: "fixture-remote-build".to_owned(),
+        host: None,
     };
     let progress_interval = observer.heartbeat_interval(&request).unwrap();
     assert_eq!(progress_interval, Duration::from_secs(60));
