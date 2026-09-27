@@ -495,13 +495,20 @@ impl ProcessEventObserver for FleetProcessObserver {
             }
         }
         if let Some(host) = &request.host {
-            self.reporter.host_task_finished(
-                host,
-                &request.label,
-                &label,
-                elapsed,
-                completion == ProcessCompletion::Succeeded,
-            );
+            if completion == ProcessCompletion::Succeeded
+                && request.output_policy == ProcessOutputPolicy::Activation
+            {
+                self.reporter
+                    .host_task_finalizing(host, &request.label, &label, elapsed);
+            } else {
+                self.reporter.host_task_finished(
+                    host,
+                    &request.label,
+                    &label,
+                    elapsed,
+                    completion == ProcessCompletion::Succeeded,
+                );
+            }
         } else {
             self.reporter.task_finished(
                 request.label.clone(),
@@ -649,6 +656,14 @@ fn diagnostic_name(label: &str) -> String {
 }
 
 fn process_label(label: &str) -> String {
+    for (prefix, action) in [
+        ("parent-reconcile-", "Reconcile parent"),
+        ("parent-settle-", "Settle parent"),
+    ] {
+        if let Some(parent) = label.strip_prefix(prefix) {
+            return format!("{action} {}", parent.replace(['-', '_'], " "));
+        }
+    }
     let words = label.replace(['-', '_'], " ");
     let mut characters = words.chars();
     match characters.next() {
@@ -1617,6 +1632,14 @@ mod tests {
             "Pre switch preparation"
         );
         assert_eq!(process_label("remote_build"), "Remote build");
+        assert_eq!(
+            process_label("parent-reconcile-gap3-gondor"),
+            "Reconcile parent gap3 gondor"
+        );
+        assert_eq!(
+            process_label("parent-settle-gap3-gondor"),
+            "Settle parent gap3 gondor"
+        );
     }
 
     #[test]

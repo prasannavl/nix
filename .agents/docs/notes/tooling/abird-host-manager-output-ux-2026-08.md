@@ -102,7 +102,11 @@ Fleet deployment phases keep the complete selected-host roster visible. Each
 running host owns a bounded rolling tail of up to five safe semantic lines;
 successful work collapses, while failed work retains its tail. The phase header
 reports stage, wave, concurrency, running, completed, pending, and elapsed
-counts. Output ownership is consistent by phase:
+counts. After a successful activation or rollback observer exits but before the
+host reaches its terminal outcome, its row reads `completed, finalizing` instead
+of retaining the stale observer name and duration. Parent-readiness task labels
+state the action before the parent endpoint, such as
+`Reconcile parent gap3 gondor`. Output ownership is consistent by phase:
 
 - build shows normalized Nix evaluation, realization, copy, and store events;
 - snapshot shows parent-readiness lifecycle events and the captured generation;
