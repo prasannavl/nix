@@ -424,13 +424,17 @@ impl ProgressReporter {
         }
         let _output = self.output.lock().ok();
         self.clear_line();
-        let line = format!(
-            "✓ {} complete · {}",
-            action_title(action),
-            format_duration(elapsed)
+        let line = styled_outcome_line(
+            self.style,
+            "✓",
+            Tone::Success,
+            &format!(
+                "{} complete · {}",
+                action_title(action),
+                format_duration(elapsed)
+            ),
         );
-        self.destination
-            .write(&format!("{}\n\n", self.style.semantic_line(&line, false)));
+        self.destination.write(&format!("{line}\n\n"));
         self.redraw_current();
     }
 
@@ -573,10 +577,10 @@ impl ProgressReporter {
         self.discard_task_tail(&key);
         let line = format!("◇ {label} · skipped");
         if !self.shows_recent_updates() {
-            self.message(line);
+            self.message_tone(Tone::Neutral, line);
             return;
         }
-        self.update_task(key, line, Tone::Warning);
+        self.update_task(key, line, Tone::Neutral);
     }
 
     pub fn task_interrupted(
@@ -814,17 +818,14 @@ impl ProgressReporter {
         }
         let _output = self.output.lock().ok();
         self.finish_current();
-        let line = if self.shows_recent_updates() {
-            format!(
-                "✓ {} · phase elapsed {}",
-                label.into(),
-                format_duration(elapsed)
-            )
+        let label = label.into();
+        let label = if self.shows_recent_updates() {
+            format!("{label} · phase elapsed {}", format_duration(elapsed))
         } else {
-            format!("✓ {}  {}", label.into(), format_duration(elapsed))
+            format!("{label}  {}", format_duration(elapsed))
         };
-        self.destination
-            .write(&format!("{}\n", self.style.semantic_line(&line, false)));
+        let line = styled_outcome_line(self.style, "✓", Tone::Success, &label);
+        self.destination.write(&format!("{line}\n"));
         self.redraw_current();
     }
 
@@ -846,10 +847,10 @@ impl ProgressReporter {
         let recent_failures = self.recent_failure_output();
         let host_failures = self.host_failure_output();
         self.finish_current();
+        let label = label.into();
         self.destination.write(&format!(
             "{}\n",
-            self.style
-                .paint(Tone::Failure, format!("✗ {}", label.into()))
+            styled_outcome_line(self.style, "✗", Tone::Failure, &label)
         ));
         for line in failure.lines() {
             self.destination.write(&format!(
@@ -889,10 +890,10 @@ impl ProgressReporter {
         let _output = self.output.lock().ok();
         let host_failures = self.host_failure_output();
         self.finish_current();
+        let label = label.into();
         self.destination.write(&format!(
             "{}\n",
-            self.style
-                .paint(Tone::Warning, format!("◇ {}", label.into()))
+            styled_outcome_line(self.style, "◇", Tone::Warning, &label)
         ));
         for line in warning.lines() {
             self.destination.write(&format!(
@@ -982,10 +983,10 @@ impl ProgressReporter {
         }
         let _output = self.output.lock().ok();
         self.finish_current();
+        let label = label.into();
         self.destination.write(&format!(
             "{}\n",
-            self.style
-                .paint(Tone::Warning, format!("◇ {}", label.into()))
+            styled_outcome_line(self.style, "◇", Tone::Warning, &label)
         ));
         self.redraw_current();
     }
@@ -1012,6 +1013,27 @@ impl ProgressReporter {
         self.destination.write(&format!(
             "{}\n",
             self.style.paint(tone, message.to_string())
+        ));
+        self.redraw_current();
+    }
+
+    pub fn message_primary_with_metadata(
+        &self,
+        prefix: impl std::fmt::Display,
+        tone: Tone,
+        primary: impl std::fmt::Display,
+        metadata: impl std::fmt::Display,
+    ) {
+        if !self.enabled() {
+            return;
+        }
+        let _output = self.output.lock().ok();
+        self.clear_line();
+        self.destination.write(&format!(
+            "{}{}{}\n",
+            prefix,
+            self.style.paint(tone, primary.to_string()),
+            paint_if_nonempty(self.style, Tone::Neutral, &metadata.to_string())
         ));
         self.redraw_current();
     }
@@ -1395,20 +1417,21 @@ fn host_dashboard_lines(
         let Some(row) = dashboard.rows.get(host) else {
             continue;
         };
-        let (tone, status) = match row.state {
+        let (tone, status, metadata) = match row.state {
             HostRowState::Pending => {
                 if let Some(task) = &row.task {
                     (
                         Tone::Muted,
+                        format!("○ {task}"),
                         format!(
-                            "○ {task} · {}",
+                            " · {}",
                             row.elapsed
                                 .map(format_duration)
                                 .unwrap_or_else(|| "pending".to_owned())
                         ),
                     )
                 } else {
-                    (Tone::Muted, "○ pending".to_owned())
+                    (Tone::Muted, "○ pending".to_owned(), String::new())
                 }
             }
             HostRowState::Running => {
@@ -1418,46 +1441,45 @@ fn host_dashboard_lines(
                     .unwrap_or_default();
                 (
                     Tone::Active,
-                    format!(
-                        "● {} · task elapsed {}",
-                        row.task.as_deref().unwrap_or("running"),
-                        format_duration(elapsed)
-                    ),
+                    format!("● {}", row.task.as_deref().unwrap_or("running")),
+                    format!(" · task elapsed {}", format_duration(elapsed)),
                 )
             }
             HostRowState::Succeeded => (
                 Tone::Success,
-                format!(
-                    "✓ {}{}",
-                    row.summary.as_deref().unwrap_or("complete"),
-                    row.elapsed
-                        .map(|elapsed| format!(" · {}", format_duration(elapsed)))
-                        .unwrap_or_default()
-                ),
+                format!("✓ {}", row.summary.as_deref().unwrap_or("complete")),
+                row.elapsed
+                    .map(|elapsed| format!(" · {}", format_duration(elapsed)))
+                    .unwrap_or_default(),
             ),
             HostRowState::Skipped => (
-                Tone::Warning,
+                Tone::Neutral,
                 format!("◇ {}", row.summary.as_deref().unwrap_or("skipped")),
+                String::new(),
             ),
             HostRowState::Failed => (
                 Tone::Failure,
                 format!("✗ {}", row.summary.as_deref().unwrap_or("failed")),
+                String::new(),
             ),
         };
         let host_width = max_columns
             .map(|columns| columns.saturating_sub(4).min(host.chars().count()))
             .unwrap_or_else(|| host.chars().count());
         let host = truncate_text(host, host_width);
-        let status = truncate_text(
-            &status,
-            max_columns
-                .map(|columns| columns.saturating_sub(host.chars().count() + 4))
-                .unwrap_or(usize::MAX),
+        let available_status_width = max_columns
+            .map(|columns| columns.saturating_sub(host.chars().count() + 4))
+            .unwrap_or(usize::MAX);
+        let status = truncate_text(&status, available_status_width);
+        let metadata = truncate_text(
+            &metadata,
+            available_status_width.saturating_sub(status.chars().count()),
         );
         lines.push(format!(
-            "  {}  {}",
+            "  {}  {}{}",
             style.paint_host(&host),
-            style.paint(tone, status)
+            style.paint(tone, status),
+            paint_if_nonempty(style, Tone::Neutral, &metadata)
         ));
         if matches!(row.state, HostRowState::Running | HostRowState::Failed)
             && !row.output.is_empty()
@@ -1597,6 +1619,29 @@ fn active_line(style: TerminalStyle, label: &str, detail: Option<&str>) -> Strin
         line.push_str(&style.paint(Tone::Muted, detail));
     }
     line
+}
+
+fn styled_outcome_line(style: TerminalStyle, marker: &str, tone: Tone, label: &str) -> String {
+    let (primary, metadata) = label
+        .split_once(" · ")
+        .map_or((label, ""), |(primary, metadata)| (primary, metadata));
+    let primary = style.paint(tone, format!("{marker} {primary}"));
+    if metadata.is_empty() {
+        primary
+    } else {
+        format!(
+            "{primary}{}",
+            style.paint(Tone::Neutral, format!(" · {metadata}"))
+        )
+    }
+}
+
+fn paint_if_nonempty(style: TerminalStyle, tone: Tone, value: &str) -> String {
+    if value.is_empty() {
+        String::new()
+    } else {
+        style.paint(tone, value)
+    }
 }
 
 pub fn format_duration(duration: Duration) -> String {
@@ -2156,7 +2201,7 @@ mod tests {
     }
 
     #[test]
-    fn skipped_tasks_use_the_warning_tone() {
+    fn skipped_tasks_use_the_neutral_nixbot_tone() {
         set_json_output(false);
         let buffer = Arc::new(Mutex::new(Vec::new()));
         let reporter = ProgressReporter {
@@ -2174,10 +2219,105 @@ mod tests {
 
         let output = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
         assert!(
-            output.contains("\x1b[33m◇ Build plan gap3 gondor · skipped\x1b[0m"),
+            output.contains("\x1b[90m◇ Build plan gap3 gondor · skipped\x1b[0m"),
             "{output:?}"
         );
         assert!(!output.contains("✗ Build plan gap3 gondor"), "{output:?}");
+    }
+
+    #[test]
+    fn completed_outcomes_color_only_primary_work_and_keep_metadata_gray() {
+        set_json_output(false);
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: false,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(true, false),
+            destination: ProgressDestination::Buffer(Arc::clone(&buffer)),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+
+        assert_eq!(
+            styled_outcome_line(
+                reporter.style,
+                "✓",
+                Tone::Success,
+                "Build systems · 8 hosts · phase 1/5 · phase elapsed 2m 45s",
+            ),
+            concat!(
+                "\x1b[32m✓ Build systems\x1b[0m",
+                "\x1b[90m · 8 hosts · phase 1/5 · phase elapsed 2m 45s\x1b[0m",
+            )
+        );
+        reporter.message_primary_with_metadata(
+            "  ",
+            Tone::Success,
+            "Build systems",
+            " · ok · 2m 45s",
+        );
+        reporter.message_primary_with_metadata("  ", Tone::Neutral, "gap3-gondor · skip", "");
+
+        assert_eq!(
+            String::from_utf8(buffer.lock().unwrap().clone()).unwrap(),
+            concat!(
+                "  \x1b[32mBuild systems\x1b[0m",
+                "\x1b[90m · ok · 2m 45s\x1b[0m\n",
+                "  \x1b[90mgap3-gondor · skip\x1b[0m\n",
+            )
+        );
+    }
+
+    #[test]
+    fn host_dashboard_uses_gray_for_skips_and_success_only_for_primary_status() {
+        let active = ActiveProgress {
+            id: 1,
+            label: "Deploy systems · 2 hosts".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: Some(HostDashboard {
+                order: vec!["app".to_owned(), "external".to_owned()],
+                rows: BTreeMap::from([
+                    (
+                        "app".to_owned(),
+                        HostRow {
+                            state: HostRowState::Succeeded,
+                            summary: Some("deployed".to_owned()),
+                            elapsed: Some(Duration::from_secs(12)),
+                            ..HostRow::default()
+                        },
+                    ),
+                    (
+                        "external".to_owned(),
+                        HostRow {
+                            state: HostRowState::Skipped,
+                            summary: Some("deployment skipped".to_owned()),
+                            ..HostRow::default()
+                        },
+                    ),
+                ]),
+                ..HostDashboard::default()
+            }),
+            started: Instant::now(),
+        };
+
+        let rendered = dashboard_lines(
+            TerminalStyle::from_capabilities(true, false),
+            &active,
+            Duration::from_secs(12),
+        )
+        .join("\n");
+        assert!(
+            rendered.contains("\x1b[32m✓ deployed\x1b[0m\x1b[90m · 12.0s\x1b[0m"),
+            "{rendered:?}"
+        );
+        assert!(
+            rendered.contains("\x1b[90m◇ deployment skipped\x1b[0m"),
+            "{rendered:?}"
+        );
+        assert!(!rendered.contains("\x1b[33m◇ deployment skipped"));
     }
 
     #[test]

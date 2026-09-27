@@ -4,9 +4,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use abird_host_manager::fleet::health::{HealthDecision, HealthEvidence};
-use abird_host_manager::fleet::health_runtime::check_managed_health_with_ignored_system_units;
+use abird_host_manager::fleet::health_runtime::{
+    check_managed_health_with_ignored_system_units, check_managed_health_with_progress,
+};
 use abird_host_manager::fleet::host_runtime::{
-    DryRun, HostExecutionTarget, HostRuntime, ProcessOutput, ProcessRequest, ProcessRunner,
+    DryRun, HostExecutionTarget, HostRuntime, ProcessOutput, ProcessOutputPolicy, ProcessRequest,
+    ProcessRunner,
 };
 use abird_host_manager::fleet::system::ResolvedHost;
 use abird_host_manager::fleet::transport::{
@@ -217,16 +220,73 @@ fn multiple_ignored_system_units_remain_in_healthy_evidence_across_samples() {
         DryRun::No,
     )
     .unwrap();
-    let report = check_managed_health_with_ignored_system_units(
+    let mut progress = Vec::new();
+    let report = check_managed_health_with_progress(
         &mut runtime,
         &target(),
         &BTreeSet::from(["first.service".into(), "second.service".into()]),
+        |attempt, decision, _| progress.push((attempt, decision.clone())),
     )
     .unwrap();
     assert!(matches!(report.decision, HealthDecision::Healthy { .. }));
     assert_eq!(report.ignored_system_failures, [first, second]);
     assert_eq!(report.attempts, 2);
+    assert!(matches!(progress[0], (1, HealthDecision::Settling { .. })));
+    assert!(matches!(progress[1], (2, HealthDecision::Healthy { .. })));
+    assert!(
+        runtime
+            .runner()
+            .requests
+            .iter()
+            .all(|request| request.output_policy == ProcessOutputPolicy::HiddenProtocol)
+    );
     assert_eq!(runtime.into_runner().waits, [Duration::from_secs(5)]);
+}
+
+#[test]
+fn failed_or_malformed_collectors_stay_hidden_protocol() {
+    let cases = [
+        ProcessOutput {
+            status: ProcessStatus::Code(1),
+            stdout: String::new(),
+            stderr: "OPENAI_API_KEY=must-not-be-progress".into(),
+            skipped: false,
+        },
+        ProcessOutput {
+            status: ProcessStatus::Code(0),
+            stdout: "user-failed\tnot-base64\n".into(),
+            stderr: String::new(),
+            skipped: false,
+        },
+    ];
+    for output in cases {
+        let mut runtime = HostRuntime::new(
+            FakeRunner {
+                outputs: VecDeque::from([output]),
+                ..FakeRunner::default()
+            },
+            PathBuf::from("/repo"),
+            DryRun::No,
+        )
+        .unwrap();
+        let mut progress = Vec::new();
+        assert!(
+            check_managed_health_with_progress(
+                &mut runtime,
+                &target(),
+                &BTreeSet::new(),
+                |attempt, _, _| progress.push(attempt),
+            )
+            .is_err()
+        );
+        assert!(progress.is_empty());
+        let requests = &runtime.runner().requests;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].output_policy,
+            ProcessOutputPolicy::HiddenProtocol
+        );
+    }
 }
 
 #[test]

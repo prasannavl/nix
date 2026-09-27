@@ -1255,7 +1255,10 @@ fn failed_trimmed_route_retries_the_complete_configured_proxy_chain() {
     git(&repository, &["commit", "-qm", "fixture"]);
 
     let current_user = run(Command::new("id").arg("-un"));
-    let current_host = run(Command::new("hostname").arg("-s"));
+    // Keep the fixture hermetic: the packaged Nix test environment does not
+    // include the `hostname` executable, while localhost is always part of the
+    // manager's self-target evidence.
+    let current_host = "localhost";
     let inventory = format!(
         r#"{{"hosts":{{"relay":{{"target":"{current_host}","user":"{current_user}","knownHosts":"{current_host} ssh-ed25519 AAAA"}},"app":{{"target":"app.invalid","user":"root","proxyJump":"relay","knownHosts":"app.invalid ssh-ed25519 AAAA","groups":["all"]}}}},"config":{{}}}}"#
     );

@@ -13,7 +13,9 @@ use crate::progress::{ProgressReporter, command_reporter, format_duration};
 use crate::terminal_style::Tone;
 
 use super::cli::{LogFormat, Options};
-use super::host_runtime::{ProcessCompletion, ProcessEventObserver, ProcessRequest, ProcessStream};
+use super::host_runtime::{
+    ProcessCompletion, ProcessEventObserver, ProcessOutputPolicy, ProcessRequest, ProcessStream,
+};
 use super::plan::Phase;
 
 static FLEET_FAILURE_PRESENTED: AtomicBool = AtomicBool::new(false);
@@ -116,6 +118,28 @@ impl FleetProgress {
     pub fn host_skipped(&self, host: &str, summary: impl Into<String>) {
         self.reporter
             .host_skipped(host, safe_host_summary(&summary.into()));
+    }
+
+    pub fn host_operation_started(&self, host: &str, key: &str, label: &str) {
+        self.reporter.host_task_started(host, key, label);
+    }
+
+    pub fn host_operation_output(&self, host: &str, key: &str, line: &str) {
+        if let Some(line) = format_operation_dashboard_line(line) {
+            self.reporter.host_task_output(host, key, line);
+        }
+    }
+
+    pub fn host_operation_finished(
+        &self,
+        host: &str,
+        key: &str,
+        label: &str,
+        elapsed: Duration,
+        succeeded: bool,
+    ) {
+        self.reporter
+            .host_task_finished(host, key, label, elapsed, succeeded);
     }
 
     pub fn phase_completed(
@@ -292,29 +316,54 @@ impl FleetProgress {
                 Tone::Failure
             } else if status.starts_with("WARN") || status.starts_with("interrupted") {
                 Tone::Warning
-            } else {
+            } else if status.starts_with("ok") {
                 Tone::Success
+            } else {
+                Tone::Neutral
             };
             self.reporter
-                .message_tone(tone, format!("  {phase} · {status}"));
+                .message_primary_with_metadata("  ", tone, phase, format!(" · {status}"));
         }
         let hosts = hosts.into_iter().collect::<Vec<_>>();
         if !hosts.is_empty() {
             self.reporter.message("Hosts:");
         }
         for (host, status) in hosts {
-            let tone = if status.contains("FAIL")
+            if status.contains("FAIL")
                 || status.contains("failed")
                 || status.contains("rollback failed")
             {
-                Tone::Failure
+                self.reporter.message_primary_with_metadata(
+                    "  ",
+                    Tone::Failure,
+                    format!("{host} · {status}"),
+                    "",
+                );
             } else if status.contains("skip") || status.contains("optional") {
-                Tone::Warning
+                let tone = if status.contains("optional") {
+                    Tone::Warning
+                } else {
+                    Tone::Neutral
+                };
+                self.reporter.message_primary_with_metadata(
+                    "  ",
+                    tone,
+                    format!("{host} · {status}"),
+                    "",
+                );
             } else {
-                Tone::Success
-            };
-            self.reporter
-                .message_tone(tone, format!("  {host} · {status}"));
+                let tone = if matches!(status, "ok" | "built") {
+                    Tone::Success
+                } else {
+                    Tone::Neutral
+                };
+                self.reporter.message_primary_with_metadata(
+                    format!("  {host} · "),
+                    tone,
+                    status,
+                    "",
+                );
+            }
         }
         let terraform = terraform.into_iter().collect::<Vec<_>>();
         if !terraform.is_empty() {
@@ -375,6 +424,9 @@ impl ProcessEventObserver for FleetProcessObserver {
         if let Some(diagnostics) = &self.diagnostics {
             diagnostics.started(request);
         }
+        if request.output_policy == ProcessOutputPolicy::HiddenProtocol {
+            return;
+        }
         let label = process_label(&request.label);
         if let Some(host) = &request.host {
             self.reporter
@@ -388,33 +440,32 @@ impl ProcessEventObserver for FleetProcessObserver {
         if let Some(diagnostics) = &self.diagnostics {
             diagnostics.output(request, stream, chunk);
         }
+        if request.output_policy == ProcessOutputPolicy::HiddenProtocol {
+            return;
+        }
         for line in chunk.lines() {
-            let Some(failure_line) = format_failure_line(line) else {
-                continue;
-            };
-            let label = process_label(&request.label);
-            self.reporter
-                .task_output(request.label.clone(), &label, failure_line.clone());
-            if let Some(host) = &request.host {
-                if let Some(line) =
-                    format_dashboard_line(line).or_else(|| format_failure_dashboard_line(line))
-                {
-                    self.reporter.host_task_output(host, &request.label, line);
-                }
-            } else if let Some(line) = format_dashboard_line(line) {
-                self.reporter
-                    .task_live_output(request.label.clone(), &label, line);
-            }
-            if self.verbose {
-                let Some(line) = format_verbose_line(line) else {
-                    continue;
-                };
+            let (dashboard_line, verbose_line) =
+                format_process_line_views(request.output_policy, stream, line, self.verbose);
+            if let Some(line) = verbose_line {
                 self.reporter.message(format_process_line(
-                    &label,
+                    &process_label(&request.label),
                     Some(stream),
                     &line,
                     self.prefix,
                 ));
+            }
+            let Some(dashboard_line) = dashboard_line else {
+                continue;
+            };
+            let label = process_label(&request.label);
+            self.reporter
+                .task_output(request.label.clone(), &label, dashboard_line.clone());
+            if let Some(host) = &request.host {
+                self.reporter
+                    .host_task_output(host, &request.label, dashboard_line);
+            } else {
+                self.reporter
+                    .task_live_output(request.label.clone(), &label, dashboard_line);
             }
         }
     }
@@ -422,6 +473,9 @@ impl ProcessEventObserver for FleetProcessObserver {
     fn finished(&self, request: &ProcessRequest, elapsed: Duration, completion: ProcessCompletion) {
         if let Some(diagnostics) = &self.diagnostics {
             diagnostics.finished(request, elapsed, completion);
+        }
+        if request.output_policy == ProcessOutputPolicy::HiddenProtocol {
+            return;
         }
         if completion == ProcessCompletion::Interrupted {
             self.reporter.task_interrupted(
@@ -432,6 +486,14 @@ impl ProcessEventObserver for FleetProcessObserver {
             return;
         }
         let label = process_label(&request.label);
+        if completion == ProcessCompletion::Failed {
+            let line = "command failed; see diagnostics".to_owned();
+            self.reporter
+                .task_output(request.label.clone(), &label, line.clone());
+            if let Some(host) = &request.host {
+                self.reporter.host_task_output(host, &request.label, line);
+            }
+        }
         if let Some(host) = &request.host {
             self.reporter.host_task_finished(
                 host,
@@ -451,6 +513,9 @@ impl ProcessEventObserver for FleetProcessObserver {
     }
 
     fn heartbeat_interval(&self, request: &ProcessRequest) -> Option<Duration> {
+        if request.output_policy == ProcessOutputPolicy::HiddenProtocol {
+            return None;
+        }
         if request.label.contains("activation") || request.label.contains("rollback") {
             self.activation_heartbeat
         } else if request.label.contains("build") || request.label.contains("realize") {
@@ -641,19 +706,27 @@ fn format_dashboard_line(line: &str) -> Option<String> {
     if let Some(path) = quoted_store_path(&line, "building '", "'...") {
         return Some(format!("[build] {}", store_basename(path)));
     }
-    if let Some(path) = quoted_store_path(&line, "copying path '", "'") {
+    if let Some(path) = first_quoted_store_path(&line, "copying path '") {
         return Some(format!("[copy] {}", store_basename(path)));
     }
-    if line.starts_with("/nix/store/") {
+    if validated_store_path(&line).is_some() {
         return Some(format!("[store] {}", store_basename(&line)));
     }
     let normalized = match line.trim() {
         "Checking switch inhibitors... done" => "[switch] inhibitors ok",
         "activating the configuration..." => "[switch] activating configuration",
         "setting up /etc..." => "[switch] updating /etc",
-        "[agenix] decrypting secrets..." => "[agenix] decrypting secrets",
-        "[agenix] chowning..." => "[agenix] fixing ownership",
-        line if dashboard_status_prefix(line).is_some() => line,
+        "[agenix] decrypting secrets..." | "[agenix] decrypting secrets" => {
+            "[agenix] decrypting secrets"
+        }
+        "[agenix] chowning..." | "[agenix] fixing ownership" => "[agenix] fixing ownership",
+        "[switch] inhibitors ok" => "[switch] inhibitors ok",
+        "[switch] activating configuration" => "[switch] activating configuration",
+        "[switch] updating /etc" => "[switch] updating /etc",
+        line if format_agenix_status_line(line).is_some() => line,
+        line if format_structured_status_line(line).is_some() => {
+            return format_structured_status_line(line);
+        }
         line if line.starts_with("reconciled ") || line.starts_with("re-applied ") => line,
         line if line.starts_with("Deploy duration: ") => line,
         _ => return None,
@@ -661,56 +734,426 @@ fn format_dashboard_line(line: &str) -> Option<String> {
     Some(normalized.to_owned())
 }
 
-fn format_failure_dashboard_line(line: &str) -> Option<String> {
-    let line = terminal_safe_line(line);
-    if line.is_empty() || sensitive_output(&line) {
-        return None;
+fn format_process_dashboard_line(
+    policy: ProcessOutputPolicy,
+    stream: ProcessStream,
+    line: &str,
+) -> Option<String> {
+    match policy {
+        ProcessOutputPolicy::Curated => format_dashboard_line(line),
+        ProcessOutputPolicy::Activation => format_activation_dashboard_line(line, stream),
+        ProcessOutputPolicy::HiddenProtocol => None,
     }
-    let lowercase = line.to_ascii_lowercase();
-    [
-        "error",
-        "failed",
-        "failure",
-        "denied",
-        "unavailable",
-        "timeout",
-        "timed out",
-        "connection",
-        "refused",
-        "closed",
-        "reset",
-        "no route",
-        "could not",
-        "cannot",
-        "exit",
-        "signal",
-        "rejected",
-        "missing",
-        "not found",
-        "command not found",
-        "start-limit",
-        "status=",
-        "result=",
-    ]
-    .iter()
-    .any(|needle| lowercase.contains(needle))
-    .then(|| format_failure_line(&line))
-    .flatten()
 }
 
-fn dashboard_status_prefix(line: &str) -> Option<&str> {
-    [
-        "[agenix]",
-        "[generation-admission]",
-        "[health-check]",
-        "[prefetch-ai-model]",
-        "[store]",
-        "[switch]",
-        "[system-units]",
-        "[user-units]",
+fn format_operation_dashboard_line(line: &str) -> Option<String> {
+    let line = terminal_safe_line(line);
+    if line.starts_with("[ssh] scanning ") {
+        return Some("[ssh] scanning configured endpoint".to_owned());
+    }
+    if line.starts_with("[ssh] no host key returned by ") {
+        return Some("[ssh] no host key returned".to_owned());
+    }
+    if line.starts_with("[ssh] host key discovered via ") {
+        return Some("[ssh] host key discovered".to_owned());
+    }
+    let rest = line.strip_prefix("[health-check] attempt ")?;
+    let (attempt, status) = rest.split_once(" · ")?;
+    if !ascii_digits(attempt) {
+        return None;
+    }
+    let (state, detail) = status
+        .split_once(" · ")
+        .map_or((status, None), |(state, detail)| (state, Some(detail)));
+    if !matches!(
+        state,
+        "healthy" | "settling" | "service failure" | "structural failure"
+    ) {
+        return None;
+    }
+    let mut rendered = format!("[health-check] attempt {attempt} · {state}");
+    if let Some(detail) = detail.and_then(format_health_progress_detail) {
+        rendered.push_str(" · ");
+        rendered.push_str(&detail);
+    }
+    Some(rendered)
+}
+
+pub(crate) fn format_health_progress_detail(detail: &str) -> Option<String> {
+    let detail = terminal_safe_line(detail);
+    if detail.is_empty() {
+        return None;
+    }
+    if sensitive_output(&detail) {
+        return Some("detail redacted; see diagnostics".to_owned());
+    }
+    if matches!(
+        detail.as_str(),
+        "durable host-agent hold state is unavailable"
+            | "deferred resource isolation is unavailable"
+            | "deferred resource state reported"
+            | "detail redacted; see diagnostics"
+            | "detail available; see diagnostics"
+    ) {
+        return Some(detail);
+    }
+    for (prefix, label) in [
+        ("failed system unit: ", "failed system unit: "),
+        (
+            "system unit still settling: ",
+            "system unit still settling: ",
+        ),
+    ] {
+        if let Some(unit) = detail.strip_prefix(prefix) {
+            return valid_unit_name(unit).then(|| format!("{label}{unit}"));
+        }
+    }
+    if detail.starts_with("resource=") {
+        return Some("deferred resource state reported".to_owned());
+    }
+    if let Some(rest) = detail.strip_prefix("user=") {
+        let (user, status) = rest.split_once(' ')?;
+        if !safe_name(user) {
+            return None;
+        }
+        if matches!(
+            status,
+            "hold=active account=missing"
+                | "declaration-query=failed"
+                | "user-manager=inactive"
+                | "expected-runtime=query-failed"
+                | "runtime settling"
+                | "runtime issue; see diagnostics"
+        ) {
+            return Some(format!("user={user} {status}"));
+        }
+        if let Some(unit) = status.strip_prefix("failed-unit=") {
+            return valid_unit_name(unit).then(|| format!("user={user} failed-unit={unit}"));
+        }
+        if let Some(unit) = status
+            .strip_prefix("unit=")
+            .and_then(|status| status.strip_suffix(" settling"))
+        {
+            return valid_unit_name(unit).then(|| format!("user={user} unit={unit} settling"));
+        }
+        return Some(format!(
+            "user={user} {}",
+            if status.starts_with("starting ") {
+                "runtime settling"
+            } else {
+                "runtime issue; see diagnostics"
+            }
+        ));
+    }
+    Some("detail available; see diagnostics".to_owned())
+}
+
+fn format_process_line_views(
+    policy: ProcessOutputPolicy,
+    stream: ProcessStream,
+    line: &str,
+    verbose: bool,
+) -> (Option<String>, Option<String>) {
+    let protocol = policy == ProcessOutputPolicy::Activation && activation_protocol_line(line);
+    (
+        format_process_dashboard_line(policy, stream, line),
+        (verbose && !protocol)
+            .then(|| format_verbose_line(line))
+            .flatten(),
+    )
+}
+
+fn format_activation_dashboard_line(line: &str, _stream: ProcessStream) -> Option<String> {
+    let line = terminal_safe_line(line);
+    if line.is_empty() || activation_protocol_line(&line) {
+        return None;
+    }
+    if let Some(line) = format_dashboard_line(&line) {
+        return Some(line);
+    }
+    if sensitive_output(&line) {
+        return None;
+    }
+    let trimmed = line.trim();
+    let lifecycle_prefix = [
+        "stopping the following ",
+        "NOT stopping the following ",
+        "reloading the following ",
+        "restarting the following ",
+        "NOT restarting the following ",
+        "starting the following ",
+        "the following units failed:",
     ]
-    .into_iter()
-    .find(|prefix| line.starts_with(prefix))
+    .iter()
+    .find(|prefix| trimmed.starts_with(**prefix));
+    if let Some(prefix) = lifecycle_prefix
+        && valid_lifecycle_line(trimmed, prefix)
+    {
+        return format_failure_line(trimmed);
+    }
+    if trimmed.starts_with("[managed-restart]") {
+        return Some("[managed-restart] service reconciliation update".to_owned());
+    }
+    None
+}
+
+fn activation_protocol_line(line: &str) -> bool {
+    matches!(
+        line.trim(),
+        "--- abird-activation-result begin ---"
+            | "--- abird-activation-result end ---"
+            | "OutcomeSource=marker"
+            | "Result=running"
+            | "Result=success"
+    ) || line.trim().starts_with("Result=")
+        || line.trim().starts_with("ExecMainStatus=")
+        || line.trim().starts_with("Admitted=")
+}
+
+fn format_structured_status_line(line: &str) -> Option<String> {
+    if let Some(rest) = line.strip_prefix("[generation-admission] ") {
+        if matches!(
+            rest,
+            "rejected-before-switch"
+                | "current authority is absent; deferring candidate acquisition until first activation"
+        ) {
+            return Some(line.to_owned());
+        }
+        if let Some((mode, path)) = rest
+            .strip_prefix("mode=")
+            .and_then(|rest| rest.split_once(" admitted "))
+            && matches!(mode, "normal" | "rollback")
+            && path.starts_with("/nix/store/")
+            && !path.chars().any(char::is_whitespace)
+        {
+            return Some(format!(
+                "[generation-admission] mode={mode} admitted {}",
+                store_basename(path)
+            ));
+        }
+        return Some("[generation-admission] update; see diagnostics".to_owned());
+    }
+    if let Some(rest) = line.strip_prefix("[prefetch-podman-image] ") {
+        return match rest {
+            "start" => Some("[prefetch-podman-image] start".to_owned()),
+            rest if rest.starts_with("skipped ") => {
+                Some("[prefetch-podman-image] skipped".to_owned())
+            }
+            rest if rest.starts_with("deferred ") => {
+                Some("[prefetch-podman-image] deferred".to_owned())
+            }
+            _ => Some("[prefetch-podman-image] activity; see diagnostics".to_owned()),
+        };
+    }
+    if let Some(rest) = line.strip_prefix("[prefetch-ai-model] ") {
+        let numeric_summary = (rest.strip_prefix("start total=").is_some_and(ascii_digits)
+            || valid_ai_prefetch_summary(rest))
+        .then(|| format!("[prefetch-ai-model] {rest}"));
+        return numeric_summary.or_else(|| {
+            Some(if rest.starts_with("failed id=") {
+                "[prefetch-ai-model] item failed; see diagnostics".to_owned()
+            } else if rest.starts_with("skipped ") {
+                "[prefetch-ai-model] skipped".to_owned()
+            } else if rest.starts_with("deferred ") {
+                "[prefetch-ai-model] deferred".to_owned()
+            } else {
+                "[prefetch-ai-model] activity; see diagnostics".to_owned()
+            })
+        });
+    }
+    if let Some(rest) = line.strip_prefix("[pre-switch] ") {
+        return Some(match rest {
+            "resetting failed system units:" => {
+                "[pre-switch] resetting failed system units".to_owned()
+            }
+            "unable to enumerate logind users" => {
+                "[pre-switch] unable to enumerate logind users".to_owned()
+            }
+            rest if valid_pre_switch_user_status(rest) => format!("[pre-switch] {rest}"),
+            _ => "[pre-switch] activity; see diagnostics".to_owned(),
+        });
+    }
+    if let Some(rest) = line.strip_prefix("[store] ") {
+        return valid_store_basename(rest).then(|| format!("[store] {rest}"));
+    }
+    for (prefix, label) in [
+        ("[system-units] ", "[system-units]"),
+        ("[user-units] ", "[user-units]"),
+    ] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return Some(if valid_unit_status(label, rest) {
+                format!("{label} {rest}")
+            } else {
+                format!("{label} activity; see diagnostics")
+            });
+        }
+    }
+    None
+}
+
+fn ascii_digits(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
+}
+
+fn valid_ai_prefetch_summary(value: &str) -> bool {
+    let Some((ok, rest)) = value
+        .strip_prefix("ok=")
+        .and_then(|value| value.split_once('/'))
+    else {
+        return false;
+    };
+    let Some((total, rest)) = rest.split_once(" deferred=") else {
+        return false;
+    };
+    let Some((deferred, failed)) = rest.split_once(" failed=") else {
+        return false;
+    };
+    [ok, total, deferred, failed].into_iter().all(ascii_digits)
+}
+
+fn safe_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-' | '@')
+        })
+}
+
+fn valid_pre_switch_user_status(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("user=") else {
+        return false;
+    };
+    let Some((user, state)) = rest.split_once(' ') else {
+        return false;
+    };
+    safe_name(user)
+        && matches!(
+            state,
+            "manager=active bus=unreachable"
+                | "manager=inactive action=starting"
+                | "manager=start-failed"
+        )
+}
+
+fn valid_store_basename(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 240
+        && !value.contains('/')
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '+' | '-')
+        })
+}
+
+fn valid_unit_name(value: &str) -> bool {
+    valid_unit_list(value) && !value.contains(',')
+}
+
+fn valid_unit_status(label: &str, value: &str) -> bool {
+    let value = if label == "[user-units]" {
+        let Some(value) = value.strip_prefix("user=") else {
+            return false;
+        };
+        let Some((user, value)) = value.split_once(' ') else {
+            return false;
+        };
+        if !safe_name(user) {
+            return false;
+        }
+        if value == "reload" {
+            return true;
+        }
+        value
+    } else {
+        value
+    };
+    let Some(value) = value.strip_prefix("action=") else {
+        return false;
+    };
+    let Some((action, value)) = value.split_once(" count=") else {
+        return false;
+    };
+    if !matches!(
+        action,
+        "stopping" | "reloading" | "restarting" | "starting" | "restart"
+    ) {
+        return false;
+    }
+    let Some((count, units)) = value.split_once(" units=") else {
+        return false;
+    };
+    ascii_digits(count) && valid_quoted_unit_list(units)
+}
+
+fn valid_quoted_unit_list(value: &str) -> bool {
+    let Some(value) = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    else {
+        return false;
+    };
+    valid_unit_list(value)
+}
+
+fn valid_unit_list(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 400
+        && value.split(',').all(|unit| {
+            let unit = unit.trim();
+            safe_name(unit)
+                && [
+                    ".service", ".socket", ".target", ".mount", ".timer", ".path", ".scope",
+                    ".slice",
+                ]
+                .iter()
+                .any(|suffix| unit.ends_with(suffix))
+        })
+}
+
+fn valid_lifecycle_line(line: &str, prefix: &str) -> bool {
+    if line == "the following units failed:" {
+        return true;
+    }
+    let Some((_, units)) = line
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.split_once(':'))
+    else {
+        return false;
+    };
+    let units = units.trim();
+    valid_unit_list(units)
+}
+
+fn format_agenix_status_line(line: &str) -> Option<&str> {
+    let value = line.strip_prefix("[agenix] ")?;
+    let valid_generation = |value: &str| {
+        !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
+    };
+    if let Some(value) = value.strip_prefix("creating generation=")
+        && valid_generation(value)
+    {
+        return Some(line);
+    }
+    if let Some(value) = value.strip_prefix("removed generation=")
+        && valid_generation(value)
+    {
+        return Some(line);
+    }
+    if let Some(value) = value
+        .strip_prefix("generation=")
+        .and_then(|value| value.strip_suffix(" active"))
+        && valid_generation(value)
+    {
+        return Some(line);
+    }
+    if let Some(value) = value.strip_prefix("decrypted ")
+        && !value.is_empty()
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+    {
+        return Some(line);
+    }
+    None
 }
 
 fn format_verbose_line(line: &str) -> Option<String> {
@@ -761,7 +1204,18 @@ fn safe_host_summary(value: &str) -> String {
 fn quoted_store_path<'a>(line: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
     line.strip_prefix(prefix)?
         .strip_suffix(suffix)
-        .filter(|path| path.starts_with("/nix/store/"))
+        .filter(|path| validated_store_path(path).is_some())
+}
+
+fn first_quoted_store_path<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+    let remainder = line.strip_prefix(prefix)?;
+    let path = remainder.split_once('\'')?.0;
+    validated_store_path(path).map(|_| path)
+}
+
+fn validated_store_path(path: &str) -> Option<&str> {
+    let basename = path.strip_prefix("/nix/store/")?;
+    valid_store_basename(basename).then_some(basename)
 }
 
 fn store_basename(path: &str) -> &str {
@@ -922,20 +1376,183 @@ mod tests {
             format_dashboard_line("copying 0 paths..."),
             Some("[copy] closure already present".to_owned())
         );
+        for line in [
+            "copying path '/nix/store/abc-unit.service' to 'ssh-ng://nixbot@host'...",
+            "copying path '/nix/store/xyz-asar' from 'https://cache.invalid'...",
+        ] {
+            let rendered = format_dashboard_line(line).unwrap();
+            assert!(rendered.starts_with("[copy] "), "{rendered}");
+            assert!(!rendered.contains("ssh-ng"), "{rendered}");
+            assert!(!rendered.contains("https://"), "{rendered}");
+        }
+        for line in [
+            "building '/nix/store/foo sk-live-value'...",
+            "copying path '/nix/store/foo sk-live-value' to 'ssh-ng://host'...",
+            "/nix/store/foo sk-live-value",
+            "/nix/store/valid-name/../../sk-live-value",
+        ] {
+            assert_eq!(format_dashboard_line(line), None, "{line}");
+        }
         assert_eq!(
             format_dashboard_line("old frame\rTOKEN=visible\x1b]0;host-title\x07 ready"),
             None
         );
         assert_eq!(format_dashboard_line("arbitrary subprocess chatter"), None);
         assert_eq!(
-            format_failure_dashboard_line("arbitrary subprocess chatter"),
+            format_dashboard_line("[pre-switch] candidate resources ready"),
+            Some("[pre-switch] activity; see diagnostics".to_owned())
+        );
+        assert_eq!(
+            format_dashboard_line("[prefetch-podman-image] pulled=3 skipped=1"),
+            Some("[prefetch-podman-image] activity; see diagnostics".to_owned())
+        );
+        assert_eq!(
+            format_dashboard_line(
+                "[system-units] action=restarting count=1 units=\"dbus-broker.service\""
+            ),
+            Some(
+                "[system-units] action=restarting count=1 units=\"dbus-broker.service\"".to_owned()
+            )
+        );
+        for prefix in [
+            "[generation-admission]",
+            "[prefetch-podman-image]",
+            "[prefetch-ai-model]",
+            "[pre-switch]",
+            "[system-units]",
+            "[user-units]",
+        ] {
+            let rendered =
+                format_dashboard_line(&format!("{prefix} signing material=sk-live-value")).unwrap();
+            assert!(!rendered.contains("sk-live-value"), "{rendered}");
+        }
+        assert_eq!(
+            format_activation_dashboard_line(
+                "NOT restarting the following user units: dbus-broker.service",
+                ProcessStream::Stdout,
+            ),
+            Some("NOT restarting the following user units: dbus-broker.service".to_owned())
+        );
+        assert_eq!(
+            format_activation_dashboard_line("Result=exit-code", ProcessStream::Stderr),
             None
         );
         assert_eq!(
-            format_failure_dashboard_line("error: connection closed by peer"),
-            Some("error: connection closed by peer".to_owned())
+            format_activation_dashboard_line(
+                "[switch] signing material=sk-live-value",
+                ProcessStream::Stdout,
+            ),
+            None
         );
         assert_eq!(format_dashboard_line("\t\r"), None);
+    }
+
+    #[test]
+    fn semantic_host_operation_lines_are_allowlisted_and_normalized() {
+        assert_eq!(
+            format_operation_dashboard_line("[ssh] scanning secret-host.example:22"),
+            Some("[ssh] scanning configured endpoint".to_owned())
+        );
+        assert_eq!(
+            format_operation_dashboard_line(
+                "[health-check] attempt 2 · service failure · user=abird failed-unit=abird-agent.service"
+            ),
+            Some(
+                "[health-check] attempt 2 · service failure · user=abird failed-unit=abird-agent.service"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            format_operation_dashboard_line(
+                "[health-check] attempt 2 · service failure · user=abird arbitrary sk-live-value"
+            ),
+            Some(
+                "[health-check] attempt 2 · service failure · user=abird runtime issue; see diagnostics"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            format_operation_dashboard_line("arbitrary operation output sk-live-value"),
+            None
+        );
+    }
+
+    #[test]
+    fn verbose_output_is_independent_from_dashboard_admission() {
+        assert_eq!(
+            format_process_line_views(
+                ProcessOutputPolicy::Curated,
+                ProcessStream::Stdout,
+                "ordinary child output",
+                true,
+            ),
+            (None, Some("ordinary child output".to_owned()))
+        );
+        assert_eq!(
+            format_process_line_views(
+                ProcessOutputPolicy::Curated,
+                ProcessStream::Stderr,
+                "OPENAI_API_KEY=secret",
+                true,
+            ),
+            (None, Some("[sensitive output redacted]".to_owned()))
+        );
+        assert_eq!(
+            format_process_dashboard_line(
+                ProcessOutputPolicy::Curated,
+                ProcessStream::Stderr,
+                "error: arbitrary subprocess payload",
+            ),
+            None
+        );
+        assert_eq!(
+            format_process_dashboard_line(
+                ProcessOutputPolicy::Activation,
+                ProcessStream::Stderr,
+                "error: arbitrary activation payload",
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn machine_protocol_output_is_never_admitted_to_human_progress() {
+        let health_record = "user-failed\tabird\tYWJpcmQtYWdlbnQuc2VydmljZQ==";
+        assert_eq!(
+            format_process_dashboard_line(
+                ProcessOutputPolicy::HiddenProtocol,
+                ProcessStream::Stdout,
+                health_record,
+            ),
+            None
+        );
+        for marker in [
+            "--- abird-activation-result begin ---",
+            "OutcomeSource=marker",
+            "ExecMainStatus=1",
+            "Admitted=1",
+            "--- abird-activation-result end ---",
+        ] {
+            assert_eq!(
+                format_process_dashboard_line(
+                    ProcessOutputPolicy::Activation,
+                    ProcessStream::Stderr,
+                    marker,
+                ),
+                None,
+                "{marker}"
+            );
+            assert_eq!(
+                format_process_line_views(
+                    ProcessOutputPolicy::Activation,
+                    ProcessStream::Stderr,
+                    marker,
+                    true,
+                ),
+                (None, None),
+                "{marker}"
+            );
+        }
     }
 
     #[test]
@@ -1017,6 +1634,7 @@ mod tests {
             cwd: temporary.path().to_path_buf(),
             stdin: Some("secret-input-is-not-logged".to_owned()),
             effect: super::super::host_runtime::EffectKind::ReadOnly,
+            output_policy: ProcessOutputPolicy::Curated,
             label: "build alpha".to_owned(),
             host: None,
         };

@@ -616,8 +616,8 @@ fn periodic_lease_heartbeat_runs_before_the_console_progress_interval() {
     use abird_host_manager::fleet::cli::Options;
     use abird_host_manager::fleet::environment::Environment;
     use abird_host_manager::fleet::host_runtime::{
-        EffectKind, ProcessCompletion, ProcessEventObserver, ProcessRequest, ProcessRunner,
-        ProcessStream, ReportingProcessRunner,
+        EffectKind, ProcessCompletion, ProcessEventObserver, ProcessOutputPolicy, ProcessRequest,
+        ProcessRunner, ProcessStream, ReportingProcessRunner,
     };
     use abird_host_manager::fleet::presentation::FleetProgress;
 
@@ -714,6 +714,7 @@ done"#
         cwd: temporary.path().to_path_buf(),
         stdin: None,
         effect: EffectKind::ReadOnly,
+        output_policy: ProcessOutputPolicy::Curated,
         label: "fixture-remote-build".to_owned(),
         host: None,
     };

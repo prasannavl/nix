@@ -67,9 +67,9 @@ use health::{HealthDecision, HealthEvidence};
 use host_runtime::{
     ActivationExecution, DeployOutcome, DryRun, EffectKind, HealthEvaluator, HostExecutionTarget,
     HostRuntime, ProcessCancellation, ProcessCompletion, ProcessEventObserver, ProcessOutput,
-    ProcessRequest, ProcessRunner, ProcessStream, RemoteBuildRequest, ReportingProcessRunner,
-    SystemHealthProbe, SystemProcessRunner, build_ssh_request, build_ssh_upload_request,
-    builder_lease_process_spec, control_master_exit_request,
+    ProcessOutputPolicy, ProcessRequest, ProcessRunner, ProcessStream, RemoteBuildRequest,
+    ReportingProcessRunner, SystemHealthProbe, SystemProcessRunner, build_ssh_request,
+    build_ssh_upload_request, builder_lease_process_spec, control_master_exit_request,
 };
 use system::ResolvedHost;
 use transport::{
@@ -1132,6 +1132,20 @@ fn snapshot_admission_activation_observer_and_health_are_ordered() {
     assert!(runner.requests[2].label.contains("activation-submit"));
     assert!(runner.requests[3].label.contains("activation-observe"));
     assert!(runner.requests[4].label.contains("health"));
+    assert_eq!(
+        runner
+            .requests
+            .iter()
+            .map(|request| request.output_policy)
+            .collect::<Vec<_>>(),
+        vec![
+            ProcessOutputPolicy::Curated,
+            ProcessOutputPolicy::Curated,
+            ProcessOutputPolicy::HiddenProtocol,
+            ProcessOutputPolicy::Activation,
+            ProcessOutputPolicy::HiddenProtocol,
+        ]
+    );
 }
 
 #[test]
@@ -1723,6 +1737,7 @@ fn reporting_process_runner_streams_both_channels_and_retains_exact_output() {
             cwd: PathBuf::from("/"),
             stdin: None,
             effect: EffectKind::ReadOnly,
+            output_policy: ProcessOutputPolicy::Curated,
             label: "probe alpha".to_owned(),
             host: None,
         })
@@ -1751,6 +1766,7 @@ fn git_environment_request(clear_git_repository_environment: bool) -> ProcessReq
         cwd: PathBuf::from("/"),
         stdin: None,
         effect: EffectKind::ReadOnly,
+        output_policy: ProcessOutputPolicy::Curated,
         label: "repository-environment".to_owned(),
         host: None,
     }
@@ -1802,6 +1818,7 @@ fn reporting_process_runner_emits_configured_heartbeats_for_quiet_commands() {
             cwd: PathBuf::from("/"),
             stdin: None,
             effect: EffectKind::ReadOnly,
+            output_policy: ProcessOutputPolicy::Curated,
             label: "heartbeat".to_owned(),
             host: None,
         })
@@ -1861,6 +1878,7 @@ fn reporting_process_runner_terminates_the_complete_child_process_group() {
             cwd: PathBuf::from("/"),
             stdin: None,
             effect: EffectKind::ReadOnly,
+            output_policy: ProcessOutputPolicy::Curated,
             label: "long probe".to_owned(),
             host: None,
         })

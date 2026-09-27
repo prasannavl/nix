@@ -61,6 +61,17 @@ pub enum EffectKind {
     Mutation,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessOutputPolicy {
+    /// Show only the fleet renderer's bounded, sanitized operational allowlist.
+    Curated,
+    /// Show the activation lifecycle allowlist while the detached unit runs.
+    Activation,
+    /// Keep machine-readable protocol output in diagnostics only. The caller
+    /// publishes parsed semantic progress instead.
+    HiddenProtocol,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProcessRequest {
     pub program: String,
@@ -70,6 +81,7 @@ pub struct ProcessRequest {
     pub cwd: PathBuf,
     pub stdin: Option<String>,
     pub effect: EffectKind,
+    pub output_policy: ProcessOutputPolicy,
     pub label: String,
     /// Inventory host whose progress this command advances. Commands that
     /// belong to the phase as a whole (for example the build-plan probe) use
@@ -648,6 +660,7 @@ pub fn build_ssh_request(
         cwd: target.cwd.clone(),
         stdin: Some(encoded_remote_script(argv, environment)?),
         effect,
+        output_policy: ProcessOutputPolicy::Curated,
         label: label.to_owned(),
         host: Some(target.route.endpoint.node.clone()),
     })
@@ -856,6 +869,7 @@ pub fn control_master_exit_request(target: &HostExecutionTarget) -> Result<Optio
         cwd: target.cwd.clone(),
         stdin: None,
         effect: EffectKind::Mutation,
+        output_policy: ProcessOutputPolicy::HiddenProtocol,
         label: "ssh-control-master-exit".to_owned(),
         host: Some(target.route.endpoint.node.clone()),
     }))
@@ -915,6 +929,7 @@ pub fn build_ssh_upload_request(
         cwd: target.cwd.clone(),
         stdin: Some(contents),
         effect: EffectKind::Mutation,
+        output_policy: ProcessOutputPolicy::HiddenProtocol,
         label: label.to_owned(),
         host: Some(target.route.endpoint.node.clone()),
     })
@@ -1074,6 +1089,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             cwd,
             stdin,
             effect,
+            output_policy,
             label,
             host,
         } = request;
@@ -1093,6 +1109,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             cwd,
             stdin,
             effect,
+            output_policy,
             label,
             host,
         })
@@ -1112,6 +1129,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             cwd: self.cwd.clone(),
             stdin: None,
             effect,
+            output_policy: ProcessOutputPolicy::Curated,
             label: label.to_owned(),
             host: None,
         }
@@ -1173,6 +1191,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 cwd: target.cwd.clone(),
                 stdin: None,
                 effect,
+                output_policy: ProcessOutputPolicy::Curated,
                 label,
                 host: Some(target.route.endpoint.node.clone()),
             })
@@ -1241,6 +1260,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 cwd: target.cwd.clone(),
                 stdin,
                 effect,
+                output_policy: ProcessOutputPolicy::Curated,
                 label,
                 host: Some(target.route.endpoint.node.clone()),
             })
@@ -1410,7 +1430,25 @@ impl<R: ProcessRunner> HostRuntime<R> {
         effect: EffectKind,
         label: &str,
     ) -> Result<ProcessOutput> {
-        let request = self.remote_root_command_request(target, command, effect, label)?;
+        self.execute_remote_root_command_bounded_with_output_policy(
+            target,
+            command,
+            effect,
+            label,
+            ProcessOutputPolicy::Curated,
+        )
+    }
+
+    pub fn execute_remote_root_command_bounded_with_output_policy(
+        &mut self,
+        target: &HostExecutionTarget,
+        command: &CommandSpec,
+        effect: EffectKind,
+        label: &str,
+        output_policy: ProcessOutputPolicy,
+    ) -> Result<ProcessOutput> {
+        let mut request = self.remote_root_command_request(target, command, effect, label)?;
+        request.output_policy = output_policy;
         self.run_bounded_read(request, target.remote_read_timeout_seconds)
     }
 
@@ -1687,12 +1725,13 @@ impl<R: ProcessRunner> HostRuntime<R> {
         goal: ActivationGoal,
         label: &str,
     ) -> Result<ActivationExecution> {
-        let submit = self.deploy_request(
+        let mut submit = self.deploy_request(
             target,
             command,
             EffectKind::Mutation,
             &format!("{label}-submit"),
         )?;
+        submit.output_policy = ProcessOutputPolicy::HiddenProtocol;
         let submitted = self.run(submit)?;
         if submitted.skipped {
             return Ok(ActivationExecution::DryRun);
@@ -1708,12 +1747,13 @@ impl<R: ProcessRunner> HostRuntime<R> {
         let observer_status = (|| {
             if let Some(observer) = &command.observer_script {
                 let observer = CommandSpec::new(SYSTEM_BASH, ["-c".to_owned(), observer.clone()]);
-                let request = self.remote_root_command_request_without_control_master(
+                let mut request = self.remote_root_command_request_without_control_master(
                     target,
                     &observer,
                     EffectKind::ReadOnly,
                     &format!("{label}-observe"),
                 )?;
+                request.output_policy = ProcessOutputPolicy::Activation;
                 self.run(request)
             } else {
                 Ok(submitted)
@@ -1784,12 +1824,13 @@ impl<R: ProcessRunner> HostRuntime<R> {
         }
 
         let verification = deploy::activation_verification_command(&command.unit);
-        let request = self.deploy_request(
+        let mut request = self.deploy_request(
             target,
             &verification,
             EffectKind::ReadOnly,
             &format!("{label}-verify"),
         )?;
+        request.output_policy = ProcessOutputPolicy::HiddenProtocol;
         let verified = self.run_bounded_read(request, target.remote_read_timeout_seconds)?;
         if verified.succeeded()
             && let Ok(sample) = ActivationSample::parse(&verified.stdout)
@@ -1811,12 +1852,13 @@ impl<R: ProcessRunner> HostRuntime<R> {
     ) -> Result<HealthDecision> {
         let mut samples = Vec::with_capacity(commands.len());
         for command in commands {
-            let request = self.remote_root_command_request(
+            let mut request = self.remote_root_command_request(
                 target,
                 command,
                 EffectKind::ReadOnly,
                 "post-switch-health",
             )?;
+            request.output_policy = ProcessOutputPolicy::HiddenProtocol;
             samples.push(self.run(request)?);
         }
         evaluator.evaluate(&samples)
@@ -1929,6 +1971,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             cwd: self.cwd.clone(),
             stdin: None,
             effect: EffectKind::ReadOnly,
+            output_policy: ProcessOutputPolicy::HiddenProtocol,
             label: "check-bootstrap".to_owned(),
             host: None,
         })

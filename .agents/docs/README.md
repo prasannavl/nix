@@ -760,7 +760,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   routing, mutation safety gates, and package-owned local Pvl policy.
 - `.agents/docs/notes/tooling/abird-host-manager-output-ux-2026-08.md`: Records
   the shared structured, stream, and passthrough output contracts, semantic
-  human views, nested progress, and TTY-only color behavior.
+  human views, host-focused rolling fleet progress, safe process-output
+  policies, live activation logs, and TTY-only color behavior.
 - `.agents/docs/notes/tooling/native-host-control-plane-2026-08.md`: Records the
   native Rust manager/agent ownership split, retired compatibility surfaces,
   durable hold boundary, lifecycle/retry/admission follow-ups, and narrow Pvl

@@ -13,6 +13,7 @@ pub enum Tone {
     Label,
     Emphasis,
     Muted,
+    Neutral,
 }
 
 impl Tone {
@@ -26,6 +27,7 @@ impl Tone {
             Self::Label => "\x1b[34m",
             Self::Emphasis => "\x1b[1m",
             Self::Muted => "\x1b[2m",
+            Self::Neutral => "\x1b[90m",
         }
     }
 }
@@ -191,6 +193,10 @@ mod tests {
         assert!(document.contains("\x1b[33m◇ Deferred\x1b[0m"));
         assert!(document.contains("\x1b[34mState\x1b[0m   target active"));
         assert_eq!(document.matches("\x1b[1m").count(), 1);
+        assert_eq!(
+            style.paint(Tone::Neutral, "skipped"),
+            "\x1b[90mskipped\x1b[0m"
+        );
     }
 
     #[test]

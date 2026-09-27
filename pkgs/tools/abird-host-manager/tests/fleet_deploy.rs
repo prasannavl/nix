@@ -8,7 +8,7 @@ mod transport;
 
 use std::collections::VecDeque;
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -320,10 +320,240 @@ fn activation_is_a_supervised_detached_attempt_with_an_authoritative_marker() {
     let observer = command.observer_script.as_deref().unwrap();
     assert!(observer.contains("activation-results"));
     assert!(observer.contains("ExecMainStatus"));
-    assert_eq!(observer.matches("read_result").count(), 3);
-    assert!(observer.contains("for ((polls = 0; polls < 19300; polls++))"));
+    assert!(observer.contains("--pid=\"$main_pid\" --lines=+1 --follow=name"));
+    assert!(observer.contains("while [ ! -e \"$log_file\" ]"));
+    assert!(observer.contains("A log follower is observational, never activation authority"));
+    assert!(observer.contains("Catch the PID-exit/log-flush race"));
+    assert!(
+        observer.find("--follow=name").unwrap() < observer.rfind("read_result || true").unwrap()
+    );
     assert_bash_syntax(&command.script);
     assert_bash_syntax(observer);
+}
+
+#[test]
+fn activation_observer_streams_log_before_the_authoritative_result_is_terminal() {
+    let command = activation_command(ActivationCommand {
+        run_id: "live-output".into(),
+        host: "gap3".into(),
+        attempt: 1,
+        generation: generation("new"),
+        goal: ActivationGoal::Switch,
+        boot_environment: BootEnvironment::Physical,
+        restart_managed: false,
+        runtime_max: Duration::from_secs(5),
+        stop_timeout: Duration::from_secs(1),
+        lock_wait: Duration::from_secs(1),
+        acquire_host_lock: true,
+    });
+    let temporary = tempfile::tempdir().unwrap();
+    let result = temporary.path().join("activation.result");
+    let log = temporary.path().join("activation.log");
+    fs::write(
+        &result,
+        "OutcomeSource=marker\nResult=running\nExecMainStatus=255\nAdmitted=1\n",
+    )
+    .unwrap();
+    fs::write(&log, "first-line\n").unwrap();
+
+    let fake_systemctl = temporary.path().join("systemctl");
+    executable(
+        &fake_systemctl,
+        r#"#!/bin/sh
+case "$*" in
+  *--property=MainPID*) printf '%s\n' "$TEST_MAIN_PID" ;;
+  *--property=Job*) printf '\n' ;;
+  *--property=LoadState*) printf 'loaded\n' ;;
+  *--property=ActiveState*) printf 'active\n' ;;
+esac
+"#,
+    );
+
+    let mut writer = Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            "sleep 0.5; printf 'final-line\\n' >> '{}'; printf 'OutcomeSource=marker\\nResult=success\\nExecMainStatus=0\\nAdmitted=1\\n' > '{}'",
+            log.display(),
+            result.display()
+        ))
+        .spawn()
+        .unwrap();
+
+    let tool = |name: &str| {
+        String::from_utf8(
+            Command::new("sh")
+                .args(["-c", &format!("command -v {name}")])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned()
+    };
+    let observer = command
+        .observer_script
+        .unwrap()
+        .replace(
+            &format!("/var/lib/nixbot/activation-results/{}.result", command.unit),
+            &result.display().to_string(),
+        )
+        .replace(
+            &format!("/var/lib/nixbot/activation-results/{}.log", command.unit),
+            &log.display().to_string(),
+        )
+        .replace(
+            "/run/current-system/sw/bin/systemctl",
+            &fake_systemctl.display().to_string(),
+        )
+        .replace("/run/current-system/sw/bin/tail", &tool("tail"))
+        .replace("/run/current-system/sw/bin/sleep", &tool("sleep"))
+        .replace("/run/current-system/sw/bin/cat", &tool("cat"));
+    let mut observer = Command::new("bash")
+        .arg("-c")
+        .arg(observer)
+        .env("TEST_MAIN_PID", writer.id().to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = observer.stdout.take().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            sender.send(line.unwrap()).unwrap();
+        }
+    });
+
+    assert_eq!(
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+        "first-line"
+    );
+    assert!(observer.try_wait().unwrap().is_none());
+    assert!(writer.wait().unwrap().success());
+    assert_eq!(
+        receiver.recv_timeout(Duration::from_secs(3)).unwrap(),
+        "final-line"
+    );
+    let status = observer.wait().unwrap();
+    reader.join().unwrap();
+    let mut stderr = String::new();
+    observer
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(status.success(), "{stderr}");
+    assert!(stderr.contains("Result=success"));
+    assert!(stderr.contains("ExecMainStatus=0"));
+}
+
+#[test]
+fn activation_observer_keeps_polling_when_the_log_follower_fails() {
+    let command = activation_command(ActivationCommand {
+        run_id: "failed-log-follower".into(),
+        host: "gap3".into(),
+        attempt: 1,
+        generation: generation("new"),
+        goal: ActivationGoal::Switch,
+        boot_environment: BootEnvironment::Physical,
+        restart_managed: false,
+        runtime_max: Duration::from_secs(5),
+        stop_timeout: Duration::from_secs(1),
+        lock_wait: Duration::from_secs(1),
+        acquire_host_lock: true,
+    });
+    let temporary = tempfile::tempdir().unwrap();
+    let result = temporary.path().join("activation.result");
+    let log = temporary.path().join("activation.log");
+    fs::write(
+        &result,
+        "OutcomeSource=marker\nResult=running\nExecMainStatus=255\nAdmitted=1\n",
+    )
+    .unwrap();
+    fs::write(&log, "first-line\n").unwrap();
+
+    let fake_systemctl = temporary.path().join("systemctl");
+    executable(
+        &fake_systemctl,
+        r#"#!/bin/sh
+case "$*" in
+  *--property=MainPID*) printf '%s\n' "$TEST_MAIN_PID" ;;
+  *--property=Job*) printf '\n' ;;
+  *--property=LoadState*) printf 'loaded\n' ;;
+  *--property=ActiveState*) printf 'active\n' ;;
+esac
+"#,
+    );
+    let fake_tail = temporary.path().join("tail");
+    executable(&fake_tail, "#!/bin/sh\nexit 42\n");
+
+    let mut writer = Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            "sleep 0.5; printf 'final-line\\n' >> '{}'; printf 'OutcomeSource=marker\\nResult=success\\nExecMainStatus=0\\nAdmitted=1\\n' > '{}'",
+            log.display(),
+            result.display()
+        ))
+        .spawn()
+        .unwrap();
+    let sleep = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v sleep"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let observer_script = command
+        .observer_script
+        .unwrap()
+        .replace(
+            &format!("/var/lib/nixbot/activation-results/{}.result", command.unit),
+            &result.display().to_string(),
+        )
+        .replace(
+            &format!("/var/lib/nixbot/activation-results/{}.log", command.unit),
+            &log.display().to_string(),
+        )
+        .replace(
+            "/run/current-system/sw/bin/systemctl",
+            &fake_systemctl.display().to_string(),
+        )
+        .replace(
+            "/run/current-system/sw/bin/tail",
+            &fake_tail.display().to_string(),
+        )
+        .replace("/run/current-system/sw/bin/sleep", sleep.trim());
+    let mut observer = Command::new("bash")
+        .arg("-c")
+        .arg(observer_script)
+        .env("TEST_MAIN_PID", writer.id().to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(observer.try_wait().unwrap().is_none());
+    assert!(writer.wait().unwrap().success());
+    let output = observer.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        vec!["first-line", "final-line"]
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Result=success"));
+    assert!(stderr.contains("ExecMainStatus=0"));
 }
 
 #[test]

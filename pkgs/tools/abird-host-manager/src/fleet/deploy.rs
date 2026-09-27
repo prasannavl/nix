@@ -21,6 +21,7 @@ const SYSTEM_MV: &str = "/run/current-system/sw/bin/mv";
 const SYSTEM_READLINK: &str = "/run/current-system/sw/bin/readlink";
 const SYSTEM_SLEEP: &str = "/run/current-system/sw/bin/sleep";
 const SYSTEM_SYSTEMCTL: &str = "/run/current-system/sw/bin/systemctl";
+const SYSTEM_TAIL: &str = "/run/current-system/sw/bin/tail";
 const SYSTEM_TEE: &str = "/run/current-system/sw/bin/tee";
 const ACTIVATION_RESULT_DIR: &str = "/var/lib/nixbot/activation-results";
 const ACTIVATION_LOCK: &str = "/run/nixos/switch-to-configuration.lock";
@@ -949,37 +950,104 @@ fn activation_observer_script(unit: &str, max_wait: Duration) -> String {
         r#"result_file={result}
 log_file={log}
 unit={unit}
+result=running
+exec_main_status=255
+admitted=0
+polls=0
 read_result() {{
     result=running
     exec_main_status=255
     admitted=0
-    if [ -s "$result_file" ]; then
-        while IFS= read -r line; do
-            case "$line" in
-                Result=*) result="${{line#Result=}}" ;;
-                ExecMainStatus=*) exec_main_status="${{line#ExecMainStatus=}}" ;;
-                Admitted=*) admitted="${{line#Admitted=}}" ;;
-            esac
-        done < "$result_file"
-    fi
+    [ -s "$result_file" ] || return 1
+    while IFS= read -r line; do
+        case "$line" in
+            Result=*) result="${{line#Result=}}" ;;
+            ExecMainStatus=*) exec_main_status="${{line#ExecMainStatus=}}" ;;
+            Admitted=*) admitted="${{line#Admitted=}}" ;;
+        esac
+    done < "$result_file"
 }}
-for ((polls = 0; polls < {max_polls}; polls++)); do
-    read_result
-    [ "$result" = running ] || break
+unit_is_terminal() {{
+    job="$({SYSTEM_SYSTEMCTL} show --property=Job --value "$unit" 2>/dev/null || true)"
+    [ -z "$job" ] || return 1
     active_state="$({SYSTEM_SYSTEMCTL} show --property=ActiveState --value "$unit" 2>/dev/null || true)"
     load_state="$({SYSTEM_SYSTEMCTL} show --property=LoadState --value "$unit" 2>/dev/null || true)"
     case "${{load_state}}:${{active_state}}" in
-        not-found:*|*:inactive|*:failed)
-            [ -s "$result_file" ] || exit 255
-            break
-            ;;
+        not-found:*|*:inactive|*:failed) return 0 ;;
+        *) return 1 ;;
     esac
+}}
+wait_for_change() {{
+    polls=$((polls + 1))
+    [ "$polls" -lt {max_polls} ] || return 1
     {SYSTEM_SLEEP} 0.1
+}}
+while ! read_result; do
+    if unit_is_terminal || ! wait_for_change; then
+        read_result || exit 255
+    fi
 done
-[ ! -e "$log_file" ] || {SYSTEM_CAT} "$log_file"
-# The unit may publish its terminal marker between the last poll and log
-# consumption. Do not return the stale running sentinel in that race.
-read_result
+main_pid=0
+while [ "$result" = running ]; do
+    main_pid="$({SYSTEM_SYSTEMCTL} show --property=MainPID --value "$unit" 2>/dev/null || true)"
+    case "$main_pid" in ''|*[!0-9]*) main_pid=0 ;; esac
+    [ "$main_pid" -le 0 ] || break
+    read_result || true
+    [ "$result" = running ] || break
+    if unit_is_terminal || ! wait_for_change; then
+        read_result || true
+        break
+    fi
+done
+while [ ! -e "$log_file" ] && [ "$result" = running ]; do
+    read_result || true
+    [ "$result" = running ] || break
+    if unit_is_terminal || ! wait_for_change; then
+        read_result || true
+        break
+    fi
+done
+if [ -e "$log_file" ]; then
+    if [ "$main_pid" -gt 0 ]; then
+        emitted_lines=0
+        while IFS= read -r line; do
+            printf '%s\n' "$line"
+            emitted_lines=$((emitted_lines + 1))
+        done < <({SYSTEM_TAIL} --pid="$main_pid" --lines=+1 --follow=name "$log_file" 2>/dev/null)
+    else
+        emitted_lines=0
+        while IFS= read -r line; do
+            printf '%s\n' "$line"
+            emitted_lines=$((emitted_lines + 1))
+        done < "$log_file"
+    fi
+fi
+# A log follower is observational, never activation authority. If it exits
+# early, keep polling the result and drain only newly completed log lines.
+while [ "$result" = running ]; do
+    if [ -e "$log_file" ]; then
+        line_number=0
+        while IFS= read -r line; do
+            line_number=$((line_number + 1))
+            [ "$line_number" -le "${{emitted_lines:-0}}" ] || printf '%s\n' "$line"
+        done < "$log_file"
+        emitted_lines=$line_number
+    fi
+    read_result || true
+    [ "$result" = running ] || break
+    if unit_is_terminal || ! wait_for_change; then
+        read_result || exit 255
+        [ "$result" = running ] && exit 255
+    fi
+done
+# Catch the PID-exit/log-flush race without repeating lines already followed.
+if [ -e "$log_file" ]; then
+    line_number=0
+    while IFS= read -r line; do
+        line_number=$((line_number + 1))
+        [ "$line_number" -le "${{emitted_lines:-0}}" ] || printf '%s\n' "$line"
+    done < "$log_file"
+fi
 printf '%s\nOutcomeSource=marker\nResult=%s\nExecMainStatus=%s\nAdmitted=%s\n%s\n' '{ACTIVATION_MARKER_BEGIN}' "$result" "$exec_main_status" "$admitted" '{ACTIVATION_MARKER_END}' >&2
 case "$exec_main_status" in ''|*[!0-9]*) exit 255 ;; *) exit "$exec_main_status" ;; esac
 "#

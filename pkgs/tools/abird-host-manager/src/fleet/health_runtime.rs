@@ -12,7 +12,9 @@ use super::health::{
     classify_transitional_unit, derive_readiness_budget, validate_deferred_resources,
     validate_durable_holds,
 };
-use super::host_runtime::{EffectKind, HostExecutionTarget, HostRuntime, ProcessRunner};
+use super::host_runtime::{
+    EffectKind, HostExecutionTarget, HostRuntime, ProcessOutputPolicy, ProcessRunner,
+};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -91,6 +93,19 @@ pub fn check_managed_health_with_ignored_system_units<R: ProcessRunner>(
     target: &HostExecutionTarget,
     ignored_system_units: &BTreeSet<String>,
 ) -> Result<ManagedHealthReport> {
+    check_managed_health_with_progress(runtime, target, ignored_system_units, |_, _, _| {})
+}
+
+pub fn check_managed_health_with_progress<R, F>(
+    runtime: &mut HostRuntime<R>,
+    target: &HostExecutionTarget,
+    ignored_system_units: &BTreeSet<String>,
+    mut progress: F,
+) -> Result<ManagedHealthReport>
+where
+    R: ProcessRunner,
+    F: FnMut(usize, &HealthDecision, &[String]),
+{
     let command = managed_health_command();
     let mut attempts = 0usize;
     let mut baseline = BaselineTimerUnits::default();
@@ -98,11 +113,12 @@ pub fn check_managed_health_with_ignored_system_units<R: ProcessRunner>(
     let mut ignored_system_failures = BTreeSet::new();
     loop {
         attempts += 1;
-        let output = runtime.execute_remote_root_command_bounded(
+        let output = runtime.execute_remote_root_command_bounded_with_output_policy(
             target,
             &command,
             EffectKind::ReadOnly,
             "post-switch-health",
+            ProcessOutputPolicy::HiddenProtocol,
         )?;
         if !output.succeeded() {
             bail!(
@@ -134,7 +150,7 @@ pub fn check_managed_health_with_ignored_system_units<R: ProcessRunner>(
                     budget = resolved;
                 }
                 let Some(readiness) = &budget else {
-                    return Ok(ManagedHealthReport {
+                    let report = ManagedHealthReport {
                         decision: HealthDecision::ServiceFailure {
                             evidence: vec![HealthEvidence::ReportedFailure {
                                 scope: "readiness".to_owned(),
@@ -150,14 +166,16 @@ pub fn check_managed_health_with_ignored_system_units<R: ProcessRunner>(
                         ignored_system_failures: report.ignored_system_failures,
                         attempts,
                         readiness_budget: None,
-                    });
+                    };
+                    progress(attempts, &report.decision, &report.details);
+                    return Ok(report);
                 };
                 let maximum_attempts = readiness
                     .timeout_seconds
                     .div_ceil(POLL_INTERVAL.as_secs())
                     .saturating_add(1) as usize;
                 if attempts >= maximum_attempts {
-                    return Ok(ManagedHealthReport {
+                    let report = ManagedHealthReport {
                         decision: HealthDecision::ServiceFailure {
                             evidence: vec![HealthEvidence::ReportedFailure {
                                 scope: "readiness".to_owned(),
@@ -172,11 +190,15 @@ pub fn check_managed_health_with_ignored_system_units<R: ProcessRunner>(
                         ignored_system_failures: report.ignored_system_failures,
                         attempts,
                         readiness_budget: budget,
-                    });
+                    };
+                    progress(attempts, &report.decision, &report.details);
+                    return Ok(report);
                 }
+                progress(attempts, &report.decision, &report.details);
                 runtime.wait(POLL_INTERVAL);
             }
             _ => {
+                progress(attempts, &report.decision, &report.details);
                 report.failure_excerpts = collect_failure_excerpts(runtime, target, &observation);
                 report.attempts = attempts;
                 report.readiness_budget = budget;
@@ -420,11 +442,12 @@ fn collect_failure_excerpts<R: ProcessRunner>(
         return Vec::new();
     }
     let command = failure_diagnostics_command(&units);
-    let Ok(output) = runtime.execute_remote_root_command_bounded(
+    let Ok(output) = runtime.execute_remote_root_command_bounded_with_output_policy(
         target,
         &command,
         EffectKind::ReadOnly,
         "post-switch-health-diagnostics",
+        ProcessOutputPolicy::HiddenProtocol,
     ) else {
         return Vec::new();
     };

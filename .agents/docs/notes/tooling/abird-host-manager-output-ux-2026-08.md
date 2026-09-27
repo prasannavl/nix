@@ -45,12 +45,15 @@ of creating manager state.
 ## Interactive color
 
 Color reinforces the existing glyph and prose vocabulary; it never replaces it.
-Interactive terminals use one restrained semantic palette: success is bold
-green, failure is bold red with readable red diagnostics, warnings and deferred
-work are yellow, active work is cyan, headings are bold, progress details are
-dimmed, and structured field labels are blue. The same palette applies across
-all structured command families, transient and durable progress, terminal
-failure rendering, deprecation warnings, and the closeout confirmation prompt.
+Interactive terminals use one restrained semantic palette: success is green,
+failure is red with readable red diagnostics, warnings and deferred work are
+yellow, active work is cyan, headings alone are bold, rolling progress details
+are dimmed, neutral or skipped outcomes and completed-line metadata use nixbot
+gray, and structured field labels are blue. Completed phase rows color only the
+primary phase outcome; host summaries color successful status values while
+skipped host lines remain wholly gray. The same palette applies across all
+structured command families, transient and durable progress, terminal failure
+rendering, deprecation warnings, and the closeout confirmation prompt.
 
 Color is automatic only when the destination stream is a terminal. Stdout and
 stderr are detected independently, `NO_COLOR` and `TERM=dumb` disable ANSI, and
@@ -94,6 +97,43 @@ The workflow summary labels source-to-target intent as `Move`, never `Route`.
 preserve `--local` whenever repository evidence or retained command steps show
 local authority, preventing an operator from crossing journal/publication
 authority modes between lifecycle commands.
+
+Fleet deployment phases keep the complete selected-host roster visible. Each
+running host owns a bounded rolling tail of up to five safe semantic lines;
+successful work collapses, while failed work retains its tail. The phase header
+reports stage, wave, concurrency, running, completed, pending, and elapsed
+counts. Output ownership is consistent by phase:
+
+- build shows normalized Nix evaluation, realization, copy, and store events;
+- snapshot shows parent-readiness lifecycle events and the captured generation;
+- acquisition shows normalized closure transfer, admission, Podman prefetch, and
+  AI-model prefetch events;
+- deployment shows pre-switch events and follows the detached activation or
+  rollback log while its target-local unit is alive; and
+- health hides the collector wire format and publishes parsed per-attempt
+  healthy, settling, or failure facts from Rust.
+
+Every child process declares an output policy. Curated operational output and
+activation lifecycle output pass through terminal sanitization, whole-line
+secret redaction, and bounded phase-specific allowlists. Machine protocols,
+activation result frames, identity uploads, and control commands remain absent
+from human progress and retained human failure tails; their raw streams remain
+available only in private diagnostic files. `--verbose` independently shows
+sanitized and whole-line-redacted non-protocol subprocess output; dashboard
+admission never controls whether verbose output is emitted. Unknown default-mode
+output fails closed to a generic diagnostic pointer instead of relying on error
+keywords. SSH key discovery and local closure copies are attributed to the
+affected host instead of appearing as unrelated phase-level chatter. Nix store
+events must contain one validated store-root basename, and manually published
+SSH or health-operation lines pass a separate semantic allowlist. Health details
+expose only validated user and systemd-unit identifiers or a generic diagnostics
+pointer; decoded collector text is never copied directly into the default host
+tail.
+
+The activation log follower is observational rather than authoritative. If it
+exits early, the observer continues bounded result polling and drains only new
+complete log lines by ordinal; the target-side result frame alone determines
+activation success or failure.
 
 ## Stability and tests
 

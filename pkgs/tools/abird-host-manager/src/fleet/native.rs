@@ -84,6 +84,25 @@ fn health_failure_message(
     message
 }
 
+fn health_progress_line(
+    attempt: usize,
+    decision: &super::health::HealthDecision,
+    details: &[String],
+) -> String {
+    let state = match decision {
+        super::health::HealthDecision::Healthy { .. } => "healthy",
+        super::health::HealthDecision::Settling { .. } => "settling",
+        super::health::HealthDecision::ServiceFailure { .. } => "service failure",
+        super::health::HealthDecision::StructuralFailure { .. } => "structural failure",
+    };
+    let detail = details
+        .first()
+        .and_then(|detail| super::presentation::format_health_progress_detail(detail))
+        .map(|detail| format!(" · {detail}"))
+        .unwrap_or_default();
+    format!("[health-check] attempt {attempt} · {state}{detail}")
+}
+
 pub struct NativeFleetEffects<'a> {
     invocation: &'a Invocation,
     nix_program: &'a Path,
@@ -1871,10 +1890,16 @@ impl<'a> NativeFleetEffects<'a> {
         };
         let mut contents = Vec::new();
         if let Some((target, port)) = scan_host {
-            self.progress.detail(format!(
-                "Discover SSH host key · {} via {target}:{port}",
-                host.inventory_name
-            ));
+            let key = format!("ssh-host-key-{}", host.inventory_name);
+            let label = "Discover SSH host key";
+            let started = Instant::now();
+            self.progress
+                .host_operation_started(&host.inventory_name, &key, label);
+            self.progress.host_operation_output(
+                &host.inventory_name,
+                &key,
+                &format!("[ssh] scanning {target}:{port}"),
+            );
             for algorithm in [Some("ed25519"), None] {
                 let mut command = Command::new("ssh-keyscan");
                 command.args([
@@ -1897,12 +1922,32 @@ impl<'a> NativeFleetEffects<'a> {
                 }
             }
             if contents.is_empty() {
+                self.progress.host_operation_output(
+                    &host.inventory_name,
+                    &key,
+                    &format!("[ssh] no host key returned by {target}:{port}"),
+                );
+                self.progress.host_operation_finished(
+                    &host.inventory_name,
+                    &key,
+                    label,
+                    started.elapsed(),
+                    false,
+                );
                 bail!("could not determine SSH host key for {target}:{port}");
             }
-            self.progress.detail(format!(
-                "Discovered SSH host key · {} via {target}:{port}",
-                host.inventory_name
-            ));
+            self.progress.host_operation_output(
+                &host.inventory_name,
+                &key,
+                &format!("[ssh] host key discovered via {target}:{port}"),
+            );
+            self.progress.host_operation_finished(
+                &host.inventory_name,
+                &key,
+                label,
+                started.elapsed(),
+                true,
+            );
         }
         let mut file = OpenOptions::new()
             .write(true)
@@ -2029,10 +2074,11 @@ impl<'a> NativeFleetEffects<'a> {
                 ),
                 &target,
             )?;
-            let output = self.host_runtime.execute_local_command(
+            let output = self.host_runtime.execute_local_command_for_host(
                 &command,
                 EffectKind::Mutation,
                 "deploy-copy-closure",
+                host,
             )?;
             if !output.succeeded() {
                 bail!("copy closure to {host} failed: {}", output.stderr.trim());
@@ -2925,18 +2971,49 @@ impl<'a> NativeFleetEffects<'a> {
                 tasks,
                 self.invocation.options.verify_jobs,
                 |(host, target, ignored_system_units)| {
+                    let key = format!("health-check-{host}");
+                    let label = "Health check";
+                    let started = Instant::now();
+                    progress.host_operation_started(&host, &key, label);
                     let result = (|| -> Result<super::health_runtime::ManagedHealthReport> {
                         let mut runtime = HostRuntime::new(
                             reporting_process_runner(&progress),
                             repository.clone(),
                             DryRun::No,
                         )?;
-                        super::health_runtime::check_managed_health_with_ignored_system_units(
+                        super::health_runtime::check_managed_health_with_progress(
                             &mut runtime,
                             &target,
                             &ignored_system_units,
+                            |attempt, decision, details| {
+                                progress.host_operation_output(
+                                    &host,
+                                    &key,
+                                    &health_progress_line(attempt, decision, details),
+                                );
+                            },
                         )
                     })();
+                    let succeeded = result.as_ref().is_ok_and(|report| {
+                        matches!(
+                            report.decision,
+                            super::health::HealthDecision::Healthy { .. }
+                        )
+                    });
+                    if result.is_err() {
+                        progress.host_operation_output(
+                            &host,
+                            &key,
+                            "[health-check] probe failed; see diagnostics",
+                        );
+                    }
+                    progress.host_operation_finished(
+                        &host,
+                        &key,
+                        label,
+                        started.elapsed(),
+                        succeeded,
+                    );
                     (host, result)
                 },
             )?;
@@ -3677,6 +3754,33 @@ pub fn action_needs_inventory(action: &Action) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semantic_health_progress_normalizes_failure_details() {
+        let decision = super::super::health::HealthDecision::ServiceFailure {
+            evidence: Vec::new(),
+        };
+        assert_eq!(
+            health_progress_line(2, &decision, &["OPENAI_API_KEY=secret".into()]),
+            "[health-check] attempt 2 · service failure · detail redacted; see diagnostics"
+        );
+        assert_eq!(
+            health_progress_line(
+                3,
+                &decision,
+                &["user=abird failed-unit=abird-agent.service".into()]
+            ),
+            "[health-check] attempt 3 · service failure · user=abird failed-unit=abird-agent.service"
+        );
+        assert_eq!(
+            health_progress_line(
+                4,
+                &decision,
+                &["user=abird arbitrary remote detail sk-live-value".into()]
+            ),
+            "[health-check] attempt 4 · service failure · user=abird runtime issue; see diagnostics"
+        );
+    }
 
     #[test]
     fn only_unavailable_deploy_skips_may_omit_native_plans() {
