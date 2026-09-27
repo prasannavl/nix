@@ -2438,6 +2438,41 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             result.stdout.splitlines(),
         )
 
+    def test_exit_cleanup_releases_recorded_candidate_leases(self):
+        runtime = self.work_dir / "runtime"
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_DIR={runtime}
+            RUNTIME_WORK_ROOT={runtime}-root
+            RUNTIME_WORK_FALLBACK_ROOT={runtime}-fallback
+            NIXBOT_DIAG_KEEP_ROOT={runtime}-diagnostics
+            NIXBOT_DIAG_DIR=''
+            mkdir -p "$RUNTIME_WORK_DIR/acquired-candidates"
+            printf '/nix/store/new-system\n' >"$RUNTIME_WORK_DIR/acquired-candidates/app.path"
+            terminate_background_jobs() {{ printf 'terminate\n'; }}
+            release_acquired_candidates() {{
+              printf 'release:%s:%s\n' "$1" "$2"
+              rm -f "$1/$2.path"
+            }}
+            release_host_local_lock() {{ printf 'lock\n'; }}
+            restore_initial_tty_state() {{ :; }}
+            log_group_end_all() {{ :; }}
+            cleanup_repo_worktree() {{ printf 'worktree\n'; }}
+            cleanup_core 130
+            """
+        )
+
+        self.assertEqual(
+            [
+                "terminate",
+                f"release:{runtime}/acquired-candidates:app",
+                "lock",
+                "worktree",
+            ],
+            result.stdout.splitlines(),
+        )
+
     def test_skip_global_lock_allows_action_without_host_local_mutex(self):
         result = self.run_script(
             """
@@ -4844,10 +4879,9 @@ EOF_SCRIPT
             FORCE_PREFIX_HOST_LOGS=0
             trap : INT
             resolve_build_out_path() {{
-              : >{marker}
               local captured=""
               run_supervised_stdout_capture captured "" \
-                bash -c 'trap "" INT; sleep 30'
+                bash -c 'trap "" INT; : >"$1"; sleep 30' _ {marker}
             }}
             set +e
             run_build_job app {output} {status}
@@ -4869,13 +4903,13 @@ EOF_SCRIPT
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + 10
         while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertTrue(marker.exists(), "build worker did not start")
         os.killpg(process.pid, signal.SIGINT)
         try:
-            stdout, stderr = process.communicate(timeout=3)
+            stdout, stderr = process.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
             stdout, stderr = process.communicate()

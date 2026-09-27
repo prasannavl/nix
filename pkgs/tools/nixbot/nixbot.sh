@@ -1745,10 +1745,26 @@ parse_args() {
 	fi
 }
 
+release_recorded_acquired_candidates() {
+	local candidate_dir="${RUNTIME_WORK_DIR:-}/acquired-candidates"
+	local candidate_file="" node=""
+	local -a nodes=()
+
+	[ -n "${RUNTIME_WORK_DIR:-}" ] && [ -d "${candidate_dir}" ] || return 0
+	for candidate_file in "${candidate_dir}"/*.path; do
+		[ -e "${candidate_file}" ] || continue
+		node="${candidate_file##*/}"
+		nodes+=("${node%.path}")
+	done
+	[ "${#nodes[@]}" -gt 0 ] || return 0
+	release_acquired_candidates "${candidate_dir}" "${nodes[@]}"
+}
+
 cleanup_core() {
 	local cleanup_rc="$1"
 
 	terminate_background_jobs || true
+	release_recorded_acquired_candidates || true
 	release_host_local_lock || true
 	restore_initial_tty_state || true
 	log_group_end_all || true
@@ -10364,6 +10380,9 @@ run_supervised_stdout_capture() {
 		"$@" >"${stdout_path}" &
 	fi
 	command_pid="$!"
+	if [ -n "${NIXBOT_SUPERVISED_COMMAND_INTERRUPTED_STATUS}" ]; then
+		terminate_pid_tree "${command_pid}" TERM
+	fi
 
 	if wait "${command_pid}"; then
 		rc=0
