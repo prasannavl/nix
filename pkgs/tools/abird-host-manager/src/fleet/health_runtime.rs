@@ -20,6 +20,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub struct ManagedHealthReport {
     pub decision: HealthDecision,
     pub details: Vec<String>,
+    pub failure_excerpts: Vec<String>,
     pub ignored_system_failures: Vec<String>,
     pub attempts: usize,
     pub readiness_budget: Option<ReadinessBudget>,
@@ -57,6 +58,20 @@ struct Observation {
     registry_timeouts: Vec<u64>,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum FailedUnitScope {
+    System,
+    User(String),
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct FailedUnit {
+    scope: FailedUnitScope,
+    unit: String,
+}
+
+const MAX_FAILURE_UNITS: usize = 3;
+
 pub fn managed_health_command() -> CommandSpec {
     CommandSpec::new(
         "/run/current-system/sw/bin/bash",
@@ -83,7 +98,7 @@ pub fn check_managed_health_with_ignored_system_units<R: ProcessRunner>(
     let mut ignored_system_failures = BTreeSet::new();
     loop {
         attempts += 1;
-        let output = runtime.execute_remote_command_bounded(
+        let output = runtime.execute_remote_root_command_bounded(
             target,
             &command,
             EffectKind::ReadOnly,
@@ -131,6 +146,7 @@ pub fn check_managed_health_with_ignored_system_units<R: ProcessRunner>(
                             "deployment work is still settling, but no service-owned timeoutReadySeconds metadata was found"
                                 .to_owned(),
                         ],
+                        failure_excerpts: Vec::new(),
                         ignored_system_failures: report.ignored_system_failures,
                         attempts,
                         readiness_budget: None,
@@ -152,6 +168,7 @@ pub fn check_managed_health_with_ignored_system_units<R: ProcessRunner>(
                             }],
                         },
                         details: report.details,
+                        failure_excerpts: collect_failure_excerpts(runtime, target, &observation),
                         ignored_system_failures: report.ignored_system_failures,
                         attempts,
                         readiness_budget: budget,
@@ -160,6 +177,7 @@ pub fn check_managed_health_with_ignored_system_units<R: ProcessRunner>(
                 runtime.wait(POLL_INTERVAL);
             }
             _ => {
+                report.failure_excerpts = collect_failure_excerpts(runtime, target, &observation);
                 report.attempts = attempts;
                 report.readiness_budget = budget;
                 return Ok(report);
@@ -354,10 +372,208 @@ fn classify_observation(
     Ok(ManagedHealthReport {
         decision,
         details,
+        failure_excerpts: Vec::new(),
         ignored_system_failures: Vec::new(),
         attempts: 1,
         readiness_budget: derive_observation_budget(observation)?,
     })
+}
+
+fn failed_units(observation: &Observation) -> Vec<FailedUnit> {
+    let mut units = BTreeSet::new();
+    for failure in &observation.system_failed {
+        if let Some(unit) = failure
+            .split_whitespace()
+            .next()
+            .filter(|unit| !unit.is_empty())
+        {
+            units.insert(FailedUnit {
+                scope: FailedUnitScope::System,
+                unit: unit.to_owned(),
+            });
+        }
+    }
+    for (user, observation) in &observation.users {
+        for failure in &observation.failed {
+            if let Some(unit) = failure
+                .split_whitespace()
+                .next()
+                .filter(|unit| !unit.is_empty())
+            {
+                units.insert(FailedUnit {
+                    scope: FailedUnitScope::User(user.clone()),
+                    unit: unit.to_owned(),
+                });
+            }
+        }
+    }
+    units.into_iter().take(MAX_FAILURE_UNITS).collect()
+}
+
+fn collect_failure_excerpts<R: ProcessRunner>(
+    runtime: &mut HostRuntime<R>,
+    target: &HostExecutionTarget,
+    observation: &Observation,
+) -> Vec<String> {
+    let units = failed_units(observation);
+    if units.is_empty() {
+        return Vec::new();
+    }
+    let command = failure_diagnostics_command(&units);
+    let Ok(output) = runtime.execute_remote_root_command_bounded(
+        target,
+        &command,
+        EffectKind::ReadOnly,
+        "post-switch-health-diagnostics",
+    ) else {
+        return Vec::new();
+    };
+    if !output.succeeded() {
+        return Vec::new();
+    }
+    parse_failure_excerpts(&output.stdout).unwrap_or_default()
+}
+
+fn failure_diagnostics_command(units: &[FailedUnit]) -> CommandSpec {
+    let mut args = vec![
+        "-c".to_owned(),
+        HEALTH_FAILURE_DIAGNOSTICS.to_owned(),
+        "--".to_owned(),
+    ];
+    for unit in units {
+        match &unit.scope {
+            FailedUnitScope::System => {
+                args.extend(["system".to_owned(), String::new(), unit.unit.clone()]);
+            }
+            FailedUnitScope::User(user) => {
+                args.extend(["user".to_owned(), user.clone(), unit.unit.clone()]);
+            }
+        }
+    }
+    CommandSpec::new("/run/current-system/sw/bin/bash", args)
+}
+
+fn parse_failure_excerpts(value: &str) -> Result<Vec<String>> {
+    let mut excerpts = Vec::new();
+    for (line_number, line) in value.lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut fields = line.split('\t');
+        let kind = fields
+            .next()
+            .context("health diagnostic record has no kind")?;
+        let fields = fields
+            .map(decode_field)
+            .collect::<Result<Vec<_>>>()
+            .with_context(|| {
+                format!(
+                    "decode health diagnostic record on line {}",
+                    line_number + 1
+                )
+            })?;
+        let field = |index: usize| {
+            fields
+                .get(index)
+                .map(String::as_str)
+                .with_context(|| format!("{kind} record is missing field {index}"))
+        };
+        let scope = match (field(0)?, field(1)?) {
+            ("system", _) => "system".to_owned(),
+            ("user", user) => format!("user={user}"),
+            (scope, _) => bail!("invalid health diagnostic scope: {scope}"),
+        };
+        let rendered = match kind {
+            "failed-status" => format!(
+                "{scope} unit={} result={} exit={}/{} restarts={}",
+                field(2)?,
+                field(3)?,
+                field(4)?,
+                field(5)?,
+                field(6)?
+            ),
+            "failed-log" => format!("{scope} unit={} log={}", field(2)?, field(3)?),
+            _ => bail!("unknown health diagnostic record kind: {kind}"),
+        };
+        if let Some(rendered) = format_health_failure_line(&rendered) {
+            excerpts.push(rendered);
+        }
+    }
+    Ok(excerpts)
+}
+
+fn format_health_failure_line(line: &str) -> Option<String> {
+    let mut line = terminal_safe_health_line(line);
+    if sensitive_health_output(&line) {
+        line = "[sensitive output redacted]".to_owned();
+    }
+    if line.is_empty() {
+        return None;
+    }
+    if line.chars().count() > 500 {
+        line = line.chars().take(499).collect::<String>();
+        line.push('…');
+    }
+    Some(line)
+}
+
+fn terminal_safe_health_line(line: &str) -> String {
+    let line = line.rsplit('\r').next().unwrap_or(line);
+    let mut output = String::with_capacity(line.len().min(240));
+    let mut characters = line.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\u{1b}' {
+            match characters.next() {
+                Some('[') => {
+                    for control in characters.by_ref() {
+                        if ('@'..='~').contains(&control) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    let mut escaped = false;
+                    for control in characters.by_ref() {
+                        if control == '\u{7}' || (escaped && control == '\\') {
+                            break;
+                        }
+                        escaped = control == '\u{1b}';
+                    }
+                }
+                Some(_) | None => {}
+            }
+            continue;
+        }
+        if character == '\t' {
+            output.push(' ');
+        } else if !character.is_control() {
+            output.push(character);
+        }
+    }
+    output.trim_end().to_owned()
+}
+
+fn sensitive_health_output(line: &str) -> bool {
+    let lowercase = line.to_ascii_lowercase();
+    let named_secret = [
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "private_key",
+        "private-key",
+        "credential",
+        "authorization:",
+        "bearer ",
+    ]
+    .iter()
+    .any(|needle| lowercase.contains(needle));
+    let credential_url = lowercase.find("://").is_some_and(|scheme| {
+        lowercase[scheme + 3..]
+            .find('@')
+            .is_some_and(|at| lowercase[scheme + 3..scheme + 3 + at].contains(':'))
+    });
+    named_secret || credential_url
 }
 
 fn observation_has_settling(observation: &Observation, baseline: &BaselineTimerUnits) -> bool {
@@ -758,6 +974,51 @@ if [ -r "$registry" ]; then
 fi
 "#;
 
+const HEALTH_FAILURE_DIAGNOSTICS: &str = r#"set -Eeuo pipefail
+base64_bin=/run/current-system/sw/bin/base64
+emit() {
+    local kind="$1" value encoded
+    shift
+    printf '%s' "$kind"
+    for value in "$@"; do
+        encoded="$(printf '%s' "$value" | "$base64_bin" -w0)"
+        printf '\t%s' "$encoded"
+    done
+    printf '\n'
+}
+while [ "$#" -ge 3 ]; do
+    scope="$1"
+    user="$2"
+    unit="$3"
+    shift 3
+    if [ "$scope" = system ]; then
+        ctl=(systemctl)
+        journal=(journalctl)
+    else
+        uid="$(id -u "$user" 2>/dev/null || true)"
+        gid="$(id -g "$user" 2>/dev/null || true)"
+        [ -n "$uid" ] && [ -n "$gid" ] || continue
+        user_env=(setpriv --reuid="$user" --regid="$gid" --init-groups env \
+            XDG_RUNTIME_DIR="/run/user/$uid" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus")
+        ctl=("${user_env[@]}" systemctl --user)
+        journal=("${user_env[@]}" journalctl --user)
+    fi
+    state="$("${ctl[@]}" show "$unit" \
+        --property=Result,ExecMainCode,ExecMainStatus,NRestarts 2>/dev/null || true)"
+    result="$(printf '%s\n' "$state" | sed -n 's/^Result=//p')"
+    code="$(printf '%s\n' "$state" | sed -n 's/^ExecMainCode=//p')"
+    status="$(printf '%s\n' "$state" | sed -n 's/^ExecMainStatus=//p')"
+    restarts="$(printf '%s\n' "$state" | sed -n 's/^NRestarts=//p')"
+    emit failed-status "$scope" "$user" "$unit" \
+        "${result:-unknown}" "${code:-unknown}" "${status:-unknown}" "${restarts:-unknown}"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        emit failed-log "$scope" "$user" "$unit" "$line"
+    done < <("${journal[@]}" -u "$unit" -b -n 3 --no-pager -o cat 2>/dev/null || true)
+done
+"#;
+
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
@@ -802,20 +1063,23 @@ mod tests {
 
     #[test]
     fn collector_is_valid_bash_and_keeps_classification_out_of_shell() {
-        let mut child = Command::new("bash")
-            .arg("-n")
-            .stdin(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(HEALTH_COLLECTOR.as_bytes())
-            .unwrap();
-        assert!(child.wait().unwrap().success());
+        for script in [HEALTH_COLLECTOR, HEALTH_FAILURE_DIAGNOSTICS] {
+            let mut child = Command::new("bash")
+                .arg("-n")
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(script.as_bytes())
+                .unwrap();
+            assert!(child.wait().unwrap().success());
+        }
         assert!(!HEALTH_COLLECTOR.contains("return 3"));
         assert!(!HEALTH_COLLECTOR.contains("FAILED —"));
+        assert!(HEALTH_FAILURE_DIAGNOSTICS.contains("-n 3"));
     }
 
     #[test]

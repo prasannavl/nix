@@ -83,3 +83,19 @@ Both distinct-store paths source the configured signed build-host cache and use
 the target's temporary trusted-public-key bridge. The fallback changes only the
 transport. It does not weaken signature enforcement, copy from an unverified
 builder store, or permit activation after a failed distribution.
+
+## Rust parity correction, September 2026
+
+Native fleet run `4c4ea46816a544c1be95ba8dca1fcbd9` reproduced the same
+target-side DNS failure. Its local client successfully fetched the complete
+34-path closure, but the Rust fallback then rejected `pvl-vlab-1` solely because
+the target uses `proxyJump = "pvl-x2"`. This was an implementation gap rather
+than a new network failure.
+
+The native relay now mirrors the final Bash design: one signed
+`nix copy --from <cache> --to <target>` runs with `NIX_SSHOPTS` derived from the
+complete prepared target route. Connection multiplexing is disabled for this
+store operation, IPv6 authorities are bracketed, and only classified transport
+loss receives bounded retry. Proxy-chain and explicit-`proxyCommand` tests cover
+the regression. Per-target diagnostic labels prevent concurrent relay logs from
+colliding.

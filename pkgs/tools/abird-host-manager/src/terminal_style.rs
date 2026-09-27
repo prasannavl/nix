@@ -18,12 +18,12 @@ pub enum Tone {
 impl Tone {
     fn code(self) -> &'static str {
         match self {
-            Self::Success => "\x1b[1;32m",
-            Self::Failure => "\x1b[1;31m",
+            Self::Success => "\x1b[32m",
+            Self::Failure => "\x1b[31m",
             Self::FailureDetail => "\x1b[31m",
-            Self::Warning => "\x1b[1;33m",
-            Self::Active => "\x1b[1;36m",
-            Self::Label => "\x1b[1;34m",
+            Self::Warning => "\x1b[33m",
+            Self::Active => "\x1b[36m",
+            Self::Label => "\x1b[34m",
             Self::Emphasis => "\x1b[1m",
             Self::Muted => "\x1b[2m",
         }
@@ -70,13 +70,21 @@ impl TerminalStyle {
     }
 
     pub fn semantic_document(self, document: &str) -> String {
-        let mut output = String::with_capacity(document.len());
+        self.semantic_text_with_heading(document, true)
+    }
+
+    pub fn semantic_text(self, text: &str) -> String {
+        self.semantic_text_with_heading(text, false)
+    }
+
+    fn semantic_text_with_heading(self, text: &str, infer_heading: bool) -> String {
+        let mut output = String::with_capacity(text.len());
         let mut first_nonempty = true;
-        for segment in document.split_inclusive('\n') {
+        for segment in text.split_inclusive('\n') {
             let (line, newline) = segment
                 .strip_suffix('\n')
                 .map_or((segment, ""), |line| (line, "\n"));
-            output.push_str(&self.semantic_line(line, first_nonempty));
+            output.push_str(&self.semantic_line(line, infer_heading && first_nonempty));
             output.push_str(newline);
             if !line.is_empty() {
                 first_nonempty = false;
@@ -164,11 +172,23 @@ mod tests {
             "Migration\n\n✓ Complete\n✗ Failed\n● Running\n◇ Deferred\nState   target active\n",
         );
         assert!(document.contains("\x1b[1mMigration\x1b[0m"));
-        assert!(document.contains("\x1b[1;32m✓ Complete\x1b[0m"));
-        assert!(document.contains("\x1b[1;31m✗ Failed\x1b[0m"));
-        assert!(document.contains("\x1b[1;36m● Running\x1b[0m"));
-        assert!(document.contains("\x1b[1;33m◇ Deferred\x1b[0m"));
-        assert!(document.contains("\x1b[1;34mState\x1b[0m   target active"));
+        assert!(document.contains("\x1b[32m✓ Complete\x1b[0m"));
+        assert!(document.contains("\x1b[31m✗ Failed\x1b[0m"));
+        assert!(document.contains("\x1b[36m● Running\x1b[0m"));
+        assert!(document.contains("\x1b[33m◇ Deferred\x1b[0m"));
+        assert!(document.contains("\x1b[34mState\x1b[0m   target active"));
+        assert_eq!(document.matches("\x1b[1m").count(), 1);
+    }
+
+    #[test]
+    fn semantic_text_never_promotes_body_lines_to_headings() {
+        let style = TerminalStyle::from_capabilities(true, false);
+        let text = "Summary · deploy · success\n  host · ok\n  │ raw process output\n";
+        assert_eq!(style.semantic_text(text), text);
+        assert_eq!(
+            style.semantic_document(text),
+            "\x1b[1mSummary · deploy · success\x1b[0m\n  host · ok\n  │ raw process output\n"
+        );
     }
 
     #[test]

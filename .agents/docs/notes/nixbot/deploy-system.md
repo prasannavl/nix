@@ -135,23 +135,19 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   materializing evaluation inputs through the remote store before the build host
   has CPU-heavy derivation work.
 - Remote deploy builds default to `--build-host-deploy-mode auto`, resolved per
-  target. A target behind `proxyJump` or `proxyCommand` uses `local-copy`
-  because operator reachability does not imply that the target can resolve or
-  reach the operator-facing cache URL. A direct target first uses `cache`; if
-  that target-side command fails, `auto` falls back to `local-copy` unless the
-  failure is an interrupt. The target-side command is not outer-retried before
-  fallback because Nix owns its own download retries and the signed relay is the
-  available alternative. Explicit `cache` remains strict and keeps the bounded
-  outer retries; explicit `local-copy` always relays. For distinct stores,
-  `cache` makes the target copy the exact path from the build-host cache.
-  `local-copy` sources the same signed cache path through the local client and
-  the same temporary target trust-key bridge. When the build host and target
-  resolve to the same canonical inventory resource, every mode skips HTTP and
-  instead runs an offline, recursive, metadata-only closure verification in that
-  store before activation. Deploy local-copy mode intentionally avoids raw
-  `ssh-ng://` copy-back into the operator store. Build-only copy-back instead
-  uses the authenticated `ssh-ng://` builder store directly and therefore does
-  not depend on operator-side cache reachability.
+  target. Every distinct-store target first uses `cache`; a non-interrupt
+  target-side failure falls back once to the signed local relay through the
+  target's complete prepared SSH route, including `proxyJump` or `proxyCommand`.
+  Proxy metadata describes SSH reachability, not which network context can reach
+  the cache. The target-side command is not outer-retried before fallback
+  because Nix owns its own download retries and the signed relay is the
+  available alternative. Explicit `cache` remains strict and keeps bounded outer
+  retries; explicit `local-copy` always relays. Both paths source the exact
+  closure from the signed builder cache and retain the target trust-key bridge.
+  When builder and target resolve to the same canonical resource, every mode
+  skips HTTP and instead performs offline recursive metadata verification in
+  that store before activation. Build-only copy-back remains a separate
+  authenticated builder-store path.
 - Build-cache config validation is fail-fast and specific: missing URL, missing
   host, and selected-build-host/cache-owner mismatches should each produce a
   distinct pre-activation error.

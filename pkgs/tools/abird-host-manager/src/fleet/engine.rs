@@ -60,13 +60,20 @@ pub trait FleetEffects {
 }
 
 pub fn execute(invocation: &Invocation, effects: &mut impl FleetEffects) -> Result<()> {
+    execute_with_interrupt_check(invocation, effects, super::signal::check_interrupted)
+}
+
+fn execute_with_interrupt_check(
+    invocation: &Invocation,
+    effects: &mut impl FleetEffects,
+    mut check_interrupted: impl FnMut() -> Result<()>,
+) -> Result<()> {
     let mut execution = ActionExecution::new(WorkflowPlan::for_action(&invocation.action).phases);
     let mut deferred_failure: Option<(PhaseFailure, Phase)> = None;
 
     while let Some(phase) = execution.start_next()? {
-        super::signal::check_interrupted()?;
+        check_interrupted()?;
         if let Err(failure) = effects.run_phase(phase) {
-            super::signal::check_interrupted()?;
             let rollback_eligible = matches!(failure.phase, Phase::Deploy | Phase::Health);
             if rollback_eligible
                 && !invocation.options.no_rollback
@@ -80,6 +87,11 @@ pub fn execute(invocation: &Invocation, effects: &mut impl FleetEffects) -> Resu
                     Err(rollback_failure)
                 };
             }
+
+            // A signal may be the reason the phase stopped, but rollback
+            // eligibility is a safety decision that must be handled before
+            // returning the interrupted exit status.
+            check_interrupted()?;
 
             if let Some(continue_through) = failure.continue_through() {
                 execution.finish_current(PhaseOutcome::FailedContinue)?;
@@ -107,6 +119,18 @@ pub fn execute(invocation: &Invocation, effects: &mut impl FleetEffects) -> Resu
         }
         execution.finish_current(PhaseOutcome::Succeeded)?;
 
+        if let Err(interrupted) = check_interrupted() {
+            if phase == Phase::Deploy
+                && !invocation.options.no_rollback
+                && let Err(rollback) = effects.rollback(phase)
+            {
+                return Err(anyhow!(
+                    "{interrupted:#}; interrupted deploy rollback also failed: {rollback:#}"
+                ));
+            }
+            return Err(interrupted);
+        }
+
         if deferred_failure
             .as_ref()
             .is_some_and(|(_, continue_through)| *continue_through == phase)
@@ -116,7 +140,6 @@ pub fn execute(invocation: &Invocation, effects: &mut impl FleetEffects) -> Resu
                 .expect("checked deferred phase failure");
             return Err(failure.into());
         }
-        super::signal::check_interrupted()?;
     }
 
     if let Some((failure, continue_through)) = deferred_failure {
@@ -125,5 +148,105 @@ pub fn execute(invocation: &Invocation, effects: &mut impl FleetEffects) -> Resu
         ))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use super::*;
+    use crate::fleet::cli::{Action, Options};
+    use crate::fleet::signal::Interrupted;
+
+    struct InterruptedDeploy {
+        calls: RefCell<Vec<&'static str>>,
+        interrupted: Rc<Cell<bool>>,
+    }
+
+    impl FleetEffects for InterruptedDeploy {
+        fn run_phase(&mut self, phase: Phase) -> std::result::Result<(), PhaseFailure> {
+            if phase == Phase::Deploy {
+                self.calls.borrow_mut().push("deploy");
+                self.interrupted.set(true);
+                Err(PhaseFailure::new(phase, "interrupted deploy"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn rollback(&mut self, _failed_phase: Phase) -> Result<()> {
+            self.calls.borrow_mut().push("rollback");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn interruption_is_reported_only_after_eligible_rollback() {
+        let invocation = Invocation {
+            action: Action::Deploy,
+            options: Options::default(),
+        };
+        let interrupted = Rc::new(Cell::new(false));
+        let mut effects = InterruptedDeploy {
+            calls: RefCell::new(Vec::new()),
+            interrupted: Rc::clone(&interrupted),
+        };
+        let error = execute_with_interrupt_check(&invocation, &mut effects, || {
+            if interrupted.get() {
+                Err(Interrupted::from_status(130).into())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+
+        assert!(error.downcast_ref::<Interrupted>().is_some());
+        assert_eq!(*effects.calls.borrow(), ["deploy", "rollback"]);
+    }
+
+    #[test]
+    fn interruption_after_successful_deploy_still_runs_rollback_hook() {
+        struct CompletedThenInterrupted {
+            calls: RefCell<Vec<&'static str>>,
+            interrupted: Rc<Cell<bool>>,
+        }
+
+        impl FleetEffects for CompletedThenInterrupted {
+            fn run_phase(&mut self, phase: Phase) -> std::result::Result<(), PhaseFailure> {
+                if phase == Phase::Deploy {
+                    self.calls.borrow_mut().push("deploy");
+                    self.interrupted.set(true);
+                }
+                Ok(())
+            }
+
+            fn rollback(&mut self, _failed_phase: Phase) -> Result<()> {
+                self.calls.borrow_mut().push("rollback");
+                Ok(())
+            }
+        }
+
+        let invocation = Invocation {
+            action: Action::Deploy,
+            options: Options::default(),
+        };
+        let interrupted = Rc::new(Cell::new(false));
+        let mut effects = CompletedThenInterrupted {
+            calls: RefCell::new(Vec::new()),
+            interrupted: Rc::clone(&interrupted),
+        };
+        let error = execute_with_interrupt_check(&invocation, &mut effects, || {
+            if interrupted.get() {
+                Err(Interrupted::from_status(130).into())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+
+        assert!(error.downcast_ref::<Interrupted>().is_some());
+        assert_eq!(*effects.calls.borrow(), ["deploy", "rollback"]);
     }
 }

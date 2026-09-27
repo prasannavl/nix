@@ -97,6 +97,28 @@ fn proxy_chain_is_outermost_first_and_prefers_operator_endpoints() {
 }
 
 #[test]
+fn proxy_keyscan_requires_a_directly_reachable_first_hop() {
+    let mut direct = host("edge", None, false);
+    let direct_plan = plan_proxy_chain(
+        &BTreeMap::from([("edge".to_owned(), direct.clone())]),
+        Some("edge"),
+    )
+    .unwrap();
+    assert_eq!(
+        direct_plan
+            .directly_scannable_first_hop()
+            .map(|hop| hop.node.as_str()),
+        Some("edge")
+    );
+
+    direct.proxy_command =
+        Some(ProxyCommandTemplate::new("cloudflared access ssh --hostname %h").unwrap());
+    let proxied_plan =
+        plan_proxy_chain(&BTreeMap::from([("edge".to_owned(), direct)]), Some("edge")).unwrap();
+    assert!(proxied_plan.directly_scannable_first_hop().is_none());
+}
+
+#[test]
 fn proxy_chain_rejects_cycles_and_unknown_hops() {
     let cycle = BTreeMap::from([
         ("a".to_owned(), host("a", Some("b"), false)),
@@ -194,6 +216,22 @@ fn retry_classification_preserves_signals_and_host_key_permanence() {
         policy.decide(&disconnected, RetryScope::Transport, 3),
         RetryDecision::Stop(FailureClass::TransportLoss)
     );
+
+    let unrelated_offending = FailureEvidence::new(
+        ProcessStatus::Code(1),
+        "Permissions 0644 for 'id_ed25519' are too open; offending file ignored",
+    );
+    assert_eq!(
+        unrelated_offending.classify(),
+        FailureClass::Permanent,
+        "generic offending diagnostics are not host-key failures"
+    );
+
+    let connection_closed = FailureEvidence::new(
+        ProcessStatus::Code(1),
+        "Connection closed by z.gap3.ai port 22",
+    );
+    assert_eq!(connection_closed.classify(), FailureClass::TransportLoss);
 }
 
 #[test]

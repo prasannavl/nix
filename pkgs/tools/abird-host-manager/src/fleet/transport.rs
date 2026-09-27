@@ -167,6 +167,13 @@ impl ProxyPlan {
     pub fn is_empty(&self) -> bool {
         self.hops.is_empty()
     }
+
+    /// Return the first hop only when it is directly reachable for keyscan.
+    /// A hop with its own ProxyCommand must establish trust on first SSH
+    /// contact because `ssh-keyscan` cannot use that transport.
+    pub fn directly_scannable_first_hop(&self) -> Option<&ProxyHop> {
+        self.hops.first().filter(|hop| hop.proxy_command.is_none())
+    }
 }
 
 pub fn plan_proxy_chain(
@@ -297,16 +304,17 @@ impl FailureEvidence {
         if let ProcessStatus::Signal(signal) = self.status {
             return FailureClass::Signal(signal);
         }
-        if contains_host_key_failure(&self.output) {
+        if output_indicates_host_key_failure(&self.output) {
             return FailureClass::HostKeyVerification;
         }
-        if contains_daemon_disconnect(&self.output) {
+        if output_indicates_daemon_disconnect(&self.output) {
             return FailureClass::DaemonDisconnected;
         }
         if self.status == ProcessStatus::Code(124) {
             return FailureClass::Timeout;
         }
-        if self.status == ProcessStatus::Code(255) || contains_transport_loss(&self.output) {
+        if self.status == ProcessStatus::Code(255) || output_indicates_transport_loss(&self.output)
+        {
             return FailureClass::TransportLoss;
         }
         FailureClass::Permanent
@@ -314,7 +322,7 @@ impl FailureEvidence {
 
     pub fn is_pre_admission_ssh_failure(&self) -> bool {
         if matches!(self.status, ProcessStatus::Signal(_))
-            || contains_host_key_failure(&self.output)
+            || output_indicates_host_key_failure(&self.output)
         {
             return false;
         }
@@ -335,19 +343,19 @@ impl FailureEvidence {
     }
 }
 
-fn contains_host_key_failure(output: &str) -> bool {
+pub fn output_indicates_host_key_failure(output: &str) -> bool {
     output.contains("REMOTE HOST IDENTIFICATION HAS CHANGED")
         || output.contains("Host key verification failed")
         || (output.contains("Offending ") && output.contains(" key in "))
 }
 
-fn contains_daemon_disconnect(output: &str) -> bool {
+pub fn output_indicates_daemon_disconnect(output: &str) -> bool {
     output.contains("Nix daemon disconnected unexpectedly")
         || (output.contains("cannot connect to socket at ")
             && output.contains("nix/daemon-socket/socket"))
 }
 
-fn contains_transport_loss(output: &str) -> bool {
+pub fn output_indicates_transport_loss(output: &str) -> bool {
     [
         "failed to start SSH connection",
         "mux_client_request_session",

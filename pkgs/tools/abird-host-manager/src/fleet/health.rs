@@ -114,6 +114,10 @@ impl HealthDecision {
         Self::with_severity(severity, evidence)
     }
 
+    pub fn requires_generation_rollback(&self) -> bool {
+        matches!(self, Self::StructuralFailure { .. })
+    }
+
     fn severity(&self) -> u8 {
         match self {
             Self::Healthy { .. } => 0,

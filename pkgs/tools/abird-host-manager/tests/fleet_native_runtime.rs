@@ -21,6 +21,18 @@ fn git(root: &Path, args: &[&str]) -> String {
     run(Command::new("git").arg("-C").arg(root).args(args))
 }
 
+fn control_paths(log: &str) -> Vec<String> {
+    log.split_whitespace()
+        .filter_map(|token| {
+            token
+                .trim_matches(['\'', '"'])
+                .strip_prefix("ControlPath=")
+                .filter(|path| path.starts_with('/'))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
 #[test]
 fn compatibility_build_runs_the_native_evaluate_and_build_pipeline() {
     let temporary = tempfile::tempdir().unwrap();
@@ -211,6 +223,110 @@ esac
 }
 
 #[test]
+fn deploy_skips_an_external_host_without_a_native_build_plan() {
+    let temporary = tempfile::tempdir().unwrap();
+    let repository = temporary.path().join("repository");
+    let tools = temporary.path().join("tools");
+    let log = temporary.path().join("nix.log");
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&tools).unwrap();
+    fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
+    fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    git(&repository, &["config", "user.name", "Fleet Test"]);
+    git(
+        &repository,
+        &["config", "user.email", "fleet@example.invalid"],
+    );
+    git(&repository, &["config", "commit.gpgsign", "false"]);
+    git(&repository, &["add", "."]);
+    git(&repository, &["commit", "-qm", "fixture"]);
+
+    let nix = tools.join("nix");
+    write_executable(
+        &nix,
+        r#"#!/bin/sh
+set -eu
+printf 'argv=%s\n' "$*" >> "$NATIVE_FLEET_NIX_LOG"
+case "$*" in
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*)
+    printf '%s\n' '{"hosts":{"app":{"groups":["all"]},"external":{"groups":["all"],"deploy":"skip"}},"config":{}}'
+    ;;
+  *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
+  *'.#nixbot.plans.app.drvPath') printf '%s\n' '/nix/store/aaaaaaaa-system.drv' ;;
+  'build --print-out-paths /nix/store/aaaaaaaa-system.drv^out') printf '%s\n' '/nix/store/aaaaaaaa-system' ;;
+  *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
+esac
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .current_dir(&repository)
+        .args([
+            "deploy",
+            "--hosts=app,external",
+            "--config",
+            "hosts.nix",
+            "--no-override",
+            "--build-host",
+            "local",
+            "--dry",
+        ])
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
+        .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .env("NATIVE_FLEET_NIX_LOG", &log)
+        .env("NIXBOT_BUILD_PLAN_CACHE", "0")
+        .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
+        .env(
+            "NIXBOT_RUNTIME_FALLBACK_ROOT",
+            temporary.path().join("fallback"),
+        )
+        .env(
+            "NIXBOT_DIAG_KEEP_ROOT",
+            temporary.path().join("diagnostics"),
+        )
+        .output()
+        .unwrap();
+
+    let progress = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{progress}");
+    assert!(
+        progress.contains("◇ Build plan external · skipped"),
+        "{progress}"
+    );
+    assert!(!progress.contains("✗ Build plan external"), "{progress}");
+    assert!(progress.contains("external · skip"), "{progress}");
+    for (phase, position) in [
+        ("Build systems", "phase 1/5"),
+        ("Snapshot generations", "phase 2/5"),
+        ("Acquire deployment artifacts", "phase 3/5"),
+        ("Deploy systems", "phase 4/5"),
+        ("Verify deployment health", "phase 5/5"),
+    ] {
+        assert!(
+            progress.contains(&format!("{phase} · 2 hosts · {position}")),
+            "{progress}"
+        );
+    }
+    assert!(progress.contains("Phases:"), "{progress}");
+    assert!(
+        progress.contains("Verify deployment health · ok"),
+        "{progress}"
+    );
+    let commands = fs::read_to_string(log).unwrap();
+    assert!(
+        commands.contains(".#nixbot.plans.app.drvPath"),
+        "{commands}"
+    );
+    assert!(!commands.contains("plans.external"), "{commands}");
+}
+
+#[test]
 fn use_repo_script_reexecutes_the_rust_app_from_the_exact_worktree() {
     let temporary = tempfile::tempdir().unwrap();
     let repository = temporary.path().join("repository");
@@ -359,11 +475,21 @@ esac
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(130), "{output:?}");
     assert!(started.elapsed() < Duration::from_secs(4));
+    let progress = String::from_utf8_lossy(&output.stderr);
+    assert!(progress.contains("Interrupt received"), "{progress}");
+    assert!(progress.contains("◇ Build app · interrupted"), "{progress}");
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("Interrupt received"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        progress.contains("◇ Build systems · 1 host · phase 1/1 · interrupted"),
+        "{progress}"
     );
+    assert!(
+        progress.contains("Summary · build · interrupted"),
+        "{progress}"
+    );
+    assert!(progress.contains("app · interrupted"), "{progress}");
+    assert!(!progress.contains("app · FAIL (build)"), "{progress}");
+    assert!(!progress.contains("✗ Build app"), "{progress}");
+    assert!(!progress.contains("✗ Build systems"), "{progress}");
 }
 
 #[test]
@@ -535,6 +661,8 @@ fn remote_build_holds_gc_lease_and_returns_verified_closure_to_local_store() {
     let nix_log = temporary.path().join("nix.log");
     let ssh_log = temporary.path().join("ssh.log");
     let ssh_count = temporary.path().join("ssh.count");
+    let keyscan_log = temporary.path().join("ssh-keyscan.log");
+    let runtime_root = temporary.path().join("dev/shm/nixbot");
     fs::create_dir_all(&repository).unwrap();
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
@@ -558,7 +686,7 @@ printf 'argv=%s env=%s\n' "$*" "${NIX_SSHOPTS:-}" >> "$NATIVE_FLEET_NIX_LOG"
 case "$*" in
   *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
   *'--file '*'hosts.nix'*)
-    printf '%s\n' '{"hosts":{"app":{},"builder":{"target":"builder.invalid","knownHosts":"builder.invalid ssh-ed25519 AAAA"}},"config":{}}'
+    printf '%s\n' '{"hosts":{"app":{},"edge":{"target":"z.gap3.ai","proxyCommand":"cloudflared access ssh --hostname %h"},"builder":{"target":"10.10.30.80","proxyJump":"edge"}},"config":{}}'
     ;;
   *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
   *'.#nixbot.plans.app.drvPath') printf '%s\n' '/nix/store/aaaaaaaa-system.drv' ;;
@@ -595,6 +723,12 @@ esac
 "#,
     )
     .unwrap();
+    let ssh_keyscan = tools.join("ssh-keyscan");
+    write_executable(
+        &ssh_keyscan,
+        "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$NATIVE_FLEET_KEYSCAN_LOG\"\nexit 93\n",
+    )
+    .unwrap();
     let path = format!(
         "{}:{}",
         tools.display(),
@@ -621,10 +755,11 @@ esac
         .env("NATIVE_FLEET_NIX_LOG", &nix_log)
         .env("NATIVE_FLEET_SSH_LOG", &ssh_log)
         .env("NATIVE_FLEET_SSH_COUNT", &ssh_count)
+        .env("NATIVE_FLEET_KEYSCAN_LOG", &keyscan_log)
         .env("NIXBOT_SSH_CONNECT_TIMEOUT_SECS", "42")
         .env("NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS", "9")
         .env("NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX", "2")
-        .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
+        .env("NIXBOT_RUNTIME_WORK_ROOT", &runtime_root)
         .env(
             "NIXBOT_RUNTIME_FALLBACK_ROOT",
             temporary.path().join("fallback"),
@@ -641,18 +776,199 @@ esac
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(fs::read_to_string(&ssh_count).unwrap().trim(), "2");
+    assert!(
+        !keyscan_log.exists(),
+        "a ProxyCommand-routed first hop must not launch direct ssh-keyscan"
+    );
     let nix_commands = fs::read_to_string(&nix_log).unwrap();
-    assert!(nix_commands.contains("copy --to ssh-ng://root@builder.invalid"));
-    assert!(nix_commands.contains("copy --from ssh-ng://root@builder.invalid"));
+    assert!(nix_commands.contains("copy --to ssh-ng://root@10.10.30.80"));
+    assert!(nix_commands.contains("copy --from ssh-ng://root@10.10.30.80"));
     assert!(nix_commands.contains("ConnectTimeout=42"));
     assert!(nix_commands.contains("ServerAliveInterval=9"));
     assert!(nix_commands.contains("ServerAliveCountMax=2"));
+    assert!(nix_commands.contains("cloudflared access ssh --hostname z.gap3.ai"));
     let ssh_commands = fs::read_to_string(&ssh_log).unwrap();
-    assert_eq!(ssh_commands.matches("root@builder.invalid").count(), 2);
+    assert_eq!(ssh_commands.matches("root@10.10.30.80").count(), 2);
     assert!(ssh_commands.contains("nixbot-build-lease"));
     assert!(ssh_commands.contains("/run/current-system/sw/bin/flock"));
     assert!(ssh_commands.contains("/nix/var/nix"));
     assert!(!ssh_commands.contains("abird-nix-build-lease"));
+    let paths = control_paths(&format!("{nix_commands}\n{ssh_commands}"));
+    assert!(!paths.is_empty(), "no SSH ControlPath was emitted");
+    for path in paths {
+        assert!(
+            path.as_bytes().len() < 108,
+            "ControlPath is too long ({} bytes): {path}",
+            path.as_bytes().len()
+        );
+        assert!(path.starts_with(runtime_root.to_str().unwrap()), "{path}");
+        assert!(path.contains("/run-"), "{path}");
+        assert!(path.contains("/t-"), "{path}");
+        assert_eq!(
+            Path::new(&path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .len(),
+            23,
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn parallel_remote_builds_share_semantic_lease_authority_with_materialized_identity() {
+    let temporary = tempfile::tempdir().unwrap();
+    let repository = temporary.path().join("repository");
+    let tools = temporary.path().join("tools");
+    let nix_log = temporary.path().join("nix.log");
+    let ssh_log = temporary.path().join("ssh.log");
+    let age_log = temporary.path().join("age.log");
+    let encrypted_key = repository.join("builder.key.age");
+    let age_identity = temporary.path().join("age-identity");
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&tools).unwrap();
+    fs::write(&encrypted_key, "ENCRYPTED-FIXTURE\n").unwrap();
+    fs::write(&age_identity, "AGE-SECRET-KEY-FIXTURE\n").unwrap();
+    fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
+    fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    run(Command::new("git").args(["init", "-q"]).arg(&repository));
+    git(&repository, &["config", "user.name", "Fleet Test"]);
+    git(
+        &repository,
+        &["config", "user.email", "fleet@example.invalid"],
+    );
+    git(&repository, &["config", "commit.gpgsign", "false"]);
+    git(&repository, &["add", "."]);
+    git(&repository, &["commit", "-qm", "fixture"]);
+
+    let nix = tools.join("nix");
+    write_executable(
+        &nix,
+        r#"#!/bin/sh
+set -eu
+printf 'argv=%s env=%s\n' "$*" "${NIX_SSHOPTS:-}" >> "$NATIVE_FLEET_NIX_LOG"
+case "$*" in
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*)
+    printf '%s\n' '{"hosts":{"app-a":{"groups":["all"]},"app-b":{"groups":["all"]},"edge":{"target":"z.gap3.ai","proxyCommand":"cloudflared access ssh --hostname %h"},"builder":{"target":"10.10.30.80","key":"builder.key.age","proxyJump":"edge"}},"config":{}}'
+    ;;
+  *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app-a","app-b"]' ;;
+  *'.#nixbot.plans.app-a.drvPath') printf '%s\n' '/nix/store/aaaaaaaa-system.drv' ;;
+  *'.#nixbot.plans.app-b.drvPath') printf '%s\n' '/nix/store/bbbbbbbb-system.drv' ;;
+  copy*|*'store verify'*) ;;
+  *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
+esac
+"#,
+    )
+    .unwrap();
+    let age = tools.join("age");
+    write_executable(
+        &age,
+        r#"#!/bin/sh
+set -eu
+destination=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) destination=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$destination" ]
+printf '%s\n' "$destination" >> "$NATIVE_FLEET_AGE_LOG"
+printf '%s\n' 'PRIVATE-KEY-FIXTURE' > "$destination"
+"#,
+    )
+    .unwrap();
+    let ssh = tools.join("ssh");
+    write_executable(
+        &ssh,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$NATIVE_FLEET_SSH_LOG"
+case "$*" in
+  *nixbot-build-lease*hold*)
+    printf '%s\n' READY
+    while read -r command; do
+      [ "$command" = PING ] || exit 2
+      printf 'PONG\n'
+    done
+    exit 0
+    ;;
+esac
+cat >/dev/null
+case "$*" in
+  *'-O exit'*) exit 0 ;;
+  *) printf '%s\n' /nix/store/cccccccc-system ;;
+esac
+"#,
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        tools.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .current_dir(&repository)
+        .args([
+            "build",
+            "--hosts=app-a,app-b",
+            "--config",
+            "hosts.nix",
+            "--no-override",
+            "--build-host=builder",
+            "--build-jobs=2",
+            "--age-key-file",
+            age_identity.to_str().unwrap(),
+        ])
+        .env("PATH", path)
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
+        .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .env("NATIVE_FLEET_NIX_LOG", &nix_log)
+        .env("NATIVE_FLEET_SSH_LOG", &ssh_log)
+        .env("NATIVE_FLEET_AGE_LOG", &age_log)
+        .env("NIXBOT_BUILD_PLAN_CACHE", "0")
+        .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
+        .env(
+            "NIXBOT_RUNTIME_FALLBACK_ROOT",
+            temporary.path().join("fallback"),
+        )
+        .env(
+            "NIXBOT_DIAG_KEEP_ROOT",
+            temporary.path().join("diagnostics"),
+        )
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        !stderr.contains("builder lease authority changed"),
+        "{stderr}"
+    );
+    let ssh_commands = fs::read_to_string(&ssh_log).unwrap();
+    assert_eq!(ssh_commands.matches("nixbot-build-lease").count(), 1);
+    assert_eq!(
+        ssh_commands
+            .lines()
+            .filter(|line| line.contains("nixbot-build-lease") && line.contains("hold"))
+            .count(),
+        1,
+        "{ssh_commands}"
+    );
+    let materialized = fs::read_to_string(&age_log).unwrap();
+    assert_eq!(materialized.lines().count(), 4, "{materialized}");
+    assert!(
+        materialized.lines().all(|path| {
+            path.contains("/t-")
+                && (path.ends_with("/key-builder-primary")
+                    || path.ends_with("/key-builder-proxy-primary"))
+        }),
+        "{materialized}"
+    );
 }
 
 #[test]

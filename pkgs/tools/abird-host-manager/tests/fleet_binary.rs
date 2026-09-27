@@ -151,11 +151,55 @@ esac
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "");
         assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            "Groups:\n  - data: db\n  - prod: app, db\n  - (ungrouped): ungrouped\n"
+            String::from_utf8(output.stderr).unwrap(),
+            "Groups:\n  - data\n    - db\n  - prod\n    - app\n    - db\n  - (ungrouped)\n    - ungrouped\n"
         );
     }
+}
+
+#[test]
+fn list_groups_keeps_empty_group_and_ungrouped_markers() {
+    let temporary = tempfile::tempdir().unwrap();
+    fixture_repository(temporary.path());
+    let nix = temporary.path().join("nix");
+    executable(
+        &nix,
+        r#"#!/bin/sh
+set -eu
+case "$*" in
+  'eval --json --file '*'/hosts.nix --apply inventory: if builtins.isFunction inventory then inventory {} else inventory')
+    printf '%s\n' '{"hosts":{"ungrouped":{"target":"10.0.0.4"}},"config":{}}'
+    ;;
+  'eval --json .#nixbot.deployDependencies --no-update-lock-file --no-write-lock-file') printf '{}\n' ;;
+  *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
+esac
+"#,
+    );
+    let config = temporary.path().join("hosts.nix");
+    fs::write(&config, "{}\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .args([
+            "--list-groups".to_owned(),
+            format!("--config={}", config.display()),
+            "--no-override".to_owned(),
+        ])
+        .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "");
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "Groups:\n  - (none)\n  - (ungrouped)\n    - ungrouped\n"
+    );
 }
 
 #[test]
@@ -193,9 +237,10 @@ esac
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "");
     assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "Hosts:\n  - parent: 10.0.0.1\n  - app: 10.0.0.2 (parent=parent)\n"
+        String::from_utf8(output.stderr).unwrap(),
+        "Hosts:\n  - parent (target: 10.0.0.1)\n  - app (target: 10.0.0.2, parent: parent)\n"
     );
 }
 

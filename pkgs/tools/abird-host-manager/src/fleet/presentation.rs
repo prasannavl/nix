@@ -12,10 +12,27 @@ use anyhow::{Context, Result};
 use crate::progress::{ProgressReporter, command_reporter, format_duration};
 
 use super::cli::{LogFormat, Options};
-use super::host_runtime::{ProcessEventObserver, ProcessRequest, ProcessStream};
+use super::host_runtime::{ProcessCompletion, ProcessEventObserver, ProcessRequest, ProcessStream};
 use super::plan::Phase;
 
 static FLEET_FAILURE_PRESENTED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkflowResult {
+    Success,
+    Failure,
+    Interrupted,
+}
+
+impl WorkflowResult {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+            Self::Interrupted => "interrupted",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct FleetProgress {
@@ -37,7 +54,7 @@ impl FleetProgress {
         let reporter = if github_actions {
             command_reporter().clone().without_color()
         } else {
-            command_reporter().clone()
+            command_reporter().clone().with_recent_updates(10)
         };
         Self {
             reporter,
@@ -62,8 +79,9 @@ impl FleetProgress {
         Ok(self)
     }
 
-    pub fn phase_started(&self, phase: Phase, hosts: usize) {
-        let label = phase_label(phase, hosts);
+    pub fn phase_started(&self, phase: Phase, hosts: usize, position: Option<(usize, usize)>) {
+        let label = phase_label(phase, hosts, position);
+        self.reporter.begin_task_scope();
         if self.github_actions {
             self.reporter.message(format!("::group::{label}"));
         } else {
@@ -71,8 +89,14 @@ impl FleetProgress {
         }
     }
 
-    pub fn phase_completed(&self, phase: Phase, hosts: usize, elapsed: Duration) {
-        let label = phase_label(phase, hosts);
+    pub fn phase_completed(
+        &self,
+        phase: Phase,
+        hosts: usize,
+        position: Option<(usize, usize)>,
+        elapsed: Duration,
+    ) {
+        let label = phase_label(phase, hosts, position);
         if self.github_actions {
             self.reporter
                 .message(format!("✓ {label}  {}", format_duration(elapsed)));
@@ -80,21 +104,72 @@ impl FleetProgress {
         } else {
             self.reporter.completed(label, elapsed);
         }
+        self.reporter.end_task_scope();
     }
 
-    pub fn phase_failed(&self, phase: Phase, hosts: usize, elapsed: Duration, error: &str) {
-        let label = format!(
-            "{} · {}",
-            phase_label(phase, hosts),
-            format_duration(elapsed)
-        );
+    pub fn phase_failed(
+        &self,
+        phase: Phase,
+        hosts: usize,
+        position: Option<(usize, usize)>,
+        elapsed: Duration,
+        error: &str,
+    ) {
+        let label = if self.reporter.shows_recent_updates() {
+            format!(
+                "{} · phase elapsed {}",
+                phase_label(phase, hosts, position),
+                format_duration(elapsed)
+            )
+        } else {
+            format!(
+                "{} · {}",
+                phase_label(phase, hosts, position),
+                format_duration(elapsed)
+            )
+        };
         if self.github_actions {
-            self.reporter.message(format!("::error::{label}: {error}"));
+            self.reporter.message(format!(
+                "::error::{}: {}",
+                github_command_value(&label),
+                github_command_value(error)
+            ));
+            self.reporter.report_failure_output();
             self.reporter.message("::endgroup::");
         } else {
             self.reporter.fail_active(label, error);
         }
+        self.reporter.end_task_scope();
         FLEET_FAILURE_PRESENTED.store(true, Ordering::Release);
+    }
+
+    pub fn phase_interrupted(
+        &self,
+        phase: Phase,
+        hosts: usize,
+        position: Option<(usize, usize)>,
+        elapsed: Duration,
+    ) {
+        let label = if self.reporter.shows_recent_updates() {
+            format!(
+                "{} · interrupted · phase elapsed {}",
+                phase_label(phase, hosts, position),
+                format_duration(elapsed)
+            )
+        } else {
+            format!(
+                "{} · interrupted · {}",
+                phase_label(phase, hosts, position),
+                format_duration(elapsed)
+            )
+        };
+        if self.github_actions {
+            self.reporter.message(format!("::warning::{label}"));
+            self.reporter.message("::endgroup::");
+        } else {
+            self.reporter.interrupt_active(label);
+        }
+        self.reporter.end_task_scope();
     }
 
     pub fn step_started(&self, label: impl Into<String>) {
@@ -114,6 +189,11 @@ impl FleetProgress {
         self.reporter.detail(detail);
     }
 
+    pub fn task_skipped(&self, key: impl Into<String>) {
+        let key = key.into();
+        self.reporter.task_skipped(key.clone(), process_label(&key));
+    }
+
     pub fn message(&self, message: impl std::fmt::Display) {
         self.reporter.message(message);
     }
@@ -121,23 +201,46 @@ impl FleetProgress {
     pub fn workflow_summary<'a>(
         &self,
         action: &str,
+        phases: impl IntoIterator<Item = (&'a str, &'a str)>,
         hosts: impl IntoIterator<Item = (&'a str, &'a str)>,
         terraform: impl IntoIterator<Item = (&'a str, &'a str)>,
-        succeeded: bool,
+        result: WorkflowResult,
         elapsed: Duration,
     ) {
-        let result = if succeeded { "success" } else { "failure" };
-        let heading = format!(
-            "Summary · {action} · {result} · {}",
-            format_duration(elapsed)
-        );
+        let result = result.label();
+        let heading = if self.reporter.shows_recent_updates() {
+            format!(
+                "Summary · {action} · {result} · total elapsed {}",
+                format_duration(elapsed)
+            )
+        } else {
+            format!(
+                "Summary · {action} · {result} · {}",
+                format_duration(elapsed)
+            )
+        };
         if self.github_actions {
             self.reporter.message(format!("::notice::{heading}"));
         } else {
-            self.reporter.message(heading);
+            self.reporter.heading(heading);
+        }
+        let phases = phases.into_iter().collect::<Vec<_>>();
+        if !phases.is_empty() {
+            self.reporter.message("Phases:");
+        }
+        for (phase, status) in phases {
+            self.reporter.message(format!("  {phase} · {status}"));
+        }
+        let hosts = hosts.into_iter().collect::<Vec<_>>();
+        if !hosts.is_empty() {
+            self.reporter.message("Hosts:");
         }
         for (host, status) in hosts {
             self.reporter.message(format!("  {host} · {status}"));
+        }
+        let terraform = terraform.into_iter().collect::<Vec<_>>();
+        if !terraform.is_empty() {
+            self.reporter.message("Terraform:");
         }
         for (project, status) in terraform {
             self.reporter
@@ -191,36 +294,56 @@ impl ProcessEventObserver for FleetProcessObserver {
             diagnostics.started(request);
         }
         self.reporter
-            .detail(format!("{} · running", process_label(&request.label)));
+            .task_started(request.label.clone(), process_label(&request.label));
     }
 
     fn output(&self, request: &ProcessRequest, stream: ProcessStream, chunk: &str) {
         if let Some(diagnostics) = &self.diagnostics {
             diagnostics.output(request, stream, chunk);
         }
-        if !self.verbose {
-            return;
-        }
         for line in chunk.lines() {
-            self.reporter.message(format_process_line(
-                &process_label(&request.label),
-                Some(stream),
-                line,
-                self.prefix,
-            ));
+            let Some(failure_line) = format_failure_line(line) else {
+                continue;
+            };
+            let label = process_label(&request.label);
+            self.reporter
+                .task_output(request.label.clone(), &label, failure_line);
+            if let Some(line) = format_dashboard_line(line) {
+                self.reporter
+                    .task_live_output(request.label.clone(), &label, line);
+            }
+            if self.verbose {
+                let Some(line) = format_verbose_line(line) else {
+                    continue;
+                };
+                self.reporter.message(format_process_line(
+                    &label,
+                    Some(stream),
+                    &line,
+                    self.prefix,
+                ));
+            }
         }
     }
 
-    fn finished(&self, request: &ProcessRequest, elapsed: Duration, succeeded: bool) {
+    fn finished(&self, request: &ProcessRequest, elapsed: Duration, completion: ProcessCompletion) {
         if let Some(diagnostics) = &self.diagnostics {
-            diagnostics.finished(request, elapsed, succeeded);
+            diagnostics.finished(request, elapsed, completion);
         }
-        self.reporter.detail(format!(
-            "{} · {} · {}",
+        if completion == ProcessCompletion::Interrupted {
+            self.reporter.task_interrupted(
+                request.label.clone(),
+                process_label(&request.label),
+                elapsed,
+            );
+            return;
+        }
+        self.reporter.task_finished(
+            request.label.clone(),
             process_label(&request.label),
-            if succeeded { "done" } else { "failed" },
-            format_duration(elapsed)
-        ));
+            elapsed,
+            completion == ProcessCompletion::Succeeded,
+        );
     }
 
     fn heartbeat_interval(&self, request: &ProcessRequest) -> Option<Duration> {
@@ -234,11 +357,11 @@ impl ProcessEventObserver for FleetProcessObserver {
     }
 
     fn heartbeat(&self, request: &ProcessRequest, elapsed: Duration) {
-        self.reporter.detail(format!(
-            "{} · running · {} elapsed",
+        self.reporter.task_heartbeat(
+            request.label.clone(),
             process_label(&request.label),
-            format_duration(elapsed)
-        ));
+            elapsed,
+        );
     }
 }
 
@@ -288,12 +411,16 @@ impl DiagnosticSink {
         );
     }
 
-    fn finished(&self, request: &ProcessRequest, elapsed: Duration, succeeded: bool) {
+    fn finished(&self, request: &ProcessRequest, elapsed: Duration, completion: ProcessCompletion) {
         self.append(
             &format!("{}.status", diagnostic_name(&request.label)),
             format!(
                 "{} {}\n",
-                if succeeded { "ok" } else { "failed" },
+                match completion {
+                    ProcessCompletion::Succeeded => "ok",
+                    ProcessCompletion::Failed => "failed",
+                    ProcessCompletion::Interrupted => "interrupted",
+                },
                 format_duration(elapsed)
             )
             .as_bytes(),
@@ -356,7 +483,7 @@ fn process_label(label: &str) -> String {
     }
 }
 
-pub fn phase_label(phase: Phase, hosts: usize) -> String {
+pub fn phase_label(phase: Phase, hosts: usize, position: Option<(usize, usize)>) -> String {
     let action = match phase {
         Phase::TerraformDns => "Apply DNS infrastructure",
         Phase::TerraformPlatform => "Apply platform infrastructure",
@@ -373,11 +500,174 @@ pub fn phase_label(phase: Phase, hosts: usize) -> String {
         Phase::RepositorySync => "Synchronize repository",
         Phase::DependencyCheck => "Check runtime dependencies",
     };
-    match hosts {
+    let mut label = match hosts {
         0 => action.to_owned(),
         1 => format!("{action} · 1 host"),
         count => format!("{action} · {count} hosts"),
+    };
+    if let Some((current, total)) = position {
+        label.push_str(&format!(" · phase {current}/{total}"));
     }
+    label
+}
+
+fn format_dashboard_line(line: &str) -> Option<String> {
+    let line = terminal_safe_line(line);
+    if line.is_empty() {
+        return None;
+    }
+    if sensitive_output(&line) && line.trim() != "[agenix] decrypting secrets..." {
+        return None;
+    }
+    if line == "copying 0 paths..." {
+        return Some("[copy] closure already present".to_owned());
+    }
+    if let Some(count) = line
+        .strip_prefix("copying ")
+        .and_then(|line| line.strip_suffix(" paths..."))
+        .filter(|count| count.chars().all(|character| character.is_ascii_digit()))
+    {
+        return Some(format!("[copy] copying {count} store paths"));
+    }
+    if let Some(path) = quoted_store_path(&line, "building '", "'...") {
+        return Some(format!("[build] {}", store_basename(path)));
+    }
+    if let Some(path) = quoted_store_path(&line, "copying path '", "'") {
+        return Some(format!("[copy] {}", store_basename(path)));
+    }
+    if line.starts_with("/nix/store/") {
+        return Some(format!("[store] {}", store_basename(&line)));
+    }
+    let normalized = match line.trim() {
+        "Checking switch inhibitors... done" => "[switch] inhibitors ok",
+        "activating the configuration..." => "[switch] activating configuration",
+        "setting up /etc..." => "[switch] updating /etc",
+        "[agenix] decrypting secrets..." => "[agenix] decrypting secrets",
+        "[agenix] chowning..." => "[agenix] fixing ownership",
+        line if dashboard_status_prefix(line).is_some() => line,
+        line if line.starts_with("reconciled ") || line.starts_with("re-applied ") => line,
+        line if line.starts_with("Deploy duration: ") => line,
+        _ => return None,
+    };
+    Some(normalized.to_owned())
+}
+
+fn dashboard_status_prefix(line: &str) -> Option<&str> {
+    [
+        "[agenix]",
+        "[generation-admission]",
+        "[health-check]",
+        "[prefetch-ai-model]",
+        "[store]",
+        "[switch]",
+        "[system-units]",
+        "[user-units]",
+    ]
+    .into_iter()
+    .find(|prefix| line.starts_with(prefix))
+}
+
+fn format_verbose_line(line: &str) -> Option<String> {
+    let line = redact_sensitive_line(terminal_safe_line(line));
+    (!line.is_empty()).then_some(line)
+}
+
+pub(crate) fn format_failure_line(line: &str) -> Option<String> {
+    let mut line = redact_sensitive_line(terminal_safe_line(line));
+    if line.is_empty() {
+        return None;
+    }
+    if line.chars().count() > 500 {
+        line = line.chars().take(499).collect::<String>();
+        line.push('…');
+    }
+    Some(line)
+}
+
+fn github_command_value(value: &str) -> String {
+    value
+        .replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
+}
+
+fn quoted_store_path<'a>(line: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
+    line.strip_prefix(prefix)?
+        .strip_suffix(suffix)
+        .filter(|path| path.starts_with("/nix/store/"))
+}
+
+fn store_basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn terminal_safe_line(line: &str) -> String {
+    // Progress tools commonly redraw one logical line with carriage returns.
+    // Only the final frame is useful in a bounded dashboard.
+    let line = line.rsplit('\r').next().unwrap_or(line);
+    let mut output = String::with_capacity(line.len().min(240));
+    let mut characters = line.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\u{1b}' {
+            match characters.next() {
+                Some('[') => {
+                    for control in characters.by_ref() {
+                        if ('@'..='~').contains(&control) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    let mut escaped = false;
+                    for control in characters.by_ref() {
+                        if control == '\u{7}' || (escaped && control == '\\') {
+                            break;
+                        }
+                        escaped = control == '\u{1b}';
+                    }
+                }
+                Some(_) | None => {}
+            }
+            continue;
+        }
+        if character == '\t' {
+            output.push(' ');
+        } else if !character.is_control() {
+            output.push(character);
+        }
+    }
+    output.trim_end().to_owned()
+}
+
+fn redact_sensitive_line(line: String) -> String {
+    if sensitive_output(&line) {
+        "[sensitive output redacted]".to_owned()
+    } else {
+        line
+    }
+}
+
+fn sensitive_output(line: &str) -> bool {
+    let lowercase = line.to_ascii_lowercase();
+    let named_secret = [
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "private_key",
+        "private-key",
+        "credential",
+        "authorization:",
+        "bearer ",
+    ]
+    .iter()
+    .any(|needle| lowercase.contains(needle));
+    let credential_url = lowercase.find("://").is_some_and(|scheme| {
+        lowercase[scheme + 3..]
+            .find('@')
+            .is_some_and(|at| lowercase[scheme + 3..scheme + 3 + at].contains(':'))
+    });
+    named_secret || credential_url
 }
 
 pub fn github_actions_mode(log_format: LogFormat, environment: bool) -> bool {
@@ -414,17 +704,20 @@ mod tests {
 
     #[test]
     fn phase_labels_are_short_and_include_fanout_size() {
-        assert_eq!(phase_label(Phase::Build, 3), "Build systems · 3 hosts");
         assert_eq!(
-            phase_label(Phase::Acquire, 2),
+            phase_label(Phase::Build, 3, Some((1, 5))),
+            "Build systems · 3 hosts · phase 1/5"
+        );
+        assert_eq!(
+            phase_label(Phase::Acquire, 2, None),
             "Acquire deployment artifacts · 2 hosts"
         );
         assert_eq!(
-            phase_label(Phase::Health, 1),
+            phase_label(Phase::Health, 1, None),
             "Verify deployment health · 1 host"
         );
         assert_eq!(
-            phase_label(Phase::TerraformDns, 0),
+            phase_label(Phase::TerraformDns, 0, None),
             "Apply DNS infrastructure"
         );
     }
@@ -442,10 +735,61 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_lines_are_allowlisted_sanitized_and_compacted() {
+        assert_eq!(
+            format_dashboard_line("\x1b[31mbuilding '/nix/store/abc-app.drv'...\x1b[0m"),
+            Some("[build] abc-app.drv".to_owned())
+        );
+        assert_eq!(
+            format_dashboard_line("copying 0 paths..."),
+            Some("[copy] closure already present".to_owned())
+        );
+        assert_eq!(
+            format_dashboard_line("old frame\rTOKEN=visible\x1b]0;host-title\x07 ready"),
+            None
+        );
+        assert_eq!(format_dashboard_line("arbitrary subprocess chatter"), None);
+        assert_eq!(format_dashboard_line("\t\r"), None);
+    }
+
+    #[test]
+    fn verbose_and_failure_lines_are_terminal_safe_and_redact_whole_secrets() {
+        assert_eq!(
+            format_verbose_line("  exact   spacing /nix/store/abc-app\n"),
+            Some("  exact   spacing /nix/store/abc-app".to_owned())
+        );
+        for secret in [
+            "TOKEN='abc def' still-secret",
+            r#"{\"token\":\"abc def\"}"#,
+            "Authorization: Bearer abc",
+            "fetch https://user:password@example.test/path",
+        ] {
+            assert_eq!(
+                format_verbose_line(secret),
+                Some("[sensitive output redacted]".to_owned()),
+                "{secret}"
+            );
+            assert_eq!(
+                format_failure_line(secret),
+                Some("[sensitive output redacted]".to_owned()),
+                "{secret}"
+            );
+        }
+    }
+
+    #[test]
     fn github_group_mode_is_explicit_or_environment_driven() {
         assert!(github_actions_mode(LogFormat::GithubActions, false));
         assert!(github_actions_mode(LogFormat::Auto, true));
         assert!(!github_actions_mode(LogFormat::Plain, true));
+    }
+
+    #[test]
+    fn github_command_values_escape_multiline_failure_evidence() {
+        assert_eq!(
+            github_command_value("failed 100%\r\nsecond line"),
+            "failed 100%25%0D%0Asecond line"
+        );
     }
 
     #[test]
@@ -477,7 +821,11 @@ mod tests {
         observer.started(&request);
         observer.output(&request, ProcessStream::Stdout, "plain output\n");
         observer.output(&request, ProcessStream::Stderr, "plain error\n");
-        observer.finished(&request, Duration::from_millis(5), true);
+        observer.finished(
+            &request,
+            Duration::from_millis(5),
+            ProcessCompletion::Succeeded,
+        );
 
         let root = temporary.path().join("commands");
         assert_eq!(

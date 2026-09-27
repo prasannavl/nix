@@ -121,8 +121,28 @@ fn ignored_system_unit_does_not_mask_same_name_failed_user_unit() {
         record("user", &["app", "1000", "active", "ok", "ok"]),
         record("user-failed", &["app", &user_failure]),
     ]);
+    let diagnostics = [
+        record(
+            "failed-status",
+            &["user", "app", unit, "start-limit-hit", "exited", "1", "5"],
+        ),
+        record(
+            "failed-log",
+            &[
+                "user",
+                "app",
+                unit,
+                "controller database schema structure is incompatible",
+            ],
+        ),
+        record(
+            "failed-log",
+            &["user", "app", unit, "authorization: bearer private-value"],
+        ),
+    ]
+    .concat();
     let mut runtime = HostRuntime::new(
-        FakeRunner::samples([observation]),
+        FakeRunner::samples([observation, diagnostics]),
         PathBuf::from("/repo"),
         DryRun::No,
     )
@@ -138,7 +158,16 @@ fn ignored_system_unit_does_not_mask_same_name_failed_user_unit() {
         if evidence.contains(&HealthEvidence::ReportedFailure { scope: "app".into(), detail: user_failure.clone() }))
     );
     assert_eq!(report.ignored_system_failures, [system_failure]);
+    assert_eq!(
+        report.failure_excerpts,
+        [
+            "user=app unit=same-name.service result=start-limit-hit exit=exited/1 restarts=5",
+            "user=app unit=same-name.service log=controller database schema structure is incompatible",
+            "[sensitive output redacted]",
+        ]
+    );
     assert_eq!(report.attempts, 1);
+    assert_eq!(runtime.into_runner().requests.len(), 2);
 }
 
 #[test]

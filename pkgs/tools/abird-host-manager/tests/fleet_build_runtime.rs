@@ -13,6 +13,9 @@ mod build_lease;
 #[path = "../src/fleet/build_runtime.rs"]
 #[allow(dead_code)]
 mod build_runtime;
+#[path = "../src/fleet/transport.rs"]
+#[allow(dead_code)]
+mod transport;
 
 use build::{
     BuildArgs, CommandAttempt, CommandExecutor, CommandSpec, NixStorePath, RemoteFailureKind,
@@ -613,8 +616,8 @@ fn periodic_lease_heartbeat_runs_before_the_console_progress_interval() {
     use abird_host_manager::fleet::cli::Options;
     use abird_host_manager::fleet::environment::Environment;
     use abird_host_manager::fleet::host_runtime::{
-        EffectKind, ProcessEventObserver, ProcessRequest, ProcessRunner, ProcessStream,
-        ReportingProcessRunner,
+        EffectKind, ProcessCompletion, ProcessEventObserver, ProcessRequest, ProcessRunner,
+        ProcessStream, ReportingProcessRunner,
     };
     use abird_host_manager::fleet::presentation::FleetProgress;
 
@@ -629,8 +632,13 @@ fn periodic_lease_heartbeat_runs_before_the_console_progress_interval() {
         fn output(&self, request: &ProcessRequest, stream: ProcessStream, chunk: &str) {
             self.inner.output(request, stream, chunk);
         }
-        fn finished(&self, request: &ProcessRequest, elapsed: Duration, succeeded: bool) {
-            self.inner.finished(request, elapsed, succeeded);
+        fn finished(
+            &self,
+            request: &ProcessRequest,
+            elapsed: Duration,
+            completion: ProcessCompletion,
+        ) {
+            self.inner.finished(request, elapsed, completion);
         }
         fn heartbeat_interval(&self, request: &ProcessRequest) -> Option<Duration> {
             self.inner.heartbeat_interval(request)

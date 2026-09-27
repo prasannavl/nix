@@ -66,14 +66,15 @@ use deploy::{
 use health::{HealthDecision, HealthEvidence};
 use host_runtime::{
     ActivationExecution, DeployOutcome, DryRun, EffectKind, HealthEvaluator, HostExecutionTarget,
-    HostRuntime, ProcessCancellation, ProcessEventObserver, ProcessOutput, ProcessRequest,
-    ProcessRunner, ProcessStream, RemoteBuildRequest, ReportingProcessRunner, SystemHealthProbe,
-    SystemProcessRunner, build_ssh_request, build_ssh_upload_request, builder_lease_process_spec,
-    control_master_exit_request,
+    HostRuntime, ProcessCancellation, ProcessCompletion, ProcessEventObserver, ProcessOutput,
+    ProcessRequest, ProcessRunner, ProcessStream, RemoteBuildRequest, ReportingProcessRunner,
+    SystemHealthProbe, SystemProcessRunner, build_ssh_request, build_ssh_upload_request,
+    builder_lease_process_spec, control_master_exit_request,
 };
 use system::ResolvedHost;
 use transport::{
-    HostKeyPolicy, ProcessStatus, ProxyHop, ProxyPlan, SshEndpoint, SshRoutePlan, TransportRole,
+    HostKeyPolicy, ProcessStatus, ProxyCommandTemplate, ProxyHop, ProxyPlan, SshEndpoint,
+    SshRoutePlan, TransportRole,
 };
 
 fn strings(values: &[&str]) -> Vec<String> {
@@ -171,6 +172,57 @@ fn target() -> HostExecutionTarget {
         false,
     )
     .unwrap()
+}
+
+fn target_as(user: &str) -> HostExecutionTarget {
+    let mut host = resolved_host();
+    host.user = user.to_owned();
+    let endpoint = SshEndpoint::new(
+        "gap3",
+        host.target.clone(),
+        host.user.clone(),
+        host.port,
+        TransportRole::Primary,
+        host.identity_key.clone(),
+    )
+    .unwrap();
+    HostExecutionTarget::from_resolved(
+        &host,
+        SshRoutePlan {
+            endpoint,
+            proxy: ProxyPlan::default(),
+            proxy_command: None,
+            host_key_policy: HostKeyPolicy::Strict,
+        },
+        Path::new("/repo"),
+        Some(PathBuf::from("/tmp/known hosts")),
+        false,
+    )
+    .unwrap()
+}
+
+fn framed_remote_argv(request: &ProcessRequest) -> Vec<String> {
+    let payload = request
+        .stdin
+        .as_deref()
+        .unwrap()
+        .split("done <<'NIXBOT_ARGV'\n")
+        .nth(1)
+        .unwrap()
+        .split("\nNIXBOT_ARGV\n")
+        .next()
+        .unwrap();
+    payload
+        .lines()
+        .map(|line| {
+            String::from_utf8(
+                base64::engine::general_purpose::STANDARD
+                    .decode(line)
+                    .unwrap(),
+            )
+            .unwrap()
+        })
+        .collect()
 }
 
 fn generation(name: &str) -> SystemGeneration {
@@ -285,6 +337,19 @@ fn control_master_is_scoped_and_has_an_explicit_retirement_command() {
 }
 
 #[test]
+fn control_master_rejects_unix_socket_paths_at_the_platform_limit() {
+    let accepted = PathBuf::from(format!("/{}", "a".repeat(106)));
+    assert_eq!(accepted.as_os_str().as_encoded_bytes().len(), 107);
+    assert!(target().with_control_master(accepted, 120).is_ok());
+
+    let rejected = PathBuf::from(format!("/{}", "a".repeat(107)));
+    assert_eq!(rejected.as_os_str().as_encoded_bytes().len(), 108);
+    let error = target().with_control_master(rejected, 120).unwrap_err();
+    assert!(error.to_string().contains("108 bytes"));
+    assert!(error.to_string().contains("shorter runtime directory"));
+}
+
+#[test]
 fn ssh_request_keeps_local_arguments_separate_and_encodes_remote_argv() {
     let target = target().with_ssh_liveness(42, 9, 2).unwrap();
     let request = build_ssh_request(
@@ -360,6 +425,15 @@ fn ssh_upload_keeps_secret_bytes_out_of_process_arguments() {
             .any(|arg| arg.contains("private fixture"))
     );
     assert_eq!(request.stdin.as_deref(), Some("private fixture bytes"));
+    assert_eq!(
+        &request.args[request.args.len() - 3..],
+        [
+            "--",
+            "root@192.0.2.42",
+            "'/run/current-system/sw/bin/bash' '-c' 'set -Eeuo pipefail; umask 077; cat > /tmp/nixbot-bootstrap-key.run-1'"
+        ]
+    );
+    assert!(!request.args.iter().any(|arg| arg == "-c"));
     assert!(
         build_ssh_upload_request(&target, String::new(), Path::new("/tmp/key;bad"), "copy")
             .is_err()
@@ -405,6 +479,60 @@ fn ssh_request_preserves_keyed_proxy_hops_in_a_nested_proxy_command() {
 }
 
 #[test]
+fn nested_proxy_commands_freeze_each_hops_forward_destination() {
+    let mut target = target();
+    target.route.proxy.hops.extend([
+        ProxyHop {
+            node: "outer".into(),
+            endpoint: SshEndpoint::new(
+                "outer",
+                "192.0.2.10",
+                "nixbot",
+                22,
+                TransportRole::Primary,
+                None,
+            )
+            .unwrap(),
+            proxy_command: None,
+            local: false,
+        },
+        ProxyHop {
+            node: "inner".into(),
+            endpoint: SshEndpoint::new(
+                "inner",
+                "2001:db8::20",
+                "nixbot",
+                2202,
+                TransportRole::Primary,
+                None,
+            )
+            .unwrap(),
+            proxy_command: None,
+            local: false,
+        },
+    ]);
+
+    let request = build_ssh_request(
+        &target,
+        &["true".into()],
+        &[],
+        EffectKind::ReadOnly,
+        "probe",
+    )
+    .unwrap();
+    let proxy = request
+        .args
+        .iter()
+        .find(|argument| argument.starts_with("ProxyCommand="))
+        .unwrap();
+
+    assert!(proxy.contains("[2001:db8::20]:2202"), "{proxy}");
+    assert!(proxy.contains("192.0.2.42:2222"), "{proxy}");
+    assert!(!proxy.contains("%h"), "{proxy}");
+    assert!(!proxy.contains("%p"), "{proxy}");
+}
+
+#[test]
 fn runtime_rejects_target_with_different_working_directory_authority() {
     let runner = FakeRunner::with_outputs([]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/different"), DryRun::No).unwrap();
@@ -422,6 +550,60 @@ fn runtime_rejects_target_with_different_working_directory_authority() {
             .contains("does not match runtime authority")
     );
     assert!(runtime.into_runner().requests.is_empty());
+}
+
+#[test]
+fn root_execution_elevates_non_root_targets_and_keeps_root_targets_direct() {
+    let command = CommandSpec::new(
+        "/run/current-system/sw/bin/incus-machines-settlement",
+        strings(&["--timeout", "42", "--machine", "abird-data"]),
+    );
+
+    let runner = FakeRunner::with_outputs([success("")]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+    runtime
+        .execute_remote_root_command(
+            &target_as("nixbot"),
+            &command,
+            EffectKind::ReadOnly,
+            "parent-settle",
+        )
+        .unwrap();
+    assert_eq!(
+        framed_remote_argv(&runtime.into_runner().requests[0]),
+        vec![
+            "/run/wrappers/bin/sudo",
+            "-n",
+            "--",
+            "/run/current-system/sw/bin/env",
+            "--",
+            "PATH=/run/wrappers/bin:/run/current-system/sw/bin",
+            "/run/current-system/sw/bin/incus-machines-settlement",
+            "--timeout",
+            "42",
+            "--machine",
+            "abird-data",
+        ]
+    );
+
+    let runner = FakeRunner::with_outputs([success("")]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+    runtime
+        .execute_remote_root_command(&target(), &command, EffectKind::ReadOnly, "parent-settle")
+        .unwrap();
+    assert_eq!(
+        framed_remote_argv(&runtime.into_runner().requests[0]),
+        vec![
+            "/run/current-system/sw/bin/env",
+            "--",
+            "PATH=/run/wrappers/bin:/run/current-system/sw/bin",
+            "/run/current-system/sw/bin/incus-machines-settlement",
+            "--timeout",
+            "42",
+            "--machine",
+            "abird-data",
+        ]
+    );
 }
 
 #[test]
@@ -472,6 +654,7 @@ fn remote_build_retries_daemon_disconnect_and_validates_exact_output() {
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let result = runtime
         .remote_build(RemoteBuildRequest {
+            subject: "app".to_owned(),
             target: target(),
             copy_derivation: CommandSpec::new(
                 "nix",
@@ -496,7 +679,9 @@ fn remote_build_retries_daemon_disconnect_and_validates_exact_output() {
     assert_eq!(runner.requests.len(), 3);
     assert_eq!(runner.waits, vec![Duration::from_secs(2)]);
     assert!(runner.requests[0].label.contains("copy-derivation"));
-    assert!(runner.requests[1].label.contains("realize"));
+    assert!(runner.requests[0].label.contains("app"));
+    assert!(runner.requests[1].label.contains("via"));
+    assert!(runner.requests[1].label.contains("app"));
     assert!(
         runner.requests[1]
             .stdin
@@ -512,6 +697,7 @@ fn remote_build_reports_action_failure_without_cleanup_side_effects() {
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let result = runtime
         .remote_build(RemoteBuildRequest {
+            subject: "app".to_owned(),
             target: target(),
             copy_derivation: CommandSpec::new(
                 "nix",
@@ -526,12 +712,44 @@ fn remote_build_reports_action_failure_without_cleanup_side_effects() {
 }
 
 #[test]
+fn remote_build_preserves_derivation_copy_failure_output() {
+    let runner = FakeRunner::with_outputs([failure(
+        1,
+        "ControlPath too long ('/very/long/control/socket' >= 108 bytes)",
+    )]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+    let error = runtime
+        .remote_build(RemoteBuildRequest {
+            subject: "app".to_owned(),
+            target: target(),
+            copy_derivation: CommandSpec::new(
+                "nix",
+                strings(&["copy", "--to", "ssh-ng://builder", "/nix/store/abc.drv"]),
+            ),
+            build: CommandSpec::new("nix", strings(&["build", "drv^out"])),
+            retry: RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
+        })
+        .unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("remote build derivation copy failed"));
+    assert!(message.contains("ControlPath too long"));
+    assert!(message.contains("108 bytes"));
+
+    let runner = runtime.into_runner();
+    assert_eq!(runner.requests.len(), 1);
+    assert!(runner.requests[0].label.contains("copy-derivation"));
+    assert!(runner.waits.is_empty());
+}
+
+#[test]
 fn dry_run_executes_remote_builder_store_effects() {
     let runner =
         FakeRunner::with_outputs([success(""), success("/nix/store/def-nixos-system-new\n")]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::Yes).unwrap();
     let result = runtime
         .remote_build(RemoteBuildRequest {
+            subject: "app".to_owned(),
             target: target(),
             copy_derivation: CommandSpec::new(
                 "nix",
@@ -585,6 +803,108 @@ fn builder_lease_ssh_is_dedicated_and_generation_independent() {
 }
 
 #[test]
+fn builder_lease_authority_is_semantic_and_ignores_materialized_key_paths() {
+    let tools = build_runtime::RemoteBuildTools::new(
+        "/run/current-system/sw/bin/nix",
+        "/run/current-system/sw/bin/bash",
+        "/run/current-system/sw/bin/flock",
+        "/nix/var/nix",
+    )
+    .unwrap();
+    let mut first = target();
+    first.route.endpoint.identity = Some(PathBuf::from("/tmp/worker-a/builder-key"));
+    first.route.proxy.hops.push(ProxyHop {
+        node: "jump".into(),
+        endpoint: SshEndpoint::new(
+            "jump",
+            "jump.example",
+            "operator",
+            2200,
+            TransportRole::Operator,
+            Some(PathBuf::from("/tmp/worker-a/proxy-key")),
+        )
+        .unwrap(),
+        proxy_command: None,
+        local: false,
+    });
+    first.route.host_key_policy = HostKeyPolicy::AcceptNew;
+
+    let mut rematerialized = first.clone();
+    rematerialized.route.endpoint.identity = Some(PathBuf::from("/tmp/worker-b/builder-key"));
+    rematerialized.route.proxy.hops[0].endpoint.identity =
+        Some(PathBuf::from("/tmp/worker-b/proxy-key"));
+    assert_eq!(
+        builder_lease_process_spec(&first, &tools)
+            .unwrap()
+            .authority,
+        builder_lease_process_spec(&rematerialized, &tools)
+            .unwrap()
+            .authority
+    );
+
+    let baseline = builder_lease_process_spec(&first, &tools)
+        .unwrap()
+        .authority;
+    let mut changed_routes = Vec::new();
+    let mut changed = first.clone();
+    changed.route.endpoint.node = "other-builder".into();
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.endpoint.host = "builder.example".into();
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.endpoint.user = "other-user".into();
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.endpoint.port = 22;
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.endpoint.role = TransportRole::Operator;
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.endpoint.identity = None;
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.proxy.hops[0].endpoint.host = "other-jump.example".into();
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.proxy.hops[0].node = "other-jump".into();
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.proxy.hops[0].endpoint.user = "other-operator".into();
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.proxy.hops[0].endpoint.port = 22;
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.proxy.hops[0].proxy_command =
+        Some(ProxyCommandTemplate::new("relay --host %h --port %p").unwrap());
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.proxy_command = Some(ProxyCommandTemplate::new("direct-relay %h %p").unwrap());
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.proxy.hops[0].local = true;
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    let extra_hop = changed.route.proxy.hops[0].clone();
+    changed.route.proxy.hops.push(extra_hop);
+    changed_routes.push(changed);
+    let mut changed = first.clone();
+    changed.route.host_key_policy = HostKeyPolicy::Strict;
+    changed_routes.push(changed);
+
+    for changed in changed_routes {
+        assert_ne!(
+            baseline,
+            builder_lease_process_spec(&changed, &tools)
+                .unwrap()
+                .authority
+        );
+    }
+}
+
+#[test]
 fn target_cache_distribution_copies_then_verifies_the_exact_closure() {
     let runner = FakeRunner::with_outputs([success("copied"), success("")]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
@@ -612,6 +932,153 @@ fn target_cache_distribution_copies_then_verifies_the_exact_closure() {
             .as_ref()
             .unwrap()
             .contains("cache.example-1:key")
+    );
+}
+
+#[test]
+fn target_cache_failure_relays_through_the_configured_proxy_chain() {
+    let runner = FakeRunner::with_outputs([
+        failure(1, "cache DNS failed"),
+        success("relayed"),
+        success(""),
+    ]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+    let closure = NixStorePath::closure_output("/nix/store/def-nixos-system-new").unwrap();
+    let cache = CacheSource::new("https://cache.example", ["cache.example-1:key"]).unwrap();
+    let mut proxied = target()
+        .with_control_master(PathBuf::from("/tmp/fleet/cm-target"), 120)
+        .unwrap();
+    proxied.route.proxy.hops.push(ProxyHop {
+        node: "jump".into(),
+        endpoint: SshEndpoint::new(
+            "jump",
+            "jump.example",
+            "operator",
+            2200,
+            TransportRole::Operator,
+            Some(PathBuf::from("/keys/jump key")),
+        )
+        .unwrap(),
+        proxy_command: None,
+        local: false,
+    });
+
+    let result = runtime
+        .distribute_closure(
+            &proxied,
+            &DistributionPlan::TryTargetCacheThenRelay {
+                closure: closure.clone(),
+                cache,
+            },
+            RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(result, host_runtime::DistributionExecution::Complete);
+    let runner = runtime.into_runner();
+    assert_eq!(runner.requests.len(), 3);
+    let relay = &runner.requests[1];
+    assert_eq!(relay.program, "nix");
+    assert_eq!(relay.label, "relay-cache-to-target-gap3");
+    assert!(
+        relay
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--from", "https://cache.example"])
+    );
+    assert!(
+        relay
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--to", "ssh-ng://root@192.0.2.42"])
+    );
+    assert!(
+        relay
+            .args
+            .iter()
+            .any(|argument| argument == closure.as_str())
+    );
+    assert!(
+        relay
+            .args
+            .iter()
+            .any(|argument| argument == "cache.example-1:key")
+    );
+    let options = relay
+        .environment
+        .iter()
+        .find_map(|(name, value)| (name == "NIX_SSHOPTS").then_some(value))
+        .unwrap();
+    assert!(options.contains("ProxyCommand="), "{options}");
+    assert!(options.contains("operator@jump.example"), "{options}");
+    assert!(options.contains("/keys/jump key"), "{options}");
+    assert!(options.contains("ControlMaster=no"), "{options}");
+    assert!(options.contains("ControlPath=none"), "{options}");
+    assert!(!options.contains("/tmp/fleet/cm-target"), "{options}");
+    assert!(runner.requests[2].label.contains("closure-verify"));
+}
+
+#[test]
+fn explicit_proxy_command_is_preserved_for_local_cache_relay() {
+    let runner = FakeRunner::with_outputs([success("relayed"), success("")]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+    let closure = NixStorePath::closure_output("/nix/store/def-nixos-system-new").unwrap();
+    let cache = CacheSource::new("https://cache.example", std::iter::empty::<String>()).unwrap();
+    let mut proxied = target();
+    proxied.route.proxy_command =
+        Some(ProxyCommandTemplate::new("relay-tool --host %h --port %p").unwrap());
+
+    let result = runtime
+        .distribute_closure(
+            &proxied,
+            &DistributionPlan::RelayThroughLocal { closure, cache },
+            RetryPolicy::new(1, Duration::ZERO).unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(result, host_runtime::DistributionExecution::Complete);
+    let requests = runtime.into_runner().requests;
+    let options = requests[0]
+        .environment
+        .iter()
+        .find_map(|(name, value)| (name == "NIX_SSHOPTS").then_some(value))
+        .unwrap();
+    assert!(
+        options.contains("ProxyCommand=relay-tool --host 192.0.2.42 --port 2222"),
+        "{options}"
+    );
+    assert!(requests[1].label.contains("closure-verify"));
+}
+
+#[test]
+fn cache_relay_retries_only_transport_loss() {
+    let runner = FakeRunner::with_outputs([
+        failure(255, "Connection reset by peer"),
+        success("relayed"),
+        success(""),
+    ]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+    let closure = NixStorePath::closure_output("/nix/store/def-nixos-system-new").unwrap();
+    let cache = CacheSource::new("https://cache.example", std::iter::empty::<String>()).unwrap();
+
+    let result = runtime
+        .distribute_closure(
+            &target(),
+            &DistributionPlan::RelayThroughLocal { closure, cache },
+            RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(result, host_runtime::DistributionExecution::Complete);
+    let runner = runtime.into_runner();
+    assert_eq!(runner.waits, vec![Duration::from_secs(2)]);
+    assert_eq!(
+        runner
+            .requests
+            .iter()
+            .filter(|request| request.label == "relay-cache-to-target-gap3")
+            .count(),
+        2
     );
 }
 
@@ -789,7 +1256,7 @@ fn failure_after_activation_admission_runs_rollback_submit_and_observer() {
 
 #[test]
 fn transport_loss_after_submission_can_be_recovered_by_authoritative_verification() {
-    let marker = "OutcomeSource=marker\nActiveState=inactive\nResult=success\nExecMainStatus=0\nCurrentSystemPath=/nix/store/abc-nixos-system-new\nSystemProfilePath=/nix/store/abc-nixos-system-new\n";
+    let marker = "OutcomeSource=marker\nResult=success\nExecMainStatus=0\nCurrentSystemPath=/nix/store/abc-nixos-system-new\nSystemProfilePath=/nix/store/abc-nixos-system-new\n";
     let runner = FakeRunner::with_outputs([
         success(""),
         failure(255, "Connection reset by peer"),
@@ -922,6 +1389,36 @@ fn post_switch_health_runs_remote_probes_then_uses_pure_health_decision() {
         .unwrap();
     assert!(matches!(result, HealthDecision::ServiceFailure { .. }));
     assert_eq!(runtime.into_runner().requests.len(), 2);
+}
+
+#[test]
+fn deploy_control_and_health_commands_use_root_execution_on_non_root_targets() {
+    let runner = FakeRunner::with_outputs([success(""), success("unit data")]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+    let target = target_as("nixbot");
+    runtime
+        .prepare_switch(&target, &pre_switch_preparation_command())
+        .unwrap();
+    runtime
+        .post_switch_health(
+            &target,
+            &[CommandSpec::new(
+                "systemctl",
+                strings(&["show", "app.service"]),
+            )],
+            &mut AlwaysHealthy,
+        )
+        .unwrap();
+
+    let requests = runtime.into_runner().requests;
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        let argv = framed_remote_argv(request);
+        assert_eq!(argv[0], "/run/wrappers/bin/sudo");
+        assert_eq!(argv[1], "-n");
+        assert_eq!(argv[3], "/run/current-system/sw/bin/env");
+        assert_eq!(argv[5], "PATH=/run/wrappers/bin:/run/current-system/sw/bin");
+    }
 }
 
 #[test]
@@ -1147,11 +1644,16 @@ impl ProcessEventObserver for RecordingObserver {
         ));
     }
 
-    fn finished(&self, request: &ProcessRequest, _elapsed: Duration, succeeded: bool) {
+    fn finished(
+        &self,
+        request: &ProcessRequest,
+        _elapsed: Duration,
+        completion: ProcessCompletion,
+    ) {
         self.events
             .lock()
             .unwrap()
-            .push(format!("finish:{}:{succeeded}", request.label));
+            .push(format!("finish:{}:{completion:?}", request.label));
     }
 
     fn heartbeat_interval(&self, request: &ProcessRequest) -> Option<Duration> {
@@ -1191,7 +1693,7 @@ fn reporting_process_runner_streams_both_channels_and_retains_exact_output() {
     assert!(events.contains(&"output:probe alpha:Stdout:one".to_owned()));
     assert!(events.contains(&"output:probe alpha:Stdout:two".to_owned()));
     assert!(events.contains(&"output:probe alpha:Stderr:bad".to_owned()));
-    assert_eq!(events.last().unwrap(), "finish:probe alpha:true");
+    assert_eq!(events.last().unwrap(), "finish:probe alpha:Succeeded");
 }
 
 fn git_environment_request(clear_git_repository_environment: bool) -> ProcessRequest {

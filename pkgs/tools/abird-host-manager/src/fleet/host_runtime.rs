@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -34,10 +35,16 @@ use super::health::{
     SystemdJob, UnitSnapshot,
 };
 use super::system::ResolvedHost;
-use super::transport::{HostKeyPolicy, ProcessStatus, SshRoutePlan};
+use super::transport::{
+    HostKeyPolicy, ProcessStatus, ProxyHop, SshEndpoint, SshRoutePlan, TransportRole,
+};
 
 const SYSTEM_BASH: &str = "/run/current-system/sw/bin/bash";
 const SYSTEM_BASE64: &str = "/run/current-system/sw/bin/base64";
+const SYSTEM_ENV: &str = "/run/current-system/sw/bin/env";
+const SYSTEM_SUDO: &str = "/run/wrappers/bin/sudo";
+const REMOTE_RUNTIME_PATH: &str = "/run/wrappers/bin:/run/current-system/sw/bin";
+const UNIX_SOCKET_PATH_LIMIT_BYTES: usize = 108;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DryRun {
@@ -114,10 +121,17 @@ pub enum ProcessStream {
     Stderr,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessCompletion {
+    Succeeded,
+    Failed,
+    Interrupted,
+}
+
 pub trait ProcessEventObserver: Send + Sync {
     fn started(&self, request: &ProcessRequest);
     fn output(&self, request: &ProcessRequest, stream: ProcessStream, chunk: &str);
-    fn finished(&self, request: &ProcessRequest, elapsed: Duration, succeeded: bool);
+    fn finished(&self, request: &ProcessRequest, elapsed: Duration, completion: ProcessCompletion);
 
     fn heartbeat_interval(&self, _request: &ProcessRequest) -> Option<Duration> {
         None
@@ -213,11 +227,19 @@ impl ProcessRunner for ReportingProcessRunner {
             Arc::clone(&self.observer),
             self.cancellation.as_deref(),
         );
-        self.observer.finished(
-            request,
-            started.elapsed(),
-            result.as_ref().is_ok_and(ProcessOutput::succeeded),
-        );
+        let completion = if result.as_ref().is_ok_and(ProcessOutput::succeeded) {
+            ProcessCompletion::Succeeded
+        } else if self
+            .cancellation
+            .as_ref()
+            .is_some_and(|cancellation| cancellation.cancel_local())
+        {
+            ProcessCompletion::Interrupted
+        } else {
+            ProcessCompletion::Failed
+        };
+        self.observer
+            .finished(request, started.elapsed(), completion);
         result
     }
 
@@ -498,6 +520,19 @@ impl HostExecutionTarget {
         if !socket.is_absolute() {
             bail!("SSH control-master socket path must be absolute");
         }
+        let socket_path_bytes = socket.as_os_str().as_bytes().len();
+        if socket_path_bytes >= UNIX_SOCKET_PATH_LIMIT_BYTES {
+            bail!(
+                concat!(
+                    "SSH control-master socket path is {} bytes, but Unix sockets ",
+                    "require fewer than {} bytes: {}; ",
+                    "use a shorter runtime directory"
+                ),
+                socket_path_bytes,
+                UNIX_SOCKET_PATH_LIMIT_BYTES,
+                socket.display()
+            );
+        }
         if persist_seconds == 0 {
             bail!("SSH control-master persistence must be positive");
         }
@@ -557,6 +592,33 @@ NIXBOT_ARGV
 exec "${{argv[@]}}"
 "#
     ))
+}
+
+fn root_argv(
+    target: &HostExecutionTarget,
+    argv: &[String],
+    environment: &[(String, String)],
+) -> Result<Vec<String>> {
+    if argv.is_empty() || argv[0].is_empty() {
+        bail!("root argv must contain a program");
+    }
+    validate_environment(environment)?;
+    let mut elevated = Vec::with_capacity(argv.len() + environment.len() + 6);
+    if target.route.endpoint.user != "root" {
+        elevated.extend([SYSTEM_SUDO.to_owned(), "-n".to_owned(), "--".to_owned()]);
+    }
+    elevated.extend([
+        SYSTEM_ENV.to_owned(),
+        "--".to_owned(),
+        format!("PATH={REMOTE_RUNTIME_PATH}"),
+    ]);
+    elevated.extend(
+        environment
+            .iter()
+            .map(|(name, value)| format!("{name}={value}")),
+    );
+    elevated.extend_from_slice(argv);
+    Ok(elevated)
 }
 
 pub fn build_ssh_request(
@@ -675,6 +737,66 @@ pub fn ssh_connection_args_without_control_master(
     Ok(args)
 }
 
+#[derive(serde::Serialize)]
+struct LeaseEndpointAuthority<'a> {
+    node: &'a str,
+    host: &'a str,
+    user: &'a str,
+    port: u16,
+    role: TransportRole,
+    has_identity: bool,
+}
+
+impl<'a> From<&'a SshEndpoint> for LeaseEndpointAuthority<'a> {
+    fn from(endpoint: &'a SshEndpoint) -> Self {
+        Self {
+            node: &endpoint.node,
+            host: &endpoint.host,
+            user: &endpoint.user,
+            port: endpoint.port,
+            role: endpoint.role,
+            has_identity: endpoint.identity.is_some(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct LeaseProxyAuthority<'a> {
+    node: &'a str,
+    endpoint: LeaseEndpointAuthority<'a>,
+    proxy_command: Option<&'a str>,
+    local: bool,
+}
+
+impl<'a> From<&'a ProxyHop> for LeaseProxyAuthority<'a> {
+    fn from(hop: &'a ProxyHop) -> Self {
+        Self {
+            node: &hop.node,
+            endpoint: (&hop.endpoint).into(),
+            proxy_command: hop.proxy_command.as_ref().map(|command| command.as_str()),
+            local: hop.local,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct LeaseRouteAuthority<'a> {
+    endpoint: LeaseEndpointAuthority<'a>,
+    proxy: Vec<LeaseProxyAuthority<'a>>,
+    proxy_command: Option<&'a str>,
+    host_key_policy: HostKeyPolicy,
+}
+
+fn lease_route_authority(route: &SshRoutePlan) -> Result<String> {
+    let authority = LeaseRouteAuthority {
+        endpoint: (&route.endpoint).into(),
+        proxy: route.proxy.hops.iter().map(Into::into).collect(),
+        proxy_command: route.proxy_command.as_ref().map(|command| command.as_str()),
+        host_key_policy: route.host_key_policy,
+    };
+    serde_json::to_string(&authority).context("serialize builder lease route authority")
+}
+
 pub fn builder_lease_process_spec(
     target: &HostExecutionTarget,
     tools: &RemoteBuildTools,
@@ -696,7 +818,7 @@ pub fn builder_lease_process_spec(
         remote_command,
     ]);
     Ok(LeaseProcessSpec {
-        authority: format!("{:?}", target.route),
+        authority: lease_route_authority(&target.route)?,
         program: "ssh".to_owned(),
         args,
         cwd: target.cwd.clone(),
@@ -767,21 +889,28 @@ pub fn build_ssh_upload_request(
                 })
         })
         .context("SSH upload destination must be an absolute shell-safe UTF-8 path")?;
-    let mut request = build_ssh_request(
-        target,
-        &["true".to_owned()],
-        &[],
-        EffectKind::Mutation,
-        label,
-    )?;
-    request.args.truncate(request.args.len().saturating_sub(2));
-    request.args.extend([
-        SYSTEM_BASH.to_owned(),
-        "-c".to_owned(),
-        format!("set -Eeuo pipefail; umask 077; cat > {destination}"),
+    let upload_script = format!("set -Eeuo pipefail; umask 077; cat > {destination}");
+    let remote_command = [SYSTEM_BASH, "-c", &upload_script]
+        .into_iter()
+        .map(shell_quote)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut args = ssh_connection_args(target)?;
+    args.extend([
+        "--".to_owned(),
+        target.route.endpoint.connect_target(),
+        remote_command,
     ]);
-    request.stdin = Some(contents);
-    Ok(request)
+    Ok(ProcessRequest {
+        program: "ssh".to_owned(),
+        args,
+        environment: Vec::new(),
+        clear_git_repository_environment: false,
+        cwd: target.cwd.clone(),
+        stdin: Some(contents),
+        effect: EffectKind::Mutation,
+        label: label.to_owned(),
+    })
 }
 
 fn shell_quote(value: &str) -> String {
@@ -790,11 +919,19 @@ fn shell_quote(value: &str) -> String {
 
 pub fn render_proxy_chain(target: &HostExecutionTarget) -> Result<Option<String>> {
     let mut upstream: Option<String> = None;
-    for hop in &target.route.proxy.hops {
+    for (index, hop) in target.route.proxy.hops.iter().enumerate() {
         if hop.proxy_command.is_some() && upstream.is_some() {
             bail!("nested proxy hop cannot combine ProxyCommand with an upstream hop");
         }
         let endpoint = &hop.endpoint;
+        let forward_destination = target
+            .route
+            .proxy
+            .hops
+            .get(index + 1)
+            .map(|next| &next.endpoint)
+            .unwrap_or(&target.route.endpoint)
+            .forward_destination();
         let mut tokens = vec![
             "ssh".to_owned(),
             "-F".to_owned(),
@@ -845,7 +982,7 @@ pub fn render_proxy_chain(target: &HostExecutionTarget) -> Result<Option<String>
         }
         tokens.extend([
             "-W".to_owned(),
-            "%h:%p".to_owned(),
+            forward_destination,
             "--".to_owned(),
             endpoint.connect_target(),
         ]);
@@ -1003,7 +1140,36 @@ impl<R: ProcessRunner> HostRuntime<R> {
         }
     }
 
-    fn remote_command_request_without_control_master(
+    fn remote_root_command_request(
+        &self,
+        target: &HostExecutionTarget,
+        command: &CommandSpec,
+        effect: EffectKind,
+        label: &str,
+    ) -> Result<ProcessRequest> {
+        self.validate_target(target)?;
+        let label = format!("{label}-{}", target.route.endpoint.node);
+        let mut argv = Vec::with_capacity(command.args.len() + 1);
+        argv.push(command.program.clone());
+        argv.extend_from_slice(&command.args);
+        let mut argv = root_argv(target, &argv, &[])?;
+        if target.local {
+            Ok(ProcessRequest {
+                program: argv.remove(0),
+                args: argv,
+                environment: Vec::new(),
+                clear_git_repository_environment: true,
+                cwd: target.cwd.clone(),
+                stdin: None,
+                effect,
+                label,
+            })
+        } else {
+            build_ssh_request(target, &argv, &[], effect, &label)
+        }
+    }
+
+    fn remote_root_command_request_without_control_master(
         &self,
         target: &HostExecutionTarget,
         command: &CommandSpec,
@@ -1012,7 +1178,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
     ) -> Result<ProcessRequest> {
         let mut isolated = target.clone();
         isolated.control_master = None;
-        let mut request = self.remote_command_request(&isolated, command, effect, label)?;
+        let mut request = self.remote_root_command_request(&isolated, command, effect, label)?;
         if !target.local {
             let separator = request
                 .args
@@ -1053,11 +1219,12 @@ impl<R: ProcessRunner> HostRuntime<R> {
         } else {
             argv.extend_from_slice(&command.args);
         }
+        let mut argv = root_argv(target, &argv, &command.environment)?;
         if target.local {
             Ok(ProcessRequest {
                 program: argv.remove(0),
                 args: argv,
-                environment: command.environment.clone(),
+                environment: Vec::new(),
                 clear_git_repository_environment: true,
                 cwd: target.cwd.clone(),
                 stdin,
@@ -1065,7 +1232,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 label,
             })
         } else {
-            build_ssh_request(target, &argv, &command.environment, effect, &label)
+            build_ssh_request(target, &argv, &[], effect, &label)
         }
     }
 
@@ -1130,6 +1297,17 @@ impl<R: ProcessRunner> HostRuntime<R> {
         self.run(request)
     }
 
+    pub fn execute_remote_root_command(
+        &mut self,
+        target: &HostExecutionTarget,
+        command: &CommandSpec,
+        effect: EffectKind,
+        label: &str,
+    ) -> Result<ProcessOutput> {
+        let request = self.remote_root_command_request(target, command, effect, label)?;
+        self.run(request)
+    }
+
     pub fn execute_remote_command_bounded(
         &mut self,
         target: &HostExecutionTarget,
@@ -1138,6 +1316,17 @@ impl<R: ProcessRunner> HostRuntime<R> {
         label: &str,
     ) -> Result<ProcessOutput> {
         let request = self.remote_command_request(target, command, effect, label)?;
+        self.run_bounded_read(request, target.remote_read_timeout_seconds)
+    }
+
+    pub fn execute_remote_root_command_bounded(
+        &mut self,
+        target: &HostExecutionTarget,
+        command: &CommandSpec,
+        effect: EffectKind,
+        label: &str,
+    ) -> Result<ProcessOutput> {
+        let request = self.remote_root_command_request(target, command, effect, label)?;
         self.run_bounded_read(request, target.remote_read_timeout_seconds)
     }
 
@@ -1164,29 +1353,24 @@ impl<R: ProcessRunner> HostRuntime<R> {
     }
 
     pub fn remote_build(&mut self, request: RemoteBuildRequest) -> Result<RemoteBuildExecution> {
-        let copied = self.execute_local_command(
-            &request.copy_derivation,
-            EffectKind::Build,
-            "remote-build-copy-derivation",
-        )?;
+        let copy_label = format!("build-{}-copy-derivation", request.subject);
+        let copied =
+            self.execute_local_command(&request.copy_derivation, EffectKind::Build, &copy_label)?;
+        require_success(&copied, "remote build derivation copy")?;
         let mut tracker = RetryTracker::new(request.retry);
-        let action_attempt = if copied.succeeded() {
-            loop {
-                let process = self.remote_command_request(
-                    &request.target,
-                    &request.build,
-                    EffectKind::Build,
-                    "remote-build-realize",
-                )?;
-                let output = self.run(process)?;
-                let attempt = command_attempt(&output);
-                match tracker.observe(attempt.clone()) {
-                    RetryDecision::Retry { delay, .. } => self.runner.wait(delay),
-                    RetryDecision::Complete | RetryDecision::Stop { .. } => break attempt,
-                }
+        let action_attempt = loop {
+            let process = self.remote_command_request(
+                &request.target,
+                &request.build,
+                EffectKind::Build,
+                &format!("build-{}-via", request.subject),
+            )?;
+            let output = self.run(process)?;
+            let attempt = command_attempt(&output);
+            match tracker.observe(attempt.clone()) {
+                RetryDecision::Retry { delay, .. } => self.runner.wait(delay),
+                RetryDecision::Complete | RetryDecision::Stop { .. } => break attempt,
             }
-        } else {
-            command_attempt(&copied)
         };
 
         let output = if action_attempt.status == CommandStatus::Success {
@@ -1246,7 +1430,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 }
             }
             DistributionPlan::RelayThroughLocal { closure, cache } => {
-                self.relay_closure(target, closure, cache)?
+                self.relay_closure(target, closure, cache, retry)?
             }
             DistributionPlan::TryTargetCacheThenRelay { closure, cache } => {
                 let copy = cache_pull_command(cache, closure);
@@ -1260,7 +1444,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 match direct.attempt.status {
                     CommandStatus::Success => self.verify_target_closure(target, closure)?,
                     CommandStatus::Signal(signal) => CommandStatus::Signal(signal),
-                    CommandStatus::Exit(_) => self.relay_closure(target, closure, cache)?,
+                    CommandStatus::Exit(_) => self.relay_closure(target, closure, cache, retry)?,
                 }
             }
         };
@@ -1315,39 +1499,47 @@ impl<R: ProcessRunner> HostRuntime<R> {
         target: &HostExecutionTarget,
         closure: &NixStorePath,
         cache: &CacheSource,
+        retry: RetryPolicy,
     ) -> Result<CommandStatus> {
-        let local_pull = cache_pull_command(cache, closure);
-        let request = self.local_request(&local_pull, EffectKind::Mutation, "relay-cache-to-local");
-        let pulled = self.run(request)?;
-        if !pulled.succeeded() {
-            return Ok(command_status(pulled.status));
-        }
         if target.local {
-            return self.verify_target_closure(target, closure);
-        }
-        if !target.route.proxy.is_empty() || target.route.proxy_command.is_some() {
-            bail!("local closure relay requires a direct target route");
+            let local_pull = cache_pull_command(cache, closure);
+            let label = format!("relay-cache-to-local-{}", target.route.endpoint.node);
+            let request = self.local_request(&local_pull, EffectKind::Mutation, &label);
+            let pulled = self.run(request)?;
+            return if pulled.succeeded() {
+                self.verify_target_closure(target, closure)
+            } else {
+                Ok(command_status(pulled.status))
+            };
         }
         let endpoint = &target.route.endpoint;
+        let host = uri_authority_component(&endpoint.host)?;
+        let host = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host.to_owned()
+        };
         let store_uri = format!(
-            "ssh-ng://{}@{}:{}",
-            uri_authority_component(&endpoint.user)?,
-            uri_authority_component(&endpoint.host)?,
-            endpoint.port
+            "ssh-ng://{}@{host}",
+            uri_authority_component(&endpoint.user)?
         );
-        let upload = CommandSpec::new(
-            "nix",
-            [
-                "copy".to_owned(),
-                "--to".to_owned(),
-                store_uri,
-                closure.as_str().to_owned(),
-            ],
-        );
-        let request = self.local_request(&upload, EffectKind::Mutation, "relay-local-to-target");
-        let uploaded = self.run(request)?;
-        if !uploaded.succeeded() {
-            return Ok(command_status(uploaded.status));
+        let relay = cache_relay_command(cache, &store_uri, closure);
+        let nix_sshopts = nix_sshopts_without_control_master(target)?;
+        let label = format!("relay-cache-to-target-{}", endpoint.node);
+        let mut tracker = RetryTracker::new(retry);
+        let relayed = loop {
+            let mut request = self.local_request(&relay, EffectKind::Mutation, &label);
+            request
+                .environment
+                .push(("NIX_SSHOPTS".to_owned(), nix_sshopts.clone()));
+            let attempt = command_attempt(&self.run(request)?);
+            match tracker.observe(attempt.clone()) {
+                RetryDecision::Retry { delay, .. } => self.runner.wait(delay),
+                RetryDecision::Complete | RetryDecision::Stop { .. } => break attempt.status,
+            }
+        };
+        if relayed != CommandStatus::Success {
+            return Ok(relayed);
         }
         self.verify_target_closure(target, closure)
     }
@@ -1422,7 +1614,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
         let observer_status = (|| {
             if let Some(observer) = &command.observer_script {
                 let observer = CommandSpec::new(SYSTEM_BASH, ["-c".to_owned(), observer.clone()]);
-                let request = self.remote_command_request_without_control_master(
+                let request = self.remote_root_command_request_without_control_master(
                     target,
                     &observer,
                     EffectKind::ReadOnly,
@@ -1444,7 +1636,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
                     command.unit.clone(),
                 ],
             );
-            self.remote_command_request_without_control_master(
+            self.remote_root_command_request_without_control_master(
                 target,
                 &cancellation,
                 EffectKind::Mutation,
@@ -1516,7 +1708,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
     ) -> Result<HealthDecision> {
         let mut samples = Vec::with_capacity(commands.len());
         for command in commands {
-            let request = self.remote_command_request(
+            let request = self.remote_root_command_request(
                 target,
                 command,
                 EffectKind::ReadOnly,
@@ -1672,6 +1864,10 @@ fn require_success(output: &ProcessOutput, label: &str) -> Result<()> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoteBuildRequest {
+    /// Logical system being built. The execution target may instead be a
+    /// shared builder, so this identity must remain explicit for progress and
+    /// diagnostic attribution.
+    pub subject: String,
     pub target: HostExecutionTarget,
     pub copy_derivation: CommandSpec,
     pub build: CommandSpec,
@@ -2028,6 +2224,35 @@ fn cache_pull_command(cache: &CacheSource, closure: &NixStorePath) -> CommandSpe
     }
     args.push(closure.as_str().to_owned());
     CommandSpec::new("nix", args)
+}
+
+fn cache_relay_command(
+    cache: &CacheSource,
+    target_store_uri: &str,
+    closure: &NixStorePath,
+) -> CommandSpec {
+    let mut args = vec!["copy".to_owned(), "--from".to_owned(), cache.url.clone()];
+    if !cache.trusted_public_keys.is_empty() {
+        args.extend([
+            "--option".to_owned(),
+            "extra-trusted-public-keys".to_owned(),
+            cache.trusted_public_keys.join(" "),
+        ]);
+    }
+    args.extend([
+        "--to".to_owned(),
+        target_store_uri.to_owned(),
+        closure.as_str().to_owned(),
+    ]);
+    CommandSpec::new("nix", args)
+}
+
+fn nix_sshopts_without_control_master(target: &HostExecutionTarget) -> Result<String> {
+    Ok(ssh_connection_args_without_control_master(target)?
+        .iter()
+        .map(|option| shell_quote(option))
+        .collect::<Vec<_>>()
+        .join(" "))
 }
 
 fn uri_authority_component(value: &str) -> Result<&str> {

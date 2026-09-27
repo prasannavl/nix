@@ -523,3 +523,36 @@ fn final_host_state_handles_build_like_actions_and_fallbacks() {
     assert!(FinalHostState::Failed.is_failure());
     assert!(!FinalHostState::OptionalRollbackFailed.is_failure());
 }
+
+#[test]
+fn interruption_is_distinct_from_failure_but_preserves_completed_work() {
+    assert_eq!(
+        HostSummaryFacts {
+            interrupted: true,
+            ..HostSummaryFacts::default()
+        }
+        .final_state(SummaryMode::Deployment),
+        FinalHostState::Interrupted
+    );
+    assert_eq!(FinalHostState::Interrupted.label(), "interrupted");
+    assert!(!FinalHostState::Interrupted.is_failure());
+
+    assert_eq!(
+        HostSummaryFacts {
+            interrupted: true,
+            build_succeeded: true,
+            ..HostSummaryFacts::default()
+        }
+        .final_state(SummaryMode::Deployment),
+        FinalHostState::Built
+    );
+    assert_eq!(
+        HostSummaryFacts {
+            interrupted: true,
+            fully_skipped: true,
+            ..HostSummaryFacts::default()
+        }
+        .final_state(SummaryMode::Deployment),
+        FinalHostState::Skipped
+    );
+}

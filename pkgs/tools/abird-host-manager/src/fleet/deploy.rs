@@ -9,6 +9,8 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 
+use super::transport::{output_indicates_host_key_failure, output_indicates_transport_loss};
+
 const CURRENT_SYSTEM: &str = "/run/current-system";
 const SYSTEM_PROFILE: &str = "/nix/var/nix/profiles/system";
 const SYSTEM_BASH: &str = "/run/current-system/sw/bin/bash";
@@ -823,7 +825,7 @@ fi
         &GenerationAdmissionPaths::default(),
     ));
     body.push_str(&format!(
-        "run_admitted_target_switch env NIXOS_INSTALL_BOOTLOADER=0 {switch} {}\n",
+        "NIXOS_INSTALL_BOOTLOADER=0 run_admitted_target_switch {switch} {}\n",
         goal.as_str()
     ));
     if goal.persists_profile() {
@@ -932,7 +934,7 @@ fn activation_observer_script(unit: &str, max_wait: Duration) -> String {
         r#"result_file={result}
 log_file={log}
 unit={unit}
-for ((polls = 0; polls < {max_polls}; polls++)); do
+read_result() {{
     result=running
     exec_main_status=255
     if [ -s "$result_file" ]; then
@@ -943,6 +945,9 @@ for ((polls = 0; polls < {max_polls}; polls++)); do
             esac
         done < "$result_file"
     fi
+}}
+for ((polls = 0; polls < {max_polls}; polls++)); do
+    read_result
     [ "$result" = running ] || break
     active_state="$({SYSTEM_SYSTEMCTL} show --property=ActiveState --value "$unit" 2>/dev/null || true)"
     load_state="$({SYSTEM_SYSTEMCTL} show --property=LoadState --value "$unit" 2>/dev/null || true)"
@@ -955,6 +960,9 @@ for ((polls = 0; polls < {max_polls}; polls++)); do
     {SYSTEM_SLEEP} 0.1
 done
 [ ! -e "$log_file" ] || {SYSTEM_CAT} "$log_file"
+# The unit may publish its terminal marker between the last poll and log
+# consumption. Do not return the stale running sentinel in that race.
+read_result
 case "$exec_main_status" in ''|*[!0-9]*) exit 255 ;; *) exit "$exec_main_status" ;; esac
 "#
     )
@@ -1059,14 +1067,11 @@ impl ActivationSample {
         self.result.as_deref() == Some("success") && self.exec_main_status == Some(0)
     }
 
-    pub fn running(&self) -> bool {
-        matches!(
-            self.active_state.as_deref(),
-            Some("active" | "activating" | "reloading" | "deactivating")
-        )
-    }
-
     pub fn settled(&self) -> bool {
+        if self.outcome_source.as_deref() == Some("marker") {
+            return matches!(self.result.as_deref(), Some("success" | "exit-code"))
+                && self.exec_main_status.is_some();
+        }
         matches!(self.active_state.as_deref(), Some("inactive" | "failed"))
     }
 }
@@ -1115,7 +1120,7 @@ pub fn verify_activation(
     target: &SystemGeneration,
     goal: ActivationGoal,
 ) -> VerificationDecision {
-    if !sample.authoritative() || sample.running() || !sample.settled() {
+    if !sample.authoritative() || !sample.settled() {
         return VerificationDecision::Pending;
     }
     if sample.current_system.as_ref() != Some(target) {
@@ -1178,18 +1183,8 @@ pub fn classify_deploy_failure(
     DeployFailureAction::Fail(status)
 }
 
-fn host_key_verification_failure(output: &str) -> bool {
-    [
-        "REMOTE HOST IDENTIFICATION HAS CHANGED",
-        "Host key verification failed",
-        "Offending ",
-    ]
-    .iter()
-    .any(|needle| output.contains(needle))
-}
-
 fn pre_admission_ssh_failure(output: &str) -> bool {
-    if host_key_verification_failure(output) {
+    if output_indicates_host_key_failure(output) {
         return false;
     }
     [
@@ -1206,25 +1201,10 @@ fn pre_admission_ssh_failure(output: &str) -> bool {
 }
 
 fn transport_loss(output: &str) -> bool {
-    if host_key_verification_failure(output) {
+    if output_indicates_host_key_failure(output) {
         return false;
     }
-    [
-        "failed to start SSH connection",
-        "mux_client_request_session",
-        "kex_exchange_identification",
-        "ssh_exchange_identification",
-        "Connection reset by peer",
-        "Connection closed by remote host",
-        "Received disconnect",
-        "Broken pipe",
-        "Bad file descriptor",
-        "stdio forwarding failed",
-        "Connection timed out",
-        "No route to host",
-    ]
-    .iter()
-    .any(|needle| output.contains(needle))
+    output_indicates_transport_loss(output)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

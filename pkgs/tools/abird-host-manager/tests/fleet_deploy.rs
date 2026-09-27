@@ -2,6 +2,9 @@
 mod deploy;
 #[path = "../src/test_support.rs"]
 mod test_support;
+#[allow(dead_code)]
+#[path = "../src/fleet/transport.rs"]
+mod transport;
 
 use std::collections::VecDeque;
 use std::fs;
@@ -290,6 +293,10 @@ fn activation_is_a_supervised_detached_attempt_with_an_authoritative_marker() {
     assert!(command.script.contains("Result=running"));
     assert!(command.script.contains("OutcomeSource=marker"));
     assert!(command.script.contains("NIXOS_INSTALL_BOOTLOADER=0"));
+    assert!(command.script.contains(
+        "NIXOS_INSTALL_BOOTLOADER=0 run_admitted_target_switch /nix/store/abc123-nixos-system-new/bin/switch-to-configuration switch"
+    ));
+    assert!(!command.script.contains("run_admitted_target_switch env "));
     assert!(command.script.contains("switch-to-configuration switch"));
     assert!(command.script.contains("/nix/var/nix/profiles/system"));
     assert!(command.script.contains("NIXOS_INSTALL_BOOTLOADER=1"));
@@ -312,6 +319,7 @@ fn activation_is_a_supervised_detached_attempt_with_an_authoritative_marker() {
     let observer = command.observer_script.as_deref().unwrap();
     assert!(observer.contains("activation-results"));
     assert!(observer.contains("ExecMainStatus"));
+    assert_eq!(observer.matches("read_result").count(), 3);
     assert!(observer.contains("for ((polls = 0; polls < 19300; polls++))"));
     assert_bash_syntax(&command.script);
     assert_bash_syntax(observer);
@@ -362,6 +370,10 @@ fn rollback_is_switch_activation_with_projection_admission_and_profile_persisten
     assert!(command.script.contains("admission_mode=rollback"));
     assert!(command.script.contains(" rollback"));
     assert!(command.script.contains("switch-to-configuration switch"));
+    assert!(command.script.contains(
+        "NIXOS_INSTALL_BOOTLOADER=0 run_admitted_target_switch /nix/store/abc123-nixos-system-old/bin/switch-to-configuration switch"
+    ));
+    assert!(!command.script.contains("run_admitted_target_switch env "));
     assert!(command.script.contains("/nix/var/nix/profiles/system"));
     assert!(!command.script.contains("NIXOS_INSTALL_BOOTLOADER=1"));
     assert!(!command.script.contains("restart-managed"));
@@ -521,6 +533,69 @@ fn rollback_uses_target_as_legacy_current_only_after_current_dispatcher_accepts_
                 "{relative} represented by {evidence_kind}"
             );
         }
+    }
+}
+
+#[test]
+fn admitted_switch_does_not_require_path_to_export_activation_environment() {
+    let temporary = tempfile::tempdir().unwrap();
+    let paths = admission_paths(temporary.path());
+    let current = PathBuf::from(&paths.current_system);
+    let target = temporary.path().join("target-system");
+    let observed = temporary.path().join("activation-environment");
+    let switch = temporary.path().join("switch-to-configuration");
+    executable(
+        &current.join("sw/bin/abird-host-agent-generation-preflight"),
+        "#!/bin/sh\nexit 0\n",
+    );
+    executable(
+        &switch,
+        &format!(
+            "#!/bin/sh\nprintf '%s|%s\\n' \"${{NIXOS_INSTALL_BOOTLOADER-<unset>}}\" \"${{ABIRD_HOST_AGENT_CURRENT_SYSTEM-<unset>}}\" > {}\n",
+            observed.display()
+        ),
+    );
+    let bash = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v bash"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+
+    for (mode, expected_current) in [
+        (ActivationAdmissionMode::Normal, "<unset>".to_owned()),
+        (
+            ActivationAdmissionMode::Rollback,
+            target.display().to_string(),
+        ),
+    ] {
+        let script = format!(
+            "{}\nNIXOS_INSTALL_BOOTLOADER=0 run_admitted_target_switch \"$TEST_TARGET_SWITCH\" switch",
+            generation_admission_script(
+                &target.display().to_string(),
+                ActivationGoal::Switch,
+                mode,
+                &paths,
+            )
+        );
+        let output = Command::new(bash.trim())
+            .arg("-c")
+            .arg(script)
+            .env("PATH", "/path/that/does/not/exist")
+            .env("TEST_TARGET_SWITCH", &switch)
+            .env(
+                "ABIRD_HOST_AGENT_CURRENT_SYSTEM",
+                "/inherited/current-system",
+            )
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "mode={mode:?}: {output:?}");
+        assert_eq!(
+            fs::read_to_string(&observed).unwrap(),
+            format!("0|{expected_current}\n")
+        );
     }
 }
 
@@ -765,7 +840,7 @@ fn sample(text: &str) -> ActivationSample {
 fn transport_verification_requires_authority_target_state_and_profile_when_persistent() {
     let target = generation("new");
     let success = sample(
-        "OutcomeSource=marker\nActiveState=inactive\nResult=success\nExecMainStatus=0\nCurrentSystemPath=/nix/store/abc123-nixos-system-new\nSystemProfilePath=/nix/store/abc123-nixos-system-new\n",
+        "OutcomeSource=marker\nResult=success\nExecMainStatus=0\nCurrentSystemPath=/nix/store/abc123-nixos-system-new\nSystemProfilePath=/nix/store/abc123-nixos-system-new\n",
     );
     assert_eq!(
         verify_activation(&success, &target, ActivationGoal::Switch),
@@ -773,7 +848,7 @@ fn transport_verification_requires_authority_target_state_and_profile_when_persi
     );
 
     let wrong_profile = sample(
-        "OutcomeSource=marker\nActiveState=inactive\nResult=success\nExecMainStatus=0\nCurrentSystemPath=/nix/store/abc123-nixos-system-new\nSystemProfilePath=/nix/store/abc123-nixos-system-old\n",
+        "OutcomeSource=marker\nResult=success\nExecMainStatus=0\nCurrentSystemPath=/nix/store/abc123-nixos-system-new\nSystemProfilePath=/nix/store/abc123-nixos-system-old\n",
     );
     assert!(matches!(
         verify_activation(&wrong_profile, &target, ActivationGoal::Switch),
@@ -785,7 +860,7 @@ fn transport_verification_requires_authority_target_state_and_profile_when_persi
     );
 
     let running = sample(
-        "OutcomeSource=marker\nActiveState=active\nResult=running\nExecMainStatus=255\nCurrentSystemPath=/nix/store/abc123-nixos-system-new\n",
+        "OutcomeSource=marker\nResult=running\nExecMainStatus=255\nCurrentSystemPath=/nix/store/abc123-nixos-system-new\n",
     );
     assert_eq!(
         verify_activation(&running, &target, ActivationGoal::Switch),
@@ -810,7 +885,7 @@ fn transport_verification_requires_authority_target_state_and_profile_when_persi
 #[test]
 fn settled_failed_activation_never_becomes_success_just_because_current_system_changed() {
     let failed = sample(
-        "OutcomeSource=marker\nActiveState=failed\nResult=exit-code\nExecMainStatus=1\nCurrentSystemPath=/nix/store/abc123-nixos-system-new\nSystemProfilePath=/nix/store/abc123-nixos-system-new\n",
+        "OutcomeSource=marker\nResult=exit-code\nExecMainStatus=1\nCurrentSystemPath=/nix/store/abc123-nixos-system-new\nSystemProfilePath=/nix/store/abc123-nixos-system-new\n",
     );
     assert!(matches!(
         verify_activation(&failed, &generation("new"), ActivationGoal::Switch),
@@ -867,6 +942,20 @@ fn deploy_failure_interpretation_preserves_signals_and_activation_boundaries() {
     );
     assert_eq!(
         classify_deploy_failure(255, "Connection reset by peer", true, 1, 3),
+        DeployFailureAction::VerifyTarget
+    );
+    assert_eq!(
+        classify_deploy_failure(
+            1,
+            "Offending configuration option ignored\nssh: connect to host h port 22: Connection refused",
+            false,
+            1,
+            3
+        ),
+        DeployFailureAction::RetryBeforeAdmission { next_attempt: 2 }
+    );
+    assert_eq!(
+        classify_deploy_failure(1, "Connection closed by z.gap3.ai port 22", true, 1, 3),
         DeployFailureAction::VerifyTarget
     );
     assert_eq!(

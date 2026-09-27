@@ -355,14 +355,14 @@ fn run_auxiliary_phase<T>(
 ) -> Result<T> {
     let progress = FleetProgress::from_options(&invocation.options);
     let started = Instant::now();
-    progress.phase_started(phase, 0);
+    progress.phase_started(phase, 0, None);
     match operation() {
         Ok(value) => {
-            progress.phase_completed(phase, 0, started.elapsed());
+            progress.phase_completed(phase, 0, None, started.elapsed());
             Ok(value)
         }
         Err(error) => {
-            progress.phase_failed(phase, 0, started.elapsed(), &format!("{error:#}"));
+            progress.phase_failed(phase, 0, None, started.elapsed(), &format!("{error:#}"));
             Err(error)
         }
     }
@@ -522,7 +522,7 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
         )?;
         let started = Instant::now();
         let action = super::engine::execute(&invocation, &mut effects);
-        effects.report_summary(action.is_ok(), started.elapsed());
+        effects.report_summary(&action, started.elapsed());
         drop(effects);
         return finish_run_state(state, action);
     }
@@ -606,7 +606,7 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
                     )?;
                     let started = Instant::now();
                     let action = super::engine::execute(&invocation, &mut effects);
-                    effects.report_summary(action.is_ok(), started.elapsed());
+                    effects.report_summary(&action, started.elapsed());
                     action
                 })()
             };
@@ -1059,35 +1059,39 @@ fn print_groups(inventory: &Inventory) {
             groups.entry(group.to_owned()).or_default().push(name);
         }
     }
-    println!("Groups:");
+    eprintln!("Groups:");
+    if groups.is_empty() {
+        eprintln!("  - (none)");
+    }
     for (group, hosts) in groups {
-        println!("  - {group}: {}", hosts.join(", "));
+        eprintln!("  - {group}");
+        for host in hosts {
+            eprintln!("    - {host}");
+        }
     }
     if !ungrouped.is_empty() {
-        println!("  - (ungrouped): {}", ungrouped.join(", "));
+        eprintln!("  - (ungrouped)");
+        for host in ungrouped {
+            eprintln!("    - {host}");
+        }
     }
 }
 
 fn print_hosts(inventory: &Inventory, selection: &Selection) {
-    println!("Hosts:");
+    eprintln!("Hosts:");
     for name in &selection.ordered {
         let host = &inventory.hosts[name];
         let target = host.target.as_deref().unwrap_or(name);
-        let mut annotations = Vec::new();
+        let mut annotations = vec![format!("target: {target}")];
         if host.deploy != super::inventory::DeployMode::Strict {
-            annotations.push(format!("deploy={:?}", host.deploy).to_ascii_lowercase());
+            annotations.push(format!("deploy: {:?}", host.deploy).to_ascii_lowercase());
         }
         if host.wait != 0 {
-            annotations.push(format!("wait={}s", host.wait));
+            annotations.push(format!("wait: {}s", host.wait));
         }
         if let Some(parent) = &host.parent {
-            annotations.push(format!("parent={parent}"));
+            annotations.push(format!("parent: {parent}"));
         }
-        let suffix = if annotations.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", annotations.join(", "))
-        };
-        println!("  - {name}: {target}{suffix}");
+        eprintln!("  - {name} ({})", annotations.join(", "));
     }
 }

@@ -168,6 +168,18 @@ fn combined_health_decision_uses_fail_closed_precedence_and_keeps_evidence() {
 }
 
 #[test]
+fn only_structural_health_failure_requires_generation_rollback() {
+    for decision in [
+        HealthDecision::healthy(),
+        HealthDecision::Settling { evidence: vec![] },
+        HealthDecision::ServiceFailure { evidence: vec![] },
+    ] {
+        assert!(!decision.requires_generation_rollback());
+    }
+    assert!(HealthDecision::StructuralFailure { evidence: vec![] }.requires_generation_rollback());
+}
+
+#[test]
 fn missing_host_agent_has_no_durable_holds() {
     assert_eq!(validate_durable_holds(None).unwrap(), Vec::new());
 }

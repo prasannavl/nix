@@ -402,6 +402,8 @@ fn legacy_cli_rejects_ambiguous_or_unsafe_shapes() {
         vec!["nixbot", "deploy", "--restart-managed", "--goal=boot"],
         vec!["nixbot", "dev-build", "--sha=abc123"],
         vec!["nixbot", "clean", "--sha=abc123"],
+        vec!["nixbot", "deploy", "--hosts="],
+        vec!["nixbot", "deploy", "--group="],
     ] {
         assert!(
             Invocation::parse_legacy(arguments.clone()).is_err(),

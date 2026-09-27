@@ -5208,7 +5208,7 @@ fn deploy_closeout_and_wait(
         } else {
             "deploy idempotently and finalize it"
         };
-        command_reporter().message(format!(
+        command_reporter().document(format!(
             "\n{stage} {}. From this repository root, deploy it manually:\n\n  {manual_command}\n\nThe journal remains pending; rerun `transaction close {} {}--yes` to {continuation}.",
             if publication.pushed { "published" } else { "committed locally" },
             record.id(),

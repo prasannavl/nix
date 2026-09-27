@@ -13,6 +13,10 @@ use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 
 use super::build_lease::LeaseEpoch;
+use super::transport::{
+    output_indicates_daemon_disconnect, output_indicates_host_key_failure,
+    output_indicates_transport_loss,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandSpec {
@@ -233,6 +237,13 @@ pub fn effective_build_plan_jobs(requested: usize, host_count: usize) -> Result<
         bail!("build-plan jobs must be positive");
     }
     Ok(requested.min(host_count))
+}
+
+pub fn automatic_build_plan_jobs(available_parallelism: usize) -> Result<usize> {
+    if available_parallelism == 0 {
+        bail!("available parallelism must be positive");
+    }
+    Ok((available_parallelism / 2).saturating_add(1))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -481,39 +492,13 @@ fn classify_remote_failure(attempt: &CommandAttempt) -> RemoteFailureKind {
         return RemoteFailureKind::Signal;
     }
     let output = format!("{}\n{}", attempt.stdout, attempt.stderr);
-    if [
-        "REMOTE HOST IDENTIFICATION HAS CHANGED",
-        "Host key verification failed",
-        "Offending ",
-    ]
-    .iter()
-    .any(|pattern| output.contains(pattern))
-    {
+    if output_indicates_host_key_failure(&output) {
         return RemoteFailureKind::HostKeyVerification;
     }
-    if output.contains("Nix daemon disconnected unexpectedly")
-        || (output.contains("cannot connect to socket at ")
-            && output.contains("nix/daemon-socket/socket"))
-    {
+    if output_indicates_daemon_disconnect(&output) {
         return RemoteFailureKind::DaemonDisconnect;
     }
-    if [
-        "failed to start SSH connection",
-        "mux_client_request_session",
-        "kex_exchange_identification",
-        "ssh_exchange_identification",
-        "Connection reset by peer",
-        "Connection closed by remote host",
-        "Received disconnect",
-        "client_loop: send disconnect: Broken pipe",
-        "Broken pipe",
-        "Bad file descriptor",
-        "stdio forwarding failed",
-        "Connection timed out",
-        "No route to host",
-    ]
-    .iter()
-    .any(|pattern| output.contains(pattern))
+    if output_indicates_transport_loss(&output)
         || matches!(attempt.status, CommandStatus::Exit(124 | 255))
     {
         return RemoteFailureKind::TransportLoss;

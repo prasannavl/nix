@@ -6,10 +6,10 @@ use abird_host_manager::fleet::build::{
     BuildPlanAttribute, BuildSchedule, BuildStage, CacheSource, CommandAttempt, CommandExecutor,
     CommandSpec, CommandStatus, DistributionInputs, DistributionPlan, LocalBuildSpec, NixStorePath,
     RemoteBuildOutput, RemoteBuildPurpose, RemoteFailureKind, RetryDecision, RetryPolicy,
-    RetryTracker, build_plan_cache_file, build_plan_evaluation_command, build_plan_probe_command,
-    closure_verification_command, copy_derivation_command, development_build_command,
-    effective_build_plan_jobs, execute_with_retry, local_build_command, remote_build_command,
-    remote_build_stages, validate_cached_build_plan,
+    RetryTracker, automatic_build_plan_jobs, build_plan_cache_file, build_plan_evaluation_command,
+    build_plan_probe_command, closure_verification_command, copy_derivation_command,
+    development_build_command, effective_build_plan_jobs, execute_with_retry, local_build_command,
+    remote_build_command, remote_build_stages, validate_cached_build_plan,
 };
 
 fn strings(values: &[&str]) -> Vec<String> {
@@ -138,6 +138,10 @@ fn cached_plan_requires_a_valid_present_derivation() {
     assert_eq!(effective_build_plan_jobs(8, 3).unwrap(), 3);
     assert_eq!(effective_build_plan_jobs(8, 0).unwrap(), 0);
     assert!(effective_build_plan_jobs(0, 3).is_err());
+    assert_eq!(automatic_build_plan_jobs(1).unwrap(), 1);
+    assert_eq!(automatic_build_plan_jobs(8).unwrap(), 5);
+    assert_eq!(automatic_build_plan_jobs(9).unwrap(), 5);
+    assert!(automatic_build_plan_jobs(0).is_err());
 }
 
 #[test]
@@ -269,6 +273,37 @@ fn daemon_disconnect_and_transport_loss_are_retryable_with_retained_evidence() {
         tracker.observe(CommandAttempt::success("/nix/store/result\n")),
         RetryDecision::Complete
     );
+}
+
+#[test]
+fn remote_failure_classification_shares_exact_ssh_diagnostics() {
+    let policy = RetryPolicy::new(2, Duration::from_secs(1)).unwrap();
+
+    let mut unrelated = RetryTracker::new(policy);
+    assert_eq!(
+        unrelated.observe(CommandAttempt::failure(
+            1,
+            "",
+            "Offending configuration option ignored"
+        )),
+        RetryDecision::Stop {
+            kind: RemoteFailureKind::CommandFailure,
+            status: 1,
+        }
+    );
+
+    let mut closed = RetryTracker::new(policy);
+    assert!(matches!(
+        closed.observe(CommandAttempt::failure(
+            1,
+            "",
+            "Connection closed by z.gap3.ai port 22"
+        )),
+        RetryDecision::Retry {
+            kind: RemoteFailureKind::TransportLoss,
+            ..
+        }
+    ));
 }
 
 #[derive(Default)]

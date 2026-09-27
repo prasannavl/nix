@@ -367,9 +367,12 @@ Use this index as the canonical map for `.agents/docs/**`.
 ### Nixbot
 
 - `.agents/docs/notes/nixbot/rust-host-manager-replacement-2026-09.md`: Native
-  Rust fleet architecture, Pvl inventory adaptations, move-style output, parity
-  evidence, and the staged landing boundary that retains the active Bash Nixbot
-  until explicit cutover.
+  Rust fleet architecture, Pvl inventory adaptations, rolling interactive
+  progress, restrained title-only bold styling, proxy-command host-key handling,
+  bounded control sockets, stable semantic builder leases, explicit root
+  target-control execution, proxy-capable signed cache relay, health failure
+  evidence, parity validation, and the staged landing boundary that retains the
+  active Bash Nixbot until explicit cutover.
 - `.agents/docs/notes/nixbot/deploy-system.md`: Canonical `nixbot` deploy,
   bootstrap, SSH, worktree, Terraform, CI, and distinct group-scope, exact-host,
   and host-filter selection behavior.
@@ -403,7 +406,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   same-store validation fix.
 - `.agents/docs/notes/nixbot/pvl-vlab-1-cache-dns-relay-2026-08.md`: Records the
   `pvl-vlab-1` target-side cache DNS failure, the invalid global reachability
-  assumption in `auto`, and per-target proxy-aware relay and fallback behavior.
+  assumption in `auto`, the Rust direct-route rejection, and full prepared-route
+  signed relay fallback behavior.
 - `.agents/docs/notes/nixbot/build-only-ssh-copyback-2026-09.md`: Records why
   remote build-only results return through the authenticated builder store while
   signed-cache enforcement remains the deployment boundary.

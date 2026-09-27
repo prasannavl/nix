@@ -641,6 +641,7 @@ pub enum SummaryMode {
 pub struct HostSummaryFacts {
     pub build_succeeded: bool,
     pub build_failed: bool,
+    pub interrupted: bool,
     pub fully_skipped: bool,
     pub snapshot_failed: bool,
     pub deploy_succeeded: bool,
@@ -668,7 +669,9 @@ impl HostSummaryFacts {
             return FinalHostState::Skipped;
         }
         if mode == SummaryMode::BuildLike {
-            return if self.build_succeeded {
+            return if self.interrupted {
+                FinalHostState::Interrupted
+            } else if self.build_succeeded {
                 FinalHostState::Ok
             } else {
                 FinalHostState::Failed
@@ -704,6 +707,8 @@ impl HostSummaryFacts {
             FinalHostState::Ok
         } else if self.build_succeeded {
             FinalHostState::Built
+        } else if self.interrupted {
+            FinalHostState::Interrupted
         } else {
             FinalHostState::Failed
         }
@@ -714,6 +719,7 @@ impl HostSummaryFacts {
 pub enum FinalHostState {
     BuildFailed,
     Skipped,
+    Interrupted,
     OptionalRollbackFailed,
     OptionalSnapshotSkipped,
     OptionalRolledBack,
@@ -737,6 +743,7 @@ impl FinalHostState {
         match self {
             Self::BuildFailed => "FAIL (build)",
             Self::Skipped => "skip",
+            Self::Interrupted => "interrupted",
             Self::OptionalRollbackFailed => "optional (rollback failed)",
             Self::OptionalSnapshotSkipped => "optional (snapshot skipped)",
             Self::OptionalRolledBack => "optional (rolled back)",

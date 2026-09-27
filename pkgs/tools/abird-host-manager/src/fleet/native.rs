@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,9 +24,9 @@ use super::build::{
     BuildArgs, BuildBatch, BuildCacheContext, BuildCacheState, BuildHostDeployMode,
     BuildPlanAttribute, BuildSchedule, BuilderClosure, CacheSource, CommandSpec,
     DistributionInputs, DistributionPlan, LocalBuildSpec, NixStorePath, RetryPolicy,
-    build_plan_cache_file, build_plan_evaluation_command, build_plan_probe_command,
-    closure_verification_command, copy_derivation_command, development_build_command,
-    local_build_command, validate_cached_build_plan,
+    automatic_build_plan_jobs, build_plan_cache_file, build_plan_evaluation_command,
+    build_plan_probe_command, closure_verification_command, copy_derivation_command,
+    development_build_command, local_build_command, validate_cached_build_plan,
 };
 use super::build_lease::{
     BuilderLeaseCoordinator, InvocationId, LeaseEpoch, LeaseRetryPolicy, SystemLeaseConnector,
@@ -42,14 +43,46 @@ use super::host_runtime::{
     retire_control_master, ssh_connection_args,
 };
 use super::inventory::{DeployMode, Inventory};
-use super::plan::Phase;
-use super::presentation::FleetProgress;
+use super::plan::{Phase, WorkflowPlan};
+use super::presentation::{FleetProgress, WorkflowResult, phase_label};
 use super::selection::Selection;
 use super::system::{ResolvedHost, resolve_host};
 use super::transport::{
-    HostTransport, ProcessStatus, ProxyCommandTemplate, SelfTargetDecision, SelfTargetEvidence,
-    SelfTargetMode, SshEndpoint, SshRoutePlan, TransportRole, plan_proxy_chain, plan_self_target,
+    HostKeyPolicy, HostTransport, ProcessStatus, ProxyCommandTemplate, SelfTargetDecision,
+    SelfTargetEvidence, SelfTargetMode, SshEndpoint, SshRoutePlan, TransportRole, plan_proxy_chain,
+    plan_self_target,
 };
+
+const SSH_CONTROL_PATH_LIMIT: usize = 108;
+const CONTROL_SOCKET_DIGEST_HEX_LEN: usize = 20;
+
+fn health_failure_message(
+    host: &str,
+    kind: &str,
+    report: &super::health_runtime::ManagedHealthReport,
+) -> String {
+    let details = report
+        .details
+        .iter()
+        .filter_map(|detail| super::presentation::format_failure_line(detail))
+        .collect::<Vec<_>>();
+    let mut message = format!(
+        "{host}: post-switch {kind}: {}",
+        if details.is_empty() {
+            "no additional health detail".to_owned()
+        } else {
+            details.join("; ")
+        }
+    );
+    if !report.failure_excerpts.is_empty() {
+        message.push_str("\n    Recent service evidence:");
+        for excerpt in report.failure_excerpts.iter().take(4) {
+            message.push_str("\n      ");
+            message.push_str(excerpt);
+        }
+    }
+    message
+}
 
 pub struct NativeFleetEffects<'a> {
     invocation: &'a Invocation,
@@ -80,12 +113,27 @@ pub struct NativeFleetEffects<'a> {
     rollback_failed: BTreeSet<String>,
     bootstrap_failed: BTreeSet<String>,
     terraform_status: Vec<(String, bool)>,
+    phase_results: Vec<PhaseResult>,
     pending_rollback: BTreeSet<String>,
     deploy_failures: Vec<String>,
     bootstrap_prepared: BTreeSet<String>,
     age_identity_prepared: BTreeSet<String>,
     prepared_targets: BTreeMap<String, HostExecutionTarget>,
     diagnostic_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PhaseResultKind {
+    Succeeded,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PhaseResult {
+    phase: Phase,
+    kind: PhaseResultKind,
+    elapsed: Duration,
 }
 
 struct DeployTaskOutcome {
@@ -118,6 +166,17 @@ struct AcquisitionTarget {
 enum CandidateAcquisition {
     Approved,
     Deferred,
+}
+
+fn unavailable_plan_is_skippable(
+    action: &Action,
+    policy: DeployMode,
+    native_plans: Option<&BTreeSet<String>>,
+    configuration: &str,
+) -> bool {
+    matches!(action, Action::Run | Action::Deploy)
+        && policy == DeployMode::Skip
+        && native_plans.is_some_and(|plans| !plans.contains(configuration))
 }
 
 fn execute_candidate_acquisition_pipeline<C>(
@@ -170,7 +229,7 @@ impl<'a> NativeFleetEffects<'a> {
             bail!("native fleet Nix program must be absolute");
         }
         let transport_store = tempfile::Builder::new()
-            .prefix("abird-fleet-transport-")
+            .prefix("t-")
             .tempdir_in(repository.parent().unwrap_or(repository))
             .context("create fleet transport material directory")?;
         let started = SystemTime::now()
@@ -240,6 +299,7 @@ impl<'a> NativeFleetEffects<'a> {
             rollback_failed: BTreeSet::new(),
             bootstrap_failed: BTreeSet::new(),
             terraform_status: Vec::new(),
+            phase_results: Vec::new(),
             pending_rollback: BTreeSet::new(),
             deploy_failures: Vec::new(),
             bootstrap_prepared: BTreeSet::new(),
@@ -257,8 +317,13 @@ impl<'a> NativeFleetEffects<'a> {
         &self.closures
     }
 
-    pub fn report_summary(&self, succeeded: bool, elapsed: Duration) {
+    pub fn report_summary(&self, outcome: &Result<()>, elapsed: Duration) {
         use super::orchestration::{HostSummaryFacts, SummaryMode};
+
+        let interrupted = outcome
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.downcast_ref::<super::signal::Interrupted>().is_some());
 
         let host_action = matches!(
             self.invocation.action,
@@ -299,7 +364,12 @@ impl<'a> NativeFleetEffects<'a> {
                         build_failed: check_failed
                             || (!fully_skipped
                                 && !build_succeeded
+                                && !interrupted
                                 && !matches!(self.invocation.action, Action::CheckBootstrap)),
+                        interrupted: interrupted
+                            && !fully_skipped
+                            && !build_succeeded
+                            && !check_failed,
                         fully_skipped,
                         snapshot_failed: self.snapshot_failed.contains(host),
                         deploy_succeeded: self.successful.contains(host),
@@ -336,15 +406,50 @@ impl<'a> NativeFleetEffects<'a> {
                 )
             })
             .collect::<Vec<_>>();
+        let phases = WorkflowPlan::for_action(&self.invocation.action)
+            .phases
+            .into_iter()
+            .map(|phase| {
+                let name = phase_label(phase, 0, None);
+                let status = self
+                    .phase_results
+                    .iter()
+                    .find(|result| result.phase == phase)
+                    .map_or_else(
+                        || "not run".to_owned(),
+                        |result| {
+                            format!(
+                                "{} · {}",
+                                match result.kind {
+                                    PhaseResultKind::Succeeded => "ok",
+                                    PhaseResultKind::Failed => "FAIL",
+                                    PhaseResultKind::Interrupted => "interrupted",
+                                },
+                                crate::progress::format_duration(result.elapsed)
+                            )
+                        },
+                    );
+                (name, status)
+            })
+            .collect::<Vec<_>>();
         self.progress.workflow_summary(
             action_summary_label(&self.invocation.action),
+            phases
+                .iter()
+                .map(|(phase, status)| (phase.as_str(), status.as_str())),
             hosts
                 .iter()
                 .map(|(host, status)| (host.as_str(), status.as_str())),
             terraform
                 .iter()
                 .map(|(project, status)| (project.as_str(), status.as_str())),
-            succeeded,
+            if outcome.is_ok() {
+                WorkflowResult::Success
+            } else if interrupted {
+                WorkflowResult::Interrupted
+            } else {
+                WorkflowResult::Failure
+            },
             elapsed,
         );
     }
@@ -449,7 +554,19 @@ impl<'a> NativeFleetEffects<'a> {
             self.invocation.options.build_jobs,
             self.invocation.options.build_logs,
         )?;
-        let plan_args = if self.selection.ordered.len() > 1 {
+        let requested_plan_jobs = match self.invocation.options.build_plan_jobs {
+            super::cli::JobCount::Auto => automatic_build_plan_jobs(
+                std::thread::available_parallelism()
+                    .map(usize::from)
+                    .unwrap_or(1),
+            )?,
+            super::cli::JobCount::Count(count) => count,
+        };
+        let probe_jobs = super::build::effective_build_plan_jobs(
+            requested_plan_jobs,
+            self.selection.ordered.len(),
+        )?;
+        let probe_args = if probe_jobs > 1 {
             vec![
                 "--option".to_owned(),
                 "eval-cache".to_owned(),
@@ -458,19 +575,21 @@ impl<'a> NativeFleetEffects<'a> {
         } else {
             Vec::new()
         };
-        let probe = build_plan_probe_command(&nix, &plan_args);
+        let probe = build_plan_probe_command(&nix, &probe_args);
         let probe = self.host_runtime.execute_local_command(
             &probe,
             EffectKind::ReadOnly,
             "build-plan-probe",
         )?;
-        let attribute = if probe.succeeded() {
-            BuildPlanAttribute::Native
+        let (attribute, native_plans) = if probe.succeeded() {
+            let plans = serde_json::from_str::<BTreeSet<String>>(&probe.stdout)
+                .context("parse native build-plan probe output")?;
+            (BuildPlanAttribute::Native, Some(plans))
         } else {
-            BuildPlanAttribute::NixosConfiguration
+            (BuildPlanAttribute::NixosConfiguration, None)
         };
-        let cache = self.build_plan_cache_context()?;
-        let mut pending = Vec::new();
+
+        let mut planned_hosts = Vec::new();
         for host in &self.selection.ordered {
             let configuration = if self.invocation.options.host.as_deref() == Some(host)
                 && let Some(configuration) = &self.invocation.options.nix_config
@@ -479,30 +598,53 @@ impl<'a> NativeFleetEffects<'a> {
             } else {
                 host.clone()
             };
+            if unavailable_plan_is_skippable(
+                &self.invocation.action,
+                self.inventory.hosts[host].deploy,
+                native_plans.as_ref(),
+                &configuration,
+            ) {
+                self.progress.task_skipped(format!("build-plan-{host}"));
+                continue;
+            }
+            planned_hosts.push((host.clone(), configuration));
+        }
+        if planned_hosts.is_empty() {
+            return Ok(());
+        }
+
+        let plan_jobs =
+            super::build::effective_build_plan_jobs(requested_plan_jobs, planned_hosts.len())?;
+        let plan_args = if plan_jobs > 1 {
+            vec![
+                "--option".to_owned(),
+                "eval-cache".to_owned(),
+                "false".to_owned(),
+            ]
+        } else {
+            Vec::new()
+        };
+        let cache = self.build_plan_cache_context()?;
+        let mut pending = Vec::new();
+        for (host, configuration) in &planned_hosts {
             if let Some((_, derivation)) =
-                self.cached_derivation(cache.as_ref(), host, &configuration)?
+                self.cached_derivation(cache.as_ref(), host, configuration)?
             {
                 self.progress
                     .detail(format!("Build plan cache hit · {host}"));
                 self.derivations.insert(host.clone(), derivation);
             } else {
                 let plan =
-                    build_plan_evaluation_command(&nix, &plan_args, attribute, &configuration);
+                    build_plan_evaluation_command(&nix, &plan_args, attribute, configuration);
                 let cache_path = cache
                     .as_ref()
                     .map(|(root, context)| {
-                        build_plan_cache_file(root, context, host, &configuration)
+                        build_plan_cache_file(root, context, host, configuration)
                     })
                     .transpose()?;
                 pending.push((host.clone(), configuration, plan, cache_path));
             }
         }
-        let plan_jobs = match self.invocation.options.build_plan_jobs {
-            super::cli::JobCount::Auto => std::thread::available_parallelism()
-                .map(usize::from)
-                .unwrap_or(1),
-            super::cli::JobCount::Count(count) => count,
-        };
         let repository = self.repository.to_path_buf();
         let progress = self.progress.clone();
         let evaluated = super::orchestration::bounded_parallel_map(
@@ -531,7 +673,7 @@ impl<'a> NativeFleetEffects<'a> {
 
         let control_plane = self.inventory.control_plane_hosts()?;
         let schedule = BuildSchedule::new(
-            self.selection.ordered.clone(),
+            planned_hosts.into_iter().map(|(host, _)| host).collect(),
             self.invocation.options.build_jobs,
             &control_plane,
         )?;
@@ -785,6 +927,7 @@ impl<'a> NativeFleetEffects<'a> {
             &target,
             &lease_spec,
             &store_uri,
+            host,
             derivation,
             build_args,
         )?;
@@ -836,6 +979,7 @@ impl<'a> NativeFleetEffects<'a> {
         target: &HostExecutionTarget,
         lease_spec: &super::build_lease::LeaseProcessSpec,
         store_uri: &str,
+        subject: &str,
         derivation: &NixStorePath,
         build_args: &BuildArgs,
     ) -> Result<(NixStorePath, LeaseEpoch)> {
@@ -844,6 +988,7 @@ impl<'a> NativeFleetEffects<'a> {
             target: &'runtime HostExecutionTarget,
             lease_spec: &'runtime super::build_lease::LeaseProcessSpec,
             store_uri: &'runtime str,
+            subject: &'runtime str,
             derivation: &'runtime NixStorePath,
             build_args: &'runtime BuildArgs,
         }
@@ -856,6 +1001,7 @@ impl<'a> NativeFleetEffects<'a> {
                 self.runtime.realize_on_builder(
                     self.target,
                     self.store_uri,
+                    self.subject,
                     self.derivation,
                     self.build_args,
                 )
@@ -872,6 +1018,7 @@ impl<'a> NativeFleetEffects<'a> {
                 target,
                 lease_spec,
                 store_uri,
+                subject,
                 derivation,
                 build_args,
             },
@@ -883,6 +1030,7 @@ impl<'a> NativeFleetEffects<'a> {
         &mut self,
         target: &HostExecutionTarget,
         store_uri: &str,
+        subject: &str,
         derivation: &NixStorePath,
         build_args: &BuildArgs,
     ) -> Result<NixStorePath> {
@@ -892,6 +1040,7 @@ impl<'a> NativeFleetEffects<'a> {
             target,
         )?;
         let execution = self.host_runtime.remote_build(RemoteBuildRequest {
+            subject: subject.to_owned(),
             target: target.clone(),
             copy_derivation,
             build: commands.build,
@@ -1235,6 +1384,11 @@ impl<'a> NativeFleetEffects<'a> {
         } else {
             SshRoutePlan::via_chain(endpoint, proxy)
         };
+        let control_socket = if local {
+            None
+        } else {
+            Some(control_socket_path(self.transport_store.path(), &route)?)
+        };
         HostExecutionTarget::from_resolved(
             &resolved,
             route,
@@ -1253,18 +1407,11 @@ impl<'a> NativeFleetEffects<'a> {
             target.with_remote_read_timeout(self.settings.remote_read_timeout_seconds)
         })
         .and_then(|target| {
-            if local {
-                Ok(target)
+            if let Some(control_socket) = control_socket {
+                target
+                    .with_control_master(control_socket, self.settings.ssh_control_persist_seconds)
             } else {
-                target.with_control_master(
-                    self.transport_store.path().join(format!(
-                        "cm-{}-{}-{}",
-                        safe_component(&resolved.inventory_name),
-                        safe_component(&resolved.user),
-                        resolved.port
-                    )),
-                    self.settings.ssh_control_persist_seconds,
-                )
+                Ok(target)
             }
         })
     }
@@ -1667,13 +1814,19 @@ impl<'a> NativeFleetEffects<'a> {
         }
         let scan_host = if host.proxy_command.is_some() {
             None
-        } else if let Some(first) = proxy.hops.first() {
-            Some((&first.endpoint.host, first.endpoint.port))
-        } else {
+        } else if proxy.is_empty() {
             Some((&host.target, host.port))
+        } else {
+            proxy
+                .directly_scannable_first_hop()
+                .map(|first| (&first.endpoint.host, first.endpoint.port))
         };
         let mut contents = Vec::new();
         if let Some((target, port)) = scan_host {
+            self.progress.detail(format!(
+                "Discover SSH host key · {} via {target}:{port}",
+                host.inventory_name
+            ));
             for algorithm in [Some("ed25519"), None] {
                 let mut command = Command::new("ssh-keyscan");
                 command.args([
@@ -1698,6 +1851,10 @@ impl<'a> NativeFleetEffects<'a> {
             if contents.is_empty() {
                 bail!("could not determine SSH host key for {target}:{port}");
             }
+            self.progress.detail(format!(
+                "Discovered SSH host key · {} via {target}:{port}",
+                host.inventory_name
+            ));
         }
         let mut file = OpenOptions::new()
             .write(true)
@@ -1953,6 +2110,7 @@ impl<'a> NativeFleetEffects<'a> {
                     &target,
                     &lease_spec,
                     &store_uri,
+                    host,
                     &closure.derivation,
                     &closure.build,
                 )?;
@@ -2001,7 +2159,7 @@ impl<'a> NativeFleetEffects<'a> {
                 let command = CommandSpec::new(command.program.clone(), command.args.clone());
                 let output = self
                     .host_runtime
-                    .execute_remote_command(&target, &command, effect, label)?;
+                    .execute_remote_root_command(&target, &command, effect, label)?;
                 if !output.succeeded() {
                     bail!(
                         "{label} failed for {host} through {parent}: {}",
@@ -2038,7 +2196,7 @@ impl<'a> NativeFleetEffects<'a> {
         } else {
             "release-candidate-lease"
         };
-        let output = self.host_runtime.execute_remote_command(
+        let output = self.host_runtime.execute_remote_root_command(
             target,
             &CommandSpec::new(command.program, command.args),
             EffectKind::Mutation,
@@ -2161,7 +2319,7 @@ impl<'a> NativeFleetEffects<'a> {
             |effects| {
                 let command =
                     super::deploy::pre_activation_image_pull_command(&candidate.generation);
-                let output = effects.host_runtime.execute_remote_command(
+                let output = effects.host_runtime.execute_remote_root_command(
                     &target,
                     &CommandSpec::new(command.program, command.args),
                     EffectKind::Mutation,
@@ -2178,7 +2336,7 @@ impl<'a> NativeFleetEffects<'a> {
             |effects| {
                 let command =
                     super::deploy::pre_activation_model_prefetch_command(&candidate.generation);
-                let output = effects.host_runtime.execute_remote_command(
+                let output = effects.host_runtime.execute_remote_root_command(
                     &target,
                     &CommandSpec::new(command.program, command.args),
                     EffectKind::Mutation,
@@ -2596,7 +2754,6 @@ impl<'a> NativeFleetEffects<'a> {
                         tasks.push((host, target, ignored_system_units));
                     }
                     Err(error) => {
-                        self.pending_rollback.insert(host.clone());
                         failures.push(format!(
                             "{host}: post-switch health transport failed: {error:#}"
                         ));
@@ -2631,7 +2788,10 @@ impl<'a> NativeFleetEffects<'a> {
                             self.progress
                                 .detail(format!("{host} · health ignored system unit · {failure}"));
                         }
-                        match report.decision {
+                        if report.decision.requires_generation_rollback() {
+                            self.pending_rollback.insert(host.clone());
+                        }
+                        match &report.decision {
                             super::health::HealthDecision::Healthy { .. } => {
                                 self.progress.detail(format!(
                                     "{host} · health ok · {} attempt{}",
@@ -2641,31 +2801,32 @@ impl<'a> NativeFleetEffects<'a> {
                             }
                             super::health::HealthDecision::Settling { .. } => {
                                 self.health_failed.insert(host.clone());
-                                failures.push(format!(
-                                    "{host}: post-switch health is still settling: {}",
-                                    report.details.join("; ")
+                                failures.push(health_failure_message(
+                                    &host,
+                                    "health is still settling",
+                                    &report,
                                 ));
                             }
                             super::health::HealthDecision::ServiceFailure { .. } => {
                                 self.health_failed.insert(host.clone());
-                                failures.push(format!(
-                                    "{host}: post-switch service health failed: {}",
-                                    report.details.join("; ")
+                                failures.push(health_failure_message(
+                                    &host,
+                                    "service health failed",
+                                    &report,
                                 ));
                             }
                             super::health::HealthDecision::StructuralFailure { .. } => {
                                 self.health_failed.insert(host.clone());
-                                self.pending_rollback.insert(host.clone());
-                                failures.push(format!(
-                                    "{host}: post-switch structural health failed: {}",
-                                    report.details.join("; ")
+                                failures.push(health_failure_message(
+                                    &host,
+                                    "structural health failed",
+                                    &report,
                                 ));
                             }
                         }
                     }
                     Err(error) => {
                         self.health_failed.insert(host.clone());
-                        self.pending_rollback.insert(host.clone());
                         failures.push(format!(
                             "{host}: post-switch health probe failed: {error:#}"
                         ));
@@ -2676,7 +2837,7 @@ impl<'a> NativeFleetEffects<'a> {
         if failures.is_empty() {
             Ok(())
         } else {
-            bail!("fleet deployment failed: {}", failures.join("; "))
+            bail!("fleet deployment failed:\n  {}", failures.join("\n  "))
         }
     }
 
@@ -2850,6 +3011,83 @@ fn reporting_process_runner(progress: &FleetProgress) -> ReportingProcessRunner 
         Some(cancellation) => runner.with_cancellation(cancellation),
         None => runner,
     }
+}
+
+fn control_socket_path(store: &Path, route: &SshRoutePlan) -> Result<PathBuf> {
+    let digest = ssh_route_digest(route);
+    let path = store.join(format!("cm-{}", &digest[..CONTROL_SOCKET_DIGEST_HEX_LEN]));
+    let length = path.as_os_str().as_bytes().len();
+    if length >= SSH_CONTROL_PATH_LIMIT {
+        bail!(
+            "SSH control path is {length} bytes, but OpenSSH requires fewer than {SSH_CONTROL_PATH_LIMIT}: {}",
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
+fn ssh_route_digest(route: &SshRoutePlan) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"abird-ssh-route-v1\0");
+    hash_ssh_endpoint(&mut digest, &route.endpoint);
+    hash_field(
+        &mut digest,
+        match route.host_key_policy {
+            HostKeyPolicy::Strict => b"strict",
+            HostKeyPolicy::AcceptNew => b"accept-new",
+        },
+    );
+    hash_optional_field(
+        &mut digest,
+        route
+            .proxy_command
+            .as_ref()
+            .map(ProxyCommandTemplate::as_str),
+    );
+    hash_field(&mut digest, &route.proxy.hops.len().to_be_bytes());
+    for hop in &route.proxy.hops {
+        hash_field(&mut digest, hop.node.as_bytes());
+        hash_ssh_endpoint(&mut digest, &hop.endpoint);
+        hash_optional_field(
+            &mut digest,
+            hop.proxy_command.as_ref().map(ProxyCommandTemplate::as_str),
+        );
+        hash_field(&mut digest, &[u8::from(hop.local)]);
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn hash_ssh_endpoint(digest: &mut Sha256, endpoint: &SshEndpoint) {
+    hash_field(digest, endpoint.node.as_bytes());
+    hash_field(digest, endpoint.host.as_bytes());
+    hash_field(digest, endpoint.user.as_bytes());
+    hash_field(digest, &endpoint.port.to_be_bytes());
+    hash_field(
+        digest,
+        match endpoint.role {
+            TransportRole::Primary => b"primary",
+            TransportRole::Operator => b"operator",
+        },
+    );
+    // The materialized identity lives below a per-worker RAII directory. Its
+    // path is deliberately not route authority; whether the route uses an
+    // identity is. This keeps parallel workers on one semantic builder lease.
+    hash_field(digest, &[u8::from(endpoint.identity.is_some())]);
+}
+
+fn hash_optional_field(digest: &mut Sha256, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            hash_field(digest, &[1]);
+            hash_field(digest, value.as_bytes());
+        }
+        None => hash_field(digest, &[0]),
+    }
+}
+
+fn hash_field(digest: &mut Sha256, value: &[u8]) {
+    digest.update(value.len().to_be_bytes());
+    digest.update(value);
 }
 
 fn safe_component(value: &str) -> String {
@@ -3066,6 +3304,16 @@ fn quote_nix_sshopts(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn include_successful_for_interrupted_rollback(
+    pending: &mut BTreeSet<String>,
+    successful: &BTreeSet<String>,
+    force_remote: bool,
+) {
+    if force_remote {
+        pending.extend(successful.iter().cloned());
+    }
+}
+
 fn with_nix_sshopts(command: CommandSpec, target: &HostExecutionTarget) -> Result<CommandSpec> {
     let options = ssh_connection_args(target)?;
     let rendered = options
@@ -3100,7 +3348,13 @@ impl FleetEffects for NativeFleetEffects<'_> {
     fn run_phase(&mut self, phase: Phase) -> std::result::Result<(), PhaseFailure> {
         let started = Instant::now();
         let host_count = self.selection.ordered.len();
-        self.progress.phase_started(phase, host_count);
+        let plan = WorkflowPlan::for_action(&self.invocation.action);
+        let position = plan
+            .phases
+            .iter()
+            .position(|candidate| *candidate == phase)
+            .map(|index| (index + 1, plan.phases.len()));
+        self.progress.phase_started(phase, host_count, position);
         let result = match phase {
             Phase::TerraformDns | Phase::TerraformPlatform | Phase::TerraformApps | Phase::Tofu => {
                 self.run_terraform_phase(phase)
@@ -3129,14 +3383,38 @@ impl FleetEffects for NativeFleetEffects<'_> {
         };
         match result {
             Ok(()) => {
+                let elapsed = started.elapsed();
+                self.phase_results.push(PhaseResult {
+                    phase,
+                    kind: PhaseResultKind::Succeeded,
+                    elapsed,
+                });
                 self.progress
-                    .phase_completed(phase, host_count, started.elapsed());
+                    .phase_completed(phase, host_count, position, elapsed);
                 Ok(())
             }
             Err(error) => {
                 let message = format!("{error:#}");
-                self.progress
-                    .phase_failed(phase, host_count, started.elapsed(), &message);
+                let elapsed = started.elapsed();
+                let interrupted = super::signal::runtime()
+                    .and_then(|runtime| runtime.interruption())
+                    .is_some();
+                self.phase_results.push(PhaseResult {
+                    phase,
+                    kind: if interrupted {
+                        PhaseResultKind::Interrupted
+                    } else {
+                        PhaseResultKind::Failed
+                    },
+                    elapsed,
+                });
+                if interrupted {
+                    self.progress
+                        .phase_interrupted(phase, host_count, position, elapsed);
+                } else {
+                    self.progress
+                        .phase_failed(phase, host_count, position, elapsed, &message);
+                }
                 if phase == Phase::Deploy {
                     Err(PhaseFailure::continuing_through(
                         phase,
@@ -3153,6 +3431,13 @@ impl FleetEffects for NativeFleetEffects<'_> {
     fn rollback(&mut self, failed_phase: Phase) -> Result<()> {
         if !matches!(failed_phase, Phase::Deploy | Phase::Health) {
             bail!("rollback is not valid for phase {failed_phase:?}");
+        }
+        if failed_phase == Phase::Deploy {
+            include_successful_for_interrupted_rollback(
+                &mut self.pending_rollback,
+                &self.successful,
+                super::signal::runtime().is_some_and(|runtime| runtime.force_remote()),
+            );
         }
         self.rollback_activated()
     }
@@ -3198,6 +3483,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_unavailable_deploy_skips_may_omit_native_plans() {
+        let plans = BTreeSet::from(["owned".to_owned()]);
+
+        assert!(unavailable_plan_is_skippable(
+            &Action::Deploy,
+            DeployMode::Skip,
+            Some(&plans),
+            "external",
+        ));
+        assert!(!unavailable_plan_is_skippable(
+            &Action::Deploy,
+            DeployMode::Skip,
+            Some(&plans),
+            "owned",
+        ));
+        assert!(!unavailable_plan_is_skippable(
+            &Action::Build,
+            DeployMode::Skip,
+            Some(&plans),
+            "external",
+        ));
+        assert!(!unavailable_plan_is_skippable(
+            &Action::Deploy,
+            DeployMode::Strict,
+            Some(&plans),
+            "external",
+        ));
+        assert!(!unavailable_plan_is_skippable(
+            &Action::Deploy,
+            DeployMode::Skip,
+            None,
+            "external",
+        ));
+    }
+
+    #[test]
+    fn only_forced_interruption_adds_successful_hosts_to_rollback() {
+        let successful = BTreeSet::from(["app".to_owned(), "db".to_owned()]);
+        let mut pending = BTreeSet::from(["failed".to_owned()]);
+        include_successful_for_interrupted_rollback(&mut pending, &successful, false);
+        assert_eq!(pending, BTreeSet::from(["failed".to_owned()]));
+
+        include_successful_for_interrupted_rollback(&mut pending, &successful, true);
+        assert_eq!(
+            pending,
+            BTreeSet::from(["app".to_owned(), "db".to_owned(), "failed".to_owned()])
+        );
+    }
+
+    #[test]
     fn repository_commands_remove_git_checkout_selectors() {
         let command = repository_command("nix");
         for selector in crate::programs::GIT_REPOSITORY_ENVIRONMENT {
@@ -3210,6 +3545,40 @@ mod tests {
                 "{selector} was not removed"
             );
         }
+    }
+
+    #[test]
+    fn control_socket_names_are_short_fixed_and_route_specific() -> anyhow::Result<()> {
+        let store = Path::new("/dev/shm/nixbot/run-15bb7f2539a04b6388ed51b71ea23e89/t-n8k91C");
+        let first = SshRoutePlan::direct(SshEndpoint::new(
+            "builder-a",
+            "10.10.30.80",
+            "root",
+            22,
+            TransportRole::Primary,
+            None,
+        )?);
+        let second = SshRoutePlan::direct(SshEndpoint::new(
+            "builder-b",
+            "10.10.30.81",
+            "root",
+            22,
+            TransportRole::Primary,
+            None,
+        )?);
+
+        let first = control_socket_path(store, &first)?;
+        let second = control_socket_path(store, &second)?;
+
+        assert_ne!(first, second);
+        for socket in [first, second] {
+            assert!(socket.as_os_str().as_bytes().len() < SSH_CONTROL_PATH_LIMIT);
+            assert_eq!(
+                socket.file_name().unwrap().as_bytes().len(),
+                3 + CONTROL_SOCKET_DIGEST_HEX_LEN
+            );
+        }
+        Ok(())
     }
 
     #[test]
