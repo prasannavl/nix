@@ -1382,11 +1382,9 @@ fn host_dashboard_lines(
         }
     }
     let host_detail_budget = available_detail_lines.saturating_sub(generic_rendered);
-    let base_host_detail_limit = if detailed_hosts == 0 {
-        0
-    } else {
-        (host_detail_budget / detailed_hosts).min(LIVE_OUTPUT_LINES_PER_TASK)
-    };
+    let base_host_detail_limit = host_detail_budget
+        .checked_div(detailed_hosts)
+        .map_or(0, |limit| limit.min(LIVE_OUTPUT_LINES_PER_TASK));
     let extra_host_details = if base_host_detail_limit < LIVE_OUTPUT_LINES_PER_TASK {
         host_detail_budget.saturating_sub(base_host_detail_limit * detailed_hosts)
     } else {

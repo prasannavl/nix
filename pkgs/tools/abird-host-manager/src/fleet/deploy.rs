@@ -797,6 +797,7 @@ fi
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn activation_script(
     generation: &SystemGeneration,
     goal: ActivationGoal,
@@ -1000,6 +1001,7 @@ pub fn activation_command(spec: ActivationCommand) -> RemoteCommand {
     supervised_activation_command(unit, script, spec.runtime_max, spec.stop_timeout)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn rollback_command(
     run_id: &str,
     host: &str,
