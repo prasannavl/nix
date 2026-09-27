@@ -127,10 +127,11 @@ requires it. The catalog never fixes KV-cache encoding.
 The NixOS candidate carries `share/ai/model-prefetch.json` for inspection and
 `ai-model-prefetch-all` when the plan is non-empty. The executable embeds that
 candidate plan; deploy engines invoke only the candidate executable and do not
-reconstruct or redirect its plan. Both engines use one ordering:
+reconstruct or redirect its plan. Both engines use one fleet ordering, with all
+Acquire work complete before any Deploy activation:
 
 ```text
-distribute candidate -> prepare target -> generation admission -> image pull -> model prefetch -> activation
+Build -> Snapshot -> Acquire[distribute -> prepare -> admission -> image pull -> model prefetch] -> Deploy[activation] -> Health
 ```
 
 Target preparation repairs failed-unit and user-manager state; it is not model
@@ -281,6 +282,8 @@ invocation and host, and cleanup removes a root only when it still resolves to
 the exact acquired generation. The controller records lease intent before the
 idempotent root operation, retains that record across ambiguous transport or
 acquisition failure, and retries cleanup before it can cross the fleet barrier.
+A catchable controller exit first stops local workers, then scans those recorded
+intents and attempts exact remote release before deleting runtime records.
 Leases never update a system profile, boot entry, or current generation.
 Separate invocations therefore do not replace each other's roots, and residue
 after an uncatchable process death is reboot-bounded and cannot block another

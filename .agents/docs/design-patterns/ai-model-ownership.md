@@ -181,8 +181,11 @@ consumers should present CPU last. A missing primary throws one clear message
 instead of yielding a null URL, so consumers never guard or coerce. The NixOS
 module exposes the view as `services.ai.consumersFor defaultHost`, while a
 repository whose addresses live elsewhere (for example a service registry) calls
-`mkConsumers` directly with its own descriptors — abird derives them from
-`mkApi` so there is a single address source.
+`mkConsumers` directly with its own descriptors. Abird combines registry-derived
+URLs from `mkApi` with the projection's exact Ollama and llama.cpp admission
+lists; its chat consumers then remove the embedding role from each endpoint's
+own `modelIds`. A real-stack rendered-config check covers LibreChat, ComfyUI,
+and OpenClaw so a catalog-only or sibling-runtime model cannot be advertised.
 
 The additive cache-warmup path is specified in `ai-model-prefetch.md`. It may
 ask current backends or Hugging Face to cache the candidate selection before
