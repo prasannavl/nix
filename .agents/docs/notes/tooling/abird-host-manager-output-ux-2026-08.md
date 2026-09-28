@@ -165,23 +165,45 @@ independently shows sanitized and contextually redacted non-protocol subprocess
 output; dashboard admission never controls whether verbose output is emitted.
 Verbose lines use the muted nixbot gray so they recede behind phase progress,
 with error lines in red and warning lines in the milder amber nixbot uses
-(256-color 178); red wins when a line carries both signals. When a verbose block
-ends, one blank line separates it from the next persistent progress line. Native
-fleet runs also capture the `l` key on an interactive terminal, toggling the
-same full verbose stream at runtime without restarting the command. The toggle
-is process-wide so nested build workers share one state, keeps `ISIG` intact so
-Ctrl-C still interrupts, restores the original terminal attributes when the run
-ends, and is not installed when stdin is not a terminal, when a
-repository-script re-exec will own the process, when the run reads a staged
-patch from stdin, or when JSON output suppresses human progress. Unknown
-default-mode output fails closed to a generic diagnostic pointer instead of
-relying on error keywords. SSH key discovery and local closure copies are
-attributed to the affected host instead of appearing as unrelated phase-level
-chatter. Nix store events must contain one validated store-root basename, and
-manually published SSH or health-operation lines pass a separate semantic
-allowlist. Health details expose only validated user and systemd-unit
-identifiers or a generic diagnostics pointer; decoded collector text is never
-copied directly into the default host tail.
+(256-color 178); red wins when a line carries both signals. On an interactive
+terminal the verbose stream is a bounded live tail rendered through the same
+clear/redraw path as the dashboard, with one blank row between the tail and the
+dashboard, and it is throttled on high-volume streams. The whole region (tail,
+separator, dashboard, a blank row, and the
+`keys: v: verbose on · ctrl-c: cancel · ctrl-c x3: force exit` footer) is kept
+at a constant height, bottom-anchored with blank rows above, so a redraw never
+changes the region size. Hiding it with `v` drops the tail so the next redraw
+shrinks the region back to just the dashboard, as if the stream had never been
+shown; redirecting output still appends plain lines. The footer's `v` action
+names what the next press does and flips on the key press
+(`verbose on`/`verbose off`) for visible feedback without adding a line. Four
+details keep the toggle honest: the dashboard mode lives in the shared progress
+state so the key reader's reporter clone redraws the same region, the heartbeat
+renders through the same builder so it can never clear a different region, the
+footer only shows when a key reader owns stdin, and every writer holds the
+output lock across its region redraw so two writers cannot each append a region
+while `rendered_lines` tracks only one. Every region line is truncated
+ANSI-aware to the terminal width so it stays on a single row, because
+`rendered_lines` counts rows and a wrapped line would leave its extra rows
+uncleared on hide. The constant height is what avoids the terminal scrolling: a
+redraw that changes the region size moves the cursor onto a new row, so the
+cursor must land on the same row every time. Nothing is printed after the run
+summary. Native fleet runs capture the `v` key on an interactive terminal,
+streaming the tail at runtime without restarting the command. Verbose
+attribution drops the duplicate host when a step already names its executor
+(`build via pvl-x2`, not `build via pvl-x2 pvl-x2`). The toggle is process-wide
+so nested build workers share one state, keeps `ISIG` intact so Ctrl-C still
+interrupts, restores the original terminal attributes when the run ends, and is
+not installed when stdin is not a terminal, when a repository-script re-exec
+will own the process, when the run reads a staged patch from stdin, or when JSON
+output suppresses human progress. Unknown default-mode output fails closed to a
+generic diagnostic pointer instead of relying on error keywords. SSH key
+discovery and local closure copies are attributed to the affected host instead
+of appearing as unrelated phase-level chatter. Nix store events must contain one
+validated store-root basename, and manually published SSH or health-operation
+lines pass a separate semantic allowlist. Health details expose only validated
+user and systemd-unit identifiers or a generic diagnostics pointer; decoded
+collector text is never copied directly into the default host tail.
 
 The activation log follower is observational rather than authoritative. If it
 exits early, the observer continues bounded result polling and drains only new

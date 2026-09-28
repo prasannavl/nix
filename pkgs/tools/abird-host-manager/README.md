@@ -241,10 +241,10 @@ Automation and `--json` default to managed deployment unless `--manual-deploy`
 is explicit.
 
 While host-manager follows a managed deployment, the one-line status includes
-the latest retained Nixbot line. Press `l` to show or hide the durable live log
-tail; `Ctrl-C` retains its normal signal behavior. The log tail belongs to the
-host-agent job, so a reconnect can recover recent output rather than depending
-on the original SSH stream.
+the latest retained Nixbot line. Press `v` to show or hide the durable verbose
+log tail; `Ctrl-C` retains its normal signal behavior. The log tail belongs to
+the host-agent job, so a reconnect can recover recent output rather than
+depending on the original SSH stream.
 
 Without `--local`, both managed and manual deployment consume an exact revision
 that must already exist and be verified on the authoritative remote;
@@ -337,10 +337,18 @@ raw, uncolored stdout, stderr, status, and duration files in the reported
 private diagnostics directory. `--prefix-host-logs` forces attribution; an
 explicit false `NIXBOT_PREFIX_HOST_LOGS` disables the automatic behavior.
 Verbose lines are muted gray so phase progress stays dominant, with errors in
-red and warnings in a milder amber, and a blank line separating a verbose block
-from the next progress line. Native fleet runs on an interactive terminal also
-capture the `l` key, which toggles the same full verbose stream at runtime
-without restarting the command.
+red and warnings in a milder amber. On a terminal they render as a bounded live
+tail in the same overwriteable region as the dashboard, with one blank row
+between the tail and the dashboard, a blank row before the key footer, and the
+whole region sized to the viewport, so the stream is cleared and redrawn like
+progress rather than appended. Redirected output still appends plain lines.
+Native fleet runs on an interactive terminal capture the `v` key and advertise
+it in a footer while running:
+`keys: v: verbose on · ctrl-c: cancel · ctrl-c x3: force exit`. The `v` action
+names what the next press does and flips the moment the key is pressed
+(`verbose on` while off, `verbose off` while on); hiding drops the tail so the
+screen looks as if it had never been shown, and no hint is printed after the run
+summary.
 
 The Rust compatibility binary remains covered by the Cargo suite so the later
 cutover is packaging and caller wiring rather than another implementation port.

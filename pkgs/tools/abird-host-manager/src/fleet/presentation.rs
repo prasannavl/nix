@@ -492,10 +492,19 @@ impl ProgressTask {
     }
 
     /// Lowercase human subject for verbose output; host steps include the host
-    /// so concurrent lines stay attributable.
+    /// so concurrent lines stay attributable. When the step already names the
+    /// host as its executor (`build via pvl-x2`), appending the host again
+    /// would duplicate the name.
     fn verbose_subject(&self) -> String {
         match &self.target {
-            TaskTarget::Host(host) => format!("{} {host}", self.running),
+            TaskTarget::Host(host) => {
+                let executor = self.running.rsplit_once(" via ").map(|(_, via)| via);
+                if executor == Some(host.as_str()) {
+                    self.running.clone()
+                } else {
+                    format!("{} {host}", self.running)
+                }
+            }
             TaskTarget::Phase => self.running.clone(),
         }
     }
@@ -1580,6 +1589,39 @@ mod tests {
         assert_eq!(
             format_process_line("build alpha", Some(ProcessStream::Stderr), "copying", true),
             "  │ [build alpha err] copying"
+        );
+    }
+
+    fn progress_task(target: TaskTarget, running: &str) -> ProgressTask {
+        ProgressTask {
+            reporter: command_reporter().clone(),
+            target,
+            heartbeat: None,
+            verbose: Arc::new(AtomicBool::new(false)),
+            prefix: false,
+            name: "build".to_owned(),
+            running: running.to_owned(),
+            done: "build done".to_owned(),
+            finalizing: false,
+            interrupted: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn verbose_subject_does_not_repeat_a_self_executing_host() {
+        assert_eq!(
+            progress_task(TaskTarget::Host("pvl-x2".to_owned()), "build via pvl-x2")
+                .verbose_subject(),
+            "build via pvl-x2"
+        );
+        assert_eq!(
+            progress_task(TaskTarget::Host("pvl-a1".to_owned()), "build via pvl-x2")
+                .verbose_subject(),
+            "build via pvl-x2 pvl-a1"
+        );
+        assert_eq!(
+            progress_task(TaskTarget::Host("pvl-a1".to_owned()), "build").verbose_subject(),
+            "build pvl-a1"
         );
     }
 

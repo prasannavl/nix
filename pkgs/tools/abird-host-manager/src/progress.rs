@@ -35,6 +35,10 @@ enum ProgressDestination {
     Stderr,
     #[cfg(test)]
     Buffer(Arc<Mutex<Vec<u8>>>),
+    /// Test destination that reports a fixed terminal size, so the viewport
+    /// budget and in-place clearing can be exercised without a real tty.
+    #[cfg(test)]
+    BufferWithViewport(Arc<Mutex<Vec<u8>>>, (usize, usize)),
 }
 
 impl ProgressDestination {
@@ -46,7 +50,7 @@ impl ProgressDestination {
                 let _ = stderr.flush();
             }
             #[cfg(test)]
-            Self::Buffer(buffer) => {
+            Self::Buffer(buffer) | Self::BufferWithViewport(buffer, _) => {
                 if let Ok(mut buffer) = buffer.lock() {
                     buffer.extend_from_slice(text.as_bytes());
                 }
@@ -59,6 +63,8 @@ impl ProgressDestination {
             Self::Stderr => terminal_viewport(),
             #[cfg(test)]
             Self::Buffer(_) => None,
+            #[cfg(test)]
+            Self::BufferWithViewport(_, viewport) => Some(*viewport),
         }
     }
 }
@@ -72,10 +78,18 @@ struct ProgressState {
     task_tails: VecDeque<TaskTail>,
     failed_task_tails: VecDeque<FailedTaskTail>,
     scrolling_snapshot_at: Option<Instant>,
-    /// Set while streamed verbose child output is the most recent text. The
-    /// next persistent progress line emits one separator blank line first so
-    /// live logs stay visually distinct from usual progress.
-    verbose_open: bool,
+    /// Dashboard mode shared by every handle to this state. The fleet reporter
+    /// is a clone, but the key-toggle reader calls the process singleton, so
+    /// the limit must live in the shared state to keep both redrawing the same
+    /// region.
+    recent_update_limit: usize,
+    /// Whether verbose streaming is enabled right now.
+    verbose_active: bool,
+    /// Bounded live tail of verbose lines rendered above the dashboard through
+    /// the same clear/redraw path as progress, newest last.
+    verbose_tail: VecDeque<(Tone, String)>,
+    /// Last live-verbose redraw, throttling high-volume streams.
+    verbose_redraw_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug)]
@@ -227,6 +241,18 @@ struct FailedTaskTail {
 }
 
 const LIVE_OUTPUT_LINES_PER_TASK: usize = 5;
+/// Bounded history for the live verbose tail; rendering keeps only what fits.
+const MAX_LIVE_VERBOSE_LINES: usize = 500;
+/// Minimum interval between live verbose redraws, capping flicker and I/O on
+/// high-volume streams; the heartbeat still renders the tail afterwards.
+const VERBOSE_REDRAW_INTERVAL: Duration = Duration::from_millis(50);
+/// Interactive key hints shown as the final row of the live region while a
+/// span is active. Uses the same `·` separator as the dashboard metadata and
+/// stays all lowercase to match the other live labels. The `v` action names
+/// what the next press does, so the toggle feels responsive on the key press.
+const KEY_FOOTER_VERBOSE_ON: &str = "keys: v: verbose on · ctrl-c: cancel · ctrl-c x3: force exit";
+const KEY_FOOTER_VERBOSE_OFF: &str =
+    "keys: v: verbose off · ctrl-c: cancel · ctrl-c x3: force exit";
 const RETAINED_OUTPUT_LINES_PER_TASK: usize = 5;
 const RETAINED_ACTIVE_TASK_TAILS: usize = 128;
 const RETAINED_FAILED_TASK_TAILS: usize = 8;
@@ -273,11 +299,21 @@ impl ProgressReporter {
     /// existing stable line stream.
     pub fn with_recent_updates(mut self, limit: usize) -> Self {
         self.recent_update_limit = limit;
+        if let Ok(mut state) = self.state.lock() {
+            state.recent_update_limit = limit;
+        }
         self
     }
 
     pub fn shows_recent_updates(&self) -> bool {
-        self.interactive && self.recent_update_limit > 0
+        if !self.interactive {
+            return false;
+        }
+        let shared = self
+            .state
+            .lock()
+            .map_or(0, |state| state.recent_update_limit);
+        self.recent_update_limit.max(shared) > 0
     }
 
     pub fn begin_task_scope(&self) {
@@ -951,7 +987,6 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
-        self.end_verbose_block();
         let label = label.into();
         let _output = self.output.lock().ok();
         let mut active_id = None;
@@ -987,7 +1022,6 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
-        self.end_verbose_block();
         let _output = self.output.lock().ok();
         self.finish_current();
         let label = label.into();
@@ -1174,7 +1208,6 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
-        self.end_verbose_block();
         let _output = self.output.lock().ok();
         self.clear_line();
         self.destination.write(&format!(
@@ -1188,7 +1221,6 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
-        self.end_verbose_block();
         let _output = self.output.lock().ok();
         self.clear_line();
         self.destination.write(&format!(
@@ -1198,39 +1230,79 @@ impl ProgressReporter {
         self.redraw_current();
     }
 
-    /// Emit one streamed verbose child-process line. The line's tone carries
-    /// the error/warning classification; the block stays open until the next
-    /// persistent progress line, which emits a separating blank line.
+    /// Record one streamed verbose child-process line in the live tail. On an
+    /// interactive terminal the tail is rendered through the normal dashboard
+    /// clear/redraw path, so hiding the stream wipes it cleanly instead of
+    /// leaving appended output. Redirected output still appends the line.
     pub fn verbose_line(&self, tone: Tone, message: impl std::fmt::Display) {
         if !self.enabled() {
             return;
         }
+        let message = message.to_string();
+        // Hold the output lock across the mutation and redraw, like every other
+        // writer. Without it a verbose redraw can interleave with a dashboard
+        // row or heartbeat redraw, so each writes its own region below the
+        // other while `rendered_lines` tracks only one; hiding then clears one
+        // copy and leaves the rest on screen.
         let _output = self.output.lock().ok();
-        self.clear_line();
-        self.destination.write(&format!(
-            "{}\n",
-            self.style.paint(tone, message.to_string())
-        ));
-        if let Ok(mut state) = self.state.lock() {
-            state.verbose_open = true;
-        }
-        self.redraw_current();
-    }
-
-    /// Close an open verbose block with one blank line before usual progress.
-    fn end_verbose_block(&self) {
-        let open = self
-            .state
-            .lock()
-            .ok()
-            .is_some_and(|mut state| std::mem::take(&mut state.verbose_open));
-        if !open {
+        if !self.interactive {
+            self.destination
+                .write(&format!("{}\n", self.style.paint(tone, message)));
             return;
         }
+        let due = if let Ok(mut state) = self.state.lock() {
+            state.verbose_active = true;
+            state.verbose_tail.push_back((tone, message));
+            while state.verbose_tail.len() > MAX_LIVE_VERBOSE_LINES {
+                state.verbose_tail.pop_front();
+            }
+            let now = Instant::now();
+            let due = state
+                .verbose_redraw_at
+                .is_none_or(|last| now.duration_since(last) >= VERBOSE_REDRAW_INTERVAL);
+            if due {
+                state.verbose_redraw_at = Some(now);
+            }
+            due
+        } else {
+            false
+        };
+        if due {
+            self.redraw_current();
+        }
+    }
+
+    /// Disable verbose streaming and drop the live tail so the next redraw
+    /// shrinks the region back to just the dashboard, as if the stream had
+    /// never been shown.
+    pub fn clear_verbose_output(&self) {
         let _output = self.output.lock().ok();
-        self.clear_line();
-        self.destination.write("\n");
-        self.redraw_current();
+        let changed = self.state.lock().ok().is_some_and(|mut state| {
+            let changed = state.verbose_active || !state.verbose_tail.is_empty();
+            state.verbose_active = false;
+            state.verbose_tail.clear();
+            state.verbose_redraw_at = None;
+            changed
+        });
+        if changed {
+            self.redraw_current();
+        }
+    }
+
+    /// Mark verbose streaming shown and redraw at once, so the toggle footer
+    /// flips to `verbose off` on the key press instead of waiting for the first
+    /// tail line to arrive.
+    pub fn show_verbose_output(&self) {
+        let _output = self.output.lock().ok();
+        let changed = self.state.lock().ok().is_some_and(|mut state| {
+            let changed = !state.verbose_active;
+            state.verbose_active = true;
+            state.verbose_redraw_at = None;
+            changed
+        });
+        if changed {
+            self.redraw_current();
+        }
     }
 
     pub fn message_primary_with_metadata(
@@ -1243,7 +1315,6 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
-        self.end_verbose_block();
         let _output = self.output.lock().ok();
         self.clear_line();
         self.destination.write(&format!(
@@ -1259,7 +1330,6 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
-        self.end_verbose_block();
         let _output = self.output.lock().ok();
         self.clear_line();
         self.destination.write(&format!(
@@ -1273,7 +1343,6 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
-        self.end_verbose_block();
         let _output = self.output.lock().ok();
         self.clear_line();
         self.destination.write(&format!(
@@ -1307,117 +1376,82 @@ impl ProgressReporter {
             return;
         }
         self.clear_line();
-        if self.shows_recent_updates() {
-            let viewport = self.destination.viewport();
-            let lines = self.state.lock().ok().and_then(|state| {
-                state.stack.last().map(|active| {
-                    dashboard_lines_with_viewport(
-                        self.style,
-                        active,
-                        active.started.elapsed(),
-                        viewport,
-                    )
-                })
-            });
-            if let Some(lines) = lines {
-                if viewport.is_some_and(|(rows, _)| lines.len() >= rows) {
-                    let should_render = self.state.lock().is_ok_and(|mut state| {
-                        claim_scrolling_snapshot(&mut state, Instant::now())
-                    });
-                    if should_render {
-                        self.destination.write(&format!("{}\n", lines.join("\n")));
-                    }
-                } else {
-                    redraw_lines(&self.destination, &lines);
-                    if let Ok(mut state) = self.state.lock() {
-                        state.rendered_lines = lines.len();
-                        state.scrolling_snapshot_at = None;
-                    }
-                }
+        let footer = self.key_footer();
+        let viewport = self.destination.viewport();
+        let dashboard = self.shows_recent_updates();
+        let lines = self.state.lock().ok().and_then(|state| {
+            live_region_lines(self.style, footer.as_deref(), &state, viewport, dashboard)
+        });
+        let Some(lines) = lines else {
+            return;
+        };
+        if viewport.is_some_and(|(rows, _)| lines.len() >= rows) {
+            let should_render = self
+                .state
+                .lock()
+                .is_ok_and(|mut state| claim_scrolling_snapshot(&mut state, Instant::now()));
+            if should_render {
+                self.destination.write(&format!("{}\n", lines.join("\n")));
             }
         } else {
-            let current = self.state.lock().ok().and_then(|state| {
-                state
-                    .stack
-                    .last()
-                    .map(|active| (active.label.clone(), active.detail.clone()))
-            });
-            if let Some((label, detail)) = current {
-                redraw_active(&self.destination, self.style, &label, detail.as_deref());
-                if let Ok(mut state) = self.state.lock() {
-                    state.rendered_lines = 1;
-                }
+            redraw_lines(&self.destination, &lines);
+            if let Ok(mut state) = self.state.lock() {
+                state.rendered_lines = lines.len();
+                state.scrolling_snapshot_at = None;
             }
         }
     }
 
+    /// Interactive key hints rendered as the final live-region row. `None` when
+    /// the reporter is not on a terminal or no key reader owns stdin. The `v`
+    /// action reflects the live toggle state, read from the shared key handle,
+    /// so the footer flips the moment the key is pressed.
+    fn key_footer(&self) -> Option<String> {
+        if !self.interactive || !crate::fleet::interactive::keys_available() {
+            return None;
+        }
+        let verbose_on = crate::fleet::interactive::verbose_handle(false).load(Ordering::Relaxed);
+        let text = if verbose_on {
+            KEY_FOOTER_VERBOSE_OFF
+        } else {
+            KEY_FOOTER_VERBOSE_ON
+        };
+        let text = match self.destination.viewport() {
+            Some((_, columns)) => truncate_text(text, columns),
+            None => text.to_owned(),
+        };
+        Some(self.style.paint(Tone::Muted, text))
+    }
+
     fn start_heartbeat(&self, active_id: u64) {
+        // Render through the same path as every other update so the heartbeat
+        // can never clear or repaint a different region than the dashboard.
+        let reporter = self.clone();
         let state = Arc::downgrade(&self.state);
         let output = Arc::downgrade(&self.output);
-        let style = self.style;
-        let destination = self.destination.clone();
-        let recent_update_limit = self.recent_update_limit;
         thread::spawn(move || {
             loop {
                 thread::sleep(Duration::from_secs(1));
                 let (Some(state), Some(output)) = (state.upgrade(), output.upgrade()) else {
                     return;
                 };
-                let _output = output.lock().ok();
-                let snapshot = state.lock().ok().and_then(|state| {
-                    if !state.stack.iter().any(|active| active.id == active_id) {
-                        return None;
-                    }
-                    state.stack.last().and_then(|active| {
-                        (active.id == active_id).then(|| {
-                            (
-                                active.label.clone(),
-                                active.detail.clone(),
-                                active.started.elapsed(),
-                            )
-                        })
-                    })
-                });
-                let Some((label, detail, elapsed)) = snapshot else {
-                    if state
-                        .lock()
-                        .is_ok_and(|state| !state.stack.iter().any(|active| active.id == active_id))
-                    {
-                        return;
-                    }
-                    continue;
+                let Ok(_output) = output.lock() else {
+                    return;
                 };
-                if recent_update_limit > 0 {
-                    let viewport = destination.viewport();
-                    let lines = state.lock().ok().and_then(|state| {
-                        state.stack.last().map(|active| {
-                            dashboard_lines_with_viewport(style, active, elapsed, viewport)
-                        })
-                    });
-                    if let Some(lines) = lines {
-                        if viewport.is_some_and(|(rows, _)| lines.len() >= rows) {
-                            let should_render = state.lock().is_ok_and(|mut state| {
-                                claim_scrolling_snapshot(&mut state, Instant::now())
-                            });
-                            if should_render {
-                                destination.write(&format!("{}\n", lines.join("\n")));
-                            }
-                            continue;
+                let render = match state.lock() {
+                    Ok(state) => {
+                        if !state.stack.iter().any(|active| active.id == active_id) {
+                            return;
                         }
-                        let rendered_lines = state
-                            .lock()
-                            .ok()
-                            .map_or(0, |mut state| std::mem::take(&mut state.rendered_lines));
-                        clear_rendered_lines(&destination, rendered_lines);
-                        redraw_lines(&destination, &lines);
-                        if let Ok(mut state) = state.lock() {
-                            state.rendered_lines = lines.len();
-                            state.scrolling_snapshot_at = None;
-                        }
+                        state
+                            .stack
+                            .last()
+                            .is_some_and(|active| active.id == active_id)
                     }
-                } else {
-                    let detail = heartbeat_detail(detail.as_deref(), elapsed);
-                    redraw_active(&destination, style, &label, Some(&detail));
+                    Err(_) => return,
+                };
+                if render {
+                    reporter.redraw_current();
                 }
             }
         });
@@ -1471,6 +1505,111 @@ fn dashboard_update_line_count(updates: &VecDeque<RecentUpdate>) -> usize {
         .iter()
         .map(|update| 1 + update.output.len().min(LIVE_OUTPUT_LINES_PER_TASK))
         .sum()
+}
+
+/// Build the live, overwriteable region for the current span: the verbose tail
+/// (when active), a blank separator, the dashboard, and the key footer. The
+/// result always fits inside the viewport so the region is cleared in place
+/// instead of scrolling, which is what lets hiding the verbose stream wipe it
+/// cleanly. Returns `None` when no span is active.
+fn live_region_lines(
+    style: TerminalStyle,
+    footer: Option<&str>,
+    state: &ProgressState,
+    viewport: Option<(usize, usize)>,
+    dashboard: bool,
+) -> Option<Vec<String>> {
+    let active = state.stack.last()?;
+    // A blank separator row plus the footer row.
+    let footer_rows = if footer.is_some() { 2 } else { 0 };
+    let verbose = state.verbose_active && !state.verbose_tail.is_empty();
+    // Terminal columns, used to keep every region line on exactly one row:
+    // `rendered_lines` counts rows, so a wrapped line would leave the extra
+    // rows uncleared when the tail is hidden.
+    let columns = viewport.map(|(_, columns)| columns);
+    // Leave the final viewport row unused so a full region never scrolls.
+    let room = viewport.map_or(usize::MAX, |(rows, _)| rows.saturating_sub(1));
+
+    let mut lines = if verbose {
+        // Reserve roughly half the room for the dashboard and stream the rest
+        // as logs, keeping space for the blank separator and the footer.
+        let stream_room = room.saturating_sub(footer_rows + 1);
+        let dashboard_budget = (stream_room / 2).max(1);
+        let dashboard_lines = if dashboard {
+            dashboard_lines_with_viewport(
+                style,
+                active,
+                active.started.elapsed(),
+                viewport.map(|(_, columns)| (dashboard_budget + 1, columns)),
+            )
+        } else {
+            vec![active_line(style, &active.label, active.detail.as_deref())]
+        };
+        // A dashboard taller than its budget (many hosts) is truncated from the
+        // bottom so the tail still gets a row.
+        let dashboard_limit = stream_room.saturating_sub(1).max(1);
+        let dashboard_lines = if dashboard_lines.len() > dashboard_limit {
+            dashboard_lines[..dashboard_limit].to_vec()
+        } else {
+            dashboard_lines
+        };
+        let tail_budget = stream_room.saturating_sub(dashboard_lines.len());
+        let start = state.verbose_tail.len().saturating_sub(tail_budget);
+        let mut streamed: Vec<String> = state
+            .verbose_tail
+            .range(start..)
+            .map(|(tone, text)| {
+                let text = match columns {
+                    Some(columns) => truncate_text(text, columns),
+                    None => text.clone(),
+                };
+                style.paint(*tone, text)
+            })
+            .collect();
+        if streamed.is_empty() {
+            dashboard_lines
+        } else {
+            streamed.push(String::new());
+            streamed.extend(dashboard_lines);
+            streamed
+        }
+    } else if dashboard {
+        dashboard_lines_with_viewport(
+            style,
+            active,
+            active.started.elapsed(),
+            viewport.map(|(rows, columns)| (rows.saturating_sub(footer_rows), columns)),
+        )
+    } else {
+        let detail = heartbeat_detail(active.detail.as_deref(), active.started.elapsed());
+        vec![active_line(style, &active.label, Some(&detail))]
+    };
+
+    if let Some(footer) = footer {
+        // Keep one blank row between the dashboard and the footer so the keys
+        // read as chrome rather than another host row.
+        lines.push(String::new());
+        lines.push(footer.to_owned());
+    }
+    // Keep every line on exactly one terminal row and the region a constant
+    // height. A redraw that changes the region size moves the cursor onto a new
+    // row, which makes the terminal scroll; bottom-anchoring pads above the
+    // content instead so the region never grows or shrinks once drawn.
+    if let Some((rows, columns)) = viewport {
+        let width = columns.saturating_sub(1).max(1);
+        for line in &mut lines {
+            *line = truncate_ansi(line, width);
+        }
+        let target = rows.saturating_sub(1);
+        if lines.len() > target {
+            lines.drain(..lines.len() - target);
+        } else if lines.len() < target {
+            let mut padded = vec![String::new(); target - lines.len()];
+            padded.append(&mut lines);
+            lines = padded;
+        }
+    }
+    Some(lines)
 }
 
 #[cfg(test)]
@@ -1763,6 +1902,42 @@ fn truncate_text(value: &str, max_columns: usize) -> String {
     truncated
 }
 
+/// Truncate a possibly styled line to `max_columns` visible columns, copying
+/// CSI escape sequences without counting them so color is preserved and never
+/// cut mid-sequence. A reset is appended when an open style was truncated.
+fn truncate_ansi(value: &str, max_columns: usize) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut visible = 0usize;
+    let mut truncated = false;
+    let mut characters = value.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\x1b' {
+            out.push(character);
+            if characters.peek() == Some(&'[') {
+                characters.next();
+                out.push('[');
+                for control in characters.by_ref() {
+                    out.push(control);
+                    if ('@'..='~').contains(&control) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if visible >= max_columns {
+            truncated = true;
+            break;
+        }
+        out.push(character);
+        visible += 1;
+    }
+    if truncated && out.contains('\x1b') {
+        out.push_str("\x1b[0m");
+    }
+    out
+}
+
 fn terminal_viewport() -> Option<(usize, usize)> {
     let mut size = libc::winsize {
         ws_row: 0,
@@ -1791,10 +1966,13 @@ fn clear_rendered_lines(destination: &ProgressDestination, lines: usize) {
     destination.write(&sequence);
 }
 
+/// Terminal rows one streamed line occupies, so a later hide can erase it.
 fn redraw_lines(destination: &ProgressDestination, lines: &[String]) {
     destination.write(&lines.join("\n"));
 }
 
+/// Detail with the live elapsed appended, so a quiet step still visibly ticks
+/// between heartbeats.
 fn heartbeat_detail(detail: Option<&str>, elapsed: Duration) -> String {
     let elapsed = format_duration(elapsed);
     detail
@@ -2000,6 +2178,384 @@ mod tests {
                 "\x1b[1mSummary · deploy · success\x1b[0m\n",
             )
         );
+    }
+
+    #[test]
+    fn hiding_verbose_logs_drops_the_live_tail() {
+        set_json_output(false);
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::clone(&buffer)),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+        reporter.state.lock().unwrap().stack.push(ActiveProgress {
+            id: 1,
+            label: "Build systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: None,
+            started: Instant::now(),
+        });
+
+        reporter.verbose_line(Tone::Neutral, "  │ first");
+        reporter.verbose_line(Tone::Neutral, "  │ second");
+        assert!(reporter.state.lock().unwrap().verbose_active);
+        assert_eq!(reporter.state.lock().unwrap().verbose_tail.len(), 2);
+
+        reporter.clear_verbose_output();
+        assert!(!reporter.state.lock().unwrap().verbose_active);
+        assert!(reporter.state.lock().unwrap().verbose_tail.is_empty());
+
+        // The hide clears the old region and redraws only the dashboard.
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(rendered.contains("\r\x1b[2K"), "{rendered:?}");
+        let final_frame = rendered.rsplit("\r\x1b[2K").next().unwrap_or("");
+        assert!(!final_frame.contains("  │ second"), "{rendered:?}");
+        // A second hide changes nothing.
+        let before = buffer.lock().unwrap().len();
+        reporter.clear_verbose_output();
+        assert_eq!(buffer.lock().unwrap().len(), before);
+    }
+
+    #[test]
+    fn non_interactive_verbose_lines_are_appended() {
+        set_json_output(false);
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: false,
+            recent_update_limit: 0,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::clone(&buffer)),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+
+        reporter.verbose_line(Tone::Neutral, "  │ first");
+        assert_eq!(
+            String::from_utf8(buffer.lock().unwrap().clone()).unwrap(),
+            "  │ first\n"
+        );
+        let before = buffer.lock().unwrap().len();
+        reporter.clear_verbose_output();
+        assert_eq!(buffer.lock().unwrap().len(), before);
+    }
+
+    #[test]
+    fn verbose_lines_serialize_on_the_output_lock() {
+        set_json_output(false);
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::new(Mutex::new(Vec::new()))),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+        let guard = reporter.output.lock().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let writer = reporter.clone();
+        let handle = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            writer.verbose_line(Tone::Neutral, "blocked");
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("writer thread should start");
+        std::thread::sleep(Duration::from_millis(150));
+        // A verbose redraw must wait for the same output lock every other
+        // writer holds, or its region write interleaves with the dashboard's.
+        assert!(
+            !handle.is_finished(),
+            "verbose_line should block on the output lock"
+        );
+        drop(guard);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn verbose_block_is_separated_from_the_dashboard_by_a_blank_line() {
+        set_json_output(false);
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::clone(&buffer)),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+        reporter.state.lock().unwrap().stack.push(ActiveProgress {
+            id: 1,
+            label: "Build systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: None,
+            started: Instant::now(),
+        });
+
+        reporter.verbose_line(Tone::Neutral, "  │ first");
+
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        // The dashboard redraw after the verbose line starts with a blank row.
+        assert!(rendered.contains("  │ first\n\n"), "{rendered:?}");
+    }
+
+    #[test]
+    fn dashboard_mode_is_shared_across_reporter_clones() {
+        set_json_output(false);
+        let base = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 0,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::new(Mutex::new(Vec::new()))),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+        assert!(!base.shows_recent_updates());
+        let fleet = base.clone().with_recent_updates(10);
+        assert!(fleet.shows_recent_updates());
+        // The key-toggle reader calls the process singleton, a separate clone
+        // that only shares state, so the mode must live in the shared state for
+        // hiding to redraw the same dashboard region.
+        assert!(base.shows_recent_updates());
+    }
+
+    #[test]
+    fn live_region_bounds_verbose_logs_and_footer_to_the_viewport() {
+        let mut state = ProgressState::default();
+        state.stack.push(ActiveProgress {
+            id: 1,
+            label: "Deploy systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: None,
+            started: Instant::now(),
+        });
+        state.verbose_active = true;
+        for index in 0..200 {
+            state
+                .verbose_tail
+                .push_back((Tone::Neutral, format!("log line {index}")));
+        }
+
+        let style = TerminalStyle::from_capabilities(false, false);
+        let lines = live_region_lines(style, Some("keys"), &state, Some((24, 80)), true)
+            .expect("active span renders a region");
+        // The whole region must fit so it is cleared in place, never scrolled.
+        assert!(lines.len() < 24, "region overflowed: {}", lines.len());
+        assert_eq!(lines.last().map(String::as_str), Some("keys"));
+        let rendered = lines.join("\n");
+        assert!(rendered.contains("log line 199"), "{rendered:?}");
+        assert!(!rendered.contains("log line 0\n"), "{rendered:?}");
+        // One blank row separates the tail from the dashboard, and another the
+        // dashboard from the key footer.
+        assert!(rendered.contains("\n\n"), "{rendered:?}");
+        assert!(rendered.ends_with("\n\nkeys"), "{rendered:?}");
+    }
+
+    #[test]
+    fn showing_verbose_marks_the_region_active_immediately() {
+        set_json_output(false);
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::clone(&buffer)),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+        reporter.state.lock().unwrap().stack.push(ActiveProgress {
+            id: 1,
+            label: "Deploy systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: None,
+            started: Instant::now(),
+        });
+
+        reporter.show_verbose_output();
+
+        assert!(reporter.state.lock().unwrap().verbose_active);
+        assert!(!buffer.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn hiding_verbose_clears_the_whole_region_not_just_one_row() {
+        set_json_output(false);
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::BufferWithViewport(Arc::clone(&buffer), (24, 100)),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+        reporter.state.lock().unwrap().stack.push(ActiveProgress {
+            id: 1,
+            label: "Build systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: None,
+            started: Instant::now(),
+        });
+        for index in 0..40 {
+            // Bypass the redraw throttle so the tail is actually rendered.
+            reporter.state.lock().unwrap().verbose_redraw_at = None;
+            reporter.verbose_line(Tone::Neutral, format!("  │ log {index}"));
+        }
+        let region = reporter.state.lock().unwrap().rendered_lines;
+        assert!(region > 2, "region should hold tail + dashboard: {region}");
+        assert!(region < 24, "region must fit the viewport: {region}");
+        buffer.lock().unwrap().clear();
+
+        reporter.clear_verbose_output();
+
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            !rendered.contains("log 39"),
+            "tail not cleared: {rendered:?}"
+        );
+        let ups = rendered.matches("\x1b[1A").count();
+        assert_eq!(ups, region - 1, "clear must cover the whole old region");
+        assert!(!reporter.state.lock().unwrap().verbose_active);
+    }
+
+    #[test]
+    fn verbose_tail_lines_are_truncated_to_one_terminal_row() {
+        let mut state = ProgressState::default();
+        state.stack.push(ActiveProgress {
+            id: 1,
+            label: "Build systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: None,
+            started: Instant::now(),
+        });
+        state.verbose_active = true;
+        state.verbose_tail.push_back((
+            Tone::Neutral,
+            format!("  │ [build via pvl-x2 pvl-l5 err] {}", "x".repeat(200)),
+        ));
+
+        let lines = live_region_lines(
+            TerminalStyle::from_capabilities(false, false),
+            Some("keys: v: verbose off"),
+            &state,
+            Some((24, 40)),
+            true,
+        )
+        .expect("active span renders a region");
+        // A wrapped line would occupy an uncounted second row and survive a
+        // hide, so every region line must fit the terminal width exactly.
+        for line in &lines {
+            assert!(
+                line.chars().count() <= 40,
+                "line stays on one row: {} chars: {line:?}",
+                line.chars().count()
+            );
+        }
+    }
+
+    #[test]
+    fn realistic_host_dashboard_region_fits_and_stays_one_row_per_line() {
+        set_json_output(false);
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::BufferWithViewport(Arc::clone(&buffer), (24, 80)),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+        let hosts = (0..8)
+            .map(|index| format!("host-{index}"))
+            .collect::<Vec<_>>();
+        reporter.started("Deploy systems");
+        reporter.begin_host_dashboard(&hosts);
+        for (index, host) in hosts.iter().enumerate() {
+            let key = format!("k{index}");
+            reporter.host_task_started(host, &key, "deploy", None);
+            reporter.host_task_output(host, &key, format!("    │ [build] {}", "x".repeat(200)));
+        }
+        {
+            let mut state = reporter.state.lock().unwrap();
+            state.verbose_active = true;
+            for _index in 0..40 {
+                state.verbose_tail.push_back((
+                    Tone::Neutral,
+                    format!("  │ [build via host-0 host-7 err] {}", "y".repeat(200)),
+                ));
+            }
+        }
+        let state = reporter.state.lock().unwrap();
+        let lines = live_region_lines(
+            TerminalStyle::from_capabilities(false, false),
+            Some("keys: v: verbose on"),
+            &state,
+            Some((24, 80)),
+            true,
+        )
+        .expect("active span renders a region");
+        assert!(lines.len() < 24, "region rows {} must fit", lines.len());
+        for line in &lines {
+            assert!(
+                line.chars().count() <= 80,
+                "line exceeds width ({} chars): {line:?}",
+                line.chars().count()
+            );
+        }
+    }
+
+    #[test]
+    fn live_region_keeps_a_constant_height_across_content_changes() {
+        let style = TerminalStyle::from_capabilities(false, false);
+        let mut state = ProgressState::default();
+        state.stack.push(ActiveProgress {
+            id: 1,
+            label: "Deploy systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: None,
+            started: Instant::now(),
+        });
+        let small = live_region_lines(style, Some("keys"), &state, Some((24, 80)), true)
+            .expect("active span renders a region");
+        state.verbose_active = true;
+        for index in 0..100 {
+            state
+                .verbose_tail
+                .push_back((Tone::Neutral, format!("line {index}")));
+        }
+        let large = live_region_lines(style, Some("keys"), &state, Some((24, 80)), true)
+            .expect("active span renders a region");
+        assert_eq!(
+            small.len(),
+            large.len(),
+            "region height must not change with content"
+        );
+        assert_eq!(small.len(), 23, "region fills the viewport minus one row");
     }
 
     #[test]

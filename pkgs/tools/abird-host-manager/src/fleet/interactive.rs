@@ -1,10 +1,10 @@
 //! Interactive keyboard controls for native fleet runs.
 //!
-//! Fleet operations are long and dashboard-driven, so the `l` key mirrors the
-//! host-agent deploy path: it toggles a full verbose stream of sanitized
-//! subprocess output while a run is in flight. The verbose state is shared
-//! process-wide so nested build workers observe one toggle, and the terminal
-//! mode is restored when the owning guard drops.
+//! Fleet operations are long and dashboard-driven, so the `v` key toggles a
+//! full verbose stream of sanitized subprocess output while a run is in
+//! flight. The verbose state is shared process-wide so nested build workers
+//! observe one toggle, and the terminal mode is restored when the owning guard
+//! drops.
 
 use std::io::{self, IsTerminal};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +19,9 @@ static VERBOSE: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 /// One reader owns stdin for the process lifetime; later installs observe the
 /// published state without touching the terminal.
 static READER_INSTALLED: AtomicBool = AtomicBool::new(false);
+/// Whether an interactive reader currently owns stdin for the `v` toggle, so
+/// the dashboard only advertises keys it can actually read.
+static KEYS_ACTIVE: AtomicBool = AtomicBool::new(false);
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 /// Keyboard poll granularity: responsive without busy-spinning the terminal.
@@ -34,10 +37,16 @@ pub struct InteractiveVerbose {
 impl Drop for InteractiveVerbose {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        KEYS_ACTIVE.store(false, Ordering::Release);
         // SAFETY: `original` was captured from the same stdin descriptor that
         // this guard put into raw mode.
         let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.original) };
     }
+}
+
+/// Whether the interactive `l` toggle is currently readable.
+pub fn keys_available() -> bool {
+    KEYS_ACTIVE.load(Ordering::Acquire)
 }
 
 /// Verbose state a fleet view should observe. When no interactive reader is
@@ -50,7 +59,7 @@ pub fn verbose_handle(initial: bool) -> Arc<AtomicBool> {
     }
 }
 
-/// Capture the `l` key on an interactive terminal and publish the shared
+/// Capture the `v` key on an interactive terminal and publish the shared
 /// verbose state. Returns `None` when there is no terminal to read, when a
 /// reader already owns stdin, or when machine output is requested.
 pub fn install(initial_verbose: bool) -> Option<InteractiveVerbose> {
@@ -64,8 +73,8 @@ pub fn install(initial_verbose: bool) -> Option<InteractiveVerbose> {
     let original = enter_raw_mode()?;
     let verbose = Arc::clone(VERBOSE.get_or_init(|| Arc::new(AtomicBool::new(initial_verbose))));
     let stop = Arc::new(AtomicBool::new(false));
-    command_reporter().message("Full verbose logs available · press l to toggle");
     spawn_reader(verbose, Arc::clone(&stop));
+    KEYS_ACTIVE.store(true, Ordering::Release);
     Some(InteractiveVerbose { original, stop })
 }
 
@@ -102,7 +111,14 @@ fn spawn_reader(verbose: Arc<AtomicBool>, stop: Arc<AtomicBool>) {
                     continue;
                 }
                 if drain_verbose_key() {
-                    report_toggle(verbose.fetch_xor(true, Ordering::AcqRel));
+                    // The footer names the next press (`verbose on`/`verbose
+                    // off`), so redraw immediately for visible feedback.
+                    let was_enabled = verbose.fetch_xor(true, Ordering::AcqRel);
+                    if was_enabled {
+                        command_reporter().clear_verbose_output();
+                    } else {
+                        command_reporter().show_verbose_output();
+                    }
                 }
             }
         });
@@ -129,17 +145,9 @@ fn drain_verbose_key() -> bool {
     // SAFETY: stdin is a valid descriptor and `byte` is a valid one-byte
     // destination. `VMIN = 0` keeps the read from blocking.
     while unsafe { libc::read(libc::STDIN_FILENO, (&mut byte as *mut u8).cast(), 1) } == 1 {
-        verbose |= matches!(byte, b'l' | b'L');
+        verbose |= matches!(byte, b'v' | b'V');
     }
     verbose
-}
-
-fn report_toggle(was_enabled: bool) {
-    command_reporter().message(if was_enabled {
-        "Full verbose logs off · press l to show"
-    } else {
-        "Full verbose logs on · press l to hide"
-    });
 }
 
 #[cfg(test)]
