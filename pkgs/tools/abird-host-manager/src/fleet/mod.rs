@@ -18,6 +18,7 @@ pub mod health;
 pub mod health_runtime;
 pub mod host_runtime;
 pub mod host_tasks;
+pub mod interactive;
 pub mod inventory;
 pub mod maintenance;
 pub mod native;

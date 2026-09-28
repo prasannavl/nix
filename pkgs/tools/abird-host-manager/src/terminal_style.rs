@@ -9,6 +9,7 @@ pub enum Tone {
     Failure,
     FailureDetail,
     Warning,
+    LogWarning,
     Active,
     Label,
     Emphasis,
@@ -23,6 +24,9 @@ impl Tone {
             Self::Failure => "\x1b[31m",
             Self::FailureDetail => "\x1b[31m",
             Self::Warning => "\x1b[33m",
+            // Milder amber for streamed child-process warnings, matching
+            // nixbot's `_NIXBOT_C_YELLOW` (256-color 178).
+            Self::LogWarning => "\x1b[38;5;178m",
             Self::Active => "\x1b[36m",
             Self::Label => "\x1b[34m",
             Self::Emphasis => "\x1b[1m",

@@ -2641,7 +2641,7 @@ impl NativeAdapter {
         let mut logs_visible = false;
         let mut last_log_sequence = 0_u64;
         if log_toggle.active() {
-            self.progress.detail("Waiting · press l for deploy logs");
+            self.progress.detail("Waiting · press v for verbose logs");
         }
         let mut last_transport_error = None;
         let mut last_progress = None;
@@ -2659,9 +2659,9 @@ impl NativeAdapter {
             if log_toggle.poll_toggle() {
                 logs_visible = !logs_visible;
                 self.progress.message(if logs_visible {
-                    "  Deploy logs visible · press l to hide"
+                    "  Verbose on · press v to turn off"
                 } else {
-                    "  Deploy logs hidden · press l to show"
+                    "  Verbose off · press v to turn on"
                 });
             }
             thread::sleep(poll_interval);
@@ -2691,7 +2691,7 @@ impl NativeAdapter {
                 if log_toggle.active()
                     && progress.get("kind").and_then(Value::as_str) == Some("command_log")
                 {
-                    detail.push_str(" · l logs");
+                    detail.push_str(" · v verbose");
                 }
                 self.progress.detail(detail);
                 last_progress = Some(progress.clone());
@@ -3170,7 +3170,7 @@ impl InteractiveLogToggle {
             )
         } == 1
         {
-            toggle |= matches!(byte, b'l' | b'L');
+            toggle |= matches!(byte, b'v' | b'V');
         }
         toggle
     }

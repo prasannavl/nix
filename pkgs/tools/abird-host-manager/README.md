@@ -336,6 +336,11 @@ attributed when phases can run concurrently, while failure diagnostics retain
 raw, uncolored stdout, stderr, status, and duration files in the reported
 private diagnostics directory. `--prefix-host-logs` forces attribution; an
 explicit false `NIXBOT_PREFIX_HOST_LOGS` disables the automatic behavior.
+Verbose lines are muted gray so phase progress stays dominant, with errors in
+red and warnings in a milder amber, and a blank line separating a verbose block
+from the next progress line. Native fleet runs on an interactive terminal also
+capture the `l` key, which toggles the same full verbose stream at runtime
+without restarting the command.
 
 The Rust compatibility binary remains covered by the Cargo suite so the later
 cutover is packaging and caller wiring rather than another implementation port.

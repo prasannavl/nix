@@ -57,7 +57,7 @@ impl WorkflowResult {
 #[derive(Clone, Debug)]
 pub struct FleetProgress {
     reporter: ProgressReporter,
-    verbose: bool,
+    verbose: Arc<AtomicBool>,
     prefix_process_logs: bool,
     github_actions: bool,
     diagnostics: Option<Arc<DiagnosticSink>>,
@@ -78,7 +78,7 @@ impl FleetProgress {
         };
         Self {
             reporter,
-            verbose: options.verbose || options.build_logs,
+            verbose: super::interactive::verbose_handle(options.verbose || options.build_logs),
             prefix_process_logs: options.prefix_host_logs,
             github_actions,
             diagnostics: None,
@@ -369,16 +369,14 @@ impl FleetProgress {
     }
 
     pub fn log_block(&self, subject: &str, output: &str) {
-        if !self.verbose {
+        if !self.verbose.load(Ordering::Relaxed) {
             return;
         }
         for line in output.lines() {
-            self.reporter.message(format_process_line(
-                subject,
-                None,
-                line,
-                self.prefix_process_logs,
-            ));
+            self.reporter.verbose_line(
+                verbose_line_tone(line),
+                format_process_line(subject, None, line, self.prefix_process_logs),
+            );
         }
     }
 
@@ -396,7 +394,7 @@ impl FleetProgress {
         Arc::new(HostScope {
             reporter: self.reporter.clone(),
             target,
-            verbose: self.verbose,
+            verbose: Arc::clone(&self.verbose),
             prefix: self.prefix_process_logs,
             build_heartbeat: self.build_heartbeat,
             activation_heartbeat: self.activation_heartbeat,
@@ -429,7 +427,7 @@ enum TaskTarget {
 pub struct HostScope {
     reporter: ProgressReporter,
     target: TaskTarget,
-    verbose: bool,
+    verbose: Arc<AtomicBool>,
     prefix: bool,
     build_heartbeat: Option<Duration>,
     activation_heartbeat: Option<Duration>,
@@ -457,7 +455,7 @@ impl TaskScope for HostScope {
             reporter: self.reporter.clone(),
             target: self.target.clone(),
             heartbeat,
-            verbose: self.verbose,
+            verbose: Arc::clone(&self.verbose),
             prefix: self.prefix,
             name: spec.name,
             running: spec.running,
@@ -474,7 +472,7 @@ pub struct ProgressTask {
     reporter: ProgressReporter,
     target: TaskTarget,
     heartbeat: Option<Duration>,
-    verbose: bool,
+    verbose: Arc<AtomicBool>,
     prefix: bool,
     name: String,
     running: String,
@@ -535,15 +533,23 @@ impl Task for ProgressTask {
 
     fn output(&self, stream: ProcessStream, chunk: &str) {
         for line in chunk.lines() {
-            let (dashboard_line, verbose_line) =
-                format_process_line_views(self.output_policy(), stream, line, self.verbose);
-            if let Some(line) = verbose_line {
-                self.reporter.message(format_process_line(
-                    &self.verbose_subject(),
-                    Some(stream),
-                    &line,
-                    self.prefix,
-                ));
+            let tone = verbose_line_tone(line);
+            let (dashboard_line, verbose_line) = format_process_line_views(
+                self.output_policy(),
+                stream,
+                line,
+                self.verbose.load(Ordering::Relaxed),
+            );
+            if let Some(verbose_line) = verbose_line {
+                self.reporter.verbose_line(
+                    tone,
+                    format_process_line(
+                        &self.verbose_subject(),
+                        Some(stream),
+                        &verbose_line,
+                        self.prefix,
+                    ),
+                );
             }
             if let Some(dashboard_line) = dashboard_line {
                 self.publish_line(dashboard_line);
@@ -1272,6 +1278,58 @@ fn format_verbose_line(line: &str) -> Option<String> {
     (!line.is_empty()).then_some(line)
 }
 
+/// Classify one streamed verbose line so failures and warnings stand out while
+/// ordinary chatter stays muted. Mirrors nixbot's `color_for` intent: red wins
+/// over mild amber, everything else keeps the neutral nixbot gray, and zero
+/// counters such as `failed=0` or `deferred=0` stay neutral.
+fn verbose_line_tone(line: &str) -> Tone {
+    let lowercase = line.to_ascii_lowercase();
+    if lowercase.contains('✗')
+        || ["error", "failed", "failure", "fatal", "panic", "unhealthy"]
+            .iter()
+            .any(|needle| contains_positive_signal(&lowercase, needle))
+    {
+        return Tone::Failure;
+    }
+    if [
+        "warning",
+        "retrying",
+        "timed out",
+        "timeout",
+        "still settling",
+        "unavailable",
+        "deferred",
+        "starting)",
+    ]
+    .iter()
+    .any(|needle| contains_positive_signal(&lowercase, needle))
+    {
+        return Tone::LogWarning;
+    }
+    Tone::Neutral
+}
+
+/// Whether `needle` occurs with a value other than a zero counter, so a summary
+/// line like `deferred=0 failed=0` stays muted instead of turning red or amber.
+fn contains_positive_signal(lowercase: &str, needle: &str) -> bool {
+    lowercase
+        .match_indices(needle)
+        .any(|(index, _)| !is_zero_counter(&lowercase[index + needle.len()..]))
+}
+
+fn is_zero_counter(rest: &str) -> bool {
+    let rest = rest.strip_prefix('s').unwrap_or(rest);
+    let rest = rest
+        .strip_prefix('=')
+        .or_else(|| rest.strip_prefix(':'))
+        .map(str::trim_start);
+    rest.is_some_and(|rest| {
+        let mut characters = rest.chars();
+        characters.next() == Some('0')
+            && !characters.next().is_some_and(|next| next.is_ascii_digit())
+    })
+}
+
 fn format_failure_line(line: &str) -> Option<String> {
     let mut line = redact_sensitive_line(terminal_safe_line(line));
     if line.is_empty() {
@@ -1381,7 +1439,29 @@ fn redact_sensitive_line(line: String) -> String {
 
 fn sensitive_output(line: &str) -> bool {
     let lowercase = line.to_ascii_lowercase();
-    let named_secret = [
+    // Structural markers are secret regardless of surrounding context.
+    if [
+        "-----begin",
+        "authorization:",
+        "bearer ",
+        "cookie:",
+        "set-cookie:",
+    ]
+    .iter()
+    .any(|needle| lowercase.contains(needle))
+    {
+        return true;
+    }
+    credential_url(&lowercase) || secret_assignments(&lowercase)
+}
+
+/// Redact only when a secret-shaped field name is followed by a separator and
+/// a value. This keeps benign store paths and filenames readable in the full
+/// verbose stream (for example `<hash>-api-token.key.age`, `libsecret`, or
+/// `etc-ipsec.secrets`) while still hiding `api_key=...`, `token: ...`, and
+/// `password is ...`.
+fn secret_assignments(lowercase: &str) -> bool {
+    const FIELDS: [&str; 15] = [
         "password",
         "passwd",
         "token",
@@ -1396,21 +1476,47 @@ fn sensitive_output(line: &str) -> bool {
         "private_key",
         "private-key",
         "private key",
-        "-----begin",
         "credential",
-        "authorization:",
-        "bearer ",
-        "cookie:",
-        "set-cookie:",
-    ]
-    .iter()
-    .any(|needle| lowercase.contains(needle));
-    let credential_url = lowercase.find("://").is_some_and(|scheme| {
-        lowercase[scheme + 3..]
+    ];
+    FIELDS.iter().any(|field| {
+        lowercase.match_indices(field).any(|(index, _)| {
+            let mut characters = lowercase[index + field.len()..].chars();
+            // Accept a plural suffix so `secrets=`, `tokens=`, and
+            // `credentials=...` stay redacted without matching `secrets/` paths.
+            let separator = match characters.next() {
+                Some('s') => characters.next(),
+                other => other,
+            };
+            let Some(separator) = separator else {
+                return false;
+            };
+            matches!(separator, '=' | ':' | ' ' | '\t' | '"' | '\\')
+                && characters.any(|character| !character.is_whitespace())
+        })
+    })
+}
+
+fn credential_url(lowercase: &str) -> bool {
+    let mut remainder = lowercase;
+    while let Some(scheme) = remainder.find("://") {
+        let after = &remainder[scheme + 3..];
+        // An authority ends at the first delimiter that closes it. Stop there
+        // so a later URL in the same line cannot be mistaken for credentials.
+        let authority_end = after
+            .find(|character: char| {
+                character.is_whitespace() || matches!(character, '/' | '?' | '#' | '\'' | '"')
+            })
+            .unwrap_or(after.len());
+        let authority = &after[..authority_end];
+        if authority
             .find('@')
-            .is_some_and(|at| lowercase[scheme + 3..scheme + 3 + at].contains(':'))
-    });
-    named_secret || credential_url
+            .is_some_and(|at| authority[..at].contains(':'))
+        {
+            return true;
+        }
+        remainder = &after[authority_end..];
+    }
+    false
 }
 
 pub fn github_actions_mode(log_format: LogFormat, environment: bool) -> bool {
@@ -1687,6 +1793,83 @@ mod tests {
             );
             assert_eq!(
                 format_failure_line(secret),
+                Some("[sensitive output redacted]".to_owned()),
+                "{secret}"
+            );
+        }
+    }
+
+    #[test]
+    fn verbose_lines_classify_errors_and_warnings_for_mild_color() {
+        assert_eq!(verbose_line_tone("ordinary child output"), Tone::Neutral);
+        assert_eq!(
+            verbose_line_tone("error: unit failed to start"),
+            Tone::Failure
+        );
+        assert_eq!(verbose_line_tone("✗ /nix/store/x.drv"), Tone::Failure);
+        assert_eq!(
+            verbose_line_tone("warning: target cache unavailable; retrying"),
+            Tone::LogWarning
+        );
+        // Red wins over amber when a line carries both signals.
+        assert_eq!(verbose_line_tone("warning: deploy failed"), Tone::Failure);
+        // Zero counters stay neutral; a single non-zero counter colors the line.
+        assert_eq!(
+            verbose_line_tone("[prefetch-ai-model] ok=13/27 deferred=0 failed=0"),
+            Tone::Neutral
+        );
+        assert_eq!(
+            verbose_line_tone("[prefetch-ai-model] ok=13/27 deferred=14 failed=0"),
+            Tone::LogWarning
+        );
+        assert_eq!(
+            verbose_line_tone("[prefetch-ai-model] ok=13/27 deferred=0 failed=1"),
+            Tone::Failure
+        );
+    }
+
+    #[test]
+    fn verbose_lines_keep_benign_secret_shaped_paths_readable() {
+        for line in [
+            "copying path '/nix/store/abc-python3.13-secretstorage-3.5.0' to 'ssh-ng://nixbot@host'...",
+            "copying path '/nix/store/abc-git-secrets-1.3.0' to 'ssh-ng://nixbot@host'...",
+            "copying path '/nix/store/abc-etc-ipsec.secrets' to 'ssh-ng://nixbot@host'...",
+            "copying path '/nix/store/abc-libsecret-0.21.7' to 'ssh-ng://nixbot@host'...",
+            "copying path '/nix/store/abc-api-token.key.age' to 'ssh-ng://nixbot@host'...",
+            "copying path '/nix/store/abc-postgres-password.key.age' to 'ssh-ng://nixbot@host'...",
+            "copying path '/nix/store/abc-app-secret' to 'ssh-ng://nixbot@host'...",
+        ] {
+            assert_eq!(format_verbose_line(line), Some(line.to_owned()), "{line}");
+        }
+    }
+
+    #[test]
+    fn verbose_lines_keep_multi_url_copy_lines_readable() {
+        // The relay push prints both the cache source and the target store, and
+        // the target-store user must not be read as cache credentials.
+        for line in [
+            "copying path '/nix/store/abc' from 'http://pvl-x2:5000' to 'ssh-ng://nixbot@pvl-vlab-1'...",
+            "copying path '/nix/store/abc' from 'http://cache:5000' to 'ssh-ng://root@192.0.2.42'...",
+        ] {
+            assert_eq!(format_verbose_line(line), Some(line.to_owned()), "{line}");
+        }
+        // A genuine credentialed URL is still redacted.
+        assert_eq!(
+            format_verbose_line("fetch https://user:password@example.test/path"),
+            Some("[sensitive output redacted]".to_owned())
+        );
+    }
+
+    #[test]
+    fn plural_secret_fields_are_still_redacted() {
+        for secret in [
+            "DB_CREDENTIALS=abc",
+            "api_tokens=abc",
+            "my_secrets: abc",
+            "PASSWORDS abc",
+        ] {
+            assert_eq!(
+                format_verbose_line(secret),
                 Some("[sensitive output redacted]".to_owned()),
                 "{secret}"
             );

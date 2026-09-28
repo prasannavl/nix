@@ -521,6 +521,7 @@ fn ci_action(action: &Action) -> Result<(String, CiCleanMode)> {
 }
 
 fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
+    let _interactive = capture_verbose_key(&invocation);
     let current = env::current_dir().context("resolve fleet invocation directory")?;
     let source_root = runtime
         .inherited_repository_root
@@ -642,6 +643,25 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
         Err(error) => Err(error),
     };
     finish_run_state(state, action)
+}
+
+/// Capture the interactive `l` verbose toggle unless terminal input belongs to
+/// someone else: a re-executed repository script, or a run that reads a staged
+/// patch from stdin.
+fn capture_verbose_key(invocation: &Invocation) -> Option<super::interactive::InteractiveVerbose> {
+    let reexeced_from_repo = env::var("NIXBOT_REEXECED_FROM_REPO").as_deref() == Ok("1");
+    if !interactive_capture_allowed(invocation, reexeced_from_repo) {
+        return None;
+    }
+    super::interactive::install(invocation.options.verbose || invocation.options.build_logs)
+}
+
+/// Whether this process may capture the interactive `l` toggle.
+fn interactive_capture_allowed(invocation: &Invocation, reexeced_from_repo: bool) -> bool {
+    let reexec_owner = !matches!(invocation.action, Action::DevBuild)
+        && invocation.options.use_repo_script
+        && !reexeced_from_repo;
+    !reexec_owner && !invocation.options.dirty_staged_patch_stdin
 }
 
 fn reexec_from_workspace(
@@ -1135,5 +1155,46 @@ mod tests {
 
         assert!(same_file(&lock, &alias));
         assert!(same_file(&temporary.path().join(".").join("lock.d"), &lock));
+    }
+
+    #[test]
+    fn interactive_verbose_capture_yields_to_terminal_input_owners() {
+        use super::super::cli::Options;
+        use super::{Action, Invocation};
+        let invocation = |action, use_repo_script, dirty_staged_patch_stdin| Invocation {
+            action,
+            options: Options {
+                use_repo_script,
+                dirty_staged_patch_stdin,
+                ..Options::default()
+            },
+        };
+        assert!(super::interactive_capture_allowed(
+            &invocation(Action::Deploy, false, false),
+            false
+        ));
+        // A re-exec parent must not read keys; the re-executed child may.
+        assert!(!super::interactive_capture_allowed(
+            &invocation(Action::Deploy, true, false),
+            false
+        ));
+        assert!(super::interactive_capture_allowed(
+            &invocation(Action::Deploy, true, false),
+            true
+        ));
+        // DevBuild never re-execs, so it may still capture.
+        assert!(super::interactive_capture_allowed(
+            &invocation(Action::DevBuild, true, false),
+            false
+        ));
+        // Patch-on-stdin runs own stdin.
+        assert!(!super::interactive_capture_allowed(
+            &invocation(Action::Deploy, false, true),
+            false
+        ));
+        assert!(!super::interactive_capture_allowed(
+            &invocation(Action::Deploy, true, true),
+            true
+        ));
     }
 }

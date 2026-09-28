@@ -72,6 +72,10 @@ struct ProgressState {
     task_tails: VecDeque<TaskTail>,
     failed_task_tails: VecDeque<FailedTaskTail>,
     scrolling_snapshot_at: Option<Instant>,
+    /// Set while streamed verbose child output is the most recent text. The
+    /// next persistent progress line emits one separator blank line first so
+    /// live logs stay visually distinct from usual progress.
+    verbose_open: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -947,6 +951,7 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
+        self.end_verbose_block();
         let label = label.into();
         let _output = self.output.lock().ok();
         let mut active_id = None;
@@ -982,6 +987,7 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
+        self.end_verbose_block();
         let _output = self.output.lock().ok();
         self.finish_current();
         let label = label.into();
@@ -1168,6 +1174,7 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
+        self.end_verbose_block();
         let _output = self.output.lock().ok();
         self.clear_line();
         self.destination.write(&format!(
@@ -1181,12 +1188,48 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
+        self.end_verbose_block();
         let _output = self.output.lock().ok();
         self.clear_line();
         self.destination.write(&format!(
             "{}\n",
             self.style.paint(tone, message.to_string())
         ));
+        self.redraw_current();
+    }
+
+    /// Emit one streamed verbose child-process line. The line's tone carries
+    /// the error/warning classification; the block stays open until the next
+    /// persistent progress line, which emits a separating blank line.
+    pub fn verbose_line(&self, tone: Tone, message: impl std::fmt::Display) {
+        if !self.enabled() {
+            return;
+        }
+        let _output = self.output.lock().ok();
+        self.clear_line();
+        self.destination.write(&format!(
+            "{}\n",
+            self.style.paint(tone, message.to_string())
+        ));
+        if let Ok(mut state) = self.state.lock() {
+            state.verbose_open = true;
+        }
+        self.redraw_current();
+    }
+
+    /// Close an open verbose block with one blank line before usual progress.
+    fn end_verbose_block(&self) {
+        let open = self
+            .state
+            .lock()
+            .ok()
+            .is_some_and(|mut state| std::mem::take(&mut state.verbose_open));
+        if !open {
+            return;
+        }
+        let _output = self.output.lock().ok();
+        self.clear_line();
+        self.destination.write("\n");
         self.redraw_current();
     }
 
@@ -1200,6 +1243,7 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
+        self.end_verbose_block();
         let _output = self.output.lock().ok();
         self.clear_line();
         self.destination.write(&format!(
@@ -1215,6 +1259,7 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
+        self.end_verbose_block();
         let _output = self.output.lock().ok();
         self.clear_line();
         self.destination.write(&format!(
@@ -1228,6 +1273,7 @@ impl ProgressReporter {
         if !self.enabled() {
             return;
         }
+        self.end_verbose_block();
         let _output = self.output.lock().ok();
         self.clear_line();
         self.destination.write(&format!(

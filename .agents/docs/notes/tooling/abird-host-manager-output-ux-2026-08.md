@@ -147,15 +147,35 @@ detail, for example `build done via abird gondor ci` and
 
 Every step's process output is governed by one presentation policy. Curated
 operational output and activation lifecycle output pass through terminal
-sanitization, whole-line secret redaction, and bounded phase-specific
-allowlists. Machine protocols, activation result frames, identity-upload
-contents, and control commands never reach human progress or retained human
-failure tails. Identity uploads and installs appear only as their own step rows;
-their raw streams remain available only in private diagnostic files. `--verbose`
-independently shows sanitized and whole-line-redacted non-protocol subprocess
+sanitization, contextual secret redaction, and bounded phase-specific
+allowlists. Redaction hides a line only when it carries a structural secret
+marker (`-----BEGIN`, `Authorization:`, `Bearer`, cookie headers, or a
+credential URL whose authority holds `user:password@`) or a secret-shaped field
+name (`token`, `secret`, `password`, `api_key`, and similar) followed by a
+separator and a value. Credential detection is scoped to each URL's authority,
+and benign store paths and filenames that merely embed such words, such as
+`<hash>-api-token.key.age`, `libsecret`, or `etc-ipsec.secrets`, stay readable
+in the full verbose stream. This keeps relay-push lines that print both a cache
+URL and an `ssh-ng://user@host` store readable instead of redacting every path.
+Machine protocols, activation result frames, identity-upload contents, and
+control commands never reach human progress or retained human failure tails.
+Identity uploads and installs appear only as their own step rows; their raw
+streams remain available only in private diagnostic files. `--verbose`
+independently shows sanitized and contextually redacted non-protocol subprocess
 output; dashboard admission never controls whether verbose output is emitted.
-Unknown default-mode output fails closed to a generic diagnostic pointer instead
-of relying on error keywords. SSH key discovery and local closure copies are
+Verbose lines use the muted nixbot gray so they recede behind phase progress,
+with error lines in red and warning lines in the milder amber nixbot uses
+(256-color 178); red wins when a line carries both signals. When a verbose block
+ends, one blank line separates it from the next persistent progress line. Native
+fleet runs also capture the `l` key on an interactive terminal, toggling the
+same full verbose stream at runtime without restarting the command. The toggle
+is process-wide so nested build workers share one state, keeps `ISIG` intact so
+Ctrl-C still interrupts, restores the original terminal attributes when the run
+ends, and is not installed when stdin is not a terminal, when a
+repository-script re-exec will own the process, when the run reads a staged
+patch from stdin, or when JSON output suppresses human progress. Unknown
+default-mode output fails closed to a generic diagnostic pointer instead of
+relying on error keywords. SSH key discovery and local closure copies are
 attributed to the affected host instead of appearing as unrelated phase-level
 chatter. Nix store events must contain one validated store-root basename, and
 manually published SSH or health-operation lines pass a separate semantic
