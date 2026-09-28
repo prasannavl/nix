@@ -652,7 +652,9 @@ impl<'a> NativeFleetEffects<'a> {
                 native_plans.as_ref(),
                 &configuration,
             ) {
-                self.progress.task_skipped(format!("build-plan-{host}"));
+                let spec = BuildStep::Plan.spec(host);
+                self.progress
+                    .task_skipped(spec.name, format!("{} {host}", spec.running));
                 self.progress
                     .host_skipped(host, "build plan unavailable; skipped");
                 continue;

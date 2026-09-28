@@ -181,7 +181,7 @@ esac
     );
     let verbose_log = String::from_utf8_lossy(&verbose.stderr);
     assert!(
-        verbose_log.contains("[Build plan app out] /nix/store/aaaaaaaa-system.drv"),
+        verbose_log.contains("[build plan app out] /nix/store/aaaaaaaa-system.drv"),
         "{verbose_log}"
     );
 
@@ -306,10 +306,10 @@ esac
     let progress = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{progress}");
     assert!(
-        progress.contains("◇ Build plan external · skipped"),
+        progress.contains("◇ build plan external · skipped"),
         "{progress}"
     );
-    assert!(!progress.contains("✗ Build plan external"), "{progress}");
+    assert!(!progress.contains("✗ build plan external"), "{progress}");
     assert!(progress.contains("external · skip"), "{progress}");
     for (phase, position) in [
         ("Build systems", "phase 1/5"),

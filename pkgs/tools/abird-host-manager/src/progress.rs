@@ -1886,7 +1886,7 @@ mod tests {
             &mut updates,
             10,
             "build-gap3".to_owned(),
-            "✓ Build plan gap3 gondor · task elapsed 1m 04s".to_owned(),
+            "✓ build plan gap3-gondor · task elapsed 1m 04s".to_owned(),
             Tone::Success,
         );
         let active = ActiveProgress {
@@ -1908,7 +1908,7 @@ mod tests {
             lines,
             vec![
                 "\x1b[1m● Build systems · 11 hosts\x1b[0m \x1b[2m· phase elapsed 1m 51s\x1b[0m",
-                "  \x1b[32m✓ Build plan gap3 gondor · task elapsed 1m 04s\x1b[0m",
+                "  \x1b[32m✓ build plan gap3-gondor · task elapsed 1m 04s\x1b[0m",
             ]
         );
         assert_eq!(lines.join("\n").matches("\x1b[1m").count(), 1);
@@ -2509,7 +2509,7 @@ mod tests {
             &mut updates,
             10,
             "build-gap3".to_owned(),
-            "✓ Build plan gap3 gondor · task elapsed 1m 04s".to_owned(),
+            "✓ build plan gap3-gondor · task elapsed 1m 04s".to_owned(),
             Tone::Success,
         );
         let active = ActiveProgress {
@@ -2529,7 +2529,7 @@ mod tests {
             ),
             vec![
                 "● Build systems · 11 hosts · phase elapsed 1m 51s",
-                "  ✓ Build plan gap3 gondor · task elapsed 1m 04s",
+                "  ✓ build plan gap3-gondor · task elapsed 1m 04s",
             ]
         );
     }
@@ -2549,14 +2549,14 @@ mod tests {
         };
 
         reporter.started("Build systems · 8 hosts");
-        reporter.task_skipped("build-gap3", "Build plan gap3 gondor");
+        reporter.task_skipped("build-gap3", "build plan gap3-gondor");
 
         let output = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
         assert!(
-            output.contains("\x1b[90m◇ Build plan gap3 gondor · skipped\x1b[0m"),
+            output.contains("\x1b[90m◇ build plan gap3-gondor · skipped\x1b[0m"),
             "{output:?}"
         );
-        assert!(!output.contains("✗ Build plan gap3 gondor"), "{output:?}");
+        assert!(!output.contains("✗ build plan gap3-gondor"), "{output:?}");
     }
 
     #[test]
@@ -2669,10 +2669,10 @@ mod tests {
         };
 
         reporter.started("Build systems · 11 hosts");
-        reporter.task_started("build-gap3", "Build plan gap3 gondor");
+        reporter.task_started("build-gap3", "build plan gap3-gondor");
         reporter.task_finished(
             "build-gap3",
-            "Build plan gap3 gondor",
+            "build plan gap3-gondor",
             Duration::from_secs(64),
             true,
         );
@@ -2683,7 +2683,7 @@ mod tests {
         let clear_two_lines = "\r\x1b[2K\x1b[1A\r\x1b[2K";
         assert!(output.matches(clear_two_lines).count() >= 3, "{output:?}");
         assert!(
-            output.contains("\n  ✓ Build plan gap3 gondor · task elapsed 1m 04s"),
+            output.contains("\n  ✓ build plan gap3-gondor · task elapsed 1m 04s"),
             "{output:?}"
         );
         let after_message = output
@@ -2695,7 +2695,7 @@ mod tests {
             "{output:?}"
         );
         assert!(
-            after_message.contains("\n  ✓ Build plan gap3 gondor · task elapsed 1m 04s"),
+            after_message.contains("\n  ✓ build plan gap3-gondor · task elapsed 1m 04s"),
             "{output:?}"
         );
         assert!(
@@ -2723,10 +2723,10 @@ mod tests {
         };
 
         reporter.started("Build systems · 11 hosts");
-        reporter.task_started("build-gap3", "Build plan gap3 gondor");
+        reporter.task_started("build-gap3", "build plan gap3-gondor");
         reporter.task_finished(
             "build-gap3",
-            "Build plan gap3 gondor",
+            "build plan gap3-gondor",
             Duration::from_secs(64),
             true,
         );
@@ -2736,7 +2736,7 @@ mod tests {
             String::from_utf8(buffer.lock().unwrap().clone()).unwrap(),
             concat!(
                 "● Build systems · 11 hosts\n",
-                "  Build plan gap3 gondor · running\n",
+                "  build plan gap3-gondor · running\n",
                 "✓ Build systems · 11 hosts  1m 51s\n",
             )
         );

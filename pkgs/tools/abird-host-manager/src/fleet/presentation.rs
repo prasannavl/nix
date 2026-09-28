@@ -264,9 +264,10 @@ impl FleetProgress {
         self.reporter.detail(detail);
     }
 
-    pub fn task_skipped(&self, key: impl Into<String>) {
-        let key = key.into();
-        self.reporter.task_skipped(key.clone(), process_label(&key));
+    /// Mark a phase-level task as deliberately skipped. The caller owns the
+    /// label so it stays lowercase and consistent with step vocabulary.
+    pub fn task_skipped(&self, key: impl Into<String>, label: impl Into<String>) {
+        self.reporter.task_skipped(key, label);
     }
 
     pub fn message(&self, message: impl std::fmt::Display) {
@@ -492,6 +493,15 @@ impl ProgressTask {
         }
     }
 
+    /// Lowercase human subject for verbose output; host steps include the host
+    /// so concurrent lines stay attributable.
+    fn verbose_subject(&self) -> String {
+        match &self.target {
+            TaskTarget::Host(host) => format!("{} {host}", self.running),
+            TaskTarget::Phase => self.running.clone(),
+        }
+    }
+
     /// Retain and render one semantic line for this step.
     fn publish_line(&self, line: String) {
         self.reporter
@@ -529,7 +539,7 @@ impl Task for ProgressTask {
                 format_process_line_views(self.output_policy(), stream, line, self.verbose);
             if let Some(line) = verbose_line {
                 self.reporter.message(format_process_line(
-                    &process_label(&self.name),
+                    &self.verbose_subject(),
                     Some(stream),
                     &line,
                     self.prefix,
@@ -756,23 +766,6 @@ fn diagnostic_name(label: &str) -> String {
         "command".to_owned()
     } else {
         name
-    }
-}
-
-fn process_label(label: &str) -> String {
-    for (prefix, action) in [
-        ("parent-reconcile-", "Reconcile parent"),
-        ("parent-settle-", "Settle parent"),
-    ] {
-        if let Some(parent) = label.strip_prefix(prefix) {
-            return format!("{action} {}", parent.replace(['-', '_'], " "));
-        }
-    }
-    let words = label.replace(['-', '_'], " ");
-    let mut characters = words.chars();
-    match characters.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
-        None => String::new(),
     }
 }
 
@@ -1725,23 +1718,6 @@ mod tests {
         assert_eq!(
             github_command_value("failed 100%\r\nsecond line"),
             "failed 100%25%0D%0Asecond line"
-        );
-    }
-
-    #[test]
-    fn internal_process_labels_render_as_human_status() {
-        assert_eq!(
-            process_label("pre-switch-preparation"),
-            "Pre switch preparation"
-        );
-        assert_eq!(process_label("remote_build"), "Remote build");
-        assert_eq!(
-            process_label("parent-reconcile-gap3-gondor"),
-            "Reconcile parent gap3 gondor"
-        );
-        assert_eq!(
-            process_label("parent-settle-gap3-gondor"),
-            "Settle parent gap3 gondor"
         );
     }
 

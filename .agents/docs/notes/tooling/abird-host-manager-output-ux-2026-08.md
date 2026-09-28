@@ -43,6 +43,9 @@ Completion phrases are lowercase and consistent: running rows use the stage noun
 `health check`) and completion rows append `done`. Every phase's terminal
 success summary uses the same wording, such as `✓ build done`,
 `✓ snapshot done`, `✓ acquire done`, `✓ deploy done`, and `✓ health done`.
+Casing is scoped to the labels that collapse into a phase: phase titles and
+isolated message sentences keep their natural casing, while task, step, and
+skipped rows stay lowercase.
 
 Durable agent submission is not completion. Job views derive their state from
 the retained job record. Fleet output retains one row per host and one overall
