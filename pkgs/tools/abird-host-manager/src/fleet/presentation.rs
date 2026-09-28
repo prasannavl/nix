@@ -163,7 +163,7 @@ impl FleetProgress {
         let error = safe_error_excerpt(error);
         let label = if self.reporter.shows_recent_updates() {
             format!(
-                "{} · phase elapsed {}",
+                "{} · elapsed {}",
                 phase_label(phase, hosts, position),
                 format_duration(elapsed)
             )
@@ -199,7 +199,7 @@ impl FleetProgress {
     ) {
         let warning = safe_error_excerpt(warning);
         let label = format!(
-            "{} · completed with warnings · phase elapsed {}",
+            "{} · completed with warnings · elapsed {}",
             phase_label(phase, hosts, position),
             format_duration(elapsed)
         );
@@ -227,7 +227,7 @@ impl FleetProgress {
     ) {
         let label = if self.reporter.shows_recent_updates() {
             format!(
-                "{} · interrupted · phase elapsed {}",
+                "{} · interrupted · elapsed {}",
                 phase_label(phase, hosts, position),
                 format_duration(elapsed)
             )
@@ -525,7 +525,7 @@ impl Task for ProgressTask {
         match &self.target {
             TaskTarget::Host(host) => {
                 self.reporter
-                    .host_task_started(host, &self.name, &self.running)
+                    .host_task_started(host, &self.name, &self.running, self.heartbeat)
             }
             TaskTarget::Phase => self
                 .reporter

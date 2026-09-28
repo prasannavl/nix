@@ -104,6 +104,37 @@ struct HostRow {
     summary: Option<String>,
     output: VecDeque<String>,
     failure_output: VecDeque<String>,
+    heartbeat_interval: Option<Duration>,
+    last_heartbeat: Option<Instant>,
+}
+
+/// Liveness of a running step's heartbeat, for the dashboard indicator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Heartbeat {
+    /// The step declared no heartbeat; no liveness can be inferred.
+    Absent,
+    /// A heartbeat arrived within the expected window (or the first window is
+    /// still open), so the step is actively reporting progress.
+    Live,
+    /// A declared heartbeat has not arrived within its expected window.
+    Stalled,
+}
+
+/// A heartbeat is overdue once twice its interval has elapsed since the last
+/// beat (or since the step started, before the first beat). The extra window
+/// avoids flagging a step that is merely between beats.
+fn heartbeat_state(row: &HostRow) -> Heartbeat {
+    let Some(interval) = row.heartbeat_interval else {
+        return Heartbeat::Absent;
+    };
+    let Some(reference) = row.last_heartbeat.or(row.task_started) else {
+        return Heartbeat::Absent;
+    };
+    if reference.elapsed() <= interval.saturating_mul(2) {
+        Heartbeat::Live
+    } else {
+        Heartbeat::Stalled
+    }
 }
 
 impl HostRow {
@@ -132,6 +163,8 @@ impl Default for HostRow {
             summary: None,
             output: VecDeque::new(),
             failure_output: VecDeque::new(),
+            heartbeat_interval: None,
+            last_heartbeat: None,
         }
     }
 }
@@ -280,7 +313,13 @@ impl ProgressReporter {
         self.redraw_current();
     }
 
-    pub fn host_task_started(&self, host: &str, key: &str, label: &str) {
+    pub fn host_task_started(
+        &self,
+        host: &str,
+        key: &str,
+        label: &str,
+        heartbeat_interval: Option<Duration>,
+    ) {
         self.start_task_tail(key);
         if !self.shows_recent_updates() {
             self.detail(format!("{host} · {label} · running"));
@@ -294,6 +333,8 @@ impl ProgressReporter {
             row.elapsed = None;
             row.summary = None;
             row.output.clear();
+            row.heartbeat_interval = heartbeat_interval;
+            row.last_heartbeat = None;
         });
     }
 
@@ -304,6 +345,7 @@ impl ProgressReporter {
         self.update_host_row(host, |row| {
             if row.task_key.as_deref() == Some(key) {
                 row.task = Some(label.to_owned());
+                row.last_heartbeat = Some(Instant::now());
             }
         });
     }
@@ -929,7 +971,7 @@ impl ProgressReporter {
         self.finish_current();
         let label = label.into();
         let label = if self.shows_recent_updates() {
-            format!("{label} · phase elapsed {}", format_duration(elapsed))
+            format!("{label} · elapsed {}", format_duration(elapsed))
         } else {
             format!("{label}  {}", format_duration(elapsed))
         };
@@ -1393,7 +1435,7 @@ fn dashboard_lines_with_viewport(
         style.paint(Tone::Emphasis, format!("● {}", active.label)),
         style.paint(
             Tone::Muted,
-            format!("· phase elapsed {}", format_duration(elapsed))
+            format!("· elapsed {}", format_duration(elapsed))
         )
     )];
     for update in &active.recent_updates {
@@ -1420,6 +1462,9 @@ fn host_dashboard_lines(
     elapsed: Duration,
     viewport: Option<(usize, usize)>,
 ) -> Vec<String> {
+    // Heartbeat pulses alternate once per second; the dashboard redraws on the
+    // same cadence, so a running step visibly blinks while it is reporting.
+    let blink_on = elapsed.as_secs().is_multiple_of(2);
     let running = dashboard
         .rows
         .values()
@@ -1438,21 +1483,22 @@ fn host_dashboard_lines(
             )
         })
         .count();
-    let pending = dashboard.rows.len().saturating_sub(running + done);
     let mut metadata = Vec::new();
     if let Some(stage) = &dashboard.stage {
         metadata.push(format!("stage {stage}"));
     }
-    if let Some((current, total)) = dashboard.wave {
+    if let Some((current, total)) = dashboard.wave
+        && total > 1
+    {
         metadata.push(format!("wave {current}/{total}"));
     }
     if dashboard.concurrency > 0 {
-        metadata.push(format!("concurrency {}", dashboard.concurrency));
+        metadata.push(format!("{running}/{} running", dashboard.concurrency));
+    } else {
+        metadata.push(format!("{running} running"));
     }
-    metadata.push(format!("running {running}"));
     metadata.push(format!("done {done}/{}", dashboard.rows.len()));
-    metadata.push(format!("pending {pending}"));
-    metadata.push(format!("phase elapsed {}", format_duration(elapsed)));
+    metadata.push(format!("elapsed {}", format_duration(elapsed)));
     let max_lines = viewport
         .map(|(rows, _)| rows.saturating_sub(1).max(1))
         .unwrap_or(usize::MAX);
@@ -1552,10 +1598,24 @@ fn host_dashboard_lines(
                     .task_started
                     .map(|started| started.elapsed())
                     .unwrap_or_default();
+                let mut metadata = format!(" · task elapsed {}", format_duration(elapsed));
+                let (tone, glyph) = match heartbeat_state(row) {
+                    Heartbeat::Live => (Tone::Active, if blink_on { "●" } else { "○" }),
+                    Heartbeat::Stalled => {
+                        let age = row
+                            .last_heartbeat
+                            .or(row.task_started)
+                            .map(|reference| reference.elapsed())
+                            .unwrap_or_default();
+                        metadata.push_str(&format!(" · no heartbeat · {}", format_duration(age)));
+                        (Tone::Warning, "●")
+                    }
+                    Heartbeat::Absent => (Tone::Active, "●"),
+                };
                 (
-                    Tone::Active,
-                    format!("● {}", row.task.as_deref().unwrap_or("running")),
-                    format!(" · task elapsed {}", format_duration(elapsed)),
+                    tone,
+                    format!("{glyph} {}", row.task.as_deref().unwrap_or("running")),
+                    metadata,
                 )
             }
             HostRowState::Succeeded => (
@@ -1907,7 +1967,7 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "\x1b[1m● Build systems · 11 hosts\x1b[0m \x1b[2m· phase elapsed 1m 51s\x1b[0m",
+                "\x1b[1m● Build systems · 11 hosts\x1b[0m \x1b[2m· elapsed 1m 51s\x1b[0m",
                 "  \x1b[32m✓ build plan gap3-gondor · task elapsed 1m 04s\x1b[0m",
             ]
         );
@@ -2002,7 +2062,7 @@ mod tests {
         reporter.started("Deploy systems · 11 hosts");
         reporter.begin_host_dashboard(&hosts);
         reporter.host_schedule("activate", Some((2, 3)), 4);
-        reporter.host_task_started("host-1", "activation-host-1", "Activation");
+        reporter.host_task_started("host-1", "activation-host-1", "Activation", None);
         for index in 0..6 {
             reporter.host_task_output("host-1", "activation-host-1", format!("line-{index}"));
         }
@@ -2014,7 +2074,7 @@ mod tests {
             Duration::from_secs(2),
             false,
         );
-        reporter.host_task_started("host-1", "rollback-host-1", "Rollback");
+        reporter.host_task_started("host-1", "rollback-host-1", "Rollback", None);
         reporter.host_task_output("host-1", "rollback-host-1", "rollback completed".to_owned());
         reporter.host_task_finished(
             "host-1",
@@ -2025,7 +2085,7 @@ mod tests {
             true,
         );
         reporter.host_finished("host-1", false, None, "activation failed");
-        reporter.host_task_started("host-2", "activation-host-2", "Activation");
+        reporter.host_task_started("host-2", "activation-host-2", "Activation", None);
         reporter.host_task_output(
             "host-2",
             "activation-host-2",
@@ -2040,7 +2100,7 @@ mod tests {
             Duration::from_secs(3),
         );
         let rendered = lines.join("\n");
-        assert!(rendered.contains("stage activate · wave 2/3 · concurrency 4"));
+        assert!(rendered.contains("stage activate · wave 2/3 · 0/4 running"));
         assert!(
             hosts.iter().all(|host| rendered.contains(host)),
             "{rendered}"
@@ -2069,7 +2129,7 @@ mod tests {
 
         reporter.started("Deploy systems · 1 host");
         reporter.begin_host_dashboard(&["app".to_owned()]);
-        reporter.host_task_started("app", "activation-app", "Activation observe app");
+        reporter.host_task_started("app", "activation-app", "Activation observe app", None);
         reporter.host_task_output(
             "app",
             "activation-app",
@@ -2116,7 +2176,7 @@ mod tests {
 
         reporter.started("Deploy systems · 1 host");
         reporter.begin_host_dashboard(&["app".to_owned()]);
-        reporter.host_task_started("app", "activation-app", "Activation observe app");
+        reporter.host_task_started("app", "activation-app", "Activation observe app", None);
         reporter.host_task_finalizing(
             "app",
             "activation-app",
@@ -2154,7 +2214,7 @@ mod tests {
 
         reporter.started("Build systems · 1 host");
         reporter.begin_host_dashboard(&["app".to_owned()]);
-        reporter.host_task_started("app", "build-app", "build");
+        reporter.host_task_started("app", "build-app", "build", None);
         reporter.host_task_output("app", "build-app", "[build] compiling".to_owned());
         reporter.host_task_finished(
             "app",
@@ -2191,7 +2251,7 @@ mod tests {
 
         reporter.started("Deploy systems · 1 host");
         reporter.begin_host_dashboard(&["app".to_owned()]);
-        reporter.host_task_started("app", "activation-app", "activation observe");
+        reporter.host_task_started("app", "activation-app", "activation observe", None);
         reporter.host_task_output("app", "activation-app", "stopping app.service".to_owned());
         reporter.host_task_interrupted(
             "app",
@@ -2226,7 +2286,7 @@ mod tests {
 
         reporter.started("Verify deployment health · 1 host");
         reporter.begin_host_dashboard(&["app".to_owned()]);
-        reporter.host_task_started("app", "health-check-app", "health check");
+        reporter.host_task_started("app", "health-check-app", "health check", None);
         reporter.host_task_output(
             "app",
             "health-check-app",
@@ -2262,6 +2322,107 @@ mod tests {
         .join("\n");
         assert!(rendered.contains("app  ⊘ interrupted"), "{rendered}");
         assert!(rendered.contains("[health-check] attempt 1"), "{rendered}");
+    }
+
+    #[test]
+    fn running_heartbeat_blinks_then_warns_when_overdue() {
+        set_json_output(false);
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::new(Mutex::new(Vec::new()))),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+
+        reporter.started("Build systems · 1 host");
+        reporter.begin_host_dashboard(&["app".to_owned()]);
+        reporter.host_task_started("app", "build-app", "build", Some(Duration::from_secs(30)));
+
+        // A fresh heartbeat is live and pulses between the two glyphs.
+        let live_on = dashboard_lines(
+            TerminalStyle::from_capabilities(false, false),
+            reporter.state.lock().unwrap().stack.last().unwrap(),
+            Duration::from_secs(4),
+        )
+        .join("\n");
+        assert!(live_on.contains("app  ● build · task elapsed"), "{live_on}");
+        let live_off = dashboard_lines(
+            TerminalStyle::from_capabilities(false, false),
+            reporter.state.lock().unwrap().stack.last().unwrap(),
+            Duration::from_secs(5),
+        )
+        .join("\n");
+        assert!(
+            live_off.contains("app  ○ build · task elapsed"),
+            "{live_off}"
+        );
+
+        // Past twice the interval with no beat: warned and explained.
+        {
+            let mut state = reporter.state.lock().unwrap();
+            let row = state
+                .stack
+                .last_mut()
+                .unwrap()
+                .host_dashboard
+                .as_mut()
+                .unwrap()
+                .rows
+                .get_mut("app")
+                .unwrap();
+            row.task_started = Some(Instant::now() - Duration::from_secs(70));
+        }
+        let stalled = dashboard_lines(
+            TerminalStyle::from_capabilities(false, false),
+            reporter.state.lock().unwrap().stack.last().unwrap(),
+            Duration::from_secs(6),
+        )
+        .join("\n");
+        assert!(stalled.contains("app  ● build · task elapsed"), "{stalled}");
+        assert!(stalled.contains("no heartbeat"), "{stalled}");
+    }
+
+    #[test]
+    fn host_dashboard_header_collapses_redundant_counts() {
+        let started = Instant::now();
+        let hosts = (1..=11)
+            .map(|index| format!("host-{index}"))
+            .collect::<Vec<_>>();
+        let mut dashboard = HostDashboard {
+            order: hosts.clone(),
+            stage: Some("build".to_owned()),
+            wave: Some((1, 1)),
+            concurrency: 1,
+            ..HostDashboard::default()
+        };
+        for host in &hosts {
+            dashboard.rows.insert(host.clone(), HostRow::default());
+        }
+        let row = dashboard.rows.get_mut("host-1").unwrap();
+        row.state = HostRowState::Running;
+        row.task = Some("build via abird-gondor-ci".to_owned());
+        row.task_started = Some(started);
+        let active = ActiveProgress {
+            id: 1,
+            label: "Build systems · 11 hosts · phase 1/5".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: Some(dashboard),
+            started,
+        };
+        let lines = dashboard_lines(
+            TerminalStyle::from_capabilities(false, false),
+            &active,
+            Duration::from_secs(245),
+        );
+        assert_eq!(
+            lines[0],
+            "● Build systems · 11 hosts · phase 1/5 · stage build · 1/1 running · done 0/11 · elapsed 4m 05s"
+        );
     }
 
     #[test]
@@ -2305,7 +2466,7 @@ mod tests {
         assert!(lines.iter().all(|line| line.chars().count() <= 80));
         assert!(hosts.iter().all(|host| rendered.contains(host)));
         assert!(rendered.contains("wave 1/2"));
-        assert!(rendered.contains("concurrency 11"));
+        assert!(rendered.contains("11/11 running"));
     }
 
     #[test]
@@ -2422,7 +2583,7 @@ mod tests {
             Duration::from_secs(2),
             false,
         );
-        reporter.fail_active("Deploy systems · phase elapsed 2.0s", "fleet deploy failed");
+        reporter.fail_active("Deploy systems · elapsed 2.0s", "fleet deploy failed");
 
         let output = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
         assert!(output.contains("Recent command output:"), "{output:?}");
@@ -2528,7 +2689,7 @@ mod tests {
                 Duration::from_secs(111),
             ),
             vec![
-                "● Build systems · 11 hosts · phase elapsed 1m 51s",
+                "● Build systems · 11 hosts · elapsed 1m 51s",
                 "  ✓ build plan gap3-gondor · task elapsed 1m 04s",
             ]
         );
@@ -2578,11 +2739,11 @@ mod tests {
                 reporter.style,
                 "✓",
                 Tone::Success,
-                "Build systems · 8 hosts · phase 1/5 · phase elapsed 2m 45s",
+                "Build systems · 8 hosts · phase 1/5 · elapsed 2m 45s",
             ),
             concat!(
                 "\x1b[32m✓ Build systems\x1b[0m",
-                "\x1b[90m · 8 hosts · phase 1/5 · phase elapsed 2m 45s\x1b[0m",
+                "\x1b[90m · 8 hosts · phase 1/5 · elapsed 2m 45s\x1b[0m",
             )
         );
         reporter.message_primary_with_metadata(
@@ -2691,7 +2852,7 @@ mod tests {
             .map(|(_, rest)| rest)
             .expect("message should be followed by the redrawn dashboard");
         assert!(
-            after_message.starts_with("● Build systems · 11 hosts · phase elapsed "),
+            after_message.starts_with("● Build systems · 11 hosts · elapsed "),
             "{output:?}"
         );
         assert!(
@@ -2699,7 +2860,7 @@ mod tests {
             "{output:?}"
         );
         assert!(
-            output.ends_with("✓ Build systems · 11 hosts · phase elapsed 1m 51s\n"),
+            output.ends_with("✓ Build systems · 11 hosts · elapsed 1m 51s\n"),
             "{output:?}"
         );
         assert!(

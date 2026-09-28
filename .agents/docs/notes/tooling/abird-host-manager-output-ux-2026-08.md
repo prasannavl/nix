@@ -119,15 +119,19 @@ authority modes between lifecycle commands.
 Fleet deployment phases keep the complete selected-host roster visible. Each
 running host owns a bounded rolling tail of up to five safe semantic lines;
 successful work collapses, while failed work retains its tail. The phase header
-reports stage, wave, concurrency, running, completed, pending, and elapsed
-counts. Host rows use one lowercase stage vocabulary for every task: the live
-row reads `● <stage> · task elapsed <t>`, and a task that finishes before the
-host reaches its terminal outcome leaves `○ <stage> done · <t>` instead of the
-stale running label. Activation and rollback keep their stage and read
-`○ activation done, finalizing · <t>` while the detached unit settles. Terminal
-tasks whose outcome carries no duration keep the last task's elapsed time, so
-completion rows still report how long the host took. Stage labels drop the
-redundant host column but keep transport builders and readiness parents as
+reports stage, wave (only when the phase has multiple waves), running slots
+(`<running>/<concurrency>`), completed, and elapsed counts, and omits the
+derivable pending count. Host rows use one lowercase stage vocabulary for every
+task: the live row reads `● <stage> · task elapsed <t>`, and a task that
+finishes before the host reaches its terminal outcome leaves
+`○ <stage> done · <t>` instead of the stale running label. While a running step
+declares a heartbeat, its live glyph pulses `●`/`○` once per second; once a
+declared heartbeat is overdue (twice its interval), the glyph turns warning and
+the row reports `no heartbeat · <age>`. Activation and rollback keep their stage
+and read `○ activation done, finalizing · <t>` while the detached unit settles.
+Terminal tasks whose outcome carries no duration keep the last task's elapsed
+time, so completion rows still report how long the host took. Stage labels drop
+the redundant host column but keep transport builders and readiness parents as
 detail, for example `build done via abird gondor ci` and
 `parent reconcile done · gap3 gondor`. Output ownership is consistent by phase:
 
