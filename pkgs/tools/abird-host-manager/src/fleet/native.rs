@@ -2480,7 +2480,15 @@ impl<'a> NativeFleetEffects<'a> {
                 task,
             )?;
             if !output.succeeded() {
-                bail!("{operation} failed for {host}: {}", output.stderr.trim());
+                let detail = output.combined_output();
+                let detail = detail.trim();
+                if detail.is_empty() {
+                    bail!(
+                        "{operation} failed for {host}: remote command exited {:?}",
+                        output.status
+                    );
+                }
+                bail!("{operation} failed for {host}: {detail}");
             }
             Ok(())
         })
