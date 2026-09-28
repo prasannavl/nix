@@ -100,6 +100,16 @@ in {
       after = ["network-online.target"];
       wants = ["network-online.target"];
 
+      # Pi Web spawns shells for agent tool calls. systemd's minimal default
+      # PATH (coreutils/findutils/grep/sed/systemd) has none of the NixOS
+      # profile tools, so without this every command had to prepend the profile
+      # dirs itself to find `git`, `rg`, `ps`, `nix`, ... The `path` option
+      # builds PATH from these packages; the default tail is disabled because
+      # `config.system.path` already provides coreutils, findutils, grep, sed,
+      # and systemd.
+      path = config.users.users.${cfg.user}.packages ++ [config.system.path];
+      enableDefaultPath = false;
+
       serviceConfig = {
         Type = "simple";
         User = cfg.user;

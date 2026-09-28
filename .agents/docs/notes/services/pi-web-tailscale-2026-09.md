@@ -45,16 +45,53 @@ serve-config oneshot and is less declarative here.
   (for example from agenix) when a second factor is wanted.
 - `pvl-a1` runs no `pi-web` service; it consumes the `pvl-l5` endpoint.
 
+## Service PATH
+
+systemd services start from systemd's minimal default PATH (coreutils,
+findutils, grep, sed, systemd), not the interactive NixOS PATH that
+`/etc/profile` sources from `/etc/set-environment`. Pi Web spawns shells for
+every Pi agent tool call, so without an explicit PATH the agent had to prepend
+the profile directories on each command:
+
+```text
+export PATH=/run/current-system/sw/bin:/etc/profiles/per-user/pvl/bin:$PATH; ...
+```
+
+The module now uses the native `systemd.services.<name>.path` option instead of
+hand-building a PATH string:
+
+```nix
+path = config.users.users.${cfg.user}.packages ++ [config.system.path];
+enableDefaultPath = false;
+```
+
+systemd turns each entry into its `bin` (and `sbin`) directory. The default tail
+(`coreutils`, `findutils`, `gnugrep`, `gnused`, `systemd`) is disabled because
+`config.system.path` already provides those, so the generated PATH is just the
+two profiles:
+
+```text
+…-home-manager-path/bin:…-system-path/bin:…-home-manager-path/sbin:…-system-path/sbin
+```
+
+That gives the agent the user's home-manager packages plus the system profile,
+so `git`, `rg`, `ps`, and `nix` resolve without a per-command export.
+`/run/wrappers` is intentionally left out; add it as a string entry
+(`"/run/wrappers"`) if wrapped binaries such as `sudo` or `ping` are also
+wanted.
+
 ## Validation
 
 ```console
 nix eval .#nixosConfigurations.pvl-l5.config.systemd.services.pi-web.serviceConfig.ExecStart --raw
+nix eval .#nixosConfigurations.pvl-l5.config.systemd.services.pi-web.environment.PATH --raw
 nix eval .#nixosConfigurations.pvl-l5.config.networking.firewall.extraInputRules --raw
 nix eval .#nixosConfigurations.pvl-l5.config.system.build.toplevel.drvPath --raw
 nix eval .#nixosConfigurations.pvl-a1.config.system.build.toplevel.drvPath --raw
 ```
 
 The evaluated `ExecStart` binds `0.0.0.0:30141`, the environment carries
-`PI_WEB_ALLOWED_HOSTS=pvl-l5,pvl-l5.tailcaaad.ts.net`, and the firewall input
-rules contain the `tailscale0` accept in addition to the existing `wlan0`
-private-range rule.
+`PI_WEB_ALLOWED_HOSTS=pvl-l5,pvl-l5.tailcaaad.ts.net` and a `PATH` built from
+the home-manager and `system-path` store bins (`bin` plus `sbin`, with the
+redundant default tail disabled), and the firewall input rules contain the
+`tailscale0` accept in addition to the existing `wlan0` private-range rule.
