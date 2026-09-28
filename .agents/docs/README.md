@@ -371,9 +371,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   phase/wave/concurrency progress with bounded live and failure tails,
   restrained title-only bold styling, self-target lock ownership, proxy-command
   host-key handling, bounded control sockets, stable semantic builder leases,
-  explicit root target-control execution, proxy-capable signed cache relay,
-  health failure evidence, parity validation, and the staged landing boundary
-  that retains the active Bash Nixbot until explicit cutover.
+  bounded post-child output draining, diagnostic descriptor lifetime, and hard
+  third-signal escape, explicit root target-control execution, proxy-capable
+  signed cache relay, health failure evidence, parity validation, and the staged
+  landing boundary that retains the active Bash Nixbot until explicit cutover.
 - `.agents/docs/notes/nixbot/deploy-system.md`: Canonical `nixbot` deploy,
   bootstrap, SSH, worktree, Terraform, CI, and distinct group-scope, exact-host,
   and host-filter selection behavior.
@@ -489,7 +490,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   guardrail, and host opt-in scope for `pvl-x2`, `pvl-a1`, and `pvl-l5`.
 - `.agents/docs/notes/services/pi-web-tailscale-2026-09.md`: Records the
   `lib/services/pi-web` systemd module, the pvl-l5 tailnet-scoped firewall
-  exposure, the `PI_WEB_ALLOWED_HOSTS` requirement, and the manual-process
+  exposure, the `PI_WEB_ALLOWED_HOSTS` requirement, the `path` packages added to
+  the unit so agent tool calls find profile tools, and the manual-process
   handoff.
 - `.agents/docs/notes/services/librechat-opendesign-pvl-x2-2026-09.md`: Records
   the LibreChat and OpenDesign services on `pvl-x2` ported from abird, including
