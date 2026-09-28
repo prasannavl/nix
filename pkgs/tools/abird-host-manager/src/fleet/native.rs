@@ -22,7 +22,7 @@ use super::bootstrap::{
 };
 use super::build::{
     BuildArgs, BuildBatch, BuildCacheContext, BuildCacheState, BuildHostDeployMode,
-    BuildPlanAttribute, BuildSchedule, BuilderClosure, CacheSource, CommandSpec,
+    BuildPlanAttribute, BuildSchedule, BuilderClosure, CacheSource, CommandSpec, CommandStatus,
     DistributionInputs, DistributionPlan, LocalBuildSpec, NixStorePath, RetryPolicy,
     automatic_build_plan_jobs, build_plan_cache_file, build_plan_evaluation_command,
     build_plan_probe_command, closure_verification_command, copy_derivation_command,
@@ -39,14 +39,19 @@ use super::engine::{FleetEffects, PhaseFailure};
 use super::environment::{Environment, LocalSelfTarget, Settings};
 use super::host_runtime::{
     ActivationExecution, DistributionExecution, DryRun, EffectKind, HostExecutionTarget,
-    HostRuntime, RemoteBuildRequest, ReportingProcessRunner, builder_lease_process_spec,
-    retire_control_master, ssh_connection_args,
+    HostRuntime, ProcessExecutor, ProcessOutput, builder_lease_process_spec, retire_control_master,
+    ssh_connection_args,
+};
+use super::host_tasks::{
+    AcquireStep, BootstrapStep, BuildStep, DeployStep, HealthStep, PhaseStep, ReadinessStep,
+    SnapshotStep, SshKeyStep, TransferStep, VerifyStep, run_step, run_step_with,
 };
 use super::inventory::{DeployMode, Inventory};
 use super::plan::{Phase, WorkflowPlan};
 use super::presentation::{FleetProgress, WorkflowResult, phase_label};
 use super::selection::Selection;
 use super::system::{ResolvedHost, resolve_host};
+use super::task::{InternalTask, StepSpecSource, TaskOutcome, TaskScope};
 use super::transport::{
     HostKeyPolicy, HostTransport, ProcessStatus, ProxyCommandTemplate, SelfTargetDecision,
     SelfTargetEvidence, SelfTargetMode, SshEndpoint, SshRoutePlan, TransportRole, plan_proxy_chain,
@@ -61,10 +66,14 @@ fn health_failure_message(
     kind: &str,
     report: &super::health_runtime::ManagedHealthReport,
 ) -> String {
+    // Details stay raw here; the presentation boundary sanitizes the rendered
+    // failure summary. Keeping this execution-side avoids a second, partial
+    // redaction that could diverge from the display contract.
     let details = report
         .details
         .iter()
-        .filter_map(|detail| super::presentation::format_failure_line(detail))
+        .filter(|detail| !detail.trim().is_empty())
+        .cloned()
         .collect::<Vec<_>>();
     let mut message = format!(
         "{host}: post-switch {kind}: {}",
@@ -95,9 +104,11 @@ fn health_progress_line(
         super::health::HealthDecision::ServiceFailure { .. } => "service failure",
         super::health::HealthDecision::StructuralFailure { .. } => "structural failure",
     };
+    // Presentation sanitizes and allowlists the detail; execution keeps it raw
+    // so there is exactly one display boundary for collector text.
     let detail = details
         .first()
-        .and_then(|detail| super::presentation::format_health_progress_detail(detail))
+        .filter(|detail| !detail.is_empty())
         .map(|detail| format!(" · {detail}"))
         .unwrap_or_default();
     format!("[health-check] attempt {attempt} · {state}{detail}")
@@ -109,7 +120,7 @@ pub struct NativeFleetEffects<'a> {
     repository: &'a Path,
     inventory: &'a Inventory,
     selection: &'a Selection,
-    host_runtime: HostRuntime<ReportingProcessRunner>,
+    host_runtime: HostRuntime<ProcessExecutor>,
     progress: FleetProgress,
     transport_store: tempfile::TempDir,
     invocation_id: InvocationId,
@@ -608,10 +619,15 @@ impl<'a> NativeFleetEffects<'a> {
             Vec::new()
         };
         let probe = build_plan_probe_command(&nix, &probe_args);
-        let probe = self.host_runtime.execute_local_command(
-            &probe,
-            EffectKind::ReadOnly,
-            "build-plan-probe",
+        let probe_scope: Arc<dyn TaskScope> = self.progress.phase_scope();
+        let probe = run_step_with(
+            &probe_scope,
+            PhaseStep::BuildPlanProbe,
+            |task| {
+                self.host_runtime
+                    .execute_local_command(&probe, EffectKind::ReadOnly, task)
+            },
+            process_outcome,
         )?;
         let (attribute, native_plans) = if probe.succeeded() {
             let plans = serde_json::from_str::<BTreeSet<String>>(&probe.stdout)
@@ -692,14 +708,14 @@ impl<'a> NativeFleetEffects<'a> {
                     repository.clone(),
                     DryRun::No,
                 )?;
-                let derivation = runtime
-                    .evaluate_build_plan_labeled_for_host(
-                        &plan,
-                        &format!("build-plan-{host}"),
-                        &host,
-                    )?
-                    .executed()
-                    .context("build-plan evaluation was unexpectedly suppressed")?;
+                let derivation = {
+                    let scope: Arc<dyn TaskScope> = progress.host_scope(&host);
+                    run_step(&scope, BuildStep::Plan, |task| {
+                        runtime.evaluate_build_plan(&plan, task)
+                    })?
+                }
+                .executed()
+                .context("build-plan evaluation was unexpectedly suppressed")?;
                 Ok((host, configuration, derivation, cache_path))
             },
         )?;
@@ -855,10 +871,12 @@ impl<'a> NativeFleetEffects<'a> {
             )
         };
         if development || build_host == "local" {
-            self.host_runtime
-                .local_build_labeled_for_host(&command, &format!("build-{host}"), host)?
-                .executed()
-                .context("local build was unexpectedly suppressed")
+            let scope: Arc<dyn TaskScope> = self.progress.host_scope(host);
+            run_step(&scope, BuildStep::Build, |task| {
+                self.host_runtime.local_build(&command, task)
+            })?
+            .executed()
+            .context("local build was unexpectedly suppressed")
         } else {
             self.remote_build(host, &build_host, derivation, build_args)
         }
@@ -1017,24 +1035,29 @@ impl<'a> NativeFleetEffects<'a> {
                 ),
                 &target,
             )?;
-            let output = self.host_runtime.execute_local_command_for_host(
-                &pull,
-                EffectKind::Build,
-                "remote-build-copy-closure-local",
-                host,
-            )?;
-            if !output.succeeded() {
-                bail!("copy remote build closure to local store failed for {host}");
-            }
-            let verified = self.host_runtime.execute_local_command_for_host(
-                &closure_verification_command(&self.nix_program.to_string_lossy(), &closure),
-                EffectKind::ReadOnly,
-                "remote-build-verify-local-closure",
-                host,
-            )?;
-            if !verified.succeeded() {
-                bail!("verify copied remote build closure failed for {host}");
-            }
+            let scope: Arc<dyn TaskScope> = self.progress.host_scope(host);
+            run_step(&scope, BuildStep::ClosureCopy, |task| {
+                let output =
+                    self.host_runtime
+                        .execute_local_command(&pull, EffectKind::Build, task)?;
+                if !output.succeeded() {
+                    bail!("copy remote build closure to local store failed for {host}");
+                }
+                Ok(())
+            })?;
+            let verification =
+                closure_verification_command(&self.nix_program.to_string_lossy(), &closure);
+            run_step(&scope, BuildStep::ClosureVerify, |task| {
+                let verified = self.host_runtime.execute_local_command(
+                    &verification,
+                    EffectKind::ReadOnly,
+                    task,
+                )?;
+                if !verified.succeeded() {
+                    bail!("verify copied remote build closure failed for {host}");
+                }
+                Ok(())
+            })?;
             self.builder_closures.remove(host);
         }
         Ok(closure)
@@ -1105,16 +1128,35 @@ impl<'a> NativeFleetEffects<'a> {
             copy_derivation_command(&self.nix_program.to_string_lossy(), store_uri, derivation),
             target,
         )?;
-        let execution = self.host_runtime.remote_build(RemoteBuildRequest {
-            subject: subject.to_owned(),
-            target: target.clone(),
-            copy_derivation,
-            build: commands.build,
-            retry: RetryPolicy::new(
-                self.settings.transport_retry_attempts,
-                Duration::from_secs(self.settings.transport_retry_delay_seconds),
-            )?,
+        let retry = RetryPolicy::new(
+            self.settings.transport_retry_attempts,
+            Duration::from_secs(self.settings.transport_retry_delay_seconds),
+        )?;
+        let scope: Arc<dyn TaskScope> = self.progress.host_scope(subject);
+        let builder = target.route.endpoint.node.clone();
+        run_step(&scope, BuildStep::Copy, |task| {
+            let copied = self.host_runtime.execute_local_command(
+                &copy_derivation,
+                EffectKind::Build,
+                task,
+            )?;
+            if !copied.succeeded() {
+                bail!(
+                    "remote build derivation copy failed: {}",
+                    copied.combined_output()
+                );
+            }
+            Ok(())
         })?;
+        let execution = run_step_with(
+            &scope,
+            BuildStep::Realize { builder },
+            |task| {
+                self.host_runtime
+                    .run_remote_build(target, &commands.build, retry, task)
+            },
+            |execution| command_outcome(&execution.status),
+        )?;
         if execution.status != super::build::CommandStatus::Success {
             bail!("remote build failed: {:?}", execution.status);
         }
@@ -1133,7 +1175,10 @@ impl<'a> NativeFleetEffects<'a> {
             target,
             &closure_verification_command("/run/current-system/sw/bin/nix", closure),
             EffectKind::ReadOnly,
-            "remote-build-verify-builder-closure",
+            InternalTask::new(format!(
+                "remote-build-verify-builder-closure-{}",
+                target.route.endpoint.node
+            )),
         )?;
         Ok(output.succeeded())
     }
@@ -1312,7 +1357,10 @@ impl<'a> NativeFleetEffects<'a> {
                 target,
                 &CommandSpec::new("true", Vec::<String>::new()),
                 EffectKind::ReadOnly,
-                "primary-connectivity-probe",
+                InternalTask::new(format!(
+                    "primary-connectivity-probe-{}",
+                    target.route.endpoint.node
+                )),
             )?;
             if output.succeeded()
                 || !matches!(output.status, ProcessStatus::Code(124 | 255))
@@ -1538,38 +1586,47 @@ impl<'a> NativeFleetEffects<'a> {
         );
         let remote_key = PathBuf::from(format!("/tmp/nixbot-bootstrap-key.{component}"));
         let remote_public = PathBuf::from(format!("/tmp/nixbot-bootstrap-public.{component}"));
-        for (source, destination, label) in [
-            (&bootstrap, &remote_key, "bootstrap-private-key-upload"),
-            (&public, &remote_public, "bootstrap-public-key-upload"),
+        let bootstrap_scope: Arc<dyn TaskScope> =
+            self.progress.host_scope(&resolved.inventory_name);
+        for (source, destination, step) in [
+            (&bootstrap, &remote_key, BootstrapStep::PrivateKeyUpload),
+            (&public, &remote_public, BootstrapStep::PublicKeyUpload),
         ] {
-            let uploaded = self.host_runtime.upload_file_to_remote(
-                &operator_target,
-                source,
-                destination,
-                label,
-            )?;
-            if !uploaded.succeeded() {
-                bail!(
-                    "{label} failed for {}: {}",
-                    resolved.inventory_name,
-                    uploaded.stderr.trim()
-                );
-            }
+            let label = step.spec(&resolved.inventory_name).running;
+            run_step(&bootstrap_scope, step, |task| {
+                let uploaded = self.host_runtime.upload_file_to_remote(
+                    &operator_target,
+                    source,
+                    destination,
+                    task,
+                )?;
+                if !uploaded.succeeded() {
+                    bail!(
+                        "{label} failed for {}: {}",
+                        resolved.inventory_name,
+                        uploaded.stderr.trim()
+                    );
+                }
+                Ok(())
+            })?;
         }
         let install = bootstrap_install_command(&remote_key, &remote_public)?;
-        let installed = self.host_runtime.execute_remote_command(
-            &operator_target,
-            &install,
-            EffectKind::Mutation,
-            "bootstrap-key-install",
-        )?;
-        if !installed.succeeded() {
-            bail!(
-                "bootstrap key installation failed for {}: {}",
-                resolved.inventory_name,
-                installed.stderr.trim()
-            );
-        }
+        run_step(&bootstrap_scope, BootstrapStep::Install, |task| {
+            let installed = self.host_runtime.execute_remote_command(
+                &operator_target,
+                &install,
+                EffectKind::Mutation,
+                task,
+            )?;
+            if !installed.succeeded() {
+                bail!(
+                    "bootstrap key installation failed for {}: {}",
+                    resolved.inventory_name,
+                    installed.stderr.trim()
+                );
+            }
+            Ok(())
+        })?;
         self.bootstrap_prepared
             .insert(resolved.inventory_name.clone());
         Ok(())
@@ -1623,38 +1680,43 @@ impl<'a> NativeFleetEffects<'a> {
             safe_component(&resolved.inventory_name),
             self.invocation_id
         ));
-        let uploaded = self.host_runtime.upload_file_to_remote(
-            target,
-            &materialized,
-            &remote,
-            "host-age-identity-upload",
-        )?;
-        if !uploaded.succeeded() {
-            bail!(
-                "host age identity upload failed for {}: {}",
-                resolved.inventory_name,
-                uploaded.stderr.trim()
-            );
-        }
-        let installed = self.host_runtime.execute_remote_command(
-            target,
-            &host_age_identity_install_command(&remote, &expected_hash)?,
-            EffectKind::Mutation,
-            "host-age-identity-install",
-        )?;
-        if !installed.succeeded()
-            || installed
-                .stdout
-                .split_whitespace()
-                .next()
-                .is_none_or(|actual| actual != expected_hash)
-        {
-            bail!(
-                "host age identity verification failed for {}: {}",
-                resolved.inventory_name,
-                installed.combined_output().trim()
-            );
-        }
+        let age_scope: Arc<dyn TaskScope> = self.progress.host_scope(&resolved.inventory_name);
+        run_step(&age_scope, AcquireStep::AgeIdentityUpload, |task| {
+            let uploaded =
+                self.host_runtime
+                    .upload_file_to_remote(target, &materialized, &remote, task)?;
+            if !uploaded.succeeded() {
+                bail!(
+                    "host age identity upload failed for {}: {}",
+                    resolved.inventory_name,
+                    uploaded.stderr.trim()
+                );
+            }
+            Ok(())
+        })?;
+        let install = host_age_identity_install_command(&remote, &expected_hash)?;
+        run_step(&age_scope, AcquireStep::AgeIdentityInstall, |task| {
+            let installed = self.host_runtime.execute_remote_command(
+                target,
+                &install,
+                EffectKind::Mutation,
+                task,
+            )?;
+            if !installed.succeeded()
+                || installed
+                    .stdout
+                    .split_whitespace()
+                    .next()
+                    .is_none_or(|actual| actual != expected_hash)
+            {
+                bail!(
+                    "host age identity verification failed for {}: {}",
+                    resolved.inventory_name,
+                    installed.combined_output().trim()
+                );
+            }
+            Ok(())
+        })?;
         self.age_identity_prepared
             .insert(resolved.inventory_name.clone());
         Ok(())
@@ -1906,64 +1968,39 @@ impl<'a> NativeFleetEffects<'a> {
         };
         let mut contents = Vec::new();
         if let Some((target, port)) = scan_host {
-            let key = format!("ssh-host-key-{}", host.inventory_name);
-            let label = "Discover SSH host key";
-            let started = Instant::now();
-            self.progress
-                .host_operation_started(&host.inventory_name, &key, label);
-            self.progress.host_operation_output(
-                &host.inventory_name,
-                &key,
-                &format!("[ssh] scanning {target}:{port}"),
-            );
-            for algorithm in [Some("ed25519"), None] {
-                let mut command = Command::new("ssh-keyscan");
-                command.args([
-                    "-T",
-                    &self.settings.ssh_connect_timeout_seconds.to_string(),
-                    "-p",
-                    &port.to_string(),
-                ]);
-                if let Some(algorithm) = algorithm {
-                    command.args(["-t", algorithm]);
+            let scope: Arc<dyn TaskScope> = self.progress.host_scope(&host.inventory_name);
+            contents = run_step(&scope, SshKeyStep::Discover, |task| -> Result<Vec<u8>> {
+                let note = |line: String| task.note(&line);
+                note(format!("[ssh] scanning {target}:{port}"));
+                let mut contents = Vec::new();
+                for algorithm in [Some("ed25519"), None] {
+                    let mut command = Command::new("ssh-keyscan");
+                    command.args([
+                        "-T",
+                        &self.settings.ssh_connect_timeout_seconds.to_string(),
+                        "-p",
+                        &port.to_string(),
+                    ]);
+                    if let Some(algorithm) = algorithm {
+                        command.args(["-t", algorithm]);
+                    }
+                    let output = command
+                        .arg(target)
+                        .current_dir(self.repository)
+                        .output()
+                        .with_context(|| format!("scan SSH host key for {target}"))?;
+                    if output.status.success() && !output.stdout.is_empty() {
+                        contents = output.stdout;
+                        break;
+                    }
                 }
-                let output = command
-                    .arg(target)
-                    .current_dir(self.repository)
-                    .output()
-                    .with_context(|| format!("scan SSH host key for {target}"))?;
-                if output.status.success() && !output.stdout.is_empty() {
-                    contents = output.stdout;
-                    break;
+                if contents.is_empty() {
+                    note(format!("[ssh] no host key returned by {target}:{port}"));
+                    bail!("could not determine SSH host key for {target}:{port}");
                 }
-            }
-            if contents.is_empty() {
-                self.progress.host_operation_output(
-                    &host.inventory_name,
-                    &key,
-                    &format!("[ssh] no host key returned by {target}:{port}"),
-                );
-                self.progress.host_operation_finished(
-                    &host.inventory_name,
-                    &key,
-                    label,
-                    started.elapsed(),
-                    false,
-                );
-                bail!("could not determine SSH host key for {target}:{port}");
-            }
-            self.progress.host_operation_output(
-                &host.inventory_name,
-                &key,
-                &format!("[ssh] host key discovered via {target}:{port}"),
-            );
-            self.progress.host_operation_finished(
-                &host.inventory_name,
-                &key,
-                label,
-                started.elapsed(),
-                true,
-            );
+                note(format!("[ssh] host key discovered via {target}:{port}"));
+                Ok(contents)
+            })?;
         }
         let mut file = OpenOptions::new()
             .write(true)
@@ -2044,7 +2081,11 @@ impl<'a> NativeFleetEffects<'a> {
                         repository.clone(),
                         DryRun::No,
                     )?;
-                    Ok((host, policy, runtime.snapshot(&target)?))
+                    let scope: Arc<dyn TaskScope> = progress.host_scope(&host);
+                    let snapshot = run_step(&scope, SnapshotStep::Capture, |task| {
+                        runtime.snapshot(&target, task)
+                    })?;
+                    Ok((host, policy, snapshot))
                 },
             )?;
             for snapshot in snapshots {
@@ -2090,15 +2131,18 @@ impl<'a> NativeFleetEffects<'a> {
                 ),
                 &target,
             )?;
-            let output = self.host_runtime.execute_local_command_for_host(
-                &command,
-                EffectKind::Mutation,
-                "deploy-copy-closure",
-                host,
-            )?;
-            if !output.succeeded() {
-                bail!("copy closure to {host} failed: {}", output.stderr.trim());
-            }
+            let scope: Arc<dyn TaskScope> = self.progress.host_scope(host);
+            run_step(&scope, TransferStep::DirectPush, |task| {
+                let output = self.host_runtime.execute_local_command(
+                    &command,
+                    EffectKind::Mutation,
+                    task,
+                )?;
+                if !output.succeeded() {
+                    bail!("copy closure to {host} failed: {}", output.stderr.trim());
+                }
+                Ok(())
+            })?;
             return Ok(());
         }
 
@@ -2187,42 +2231,119 @@ impl<'a> NativeFleetEffects<'a> {
         plan: &DistributionPlan,
         retry: RetryPolicy,
     ) -> Result<DistributionExecution> {
-        match plan {
-            DistributionPlan::RelayThroughLocal { .. } => {
+        let host = resolved.inventory_name.clone();
+        let scope: Arc<dyn TaskScope> = self.progress.host_scope(&host);
+        let result = match plan {
+            DistributionPlan::VerifyExisting { closure } => {
+                let target = self.execution_target(resolved)?;
+                self.distribute_verify(&scope, &target, closure)?
+            }
+            DistributionPlan::TargetCachePull {
+                closure,
+                cache,
+                retry: retry_transport,
+            } => {
+                let attempts = if *retry_transport {
+                    retry
+                } else {
+                    RetryPolicy::new(1, Duration::ZERO)?
+                };
+                let target = self.execution_target(resolved)?;
+                let status = run_step_with(
+                    &scope,
+                    TransferStep::CachePull,
+                    |task| {
+                        self.host_runtime
+                            .cache_pull(&target, cache, closure, attempts, task)
+                    },
+                    command_outcome,
+                )?;
+                if status != CommandStatus::Success {
+                    status
+                } else {
+                    self.distribute_verify(&scope, &target, closure)?
+                }
+            }
+            DistributionPlan::RelayThroughLocal { closure, cache } => {
                 let target = self.primary_execution_target(resolved)?;
-                self.host_runtime.distribute_closure(&target, plan, retry)
+                let step = relay_step(&target);
+                let status = run_step_with(
+                    &scope,
+                    step,
+                    |task| {
+                        self.host_runtime
+                            .relay_transfer(&target, closure, cache, retry, task)
+                    },
+                    command_outcome,
+                )?;
+                if status != CommandStatus::Success {
+                    status
+                } else {
+                    self.distribute_verify(&scope, &target, closure)?
+                }
             }
             DistributionPlan::TryTargetCacheThenRelay { closure, cache } => {
                 let target = self.execution_target(resolved)?;
-                let direct = DistributionPlan::TargetCachePull {
-                    closure: closure.clone(),
-                    cache: cache.clone(),
-                    retry: false,
-                };
-                let result = match self
-                    .host_runtime
-                    .distribute_closure(&target, &direct, retry)?
-                {
-                    DistributionExecution::Failed(super::build::CommandStatus::Exit(_)) => {
+                let status = run_step_with(
+                    &scope,
+                    TransferStep::CachePull,
+                    |task| {
+                        self.host_runtime.cache_pull(
+                            &target,
+                            cache,
+                            closure,
+                            RetryPolicy::new(1, Duration::ZERO)?,
+                            task,
+                        )
+                    },
+                    command_outcome,
+                )?;
+                match status {
+                    CommandStatus::Success => self.distribute_verify(&scope, &target, closure)?,
+                    CommandStatus::Signal(signal) => CommandStatus::Signal(signal),
+                    CommandStatus::Exit(_) => {
                         let primary = self.primary_execution_target(resolved)?;
-                        self.host_runtime.distribute_closure(
-                            &primary,
-                            &DistributionPlan::RelayThroughLocal {
-                                closure: closure.clone(),
-                                cache: cache.clone(),
+                        let step = relay_step(&primary);
+                        let status = run_step_with(
+                            &scope,
+                            step,
+                            |task| {
+                                self.host_runtime
+                                    .relay_transfer(&primary, closure, cache, retry, task)
                             },
-                            retry,
-                        )?
+                            command_outcome,
+                        )?;
+                        if status != CommandStatus::Success {
+                            status
+                        } else {
+                            self.distribute_verify(&scope, &primary, closure)?
+                        }
                     }
-                    result => result,
-                };
-                Ok(result)
+                }
             }
-            _ => {
-                let target = self.execution_target(resolved)?;
-                self.host_runtime.distribute_closure(&target, plan, retry)
-            }
-        }
+        };
+        Ok(if result == CommandStatus::Success {
+            DistributionExecution::Complete
+        } else {
+            DistributionExecution::Failed(result)
+        })
+    }
+
+    fn distribute_verify(
+        &mut self,
+        scope: &Arc<dyn TaskScope>,
+        target: &HostExecutionTarget,
+        closure: &NixStorePath,
+    ) -> Result<CommandStatus> {
+        run_step_with(
+            scope,
+            VerifyStep::Closure,
+            |task| {
+                self.host_runtime
+                    .verify_target_closure(target, closure, task)
+            },
+            command_outcome,
+        )
     }
 
     fn ensure_builder_closure_for_use(
@@ -2282,24 +2403,37 @@ impl<'a> NativeFleetEffects<'a> {
             )?;
             let resolved = resolve_host(self.inventory, parent, &self.invocation.options)?;
             let target = self.execution_target(&resolved)?;
-            for (label, command, effect) in [
+            let scope: Arc<dyn TaskScope> = self.progress.host_scope(host);
+            for (step, command, effect) in [
                 (
-                    "parent-reconcile",
+                    ReadinessStep::Reconcile {
+                        parent: parent.to_owned(),
+                    },
                     &commands.reconcile,
                     EffectKind::Mutation,
                 ),
-                ("parent-settle", &commands.settle, EffectKind::ReadOnly),
+                (
+                    ReadinessStep::Settle {
+                        parent: parent.to_owned(),
+                    },
+                    &commands.settle,
+                    EffectKind::ReadOnly,
+                ),
             ] {
                 let command = CommandSpec::new(command.program.clone(), command.args.clone());
-                let output = self
-                    .host_runtime
-                    .execute_remote_root_command_for_host(&target, &command, effect, label, host)?;
-                if !output.succeeded() {
-                    bail!(
-                        "{label} failed for {host} through {parent}: {}",
-                        output.stderr.trim()
-                    );
-                }
+                let label = step.spec(host).running;
+                run_step(&scope, step, |task| {
+                    let output = self
+                        .host_runtime
+                        .execute_remote_root_command(&target, &command, effect, task)?;
+                    if !output.succeeded() {
+                        bail!(
+                            "{label} failed for {host} through {parent}: {}",
+                            output.stderr.trim()
+                        );
+                    }
+                    Ok(())
+                })?;
             }
         }
         Ok(())
@@ -2330,17 +2464,24 @@ impl<'a> NativeFleetEffects<'a> {
         } else {
             "release-candidate-lease"
         };
-        let output = self.host_runtime.execute_remote_root_command_for_host(
-            target,
-            &CommandSpec::new(command.program, command.args),
-            EffectKind::Mutation,
-            operation,
-            host,
-        )?;
-        if !output.succeeded() {
-            bail!("{operation} failed for {host}: {}", output.stderr.trim());
-        }
-        Ok(())
+        let step = if acquire {
+            AcquireStep::CandidateLeaseAcquire
+        } else {
+            AcquireStep::CandidateLeaseRelease
+        };
+        let scope: Arc<dyn TaskScope> = self.progress.host_scope(host);
+        run_step(&scope, step, |task| {
+            let output = self.host_runtime.execute_remote_root_command(
+                target,
+                &CommandSpec::new(command.program, command.args),
+                EffectKind::Mutation,
+                task,
+            )?;
+            if !output.succeeded() {
+                bail!("{operation} failed for {host}: {}", output.stderr.trim());
+            }
+            Ok(())
+        })
     }
 
     fn release_candidate_lease(&mut self, host: &str, generation: &NixStorePath) -> Result<()> {
@@ -2432,7 +2573,17 @@ impl<'a> NativeFleetEffects<'a> {
                 let goal = deploy_goal(effects.invocation.options.goal);
                 let admission =
                     super::deploy::generation_admission_command(&candidate.generation, goal);
-                let admitted = effects.host_runtime.admit_generation(&target, &admission)?;
+                let scope: Arc<dyn TaskScope> = effects.progress.host_scope(host);
+                let admitted = run_step_with(
+                    &scope,
+                    AcquireStep::GenerationAdmission,
+                    |task| {
+                        effects
+                            .host_runtime
+                            .admit_generation(&target, &admission, task)
+                    },
+                    process_outcome,
+                )?;
                 if admitted.succeeded()
                     && admitted.stdout.lines().any(|line| {
                         line == super::deploy::GENERATION_ADMISSION_ACQUISITION_DEFERRED_MARKER
@@ -2454,36 +2605,42 @@ impl<'a> NativeFleetEffects<'a> {
             |effects| {
                 let command =
                     super::deploy::pre_activation_image_pull_command(&candidate.generation);
-                let output = effects.host_runtime.execute_remote_root_command(
-                    &target,
-                    &CommandSpec::new(command.program, command.args),
-                    EffectKind::Mutation,
-                    "prefetch-podman-image",
-                )?;
-                if !output.succeeded() {
-                    bail!(
-                        "Podman image prefetch failed for {host}: {}",
-                        output.stderr.trim()
-                    );
-                }
-                Ok(())
+                let scope: Arc<dyn TaskScope> = effects.progress.host_scope(host);
+                run_step(&scope, AcquireStep::PrefetchPodman, |task| {
+                    let output = effects.host_runtime.execute_remote_root_command(
+                        &target,
+                        &CommandSpec::new(command.program, command.args),
+                        EffectKind::Mutation,
+                        task,
+                    )?;
+                    if !output.succeeded() {
+                        bail!(
+                            "Podman image prefetch failed for {host}: {}",
+                            output.stderr.trim()
+                        );
+                    }
+                    Ok(())
+                })
             },
             |effects| {
                 let command =
                     super::deploy::pre_activation_model_prefetch_command(&candidate.generation);
-                let output = effects.host_runtime.execute_remote_root_command(
-                    &target,
-                    &CommandSpec::new(command.program, command.args),
-                    EffectKind::Mutation,
-                    "prefetch-ai-model",
-                )?;
-                if !output.succeeded() {
-                    bail!(
-                        "AI model prefetch failed for {host}: {}",
-                        output.stderr.trim()
-                    );
-                }
-                Ok(())
+                let scope: Arc<dyn TaskScope> = effects.progress.host_scope(host);
+                run_step(&scope, AcquireStep::PrefetchModels, |task| {
+                    let output = effects.host_runtime.execute_remote_root_command(
+                        &target,
+                        &CommandSpec::new(command.program, command.args),
+                        EffectKind::Mutation,
+                        task,
+                    )?;
+                    if !output.succeeded() {
+                        bail!(
+                            "AI model prefetch failed for {host}: {}",
+                            output.stderr.trim()
+                        );
+                    }
+                    Ok(())
+                })
             },
         );
         if let Err(error) = acquisition {
@@ -2526,9 +2683,19 @@ impl<'a> NativeFleetEffects<'a> {
         // Verify or re-establish the exact target-side GC root before making
         // any activation preparation changes.
         self.set_candidate_lease(host, &target, &desired, true)?;
-        let prepared = self
-            .host_runtime
-            .prepare_switch(&target, &super::deploy::pre_switch_preparation_command())?;
+        let scope: Arc<dyn TaskScope> = self.progress.host_scope(host);
+        let prepared = run_step_with(
+            &scope,
+            DeployStep::PreSwitch,
+            |task| {
+                self.host_runtime.prepare_switch(
+                    &target,
+                    &super::deploy::pre_switch_preparation_command(),
+                    task,
+                )
+            },
+            process_outcome,
+        )?;
         if !prepared.succeeded() {
             return Err(anyhow::anyhow!(
                 "pre-switch preparation failed for {host}: {}",
@@ -2556,8 +2723,15 @@ impl<'a> NativeFleetEffects<'a> {
                 lock_wait: Duration::from_secs(self.settings.state_lock_timeout_seconds),
                 acquire_host_lock,
             });
-            self.host_runtime
-                .activate(&target, &activation, &desired, goal, "activation")
+            run_step_with(
+                &scope,
+                DeployStep::Activation,
+                |task| {
+                    self.host_runtime
+                        .activate(&target, &activation, &desired, goal, task)
+                },
+                activation_outcome,
+            )
         })();
         let activation_execution = activation_execution?;
         match activation_execution {
@@ -2986,48 +3160,40 @@ impl<'a> NativeFleetEffects<'a> {
                 tasks,
                 self.invocation.options.verify_jobs,
                 |(host, target, ignored_system_units)| {
-                    let key = format!("health-check-{host}");
-                    let label = "Health check";
-                    let started = Instant::now();
-                    progress.host_operation_started(&host, &key, label);
-                    let result = (|| -> Result<super::health_runtime::ManagedHealthReport> {
-                        let mut runtime = HostRuntime::new(
-                            reporting_process_runner(&progress),
-                            repository.clone(),
-                            DryRun::No,
-                        )?;
-                        super::health_runtime::check_managed_health_with_progress(
-                            &mut runtime,
-                            &target,
-                            &ignored_system_units,
-                            |attempt, decision, details| {
-                                progress.host_operation_output(
-                                    &host,
-                                    &key,
-                                    &health_progress_line(attempt, decision, details),
-                                );
-                            },
-                        )
-                    })();
-                    let succeeded = result.as_ref().is_ok_and(|report| {
-                        matches!(
-                            report.decision,
-                            super::health::HealthDecision::Healthy { .. }
-                        )
-                    });
-                    if result.is_err() {
-                        progress.host_operation_output(
-                            &host,
-                            &key,
-                            "[health-check] probe failed; see diagnostics",
-                        );
-                    }
-                    progress.host_operation_finished(
-                        &host,
-                        &key,
-                        label,
-                        started.elapsed(),
-                        succeeded,
+                    let scope: Arc<dyn TaskScope> = progress.host_scope(&host);
+                    let result = run_step_with(
+                        &scope,
+                        HealthStep::Check,
+                        |task| -> Result<super::health_runtime::ManagedHealthReport> {
+                            let mut runtime = HostRuntime::new(
+                                reporting_process_runner(&progress),
+                                repository.clone(),
+                                DryRun::No,
+                            )?;
+                            let report = super::health_runtime::check_managed_health_with_progress(
+                                &mut runtime,
+                                &target,
+                                &ignored_system_units,
+                                Some(&task),
+                                |attempt, decision, details| {
+                                    task.note(&health_progress_line(attempt, decision, details));
+                                },
+                            );
+                            if report.is_err() {
+                                task.note("[health-check] probe failed; see diagnostics");
+                            }
+                            report
+                        },
+                        |report| {
+                            if matches!(
+                                report.decision,
+                                super::health::HealthDecision::Healthy { .. }
+                            ) {
+                                TaskOutcome::Succeeded
+                            } else {
+                                TaskOutcome::Failed
+                            }
+                        },
                     );
                     (host, result)
                 },
@@ -3212,12 +3378,20 @@ impl<'a> NativeFleetEffects<'a> {
                         Duration::from_secs(self.settings.state_lock_timeout_seconds),
                         acquire_host_lock,
                     );
-                    match self.host_runtime.activate(
-                        &target,
-                        &command,
-                        &generation,
-                        super::deploy::ActivationGoal::Switch,
-                        "rollback",
+                    let scope: Arc<dyn TaskScope> = self.progress.host_scope(&host);
+                    match run_step_with(
+                        &scope,
+                        DeployStep::Rollback,
+                        |task| {
+                            self.host_runtime.activate(
+                                &target,
+                                &command,
+                                &generation,
+                                super::deploy::ActivationGoal::Switch,
+                                task,
+                            )
+                        },
+                        activation_outcome,
                     )? {
                         ActivationExecution::Succeeded
                         | ActivationExecution::SucceededAfterVerification
@@ -3275,8 +3449,41 @@ fn action_summary_label(action: &Action) -> &str {
     }
 }
 
-fn reporting_process_runner(progress: &FleetProgress) -> ReportingProcessRunner {
-    let runner = ReportingProcessRunner::new(progress.process_observer());
+fn relay_step(target: &HostExecutionTarget) -> TransferStep {
+    if target.local {
+        TransferStep::RelayPull
+    } else {
+        TransferStep::RelayPush
+    }
+}
+
+fn command_outcome(status: &CommandStatus) -> TaskOutcome {
+    if *status == CommandStatus::Success {
+        TaskOutcome::Succeeded
+    } else {
+        TaskOutcome::Failed
+    }
+}
+
+fn process_outcome(output: &ProcessOutput) -> TaskOutcome {
+    if output.succeeded() {
+        TaskOutcome::Succeeded
+    } else {
+        TaskOutcome::Failed
+    }
+}
+
+fn activation_outcome(execution: &ActivationExecution) -> TaskOutcome {
+    match execution {
+        ActivationExecution::Succeeded
+        | ActivationExecution::SucceededAfterVerification
+        | ActivationExecution::DryRun => TaskOutcome::Succeeded,
+        ActivationExecution::Failed { .. } => TaskOutcome::Failed,
+    }
+}
+
+fn reporting_process_runner(progress: &FleetProgress) -> ProcessExecutor {
+    let runner = ProcessExecutor::new(progress.recorder());
     match super::signal::runtime() {
         Some(cancellation) => runner.with_cancellation(cancellation),
         None => runner,
@@ -3771,29 +3978,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn semantic_health_progress_normalizes_failure_details() {
+    fn health_progress_line_carries_attempt_state_and_raw_detail() {
         let decision = super::super::health::HealthDecision::ServiceFailure {
             evidence: Vec::new(),
         };
+        // Sanitization and allowlisting are presentation-owned; this only pins
+        // the line shape that presentation parses back.
         assert_eq!(
-            health_progress_line(2, &decision, &["OPENAI_API_KEY=secret".into()]),
-            "[health-check] attempt 2 · service failure · detail redacted; see diagnostics"
+            health_progress_line(2, &decision, &["first.service loaded failed".into()]),
+            "[health-check] attempt 2 · service failure · first.service loaded failed"
         );
         assert_eq!(
-            health_progress_line(
-                3,
-                &decision,
-                &["user=abird failed-unit=abird-agent.service".into()]
-            ),
-            "[health-check] attempt 3 · service failure · user=abird failed-unit=abird-agent.service"
+            health_progress_line(3, &decision, &[]),
+            "[health-check] attempt 3 · service failure"
         );
         assert_eq!(
-            health_progress_line(
-                4,
-                &decision,
-                &["user=abird arbitrary remote detail sk-live-value".into()]
-            ),
-            "[health-check] attempt 4 · service failure · user=abird runtime issue; see diagnostics"
+            health_progress_line(4, &decision, &[String::new()]),
+            "[health-check] attempt 4 · service failure"
         );
     }
 

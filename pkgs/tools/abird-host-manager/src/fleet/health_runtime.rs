@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -12,9 +13,8 @@ use super::health::{
     classify_transitional_unit, derive_readiness_budget, validate_deferred_resources,
     validate_durable_holds,
 };
-use super::host_runtime::{
-    EffectKind, HostExecutionTarget, HostRuntime, ProcessOutputPolicy, ProcessRunner,
-};
+use super::host_runtime::{EffectKind, HostExecutionTarget, HostRuntime, ProcessRunner};
+use super::task::{InternalTask, Task};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -81,6 +81,19 @@ pub fn managed_health_command() -> CommandSpec {
     )
 }
 
+/// Hidden probe task for a health check. When the probe runs inside a step, a
+/// cancelled probe still interrupts that step.
+fn health_probe_task(
+    target: &HostExecutionTarget,
+    parent: Option<&Arc<dyn Task>>,
+) -> Arc<dyn Task> {
+    let name = format!("post-switch-health-{}", target.route.endpoint.node);
+    match parent {
+        Some(parent) => InternalTask::child(name, Arc::clone(parent)),
+        None => InternalTask::new(name),
+    }
+}
+
 pub fn check_managed_health<R: ProcessRunner>(
     runtime: &mut HostRuntime<R>,
     target: &HostExecutionTarget,
@@ -93,13 +106,16 @@ pub fn check_managed_health_with_ignored_system_units<R: ProcessRunner>(
     target: &HostExecutionTarget,
     ignored_system_units: &BTreeSet<String>,
 ) -> Result<ManagedHealthReport> {
-    check_managed_health_with_progress(runtime, target, ignored_system_units, |_, _, _| {})
+    check_managed_health_with_progress(runtime, target, ignored_system_units, None, |_, _, _| {})
 }
 
+/// `parent` links each hidden health probe to the owning step, so a cancelled
+/// probe interrupts that step instead of only being seen as a failed command.
 pub fn check_managed_health_with_progress<R, F>(
     runtime: &mut HostRuntime<R>,
     target: &HostExecutionTarget,
     ignored_system_units: &BTreeSet<String>,
+    parent: Option<&Arc<dyn Task>>,
     mut progress: F,
 ) -> Result<ManagedHealthReport>
 where
@@ -113,12 +129,11 @@ where
     let mut ignored_system_failures = BTreeSet::new();
     loop {
         attempts += 1;
-        let output = runtime.execute_remote_root_command_bounded_with_output_policy(
+        let output = runtime.execute_remote_root_command_bounded(
             target,
             &command,
             EffectKind::ReadOnly,
-            "post-switch-health",
-            ProcessOutputPolicy::HiddenProtocol,
+            health_probe_task(target, parent),
         )?;
         if !output.succeeded() {
             bail!(
@@ -442,12 +457,14 @@ fn collect_failure_excerpts<R: ProcessRunner>(
         return Vec::new();
     }
     let command = failure_diagnostics_command(&units);
-    let Ok(output) = runtime.execute_remote_root_command_bounded_with_output_policy(
+    let Ok(output) = runtime.execute_remote_root_command_bounded(
         target,
         &command,
         EffectKind::ReadOnly,
-        "post-switch-health-diagnostics",
-        ProcessOutputPolicy::HiddenProtocol,
+        InternalTask::new(format!(
+            "post-switch-health-diagnostics-{}",
+            target.route.endpoint.node
+        )),
     ) else {
         return Vec::new();
     };

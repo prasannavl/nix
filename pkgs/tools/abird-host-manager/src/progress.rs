@@ -106,6 +106,21 @@ struct HostRow {
     failure_output: VecDeque<String>,
 }
 
+impl HostRow {
+    /// Interruption is a terminal host state: any later host-level outcome for
+    /// the same row keeps it instead of downgrading it to failed or skipped.
+    fn keep_interrupted(&mut self, elapsed: Option<Duration>) -> bool {
+        if self.state != HostRowState::Interrupted {
+            return false;
+        }
+        self.task_started = None;
+        if elapsed.is_some() {
+            self.elapsed = elapsed;
+        }
+        true
+    }
+}
+
 impl Default for HostRow {
     fn default() -> Self {
         Self {
@@ -130,15 +145,18 @@ enum HostRowState {
     Succeeded,
     Skipped,
     Failed,
+    Interrupted,
 }
 
 /// Terminal-ish outcome of a host-attributed task. Success is either a plain
-/// completed stage or a finalizing activation/rollback observer.
+/// completed stage or a finalizing activation/rollback observer; interruption
+/// is a distinct terminal outcome, not a failure of the host itself.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HostTaskOutcome {
     Done,
     Finalizing,
     Failed,
+    Interrupted,
 }
 
 #[derive(Clone, Debug)]
@@ -341,6 +359,17 @@ impl ProgressReporter {
         self.finish_host_task(host, key, label, done, elapsed, HostTaskOutcome::Finalizing);
     }
 
+    pub fn host_task_interrupted(&self, host: &str, key: &str, label: &str, elapsed: Duration) {
+        self.finish_host_task(
+            host,
+            key,
+            label,
+            label,
+            elapsed,
+            HostTaskOutcome::Interrupted,
+        );
+    }
+
     fn finish_host_task(
         &self,
         host: &str,
@@ -350,7 +379,7 @@ impl ProgressReporter {
         elapsed: Duration,
         outcome: HostTaskOutcome,
     ) {
-        let succeeded = !matches!(outcome, HostTaskOutcome::Failed);
+        let succeeded = matches!(outcome, HostTaskOutcome::Done | HostTaskOutcome::Finalizing);
         self.finish_task_tail(
             key,
             format!(
@@ -360,15 +389,22 @@ impl ProgressReporter {
             succeeded,
         );
         if !self.shows_recent_updates() {
-            self.detail(format!(
+            let line = format!(
                 "{host} · {} · {}",
-                if succeeded {
-                    done.to_owned()
-                } else {
-                    format!("{label} · failed")
+                match outcome {
+                    HostTaskOutcome::Done | HostTaskOutcome::Finalizing => done.to_owned(),
+                    HostTaskOutcome::Failed => format!("{label} · failed"),
+                    HostTaskOutcome::Interrupted => format!("{label} · interrupted"),
                 },
                 format_duration(elapsed)
-            ));
+            );
+            // Interruption is a terminal outcome with no later summary of its
+            // own, so it must not be rate-limited like a rolling detail line.
+            if outcome == HostTaskOutcome::Interrupted {
+                self.message(format!("⊘ {line}"));
+            } else {
+                self.detail(line);
+            }
             return;
         }
         self.update_host_row(host, |row| {
@@ -378,20 +414,28 @@ impl ProgressReporter {
             row.task = Some(done.to_owned());
             row.task_started = None;
             row.elapsed = Some(elapsed);
-            if succeeded {
-                row.state = match outcome {
-                    HostTaskOutcome::Finalizing => HostRowState::Finalizing,
-                    HostTaskOutcome::Done | HostTaskOutcome::Failed => HostRowState::Completed,
-                };
-                row.output.clear();
-            } else {
-                row.state = HostRowState::Failed;
-                for line in row.output.clone() {
-                    if row.failure_output.back() != Some(&line) {
-                        row.failure_output.push_back(line);
-                    }
-                    while row.failure_output.len() > RETAINED_OUTPUT_LINES_PER_TASK {
-                        row.failure_output.pop_front();
+            match outcome {
+                HostTaskOutcome::Done => {
+                    row.state = HostRowState::Completed;
+                    row.output.clear();
+                }
+                HostTaskOutcome::Finalizing => {
+                    row.state = HostRowState::Finalizing;
+                    row.output.clear();
+                }
+                HostTaskOutcome::Failed | HostTaskOutcome::Interrupted => {
+                    row.state = if outcome == HostTaskOutcome::Interrupted {
+                        HostRowState::Interrupted
+                    } else {
+                        HostRowState::Failed
+                    };
+                    for line in row.output.clone() {
+                        if row.failure_output.back() != Some(&line) {
+                            row.failure_output.push_back(line);
+                        }
+                        while row.failure_output.len() > RETAINED_OUTPUT_LINES_PER_TASK {
+                            row.failure_output.pop_front();
+                        }
                     }
                 }
             }
@@ -407,6 +451,9 @@ impl ProgressReporter {
     ) {
         let summary = summary.into();
         self.update_host_row(host, |row| {
+            if row.keep_interrupted(elapsed) {
+                return;
+            }
             row.state = if succeeded {
                 HostRowState::Succeeded
             } else {
@@ -432,6 +479,9 @@ impl ProgressReporter {
     pub fn host_skipped(&self, host: &str, summary: impl Into<String>) {
         let summary = summary.into();
         self.update_host_row(host, |row| {
+            if row.keep_interrupted(None) {
+                return;
+            }
             row.state = HostRowState::Skipped;
             row.summary = (!summary.is_empty()).then_some(summary);
             row.task_started = None;
@@ -653,11 +703,11 @@ impl ProgressReporter {
         self.discard_task_tail(&key);
         let line = if self.shows_recent_updates() {
             format!(
-                "◇ {label} · interrupted · task elapsed {}",
+                "⊘ {label} · interrupted · task elapsed {}",
                 format_duration(elapsed)
             )
         } else {
-            format!("◇ {label} · interrupted · {}", format_duration(elapsed))
+            format!("⊘ {label} · interrupted · {}", format_duration(elapsed))
         };
         if !self.shows_recent_updates() {
             self.message(line);
@@ -1022,14 +1072,21 @@ impl ProgressReporter {
                     .into_iter()
                     .filter_map(|host| {
                         let row = dashboard.rows.get(&host)?;
-                        (row.state == HostRowState::Failed).then(|| {
-                            let summary = row
-                                .summary
-                                .clone()
-                                .or_else(|| row.task.clone())
-                                .unwrap_or_else(|| "failed".to_owned());
-                            (host, summary, row.output.iter().cloned().collect())
-                        })
+                        (matches!(row.state, HostRowState::Failed | HostRowState::Interrupted))
+                            .then(|| {
+                                let summary = row
+                                    .summary
+                                    .clone()
+                                    .or_else(|| row.task.clone())
+                                    .unwrap_or_else(|| {
+                                        if row.state == HostRowState::Interrupted {
+                                            "interrupted".to_owned()
+                                        } else {
+                                            "failed".to_owned()
+                                        }
+                                    });
+                                (host, summary, row.output.iter().cloned().collect())
+                            })
                     })
                     .collect()
             })
@@ -1374,7 +1431,10 @@ fn host_dashboard_lines(
         .filter(|row| {
             matches!(
                 row.state,
-                HostRowState::Succeeded | HostRowState::Skipped | HostRowState::Failed
+                HostRowState::Succeeded
+                    | HostRowState::Skipped
+                    | HostRowState::Failed
+                    | HostRowState::Interrupted
             )
         })
         .count();
@@ -1421,8 +1481,10 @@ fn host_dashboard_lines(
         .iter()
         .filter(|host| {
             dashboard.rows.get(*host).is_some_and(|row| {
-                matches!(row.state, HostRowState::Running | HostRowState::Failed)
-                    && !row.output.is_empty()
+                matches!(
+                    row.state,
+                    HostRowState::Running | HostRowState::Failed | HostRowState::Interrupted
+                ) && !row.output.is_empty()
             })
         })
         .count();
@@ -1513,6 +1575,13 @@ fn host_dashboard_lines(
                 format!("✗ {}", row.summary.as_deref().unwrap_or("failed")),
                 String::new(),
             ),
+            HostRowState::Interrupted => (
+                Tone::Warning,
+                format!("⊘ {}", row.summary.as_deref().unwrap_or("interrupted")),
+                row.elapsed
+                    .map(|elapsed| format!(" · {}", format_duration(elapsed)))
+                    .unwrap_or_default(),
+            ),
         };
         let host_width = max_columns
             .map(|columns| columns.saturating_sub(4).min(host.chars().count()))
@@ -1532,8 +1601,10 @@ fn host_dashboard_lines(
             style.paint(tone, status),
             paint_if_nonempty(style, Tone::Neutral, &metadata)
         ));
-        if matches!(row.state, HostRowState::Running | HostRowState::Failed)
-            && !row.output.is_empty()
+        if matches!(
+            row.state,
+            HostRowState::Running | HostRowState::Failed | HostRowState::Interrupted
+        ) && !row.output.is_empty()
         {
             let limit = (base_host_detail_limit
                 + usize::from(detailed_host_index < extra_host_details))
@@ -2103,6 +2174,94 @@ mod tests {
         .join("\n");
         assert!(rendered.contains("app  ○ build done · 3.0s"), "{rendered}");
         assert!(!rendered.contains("compiling"), "{rendered}");
+    }
+
+    #[test]
+    fn interrupted_host_task_gets_its_own_state_and_tail() {
+        set_json_output(false);
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::new(Mutex::new(Vec::new()))),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+
+        reporter.started("Deploy systems · 1 host");
+        reporter.begin_host_dashboard(&["app".to_owned()]);
+        reporter.host_task_started("app", "activation-app", "activation observe");
+        reporter.host_task_output("app", "activation-app", "stopping app.service".to_owned());
+        reporter.host_task_interrupted(
+            "app",
+            "activation-app",
+            "activation observe",
+            Duration::from_secs(4),
+        );
+
+        let state = reporter.state.lock().unwrap();
+        let rendered = dashboard_lines(
+            TerminalStyle::from_capabilities(false, false),
+            state.stack.last().unwrap(),
+            Duration::from_secs(4),
+        )
+        .join("\n");
+        assert!(rendered.contains("app  ⊘ interrupted · 4.0s"), "{rendered}");
+        assert!(rendered.contains("stopping app.service"), "{rendered}");
+    }
+
+    #[test]
+    fn host_level_interruption_keeps_its_state_and_tail() {
+        set_json_output(false);
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::new(Mutex::new(Vec::new()))),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+
+        reporter.started("Verify deployment health · 1 host");
+        reporter.begin_host_dashboard(&["app".to_owned()]);
+        reporter.host_task_started("app", "health-check-app", "health check");
+        reporter.host_task_output(
+            "app",
+            "health-check-app",
+            "[health-check] attempt 1 · settling".to_owned(),
+        );
+        reporter.host_task_interrupted(
+            "app",
+            "health-check-app",
+            "health check",
+            Duration::from_secs(2),
+        );
+        // A later host-level failure must not overwrite the interruption.
+        reporter.host_finished("app", false, None, "health probe failed");
+        // Neither must a later skip (for example an optional host).
+        reporter.host_skipped("app", "optional snapshot unavailable");
+
+        let state = reporter.state.lock().unwrap();
+        let row = &state
+            .stack
+            .last()
+            .unwrap()
+            .host_dashboard
+            .as_ref()
+            .unwrap()
+            .rows["app"];
+        assert_eq!(row.state, HostRowState::Interrupted);
+        assert_eq!(row.summary, None);
+        let rendered = dashboard_lines(
+            TerminalStyle::from_capabilities(false, false),
+            state.stack.last().unwrap(),
+            Duration::from_secs(2),
+        )
+        .join("\n");
+        assert!(rendered.contains("app  ⊘ interrupted"), "{rendered}");
+        assert!(rendered.contains("[health-check] attempt 1"), "{rendered}");
     }
 
     #[test]

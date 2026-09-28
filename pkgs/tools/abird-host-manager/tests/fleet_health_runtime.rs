@@ -8,8 +8,7 @@ use abird_host_manager::fleet::health_runtime::{
     check_managed_health_with_ignored_system_units, check_managed_health_with_progress,
 };
 use abird_host_manager::fleet::host_runtime::{
-    DryRun, HostExecutionTarget, HostRuntime, ProcessOutput, ProcessOutputPolicy, ProcessRequest,
-    ProcessRunner,
+    DryRun, HostExecutionTarget, HostRuntime, ProcessOutput, ProcessRequest, ProcessRunner,
 };
 use abird_host_manager::fleet::system::ResolvedHost;
 use abird_host_manager::fleet::transport::{
@@ -225,6 +224,7 @@ fn multiple_ignored_system_units_remain_in_healthy_evidence_across_samples() {
         &mut runtime,
         &target(),
         &BTreeSet::from(["first.service".into(), "second.service".into()]),
+        None,
         |attempt, decision, _| progress.push((attempt, decision.clone())),
     )
     .unwrap();
@@ -238,7 +238,7 @@ fn multiple_ignored_system_units_remain_in_healthy_evidence_across_samples() {
             .runner()
             .requests
             .iter()
-            .all(|request| request.output_policy == ProcessOutputPolicy::HiddenProtocol)
+            .all(|request| request.task.name().starts_with("post-switch-health"))
     );
     assert_eq!(runtime.into_runner().waits, [Duration::from_secs(5)]);
 }
@@ -275,6 +275,7 @@ fn failed_or_malformed_collectors_stay_hidden_protocol() {
                 &mut runtime,
                 &target(),
                 &BTreeSet::new(),
+                None,
                 |attempt, _, _| progress.push(attempt),
             )
             .is_err()
@@ -282,10 +283,7 @@ fn failed_or_malformed_collectors_stay_hidden_protocol() {
         assert!(progress.is_empty());
         let requests = &runtime.runner().requests;
         assert_eq!(requests.len(), 1);
-        assert_eq!(
-            requests[0].output_policy,
-            ProcessOutputPolicy::HiddenProtocol
-        );
+        assert!(requests[0].task.name().starts_with("post-switch-health"));
     }
 }
 

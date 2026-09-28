@@ -26,7 +26,7 @@ use crate::programs::clear_git_repository_environment;
 
 use super::bootstrap::ForcedCommandPlan;
 use super::build::{
-    self, CacheSource, CommandAttempt, CommandSpec, CommandStatus, DistributionPlan,
+    self, CacheSource, CommandAttempt, CommandSpec, CommandStatus,
     FailureEvidence as BuildFailureEvidence, NixStorePath, RemoteBuildOutput, RetryDecision,
     RetryPolicy, RetryTracker,
 };
@@ -41,6 +41,7 @@ use super::health::{
     SystemdJob, UnitSnapshot,
 };
 use super::system::ResolvedHost;
+use super::task::{InternalTask, Task};
 use super::transport::{
     HostKeyPolicy, ProcessStatus, ProxyHop, SshEndpoint, SshRoutePlan, TransportRole,
 };
@@ -67,18 +68,7 @@ pub enum EffectKind {
     Mutation,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProcessOutputPolicy {
-    /// Show only the fleet renderer's bounded, sanitized operational allowlist.
-    Curated,
-    /// Show the activation lifecycle allowlist while the detached unit runs.
-    Activation,
-    /// Keep machine-readable protocol output in diagnostics only. The caller
-    /// publishes parsed semantic progress instead.
-    HiddenProtocol,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ProcessRequest {
     pub program: String,
     pub args: Vec<String>,
@@ -87,12 +77,9 @@ pub struct ProcessRequest {
     pub cwd: PathBuf,
     pub stdin: Option<String>,
     pub effect: EffectKind,
-    pub output_policy: ProcessOutputPolicy,
-    pub label: String,
-    /// Inventory host whose progress this command advances. Commands that
-    /// belong to the phase as a whole (for example the build-plan probe) use
-    /// `None`.
-    pub host: Option<String>,
+    /// Progress identity: the diagnostic name lives on the task, and any step
+    /// row is rendered from the same handle.
+    pub task: Arc<dyn Task>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,16 +137,29 @@ pub enum ProcessCompletion {
     Interrupted,
 }
 
-pub trait ProcessEventObserver: Send + Sync {
-    fn started(&self, request: &ProcessRequest);
-    fn output(&self, request: &ProcessRequest, stream: ProcessStream, chunk: &str);
-    fn finished(&self, request: &ProcessRequest, elapsed: Duration, completion: ProcessCompletion);
+/// Process diagnostics, independent of progress display.
+pub trait ProcessRecorder: Send + Sync {
+    fn started(&self, name: &str);
+    fn output(&self, name: &str, stream: ProcessStream, chunk: &str);
+    fn finished(&self, name: &str, elapsed: Duration, completion: ProcessCompletion);
+}
 
-    fn heartbeat_interval(&self, _request: &ProcessRequest) -> Option<Duration> {
-        None
+/// Fans one process's output to both its progress task and the diagnostic
+/// recorder, so display and retained diagnostics never diverge.
+#[derive(Clone)]
+struct ProcessSink {
+    name: String,
+    task: Arc<dyn Task>,
+    recorder: Option<Arc<dyn ProcessRecorder>>,
+}
+
+impl ProcessSink {
+    fn output(&self, stream: ProcessStream, chunk: &str) {
+        if let Some(recorder) = &self.recorder {
+            recorder.output(&self.name, stream, chunk);
+        }
+        self.task.output(stream, chunk);
     }
-
-    fn heartbeat(&self, _request: &ProcessRequest, _elapsed: Duration) {}
 }
 
 pub trait ProcessCancellation: Send + Sync {
@@ -221,15 +221,15 @@ impl ProcessRunner for SystemProcessRunner {
     }
 }
 
-pub struct ReportingProcessRunner {
-    observer: Arc<dyn ProcessEventObserver>,
+pub struct ProcessExecutor {
+    recorder: Option<Arc<dyn ProcessRecorder>>,
     cancellation: Option<Arc<dyn ProcessCancellation>>,
 }
 
-impl ReportingProcessRunner {
-    pub fn new(observer: Arc<dyn ProcessEventObserver>) -> Self {
+impl ProcessExecutor {
+    pub fn new(recorder: Option<Arc<dyn ProcessRecorder>>) -> Self {
         Self {
-            observer,
+            recorder,
             cancellation: None,
         }
     }
@@ -240,15 +240,19 @@ impl ReportingProcessRunner {
     }
 }
 
-impl ProcessRunner for ReportingProcessRunner {
+impl ProcessRunner for ProcessExecutor {
     fn run(&mut self, request: &ProcessRequest) -> io::Result<ProcessOutput> {
         let started = Instant::now();
-        self.observer.started(request);
-        let result = run_observed_process(
-            request,
-            Arc::clone(&self.observer),
-            self.cancellation.as_deref(),
-        );
+        let name = request.task.name().to_owned();
+        if let Some(recorder) = &self.recorder {
+            recorder.started(&name);
+        }
+        let sink = ProcessSink {
+            name: name.clone(),
+            task: Arc::clone(&request.task),
+            recorder: self.recorder.clone(),
+        };
+        let result = run_process(request, sink, self.cancellation.as_deref());
         let completion = if result.as_ref().is_ok_and(ProcessOutput::succeeded) {
             ProcessCompletion::Succeeded
         } else if self
@@ -260,8 +264,12 @@ impl ProcessRunner for ReportingProcessRunner {
         } else {
             ProcessCompletion::Failed
         };
-        self.observer
-            .finished(request, started.elapsed(), completion);
+        if completion == ProcessCompletion::Interrupted {
+            request.task.mark_interrupted();
+        }
+        if let Some(recorder) = &self.recorder {
+            recorder.finished(&name, started.elapsed(), completion);
+        }
         result
     }
 
@@ -302,9 +310,9 @@ impl ProcessRunner for ReportingProcessRunner {
     }
 }
 
-fn run_observed_process(
+fn run_process(
     request: &ProcessRequest,
-    observer: Arc<dyn ProcessEventObserver>,
+    sink: ProcessSink,
     cancellation: Option<&dyn ProcessCancellation>,
 ) -> io::Result<ProcessOutput> {
     let started = Instant::now();
@@ -343,31 +351,27 @@ fn run_observed_process(
         .take()
         .ok_or_else(|| io::Error::other("child stderr pipe is unavailable"))?;
     let child_exited = Arc::new(AtomicBool::new(false));
-    let stdout_observer = Arc::clone(&observer);
-    let stdout_request = request.clone();
+    let stdout_sink = sink.clone();
     let stdout_child_exited = Arc::clone(&child_exited);
     let stdout_thread = std::thread::spawn(move || {
         observe_stream(
             stdout,
-            &stdout_request,
             ProcessStream::Stdout,
-            stdout_observer,
+            stdout_sink,
             &stdout_child_exited,
         )
     });
-    let stderr_request = request.clone();
-    let stderr_observer = Arc::clone(&observer);
+    let stderr_sink = sink.clone();
     let stderr_child_exited = Arc::clone(&child_exited);
     let stderr_thread = std::thread::spawn(move || {
         observe_stream(
             stderr,
-            &stderr_request,
             ProcessStream::Stderr,
-            stderr_observer,
+            stderr_sink,
             &stderr_child_exited,
         )
     });
-    let heartbeat_interval = observer.heartbeat_interval(request);
+    let heartbeat_interval = sink.task.heartbeat_interval();
     let mut next_heartbeat = heartbeat_interval;
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -378,7 +382,7 @@ fn run_observed_process(
             break child.wait()?;
         }
         if next_heartbeat.is_some_and(|next| started.elapsed() >= next) {
-            observer.heartbeat(request, started.elapsed());
+            sink.task.heartbeat(started.elapsed());
             next_heartbeat = heartbeat_interval.map(|interval| started.elapsed() + interval);
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -452,9 +456,8 @@ fn terminate_process_group(child: &mut std::process::Child) -> io::Result<()> {
 #[cfg(unix)]
 fn observe_stream(
     mut reader: impl Read + AsRawFd,
-    request: &ProcessRequest,
     stream: ProcessStream,
-    observer: Arc<dyn ProcessEventObserver>,
+    sink: ProcessSink,
     child_exited: &AtomicBool,
 ) -> io::Result<String> {
     const POLL_INTERVAL_MILLIS: i32 = 50;
@@ -487,11 +490,7 @@ fn observe_stream(
                         bytes[emitted..].iter().position(|byte| *byte == b'\n')
                     {
                         let end = emitted + relative + 1;
-                        observer.output(
-                            request,
-                            stream,
-                            &String::from_utf8_lossy(&bytes[emitted..end]),
-                        );
+                        sink.output(stream, &String::from_utf8_lossy(&bytes[emitted..end]));
                         emitted = end;
                     }
                     continue;
@@ -505,7 +504,7 @@ fn observe_stream(
         }
     }
     if emitted < bytes.len() {
-        observer.output(request, stream, &String::from_utf8_lossy(&bytes[emitted..]));
+        sink.output(stream, &String::from_utf8_lossy(&bytes[emitted..]));
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
@@ -513,9 +512,8 @@ fn observe_stream(
 #[cfg(not(unix))]
 fn observe_stream(
     reader: impl Read,
-    request: &ProcessRequest,
     stream: ProcessStream,
-    observer: Arc<dyn ProcessEventObserver>,
+    sink: ProcessSink,
     _child_exited: &AtomicBool,
 ) -> io::Result<String> {
     let mut reader = BufReader::new(reader);
@@ -525,7 +523,7 @@ fn observe_stream(
         if reader.read_until(b'\n', &mut bytes)? == 0 {
             break;
         }
-        observer.output(request, stream, &String::from_utf8_lossy(&bytes[start..]));
+        sink.output(stream, &String::from_utf8_lossy(&bytes[start..]));
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
@@ -721,7 +719,7 @@ pub fn build_ssh_request(
     argv: &[String],
     environment: &[(String, String)],
     effect: EffectKind,
-    label: &str,
+    task: Arc<dyn Task>,
 ) -> Result<ProcessRequest> {
     let mut args = ssh_connection_args(target)?;
     let endpoint = &target.route.endpoint;
@@ -739,9 +737,7 @@ pub fn build_ssh_request(
         cwd: target.cwd.clone(),
         stdin: Some(encoded_remote_script(argv, environment)?),
         effect,
-        output_policy: ProcessOutputPolicy::Curated,
-        label: label.to_owned(),
-        host: Some(target.route.endpoint.node.clone()),
+        task,
     })
 }
 
@@ -948,9 +944,7 @@ pub fn control_master_exit_request(target: &HostExecutionTarget) -> Result<Optio
         cwd: target.cwd.clone(),
         stdin: None,
         effect: EffectKind::Mutation,
-        output_policy: ProcessOutputPolicy::HiddenProtocol,
-        label: "ssh-control-master-exit".to_owned(),
-        host: Some(target.route.endpoint.node.clone()),
+        task: InternalTask::new("ssh-control-master-exit"),
     }))
 }
 
@@ -974,7 +968,7 @@ pub fn build_ssh_upload_request(
     target: &HostExecutionTarget,
     contents: String,
     remote_destination: &Path,
-    label: &str,
+    task: Arc<dyn Task>,
 ) -> Result<ProcessRequest> {
     if target.local {
         bail!("SSH upload is not valid for a local execution target");
@@ -1008,9 +1002,7 @@ pub fn build_ssh_upload_request(
         cwd: target.cwd.clone(),
         stdin: Some(contents),
         effect: EffectKind::Mutation,
-        output_policy: ProcessOutputPolicy::HiddenProtocol,
-        label: label.to_owned(),
-        host: Some(target.route.endpoint.node.clone()),
+        task,
     })
 }
 
@@ -1149,7 +1141,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
         }
         self.runner
             .run(&request)
-            .with_context(|| format!("failed to execute {}", request.label))
+            .with_context(|| format!("failed to execute {}", request.task.name()))
     }
 
     fn run_bounded_read(
@@ -1168,9 +1160,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             cwd,
             stdin,
             effect,
-            output_policy,
-            label,
-            host,
+            task,
         } = request;
         let mut timeout_args = vec![
             "--foreground".to_owned(),
@@ -1188,9 +1178,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             cwd,
             stdin,
             effect,
-            output_policy,
-            label,
-            host,
+            task,
         })
     }
 
@@ -1198,7 +1186,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
         &self,
         command: &CommandSpec,
         effect: EffectKind,
-        label: &str,
+        task: Arc<dyn Task>,
     ) -> ProcessRequest {
         ProcessRequest {
             program: command.program.clone(),
@@ -1208,9 +1196,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             cwd: self.cwd.clone(),
             stdin: None,
             effect,
-            output_policy: ProcessOutputPolicy::Curated,
-            label: label.to_owned(),
-            host: None,
+            task,
         }
     }
 
@@ -1230,21 +1216,19 @@ impl<R: ProcessRunner> HostRuntime<R> {
         target: &HostExecutionTarget,
         command: &CommandSpec,
         effect: EffectKind,
-        label: &str,
+        task: Arc<dyn Task>,
     ) -> Result<ProcessRequest> {
         self.validate_target(target)?;
-        let label = format!("{label}-{}", target.route.endpoint.node);
         if target.local {
             Ok(ProcessRequest {
                 cwd: target.cwd.clone(),
-                host: Some(target.route.endpoint.node.clone()),
-                ..self.local_request(command, effect, &label)
+                ..self.local_request(command, effect, task)
             })
         } else {
             let mut argv = Vec::with_capacity(command.args.len() + 1);
             argv.push(command.program.clone());
             argv.extend_from_slice(&command.args);
-            build_ssh_request(target, &argv, &[], effect, &label)
+            build_ssh_request(target, &argv, &[], effect, task)
         }
     }
 
@@ -1253,10 +1237,9 @@ impl<R: ProcessRunner> HostRuntime<R> {
         target: &HostExecutionTarget,
         command: &CommandSpec,
         effect: EffectKind,
-        label: &str,
+        task: Arc<dyn Task>,
     ) -> Result<ProcessRequest> {
         self.validate_target(target)?;
-        let label = format!("{label}-{}", target.route.endpoint.node);
         let mut argv = Vec::with_capacity(command.args.len() + 1);
         argv.push(command.program.clone());
         argv.extend_from_slice(&command.args);
@@ -1270,12 +1253,10 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 cwd: target.cwd.clone(),
                 stdin: None,
                 effect,
-                output_policy: ProcessOutputPolicy::Curated,
-                label,
-                host: Some(target.route.endpoint.node.clone()),
+                task,
             })
         } else {
-            build_ssh_request(target, &argv, &[], effect, &label)
+            build_ssh_request(target, &argv, &[], effect, task)
         }
     }
 
@@ -1284,11 +1265,11 @@ impl<R: ProcessRunner> HostRuntime<R> {
         target: &HostExecutionTarget,
         command: &CommandSpec,
         effect: EffectKind,
-        label: &str,
+        task: Arc<dyn Task>,
     ) -> Result<ProcessRequest> {
         let mut isolated = target.clone();
         isolated.control_master = None;
-        let mut request = self.remote_root_command_request(&isolated, command, effect, label)?;
+        let mut request = self.remote_root_command_request(&isolated, command, effect, task)?;
         if !target.local {
             let separator = request
                 .args
@@ -1313,10 +1294,9 @@ impl<R: ProcessRunner> HostRuntime<R> {
         target: &HostExecutionTarget,
         command: &RemoteCommand,
         effect: EffectKind,
-        label: &str,
+        task: Arc<dyn Task>,
     ) -> Result<ProcessRequest> {
         self.validate_target(target)?;
-        let label = format!("{label}-{}", target.route.endpoint.node);
         let mut argv = vec![command.program.clone()];
         let mut stdin = None;
         if command.args.as_slice() == ["-s"] {
@@ -1339,28 +1319,19 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 cwd: target.cwd.clone(),
                 stdin,
                 effect,
-                output_policy: ProcessOutputPolicy::Curated,
-                label,
-                host: Some(target.route.endpoint.node.clone()),
+                task,
             })
         } else {
-            build_ssh_request(target, &argv, &[], effect, &label)
+            build_ssh_request(target, &argv, &[], effect, task)
         }
     }
 
     pub fn evaluate_build_plan(
         &mut self,
         command: &CommandSpec,
+        task: Arc<dyn Task>,
     ) -> Result<Execution<NixStorePath>> {
-        self.evaluate_build_plan_labeled(command, "build-plan-evaluation")
-    }
-
-    pub fn evaluate_build_plan_labeled(
-        &mut self,
-        command: &CommandSpec,
-        label: &str,
-    ) -> Result<Execution<NixStorePath>> {
-        let request = self.local_request(command, EffectKind::ReadOnly, label);
+        let request = self.local_request(command, EffectKind::ReadOnly, task);
         let output = self.run(request)?;
         require_success(&output, "build-plan evaluation")?;
         Ok(Execution::Executed(NixStorePath::derivation(
@@ -1368,49 +1339,12 @@ impl<R: ProcessRunner> HostRuntime<R> {
         )?))
     }
 
-    pub fn evaluate_build_plan_labeled_for_host(
+    pub fn local_build(
         &mut self,
         command: &CommandSpec,
-        label: &str,
-        host: &str,
+        task: Arc<dyn Task>,
     ) -> Result<Execution<NixStorePath>> {
-        let mut request = self.local_request(command, EffectKind::ReadOnly, label);
-        request.host = Some(host.to_owned());
-        let output = self.run(request)?;
-        require_success(&output, "build-plan evaluation")?;
-        Ok(Execution::Executed(NixStorePath::derivation(
-            &output.stdout,
-        )?))
-    }
-
-    pub fn local_build(&mut self, command: &CommandSpec) -> Result<Execution<NixStorePath>> {
-        self.local_build_labeled(command, "local-build")
-    }
-
-    pub fn local_build_labeled(
-        &mut self,
-        command: &CommandSpec,
-        label: &str,
-    ) -> Result<Execution<NixStorePath>> {
-        let request = self.local_request(command, EffectKind::Build, label);
-        let output = self.run(request)?;
-        if output.skipped {
-            return Ok(Execution::DryRun);
-        }
-        require_success(&output, "local build")?;
-        Ok(Execution::Executed(NixStorePath::closure_output(
-            &output.stdout,
-        )?))
-    }
-
-    pub fn local_build_labeled_for_host(
-        &mut self,
-        command: &CommandSpec,
-        label: &str,
-        host: &str,
-    ) -> Result<Execution<NixStorePath>> {
-        let mut request = self.local_request(command, EffectKind::Build, label);
-        request.host = Some(host.to_owned());
+        let request = self.local_request(command, EffectKind::Build, task);
         let output = self.run(request)?;
         if output.skipped {
             return Ok(Execution::DryRun);
@@ -1425,21 +1359,9 @@ impl<R: ProcessRunner> HostRuntime<R> {
         &mut self,
         command: &CommandSpec,
         effect: EffectKind,
-        label: &str,
+        task: Arc<dyn Task>,
     ) -> Result<ProcessOutput> {
-        let request = self.local_request(command, effect, label);
-        self.run(request)
-    }
-
-    pub fn execute_local_command_for_host(
-        &mut self,
-        command: &CommandSpec,
-        effect: EffectKind,
-        label: &str,
-        host: &str,
-    ) -> Result<ProcessOutput> {
-        let mut request = self.local_request(command, effect, label);
-        request.host = Some(host.to_owned());
+        let request = self.local_request(command, effect, task);
         self.run(request)
     }
 
@@ -1448,22 +1370,9 @@ impl<R: ProcessRunner> HostRuntime<R> {
         target: &HostExecutionTarget,
         command: &CommandSpec,
         effect: EffectKind,
-        label: &str,
+        task: Arc<dyn Task>,
     ) -> Result<ProcessOutput> {
-        let request = self.remote_command_request(target, command, effect, label)?;
-        self.run(request)
-    }
-
-    pub fn execute_remote_command_for_host(
-        &mut self,
-        target: &HostExecutionTarget,
-        command: &CommandSpec,
-        effect: EffectKind,
-        label: &str,
-        host: &str,
-    ) -> Result<ProcessOutput> {
-        let mut request = self.remote_command_request(target, command, effect, label)?;
-        request.host = Some(host.to_owned());
+        let request = self.remote_command_request(target, command, effect, task)?;
         self.run(request)
     }
 
@@ -1472,22 +1381,9 @@ impl<R: ProcessRunner> HostRuntime<R> {
         target: &HostExecutionTarget,
         command: &CommandSpec,
         effect: EffectKind,
-        label: &str,
+        task: Arc<dyn Task>,
     ) -> Result<ProcessOutput> {
-        let request = self.remote_root_command_request(target, command, effect, label)?;
-        self.run(request)
-    }
-
-    pub fn execute_remote_root_command_for_host(
-        &mut self,
-        target: &HostExecutionTarget,
-        command: &CommandSpec,
-        effect: EffectKind,
-        label: &str,
-        host: &str,
-    ) -> Result<ProcessOutput> {
-        let mut request = self.remote_root_command_request(target, command, effect, label)?;
-        request.host = Some(host.to_owned());
+        let request = self.remote_root_command_request(target, command, effect, task)?;
         self.run(request)
     }
 
@@ -1496,9 +1392,9 @@ impl<R: ProcessRunner> HostRuntime<R> {
         target: &HostExecutionTarget,
         command: &CommandSpec,
         effect: EffectKind,
-        label: &str,
+        task: Arc<dyn Task>,
     ) -> Result<ProcessOutput> {
-        let request = self.remote_command_request(target, command, effect, label)?;
+        let request = self.remote_command_request(target, command, effect, task)?;
         self.run_bounded_read(request, target.remote_read_timeout_seconds)
     }
 
@@ -1507,27 +1403,9 @@ impl<R: ProcessRunner> HostRuntime<R> {
         target: &HostExecutionTarget,
         command: &CommandSpec,
         effect: EffectKind,
-        label: &str,
+        task: Arc<dyn Task>,
     ) -> Result<ProcessOutput> {
-        self.execute_remote_root_command_bounded_with_output_policy(
-            target,
-            command,
-            effect,
-            label,
-            ProcessOutputPolicy::Curated,
-        )
-    }
-
-    pub fn execute_remote_root_command_bounded_with_output_policy(
-        &mut self,
-        target: &HostExecutionTarget,
-        command: &CommandSpec,
-        effect: EffectKind,
-        label: &str,
-        output_policy: ProcessOutputPolicy,
-    ) -> Result<ProcessOutput> {
-        let mut request = self.remote_root_command_request(target, command, effect, label)?;
-        request.output_policy = output_policy;
+        let request = self.remote_root_command_request(target, command, effect, task)?;
         self.run_bounded_read(request, target.remote_read_timeout_seconds)
     }
 
@@ -1540,7 +1418,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
         target: &HostExecutionTarget,
         local_source: &Path,
         remote_destination: &Path,
-        label: &str,
+        task: Arc<dyn Task>,
     ) -> Result<ProcessOutput> {
         self.validate_target(target)?;
         if !local_source.is_absolute() || !local_source.is_file() {
@@ -1548,29 +1426,21 @@ impl<R: ProcessRunner> HostRuntime<R> {
         }
         let contents = std::fs::read_to_string(local_source)
             .with_context(|| format!("read SSH upload source {}", local_source.display()))?;
-        let label = format!("{label}-{}", target.route.endpoint.node);
-        let request = build_ssh_upload_request(target, contents, remote_destination, &label)?;
+        let request = build_ssh_upload_request(target, contents, remote_destination, task)?;
         self.run(request)
     }
 
-    pub fn remote_build(&mut self, request: RemoteBuildRequest) -> Result<RemoteBuildExecution> {
-        let copy_label = format!("build-{}-copy-derivation", request.subject);
-        let copied = self.execute_local_command_for_host(
-            &request.copy_derivation,
-            EffectKind::Build,
-            &copy_label,
-            &request.subject,
-        )?;
-        require_success(&copied, "remote build derivation copy")?;
-        let mut tracker = RetryTracker::new(request.retry);
+    pub fn run_remote_build(
+        &mut self,
+        target: &HostExecutionTarget,
+        command: &CommandSpec,
+        retry: RetryPolicy,
+        task: Arc<dyn Task>,
+    ) -> Result<RemoteBuildExecution> {
+        let mut tracker = RetryTracker::new(retry);
         let action_attempt = loop {
-            let mut process = self.remote_command_request(
-                &request.target,
-                &request.build,
-                EffectKind::Build,
-                &format!("build-{}-via", request.subject),
-            )?;
-            process.host = Some(request.subject.clone());
+            let process =
+                self.remote_command_request(target, command, EffectKind::Build, Arc::clone(&task))?;
             let output = self.run(process)?;
             let attempt = command_attempt(&output);
             match tracker.observe(attempt.clone()) {
@@ -1598,67 +1468,18 @@ impl<R: ProcessRunner> HostRuntime<R> {
         })
     }
 
-    pub fn distribute_closure(
+    pub fn cache_pull(
         &mut self,
         target: &HostExecutionTarget,
-        plan: &DistributionPlan,
+        cache: &CacheSource,
+        closure: &NixStorePath,
         retry: RetryPolicy,
-    ) -> Result<DistributionExecution> {
-        if self.dry_run == DryRun::Yes {
-            return Ok(DistributionExecution::DryRun);
-        }
-        let result = match plan {
-            DistributionPlan::VerifyExisting { closure } => {
-                self.verify_target_closure(target, closure)?
-            }
-            DistributionPlan::TargetCachePull {
-                closure,
-                cache,
-                retry: retry_transport,
-            } => {
-                let attempts = if *retry_transport {
-                    retry
-                } else {
-                    RetryPolicy::new(1, Duration::ZERO)?
-                };
-                let copy = cache_pull_command(cache, closure);
-                let copied = self.run_remote_with_retry(
-                    target,
-                    &copy,
-                    EffectKind::Mutation,
-                    "target-cache-pull",
-                    attempts,
-                )?;
-                if !copied.attempt.status.eq(&CommandStatus::Success) {
-                    copied.attempt.status
-                } else {
-                    self.verify_target_closure(target, closure)?
-                }
-            }
-            DistributionPlan::RelayThroughLocal { closure, cache } => {
-                self.relay_closure(target, closure, cache, retry)?
-            }
-            DistributionPlan::TryTargetCacheThenRelay { closure, cache } => {
-                let copy = cache_pull_command(cache, closure);
-                let direct = self.run_remote_with_retry(
-                    target,
-                    &copy,
-                    EffectKind::Mutation,
-                    "target-cache-pull",
-                    RetryPolicy::new(1, Duration::ZERO)?,
-                )?;
-                match direct.attempt.status {
-                    CommandStatus::Success => self.verify_target_closure(target, closure)?,
-                    CommandStatus::Signal(signal) => CommandStatus::Signal(signal),
-                    CommandStatus::Exit(_) => self.relay_closure(target, closure, cache, retry)?,
-                }
-            }
-        };
-        Ok(if result == CommandStatus::Success {
-            DistributionExecution::Complete
-        } else {
-            DistributionExecution::Failed(result)
-        })
+        task: Arc<dyn Task>,
+    ) -> Result<CommandStatus> {
+        let copy = cache_pull_command(cache, closure);
+        let copied =
+            self.run_remote_with_retry(target, &copy, EffectKind::Mutation, retry, task)?;
+        Ok(copied.attempt.status)
     }
 
     fn run_remote_with_retry(
@@ -1666,12 +1487,13 @@ impl<R: ProcessRunner> HostRuntime<R> {
         target: &HostExecutionTarget,
         command: &CommandSpec,
         effect: EffectKind,
-        label: &str,
         retry: RetryPolicy,
+        task: Arc<dyn Task>,
     ) -> Result<build::RetryExecution> {
         let mut tracker = RetryTracker::new(retry);
         loop {
-            let request = self.remote_command_request(target, command, effect, label)?;
+            let request =
+                self.remote_command_request(target, command, effect, Arc::clone(&task))?;
             let attempt = command_attempt(&self.run(request)?);
             match tracker.observe(attempt.clone()) {
                 RetryDecision::Retry { delay, .. } => self.runner.wait(delay),
@@ -1685,42 +1507,30 @@ impl<R: ProcessRunner> HostRuntime<R> {
         }
     }
 
-    fn verify_target_closure(
+    pub fn verify_target_closure(
         &mut self,
         target: &HostExecutionTarget,
         closure: &NixStorePath,
+        task: Arc<dyn Task>,
     ) -> Result<CommandStatus> {
         let command = build::closure_verification_command("nix", closure);
-        let request = self.remote_command_request(
-            target,
-            &command,
-            EffectKind::ReadOnly,
-            "target-closure-verify",
-        )?;
+        let request = self.remote_command_request(target, &command, EffectKind::ReadOnly, task)?;
         Ok(command_status(self.run(request)?.status))
     }
 
-    fn relay_closure(
+    pub fn relay_transfer(
         &mut self,
         target: &HostExecutionTarget,
         closure: &NixStorePath,
         cache: &CacheSource,
         retry: RetryPolicy,
+        task: Arc<dyn Task>,
     ) -> Result<CommandStatus> {
         if target.local {
             let local_pull = cache_pull_command(cache, closure);
-            let label = format!("relay-cache-to-local-{}", target.route.endpoint.node);
-            let request = self.local_request(&local_pull, EffectKind::Mutation, &label);
-            let request = ProcessRequest {
-                host: Some(target.route.endpoint.node.clone()),
-                ..request
-            };
+            let request = self.local_request(&local_pull, EffectKind::Mutation, Arc::clone(&task));
             let pulled = self.run(request)?;
-            return if pulled.succeeded() {
-                self.verify_target_closure(target, closure)
-            } else {
-                Ok(command_status(pulled.status))
-            };
+            return Ok(command_status(pulled.status));
         }
         let endpoint = &target.route.endpoint;
         let host = uri_authority_component(&endpoint.host)?;
@@ -1735,11 +1545,9 @@ impl<R: ProcessRunner> HostRuntime<R> {
         );
         let relay = cache_relay_command(cache, &store_uri, closure);
         let nix_sshopts = nix_sshopts_without_control_master(target)?;
-        let label = format!("relay-cache-to-target-{}", endpoint.node);
         let mut tracker = RetryTracker::new(retry);
         let relayed = loop {
-            let mut request = self.local_request(&relay, EffectKind::Mutation, &label);
-            request.host = Some(endpoint.node.clone());
+            let mut request = self.local_request(&relay, EffectKind::Mutation, Arc::clone(&task));
             request
                 .environment
                 .push(("NIX_SSHOPTS".to_owned(), nix_sshopts.clone()));
@@ -1749,17 +1557,17 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 RetryDecision::Complete | RetryDecision::Stop { .. } => break attempt.status,
             }
         };
-        if relayed != CommandStatus::Success {
-            return Ok(relayed);
-        }
-        self.verify_target_closure(target, closure)
+        Ok(relayed)
     }
 
-    pub fn snapshot(&mut self, target: &HostExecutionTarget) -> Result<GenerationSnapshot> {
+    pub fn snapshot(
+        &mut self,
+        target: &HostExecutionTarget,
+        task: Arc<dyn Task>,
+    ) -> Result<GenerationSnapshot> {
         let command = deploy::snapshot_command();
         let command = CommandSpec::new(command.program, command.args);
-        let request =
-            self.remote_command_request(target, &command, EffectKind::ReadOnly, "snapshot")?;
+        let request = self.remote_command_request(target, &command, EffectKind::ReadOnly, task)?;
         let output = self.run_bounded_read(request, target.remote_read_timeout_seconds)?;
         if output.succeeded() {
             GenerationSnapshot::parse(&output.stdout)
@@ -1772,13 +1580,9 @@ impl<R: ProcessRunner> HostRuntime<R> {
         &mut self,
         target: &HostExecutionTarget,
         command: &RemoteCommand,
+        task: Arc<dyn Task>,
     ) -> Result<ProcessOutput> {
-        let request = self.deploy_request(
-            target,
-            command,
-            EffectKind::Mutation,
-            "pre-switch-preparation",
-        )?;
+        let request = self.deploy_request(target, command, EffectKind::Mutation, task)?;
         self.run(request)
     }
 
@@ -1786,13 +1590,9 @@ impl<R: ProcessRunner> HostRuntime<R> {
         &mut self,
         target: &HostExecutionTarget,
         command: &RemoteCommand,
+        task: Arc<dyn Task>,
     ) -> Result<ProcessOutput> {
-        let request = self.deploy_request(
-            target,
-            command,
-            EffectKind::Mutation,
-            "generation-admission-preflight",
-        )?;
+        let request = self.deploy_request(target, command, EffectKind::Mutation, task)?;
         self.run(request)
     }
 
@@ -1802,15 +1602,14 @@ impl<R: ProcessRunner> HostRuntime<R> {
         command: &RemoteCommand,
         desired: &SystemGeneration,
         goal: ActivationGoal,
-        label: &str,
+        task: Arc<dyn Task>,
     ) -> Result<ActivationExecution> {
-        let mut submit = self.deploy_request(
+        let submit = self.deploy_request(
             target,
             command,
             EffectKind::Mutation,
-            &format!("{label}-submit"),
+            InternalTask::child(format!("{}-submit", task.name()), Arc::clone(&task)),
         )?;
-        submit.output_policy = ProcessOutputPolicy::HiddenProtocol;
         let submitted = self.run(submit)?;
         if submitted.skipped {
             return Ok(ActivationExecution::DryRun);
@@ -1826,13 +1625,12 @@ impl<R: ProcessRunner> HostRuntime<R> {
         let observer_status = (|| {
             if let Some(observer) = &command.observer_script {
                 let observer = CommandSpec::new(SYSTEM_BASH, ["-c".to_owned(), observer.clone()]);
-                let mut request = self.remote_root_command_request_without_control_master(
+                let request = self.remote_root_command_request_without_control_master(
                     target,
                     &observer,
                     EffectKind::ReadOnly,
-                    &format!("{label}-observe"),
+                    Arc::clone(&task),
                 )?;
-                request.output_policy = ProcessOutputPolicy::Activation;
                 self.run(request)
             } else {
                 Ok(submitted)
@@ -1853,7 +1651,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 target,
                 &cancellation,
                 EffectKind::Mutation,
-                &format!("{label}-force-cancel"),
+                InternalTask::child(format!("{}-force-cancel", task.name()), Arc::clone(&task)),
             )
             .and_then(|request| {
                 let mut runner = SystemProcessRunner;
@@ -1903,13 +1701,12 @@ impl<R: ProcessRunner> HostRuntime<R> {
         }
 
         let verification = deploy::activation_verification_command(&command.unit);
-        let mut request = self.deploy_request(
+        let request = self.deploy_request(
             target,
             &verification,
             EffectKind::ReadOnly,
-            &format!("{label}-verify"),
+            InternalTask::child(format!("{}-verify", task.name()), Arc::clone(&task)),
         )?;
-        request.output_policy = ProcessOutputPolicy::HiddenProtocol;
         let verified = self.run_bounded_read(request, target.remote_read_timeout_seconds)?;
         if verified.succeeded()
             && let Ok(sample) = ActivationSample::parse(&verified.stdout)
@@ -1931,13 +1728,12 @@ impl<R: ProcessRunner> HostRuntime<R> {
     ) -> Result<HealthDecision> {
         let mut samples = Vec::with_capacity(commands.len());
         for command in commands {
-            let mut request = self.remote_root_command_request(
+            let request = self.remote_root_command_request(
                 target,
                 command,
                 EffectKind::ReadOnly,
-                "post-switch-health",
+                InternalTask::new(format!("post-switch-health-{}", target.route.endpoint.node)),
             )?;
-            request.output_policy = ProcessOutputPolicy::HiddenProtocol;
             samples.push(self.run(request)?);
         }
         evaluator.evaluate(&samples)
@@ -1960,7 +1756,10 @@ impl<R: ProcessRunner> HostRuntime<R> {
         if self.dry_run == DryRun::Yes {
             return Ok(DeployOutcome::DryRun);
         }
-        let snapshot = self.snapshot(target)?;
+        let snapshot = self.snapshot(
+            target,
+            InternalTask::new(format!("snapshot-{}", target.route.endpoint.node)),
+        )?;
         let rollback_generation = match snapshot.deploy_decision(requirement, desired, if_changed) {
             DeployDecision::SkipUnchanged => return Ok(DeployOutcome::SkippedUnchanged),
             DeployDecision::SkipOptionalMissing => {
@@ -1971,14 +1770,26 @@ impl<R: ProcessRunner> HostRuntime<R> {
                 rollback_generation,
             } => rollback_generation,
         };
-        let prepared = self.prepare_switch(target, admission)?;
+        let prepared = self.prepare_switch(
+            target,
+            admission,
+            InternalTask::new(format!(
+                "pre-switch-preparation-{}",
+                target.route.endpoint.node
+            )),
+        )?;
         if !prepared.succeeded() {
             return Ok(DeployOutcome::FailedBeforeActivation(command_status(
                 prepared.status,
             )));
         }
-        let activated =
-            self.activate(target, activation, desired, activation_goal, "activation")?;
+        let activated = self.activate(
+            target,
+            activation,
+            desired,
+            activation_goal,
+            InternalTask::new(format!("activation-{}", target.route.endpoint.node)),
+        )?;
         let activation_status = match activated {
             ActivationExecution::Succeeded | ActivationExecution::SucceededAfterVerification => {
                 let health = self.post_switch_health(target, health_commands, health_evaluator);
@@ -2010,7 +1821,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             &rollback,
             &rollback_generation,
             ActivationGoal::Switch,
-            "rollback",
+            InternalTask::new(format!("rollback-{}", target.route.endpoint.node)),
         )? {
             ActivationExecution::Succeeded | ActivationExecution::SucceededAfterVerification => {
                 CommandStatus::Success
@@ -2050,9 +1861,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             cwd: self.cwd.clone(),
             stdin: None,
             effect: EffectKind::ReadOnly,
-            output_policy: ProcessOutputPolicy::HiddenProtocol,
-            label: "check-bootstrap".to_owned(),
-            host: None,
+            task: InternalTask::new("check-bootstrap"),
         })
     }
 }
@@ -2086,18 +1895,6 @@ fn require_success(output: &ProcessOutput, label: &str) -> Result<()> {
     } else {
         bail!("{label} failed: {}", output.combined_output())
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RemoteBuildRequest {
-    /// Logical system being built. The execution target may instead be a
-    /// shared builder, so this identity must remain explicit for progress and
-    /// diagnostic attribution.
-    pub subject: String,
-    pub target: HostExecutionTarget,
-    pub copy_derivation: CommandSpec,
-    pub build: CommandSpec,
-    pub retry: RetryPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -41,6 +41,9 @@ mod inventory;
 #[path = "../src/fleet/system.rs"]
 mod system;
 #[allow(clippy::all)]
+#[path = "../src/fleet/task.rs"]
+mod task;
+#[allow(clippy::all)]
 #[path = "../src/fleet/transport.rs"]
 mod transport;
 
@@ -55,9 +58,8 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use bootstrap::ForcedCommandPlan;
 use build::{
-    BuildPlanAttribute, CacheSource, CommandSpec, CommandStatus, DistributionPlan, LocalBuildSpec,
-    NixStorePath, RemoteFailureKind, RetryPolicy, build_plan_evaluation_command,
-    local_build_command,
+    BuildPlanAttribute, CacheSource, CommandSpec, CommandStatus, LocalBuildSpec, NixStorePath,
+    RemoteFailureKind, RetryPolicy, build_plan_evaluation_command, local_build_command,
 };
 use deploy::{
     ActivationCommand, ActivationGoal, BootEnvironment, RemoteCommand, SnapshotRequirement,
@@ -66,12 +68,12 @@ use deploy::{
 use health::{HealthDecision, HealthEvidence};
 use host_runtime::{
     ActivationExecution, DeployOutcome, DryRun, EffectKind, HealthEvaluator, HostExecutionTarget,
-    HostRuntime, ProcessCancellation, ProcessCompletion, ProcessEventObserver, ProcessOutput,
-    ProcessOutputPolicy, ProcessRequest, ProcessRunner, ProcessStream, RemoteBuildRequest,
-    ReportingProcessRunner, SystemHealthProbe, SystemProcessRunner, build_ssh_request,
+    HostRuntime, ProcessCancellation, ProcessExecutor, ProcessOutput, ProcessRequest,
+    ProcessRunner, ProcessStream, SystemHealthProbe, SystemProcessRunner, build_ssh_request,
     build_ssh_upload_request, builder_lease_process_spec, control_master_exit_request,
 };
 use system::ResolvedHost;
+use task::{InternalTask, Task, TaskOutcome};
 use transport::{
     HostKeyPolicy, ProcessStatus, ProxyCommandTemplate, ProxyHop, ProxyPlan, SshEndpoint,
     SshRoutePlan, TransportRole,
@@ -315,7 +317,7 @@ fn control_master_is_scoped_and_has_an_explicit_retirement_command() {
         &strings(&["true"]),
         &[],
         EffectKind::ReadOnly,
-        "probe",
+        InternalTask::new("probe"),
     )
     .unwrap();
     assert!(request.args.iter().any(|arg| arg == "ControlMaster=auto"));
@@ -363,7 +365,7 @@ fn ssh_request_keeps_local_arguments_separate_and_encodes_remote_argv() {
         ],
         &[("SAFE_NAME".into(), "value $(false)".into())],
         EffectKind::Mutation,
-        "test",
+        InternalTask::new("test"),
     )
     .unwrap();
 
@@ -413,12 +415,12 @@ fn ssh_upload_keeps_secret_bytes_out_of_process_arguments() {
         &target,
         "private fixture bytes".to_owned(),
         Path::new("/tmp/nixbot-bootstrap-key.run-1"),
-        "bootstrap-copy",
+        InternalTask::new("bootstrap-copy"),
     )
     .unwrap();
     assert_eq!(request.program, "ssh");
     assert_eq!(request.effect, EffectKind::Mutation);
-    assert_eq!(request.label, "bootstrap-copy");
+    assert_eq!(request.task.name(), "bootstrap-copy");
     assert!(request.args.windows(2).any(|pair| pair == ["-p", "2222"]));
     assert!(
         !request
@@ -437,8 +439,13 @@ fn ssh_upload_keeps_secret_bytes_out_of_process_arguments() {
     );
     assert!(!request.args.iter().any(|arg| arg == "-c"));
     assert!(
-        build_ssh_upload_request(&target, String::new(), Path::new("/tmp/key;bad"), "copy")
-            .is_err()
+        build_ssh_upload_request(
+            &target,
+            String::new(),
+            Path::new("/tmp/key;bad"),
+            InternalTask::new("copy")
+        )
+        .is_err()
     );
 }
 
@@ -464,7 +471,7 @@ fn ssh_request_preserves_keyed_proxy_hops_in_a_nested_proxy_command() {
         &["true".into()],
         &[],
         EffectKind::ReadOnly,
-        "probe",
+        InternalTask::new("probe"),
     )
     .unwrap();
     let proxy = request
@@ -519,7 +526,7 @@ fn nested_proxy_commands_freeze_each_hops_forward_destination() {
         &["true".into()],
         &[],
         EffectKind::ReadOnly,
-        "probe",
+        InternalTask::new("probe"),
     )
     .unwrap();
     let proxy = request
@@ -543,7 +550,7 @@ fn runtime_rejects_target_with_different_working_directory_authority() {
             &target(),
             &CommandSpec::new("true", Vec::<String>::new()),
             EffectKind::ReadOnly,
-            "probe",
+            InternalTask::new("probe"),
         )
         .unwrap_err();
     assert!(
@@ -568,7 +575,7 @@ fn root_execution_elevates_non_root_targets_and_keeps_root_targets_direct() {
             &target_as("nixbot"),
             &command,
             EffectKind::ReadOnly,
-            "parent-settle",
+            InternalTask::new("parent-settle"),
         )
         .unwrap();
     assert_eq!(
@@ -591,7 +598,12 @@ fn root_execution_elevates_non_root_targets_and_keeps_root_targets_direct() {
     let runner = FakeRunner::with_outputs([success("")]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     runtime
-        .execute_remote_root_command(&target(), &command, EffectKind::ReadOnly, "parent-settle")
+        .execute_remote_root_command(
+            &target(),
+            &command,
+            EffectKind::ReadOnly,
+            InternalTask::new("parent-settle"),
+        )
         .unwrap();
     assert_eq!(
         framed_remote_argv(&runtime.into_runner().requests[0]),
@@ -618,7 +630,7 @@ fn build_plan_then_local_build_preserves_order_cwd_and_parsing() {
 
     let eval = build_plan_evaluation_command("nix", &[], BuildPlanAttribute::Native, "gap3");
     let evaluated = runtime
-        .evaluate_build_plan(&eval)
+        .evaluate_build_plan(&eval, InternalTask::new("build-plan-evaluation"))
         .unwrap()
         .executed()
         .unwrap();
@@ -628,7 +640,11 @@ fn build_plan_then_local_build_preserves_order_cwd_and_parsing() {
         &build::BuildArgs::new(Vec::new(), true),
         LocalBuildSpec { result_link: None },
     );
-    let built = runtime.local_build(&build).unwrap().executed().unwrap();
+    let built = runtime
+        .local_build(&build, InternalTask::new("local-build"))
+        .unwrap()
+        .executed()
+        .unwrap();
     assert_eq!(built.as_str(), closure);
 
     let runner = runtime.into_runner();
@@ -649,25 +665,20 @@ fn build_plan_then_local_build_preserves_order_cwd_and_parsing() {
 #[test]
 fn remote_build_retries_daemon_disconnect_and_validates_exact_output() {
     let runner = FakeRunner::with_outputs([
-        success(""),
         failure(1, "Nix daemon disconnected unexpectedly"),
         success("/nix/store/def-nixos-system-new\n"),
     ]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let result = runtime
-        .remote_build(RemoteBuildRequest {
-            subject: "app".to_owned(),
-            target: target(),
-            copy_derivation: CommandSpec::new(
-                "nix",
-                strings(&["copy", "--to", "ssh-ng://builder", "/nix/store/abc.drv"]),
-            ),
-            build: CommandSpec::new(
+        .run_remote_build(
+            &target(),
+            &CommandSpec::new(
                 "nix",
                 strings(&["build", "--no-link", "--print-out-paths", "drv^out"]),
             ),
-            retry: RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
-        })
+            RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
+            InternalTask::new("build-app-via-builder"),
+        )
         .unwrap();
     assert_eq!(
         result.output.unwrap().path.as_str(),
@@ -678,14 +689,11 @@ fn remote_build_retries_daemon_disconnect_and_validates_exact_output() {
     assert_eq!(result.status, CommandStatus::Success);
 
     let runner = runtime.into_runner();
-    assert_eq!(runner.requests.len(), 3);
+    assert_eq!(runner.requests.len(), 2);
     assert_eq!(runner.waits, vec![Duration::from_secs(2)]);
-    assert!(runner.requests[0].label.contains("copy-derivation"));
-    assert!(runner.requests[0].label.contains("app"));
-    assert!(runner.requests[1].label.contains("via"));
-    assert!(runner.requests[1].label.contains("app"));
+    assert_eq!(runner.requests[0].task.name(), "build-app-via-builder");
     assert!(
-        runner.requests[1]
+        runner.requests[0]
             .stdin
             .as_ref()
             .unwrap()
@@ -694,75 +702,58 @@ fn remote_build_retries_daemon_disconnect_and_validates_exact_output() {
 }
 
 #[test]
-fn remote_build_reports_action_failure_without_cleanup_side_effects() {
-    let runner = FakeRunner::with_outputs([success(""), failure(7, "build failed")]);
+fn remote_build_reports_action_failure_status() {
+    let runner = FakeRunner::with_outputs([failure(7, "build failed")]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let result = runtime
-        .remote_build(RemoteBuildRequest {
-            subject: "app".to_owned(),
-            target: target(),
-            copy_derivation: CommandSpec::new(
-                "nix",
-                strings(&["copy", "--to", "ssh-ng://builder", "/nix/store/abc.drv"]),
-            ),
-            build: CommandSpec::new("nix", strings(&["build", "drv^out"])),
-            retry: RetryPolicy::new(1, Duration::ZERO).unwrap(),
-        })
+        .run_remote_build(
+            &target(),
+            &CommandSpec::new("nix", strings(&["build", "drv^out"])),
+            RetryPolicy::new(1, Duration::ZERO).unwrap(),
+            InternalTask::new("build-app-via-builder"),
+        )
         .unwrap();
     assert_eq!(result.status, CommandStatus::Exit(7));
-    assert_eq!(runtime.into_runner().requests.len(), 2);
+    assert_eq!(runtime.into_runner().requests.len(), 1);
 }
 
 #[test]
-fn remote_build_preserves_derivation_copy_failure_output() {
+fn remote_build_preserves_failure_evidence_without_cleanup_side_effects() {
     let runner = FakeRunner::with_outputs([failure(
         1,
         "ControlPath too long ('/very/long/control/socket' >= 108 bytes)",
     )]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
-    let error = runtime
-        .remote_build(RemoteBuildRequest {
-            subject: "app".to_owned(),
-            target: target(),
-            copy_derivation: CommandSpec::new(
-                "nix",
-                strings(&["copy", "--to", "ssh-ng://builder", "/nix/store/abc.drv"]),
-            ),
-            build: CommandSpec::new("nix", strings(&["build", "drv^out"])),
-            retry: RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
-        })
-        .unwrap_err();
-
-    let message = error.to_string();
-    assert!(message.contains("remote build derivation copy failed"));
-    assert!(message.contains("ControlPath too long"));
-    assert!(message.contains("108 bytes"));
+    let result = runtime
+        .run_remote_build(
+            &target(),
+            &CommandSpec::new("nix", strings(&["build", "drv^out"])),
+            RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
+            InternalTask::new("build-app-via-builder"),
+        )
+        .unwrap();
+    assert_eq!(result.status, CommandStatus::Exit(1));
+    assert!(result.output.is_none());
 
     let runner = runtime.into_runner();
     assert_eq!(runner.requests.len(), 1);
-    assert!(runner.requests[0].label.contains("copy-derivation"));
     assert!(runner.waits.is_empty());
 }
 
 #[test]
 fn dry_run_executes_remote_builder_store_effects() {
-    let runner =
-        FakeRunner::with_outputs([success(""), success("/nix/store/def-nixos-system-new\n")]);
+    let runner = FakeRunner::with_outputs([success("/nix/store/def-nixos-system-new\n")]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::Yes).unwrap();
     let result = runtime
-        .remote_build(RemoteBuildRequest {
-            subject: "app".to_owned(),
-            target: target(),
-            copy_derivation: CommandSpec::new(
-                "nix",
-                strings(&["copy", "--to", "ssh-ng://builder", "/nix/store/abc.drv"]),
-            ),
-            build: CommandSpec::new(
+        .run_remote_build(
+            &target(),
+            &CommandSpec::new(
                 "nix",
                 strings(&["build", "--no-link", "--print-out-paths", "drv^out"]),
             ),
-            retry: RetryPolicy::new(1, Duration::ZERO).unwrap(),
-        })
+            RetryPolicy::new(1, Duration::ZERO).unwrap(),
+            InternalTask::new("build-app-via-builder"),
+        )
         .unwrap();
     assert_eq!(result.status, CommandStatus::Success);
     assert_eq!(
@@ -770,7 +761,7 @@ fn dry_run_executes_remote_builder_store_effects() {
         "/nix/store/def-nixos-system-new"
     );
     let requests = runtime.into_runner().requests;
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 1);
     assert!(
         requests
             .iter()
@@ -912,22 +903,28 @@ fn target_cache_distribution_copies_then_verifies_the_exact_closure() {
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let closure = NixStorePath::closure_output("/nix/store/def-nixos-system-new").unwrap();
     let cache = CacheSource::new("https://cache.example", ["cache.example-1:key"]).unwrap();
-    let result = runtime
-        .distribute_closure(
+    let copied = runtime
+        .cache_pull(
             &target(),
-            &DistributionPlan::TargetCachePull {
-                closure,
-                cache,
-                retry: true,
-            },
+            &cache,
+            &closure,
             RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
+            InternalTask::new("target-cache-pull-gap3"),
         )
         .unwrap();
-    assert_eq!(result, host_runtime::DistributionExecution::Complete);
+    assert_eq!(copied, CommandStatus::Success);
+    let verified = runtime
+        .verify_target_closure(
+            &target(),
+            &closure,
+            InternalTask::new("target-closure-verify-gap3"),
+        )
+        .unwrap();
+    assert_eq!(verified, CommandStatus::Success);
     let runner = runtime.into_runner();
     assert_eq!(runner.requests.len(), 2);
-    assert!(runner.requests[0].label.contains("cache-pull"));
-    assert!(runner.requests[1].label.contains("closure-verify"));
+    assert!(runner.requests[0].task.name().contains("cache-pull"));
+    assert!(runner.requests[1].task.name().contains("closure-verify"));
     assert!(
         !runner.requests[0]
             .stdin
@@ -938,12 +935,8 @@ fn target_cache_distribution_copies_then_verifies_the_exact_closure() {
 }
 
 #[test]
-fn target_cache_failure_relays_through_the_configured_proxy_chain() {
-    let runner = FakeRunner::with_outputs([
-        failure(1, "cache DNS failed"),
-        success("relayed"),
-        success(""),
-    ]);
+fn relay_transfer_uses_the_configured_proxy_chain() {
+    let runner = FakeRunner::with_outputs([success("relayed")]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let closure = NixStorePath::closure_output("/nix/store/def-nixos-system-new").unwrap();
     let cache = CacheSource::new("https://cache.example", ["cache.example-1:key"]).unwrap();
@@ -966,22 +959,21 @@ fn target_cache_failure_relays_through_the_configured_proxy_chain() {
     });
 
     let result = runtime
-        .distribute_closure(
+        .relay_transfer(
             &proxied,
-            &DistributionPlan::TryTargetCacheThenRelay {
-                closure: closure.clone(),
-                cache,
-            },
+            &closure,
+            &cache,
             RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
+            InternalTask::new("relay-cache-to-target-gap3"),
         )
         .unwrap();
 
-    assert_eq!(result, host_runtime::DistributionExecution::Complete);
+    assert_eq!(result, CommandStatus::Success);
     let runner = runtime.into_runner();
-    assert_eq!(runner.requests.len(), 3);
-    let relay = &runner.requests[1];
+    assert_eq!(runner.requests.len(), 1);
+    let relay = &runner.requests[0];
     assert_eq!(relay.program, "nix");
-    assert_eq!(relay.label, "relay-cache-to-target-gap3");
+    assert_eq!(relay.task.name(), "relay-cache-to-target-gap3");
     assert!(
         relay
             .args
@@ -1017,12 +1009,11 @@ fn target_cache_failure_relays_through_the_configured_proxy_chain() {
     assert!(options.contains("ControlMaster=no"), "{options}");
     assert!(options.contains("ControlPath=none"), "{options}");
     assert!(!options.contains("/tmp/fleet/cm-target"), "{options}");
-    assert!(runner.requests[2].label.contains("closure-verify"));
 }
 
 #[test]
-fn explicit_proxy_command_is_preserved_for_local_cache_relay() {
-    let runner = FakeRunner::with_outputs([success("relayed"), success("")]);
+fn explicit_proxy_command_is_preserved_for_cache_relay() {
+    let runner = FakeRunner::with_outputs([success("relayed")]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let closure = NixStorePath::closure_output("/nix/store/def-nixos-system-new").unwrap();
     let cache = CacheSource::new("https://cache.example", std::iter::empty::<String>()).unwrap();
@@ -1031,14 +1022,16 @@ fn explicit_proxy_command_is_preserved_for_local_cache_relay() {
         Some(ProxyCommandTemplate::new("relay-tool --host %h --port %p").unwrap());
 
     let result = runtime
-        .distribute_closure(
+        .relay_transfer(
             &proxied,
-            &DistributionPlan::RelayThroughLocal { closure, cache },
+            &closure,
+            &cache,
             RetryPolicy::new(1, Duration::ZERO).unwrap(),
+            InternalTask::new("relay-cache-to-target-gap3"),
         )
         .unwrap();
 
-    assert_eq!(result, host_runtime::DistributionExecution::Complete);
+    assert_eq!(result, CommandStatus::Success);
     let requests = runtime.into_runner().requests;
     let options = requests[0]
         .environment
@@ -1049,36 +1042,34 @@ fn explicit_proxy_command_is_preserved_for_local_cache_relay() {
         options.contains("ProxyCommand=relay-tool --host 192.0.2.42 --port 2222"),
         "{options}"
     );
-    assert!(requests[1].label.contains("closure-verify"));
 }
 
 #[test]
 fn cache_relay_retries_only_transport_loss() {
-    let runner = FakeRunner::with_outputs([
-        failure(255, "Connection reset by peer"),
-        success("relayed"),
-        success(""),
-    ]);
+    let runner =
+        FakeRunner::with_outputs([failure(255, "Connection reset by peer"), success("relayed")]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let closure = NixStorePath::closure_output("/nix/store/def-nixos-system-new").unwrap();
     let cache = CacheSource::new("https://cache.example", std::iter::empty::<String>()).unwrap();
 
     let result = runtime
-        .distribute_closure(
+        .relay_transfer(
             &target(),
-            &DistributionPlan::RelayThroughLocal { closure, cache },
+            &closure,
+            &cache,
             RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
+            InternalTask::new("relay-cache-to-target-gap3"),
         )
         .unwrap();
 
-    assert_eq!(result, host_runtime::DistributionExecution::Complete);
+    assert_eq!(result, CommandStatus::Success);
     let runner = runtime.into_runner();
     assert_eq!(runner.waits, vec![Duration::from_secs(2)]);
     assert_eq!(
         runner
             .requests
             .iter()
-            .filter(|request| request.label == "relay-cache-to-target-gap3")
+            .filter(|request| request.task.name() == "relay-cache-to-target-gap3")
             .count(),
         2
     );
@@ -1114,7 +1105,7 @@ fn snapshot_admission_activation_observer_and_health_are_ordered() {
 
     let runner = runtime.into_runner();
     assert_eq!(runner.requests.len(), 5);
-    assert!(runner.requests[0].label.contains("snapshot"));
+    assert!(runner.requests[0].task.name().contains("snapshot"));
     assert_eq!(runner.requests[0].program, "timeout");
     assert!(
         runner.requests[0]
@@ -1128,24 +1119,13 @@ fn snapshot_admission_activation_observer_and_health_are_ordered() {
             .iter()
             .any(|argument| argument == "ssh")
     );
-    assert!(runner.requests[1].label.contains("pre-switch"));
-    assert!(runner.requests[2].label.contains("activation-submit"));
-    assert!(runner.requests[3].label.contains("activation-observe"));
-    assert!(runner.requests[4].label.contains("health"));
     assert_eq!(
-        runner
-            .requests
-            .iter()
-            .map(|request| request.output_policy)
-            .collect::<Vec<_>>(),
-        vec![
-            ProcessOutputPolicy::Curated,
-            ProcessOutputPolicy::Curated,
-            ProcessOutputPolicy::HiddenProtocol,
-            ProcessOutputPolicy::Activation,
-            ProcessOutputPolicy::HiddenProtocol,
-        ]
+        runner.requests[1].task.name(),
+        "pre-switch-preparation-gap3"
     );
+    assert_eq!(runner.requests[2].task.name(), "activation-gap3-submit");
+    assert_eq!(runner.requests[3].task.name(), "activation-gap3");
+    assert_eq!(runner.requests[4].task.name(), "post-switch-health-gap3");
 }
 
 #[test]
@@ -1212,7 +1192,7 @@ fn generation_admission_rejection_does_not_cross_rollback_boundary() {
     assert!(
         !requests
             .iter()
-            .any(|request| request.label.contains("rollback"))
+            .any(|request| request.task.name().contains("rollback"))
     );
 }
 
@@ -1260,10 +1240,18 @@ fn failure_after_activation_admission_runs_rollback_submit_and_observer() {
         .into_runner()
         .requests
         .into_iter()
-        .map(|request| request.label)
+        .map(|request| request.task.name().to_owned())
         .collect::<Vec<_>>();
-    assert!(labels[4].contains("rollback-submit"));
-    assert!(labels[5].contains("rollback-observe"));
+    assert!(
+        labels
+            .iter()
+            .any(|label| label.starts_with("rollback") && label.contains("submit"))
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|label| label.starts_with("rollback") && !label.contains("submit"))
+    );
     assert_eq!(
         rollback_generations.into_inner(),
         vec!["/nix/store/abc-nixos-system-old"]
@@ -1288,7 +1276,7 @@ fn explicit_pre_admission_failure_does_not_trigger_verification_or_rollback() {
                 &activation(ActivationGoal::Switch),
                 &generation("new"),
                 ActivationGoal::Switch,
-                "activation",
+                InternalTask::new("activation"),
             )
             .unwrap(),
         ActivationExecution::Failed {
@@ -1301,12 +1289,12 @@ fn explicit_pre_admission_failure_does_not_trigger_verification_or_rollback() {
     assert!(
         !requests
             .iter()
-            .any(|request| request.label.contains("verify"))
+            .any(|request| request.task.name().contains("verify"))
     );
     assert!(
         !requests
             .iter()
-            .any(|request| request.label.contains("rollback"))
+            .any(|request| request.task.name().contains("rollback"))
     );
 }
 
@@ -1326,7 +1314,7 @@ fn transport_loss_after_submission_can_be_recovered_by_authoritative_verificatio
                 &activation(ActivationGoal::Switch),
                 &generation("new"),
                 ActivationGoal::Switch,
-                "activation",
+                InternalTask::new("activation"),
             )
             .unwrap(),
         ActivationExecution::SucceededAfterVerification
@@ -1351,7 +1339,7 @@ fn dry_run_executes_evaluation_and_build_but_no_target_mutation() {
     let eval = build_plan_evaluation_command("nix", &[], BuildPlanAttribute::Native, "gap3");
     assert!(
         runtime
-            .evaluate_build_plan(&eval)
+            .evaluate_build_plan(&eval, InternalTask::new("build-plan-evaluation"))
             .unwrap()
             .executed()
             .is_some()
@@ -1359,12 +1347,20 @@ fn dry_run_executes_evaluation_and_build_but_no_target_mutation() {
 
     let build = CommandSpec::new("nix", strings(&["build", "drv^out"]));
     assert_eq!(
-        runtime.local_build(&build).unwrap().executed().unwrap(),
+        runtime
+            .local_build(&build, InternalTask::new("local-build"))
+            .unwrap()
+            .executed()
+            .unwrap(),
         NixStorePath::closure_output("/nix/store/abc-system").unwrap()
     );
     assert!(
         runtime
-            .prepare_switch(&target(), &pre_switch_preparation_command())
+            .prepare_switch(
+                &target(),
+                &pre_switch_preparation_command(),
+                InternalTask::new("pre-switch-preparation")
+            )
             .unwrap()
             .skipped
     );
@@ -1375,7 +1371,7 @@ fn dry_run_executes_evaluation_and_build_but_no_target_mutation() {
                 &activation(ActivationGoal::Switch),
                 &generation("new"),
                 ActivationGoal::Switch,
-                "activation",
+                InternalTask::new("activation"),
             )
             .unwrap(),
         ActivationExecution::DryRun
@@ -1453,7 +1449,11 @@ fn deploy_control_and_health_commands_use_root_execution_on_non_root_targets() {
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let target = target_as("nixbot");
     runtime
-        .prepare_switch(&target, &pre_switch_preparation_command())
+        .prepare_switch(
+            &target,
+            &pre_switch_preparation_command(),
+            InternalTask::new("pre-switch-preparation"),
+        )
         .unwrap();
     runtime
         .post_switch_health(
@@ -1679,55 +1679,82 @@ fn managed_health_runtime_turns_expired_settling_into_service_failure() {
     assert_eq!(report.readiness_budget.unwrap().timeout_seconds, 1);
 }
 
-#[derive(Default)]
-struct RecordingObserver {
+struct RecordingTask {
+    label: String,
     events: Mutex<Vec<String>>,
+    interrupted: AtomicBool,
 }
 
-impl ProcessEventObserver for RecordingObserver {
-    fn started(&self, request: &ProcessRequest) {
+impl RecordingTask {
+    fn new(label: &str) -> Arc<Self> {
+        Arc::new(Self {
+            label: label.to_owned(),
+            events: Mutex::new(Vec::new()),
+            interrupted: AtomicBool::new(false),
+        })
+    }
+}
+
+impl std::fmt::Debug for RecordingTask {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RecordingTask")
+            .field("label", &self.label)
+            .finish()
+    }
+}
+
+impl Task for RecordingTask {
+    fn name(&self) -> &str {
+        &self.label
+    }
+
+    fn started(&self) {
         self.events
             .lock()
             .unwrap()
-            .push(format!("start:{}", request.label));
+            .push(format!("start:{}", self.label));
     }
 
-    fn output(&self, request: &ProcessRequest, stream: ProcessStream, chunk: &str) {
+    fn output(&self, stream: ProcessStream, chunk: &str) {
         self.events.lock().unwrap().push(format!(
             "output:{}:{stream:?}:{}",
-            request.label,
+            self.label,
             chunk.trim_end()
         ));
     }
 
-    fn finished(
-        &self,
-        request: &ProcessRequest,
-        _elapsed: Duration,
-        completion: ProcessCompletion,
-    ) {
+    fn heartbeat(&self, _elapsed: Duration) {
         self.events
             .lock()
             .unwrap()
-            .push(format!("finish:{}:{completion:?}", request.label));
+            .push(format!("heartbeat:{}", self.label));
     }
 
-    fn heartbeat_interval(&self, request: &ProcessRequest) -> Option<Duration> {
-        (request.label == "heartbeat").then(|| Duration::from_millis(20))
-    }
-
-    fn heartbeat(&self, request: &ProcessRequest, _elapsed: Duration) {
+    fn finished(&self, _elapsed: Duration, outcome: TaskOutcome) {
         self.events
             .lock()
             .unwrap()
-            .push(format!("heartbeat:{}", request.label));
+            .push(format!("finish:{}:{outcome:?}", self.label));
+    }
+
+    fn heartbeat_interval(&self) -> Option<Duration> {
+        (self.label == "heartbeat").then(|| Duration::from_millis(20))
+    }
+
+    fn mark_interrupted(&self) {
+        self.interrupted.store(true, Ordering::Release);
+    }
+
+    fn was_interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::Acquire)
     }
 }
 
 #[test]
 fn reporting_process_runner_streams_both_channels_and_retains_exact_output() {
-    let observer = Arc::new(RecordingObserver::default());
-    let mut runner = ReportingProcessRunner::new(observer.clone());
+    let task = RecordingTask::new("probe alpha");
+    let mut runner = ProcessExecutor::new(None);
     let output = runner
         .run(&ProcessRequest {
             program: "/bin/sh".to_owned(),
@@ -1737,24 +1764,29 @@ fn reporting_process_runner_streams_both_channels_and_retains_exact_output() {
             cwd: PathBuf::from("/"),
             stdin: None,
             effect: EffectKind::ReadOnly,
-            output_policy: ProcessOutputPolicy::Curated,
-            label: "probe alpha".to_owned(),
-            host: None,
+            task: task.clone(),
         })
         .unwrap();
 
     assert!(output.succeeded());
     assert_eq!(output.stdout, "one\ntwo");
     assert_eq!(output.stderr, "bad\n");
-    let events = observer.events.lock().unwrap();
-    assert_eq!(events.first().unwrap(), "start:probe alpha");
+    let events = task.events.lock().unwrap();
     assert!(events.contains(&"output:probe alpha:Stdout:one".to_owned()));
     assert!(events.contains(&"output:probe alpha:Stdout:two".to_owned()));
     assert!(events.contains(&"output:probe alpha:Stderr:bad".to_owned()));
-    assert_eq!(events.last().unwrap(), "finish:probe alpha:Succeeded");
+    // The executor forwards process output only; the step owns the lifecycle.
+    assert!(
+        events
+            .iter()
+            .all(|event| !event.starts_with("start:") && !event.starts_with("finish:"))
+    );
 }
 
-fn git_environment_request(clear_git_repository_environment: bool) -> ProcessRequest {
+fn git_environment_request(
+    clear_git_repository_environment: bool,
+    task: Arc<dyn Task>,
+) -> ProcessRequest {
     ProcessRequest {
         program: "env".to_owned(),
         args: Vec::new(),
@@ -1766,9 +1798,7 @@ fn git_environment_request(clear_git_repository_environment: bool) -> ProcessReq
         cwd: PathBuf::from("/"),
         stdin: None,
         effect: EffectKind::ReadOnly,
-        output_policy: ProcessOutputPolicy::Curated,
-        label: "repository-environment".to_owned(),
-        host: None,
+        task,
     }
 }
 
@@ -1787,15 +1817,17 @@ fn assert_no_git_checkout_selectors(output: &ProcessOutput) {
 
 #[test]
 fn local_repository_processes_clear_git_selectors_after_request_environment() {
-    let request = git_environment_request(true);
+    let request = git_environment_request(true, RecordingTask::new("repository-environment"));
     assert_no_git_checkout_selectors(&SystemProcessRunner.run(&request).unwrap());
 
-    let observer = Arc::new(RecordingObserver::default());
-    let mut reporting = ReportingProcessRunner::new(observer);
+    let mut reporting = ProcessExecutor::new(None);
     assert_no_git_checkout_selectors(&reporting.run(&request).unwrap());
 
     let inherited = SystemProcessRunner
-        .run(&git_environment_request(false))
+        .run(&git_environment_request(
+            false,
+            RecordingTask::new("repository-environment"),
+        ))
         .unwrap();
     assert!(inherited.stdout.contains("GIT_DIR=/incorrect/repository\n"));
     assert!(
@@ -1807,8 +1839,8 @@ fn local_repository_processes_clear_git_selectors_after_request_environment() {
 
 #[test]
 fn reporting_process_runner_does_not_wait_for_inherited_output_descriptors() {
-    let observer = Arc::new(RecordingObserver::default());
-    let mut runner = ReportingProcessRunner::new(observer.clone());
+    let task = RecordingTask::new("descriptor leak");
+    let mut runner = ProcessExecutor::new(None);
     let started = Instant::now();
     let output = runner
         .run(&ProcessRequest {
@@ -1822,9 +1854,7 @@ fn reporting_process_runner_does_not_wait_for_inherited_output_descriptors() {
             cwd: PathBuf::from("/"),
             stdin: None,
             effect: EffectKind::ReadOnly,
-            output_policy: ProcessOutputPolicy::Curated,
-            label: "descriptor leak".to_owned(),
-            host: None,
+            task: task.clone(),
         })
         .unwrap();
 
@@ -1832,16 +1862,20 @@ fn reporting_process_runner_does_not_wait_for_inherited_output_descriptors() {
     assert!(output.succeeded());
     assert_eq!(output.stdout, "complete\n");
     assert!(output.stderr.is_empty());
-    assert_eq!(
-        observer.events.lock().unwrap().last().unwrap(),
-        "finish:descriptor leak:Succeeded"
+    // The executor forwards process output only; the step owns the lifecycle.
+    assert!(
+        task.events
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|event| !event.starts_with("finish:"))
     );
 }
 
 #[test]
 fn reporting_process_runner_emits_configured_heartbeats_for_quiet_commands() {
-    let observer = Arc::new(RecordingObserver::default());
-    let mut runner = ReportingProcessRunner::new(observer.clone());
+    let task = RecordingTask::new("heartbeat");
+    let mut runner = ProcessExecutor::new(None);
     let output = runner
         .run(&ProcessRequest {
             program: "/bin/sh".to_owned(),
@@ -1851,15 +1885,12 @@ fn reporting_process_runner_emits_configured_heartbeats_for_quiet_commands() {
             cwd: PathBuf::from("/"),
             stdin: None,
             effect: EffectKind::ReadOnly,
-            output_policy: ProcessOutputPolicy::Curated,
-            label: "heartbeat".to_owned(),
-            host: None,
+            task: task.clone(),
         })
         .unwrap();
     assert!(output.succeeded());
     assert!(
-        observer
-            .events
+        task.events
             .lock()
             .unwrap()
             .contains(&"heartbeat:heartbeat".to_owned())
@@ -1893,14 +1924,14 @@ impl ProcessCancellation for TimedCancellation {
 
 #[test]
 fn reporting_process_runner_terminates_the_complete_child_process_group() {
-    let observer = Arc::new(RecordingObserver::default());
+    let task = RecordingTask::new("long probe");
     let cancellation = Arc::new(TimedCancellation {
         started: Instant::now(),
         delay: Duration::from_millis(50),
         activations: AtomicUsize::new(0),
         force: AtomicBool::new(false),
     });
-    let mut runner = ReportingProcessRunner::new(observer).with_cancellation(cancellation);
+    let mut runner = ProcessExecutor::new(None).with_cancellation(cancellation);
     let started = Instant::now();
     let output = runner
         .run(&ProcessRequest {
@@ -1911,25 +1942,27 @@ fn reporting_process_runner_terminates_the_complete_child_process_group() {
             cwd: PathBuf::from("/"),
             stdin: None,
             effect: EffectKind::ReadOnly,
-            output_policy: ProcessOutputPolicy::Curated,
-            label: "long probe".to_owned(),
-            host: None,
+            task: task.clone(),
         })
         .unwrap();
     assert!(started.elapsed() < Duration::from_secs(3));
     assert!(matches!(output.status, ProcessStatus::Signal(_)));
+    assert!(
+        task.was_interrupted(),
+        "the process layer must mark a cancelled process on its task"
+    );
 }
 
 #[test]
 fn cancellation_does_not_wait_for_a_surviving_output_writer() {
-    let observer = Arc::new(RecordingObserver::default());
+    let task = RecordingTask::new("cancel descriptor leak");
     let cancellation = Arc::new(TimedCancellation {
         started: Instant::now(),
         delay: Duration::from_millis(100),
         activations: AtomicUsize::new(0),
         force: AtomicBool::new(false),
     });
-    let mut runner = ReportingProcessRunner::new(observer).with_cancellation(cancellation);
+    let mut runner = ProcessExecutor::new(None).with_cancellation(cancellation);
     let started = Instant::now();
     let output = runner
         .run(&ProcessRequest {
@@ -1943,9 +1976,7 @@ fn cancellation_does_not_wait_for_a_surviving_output_writer() {
             cwd: PathBuf::from("/"),
             stdin: None,
             effect: EffectKind::ReadOnly,
-            output_policy: ProcessOutputPolicy::Curated,
-            label: "cancel descriptor leak".to_owned(),
-            host: None,
+            task: task.clone(),
         })
         .unwrap();
 

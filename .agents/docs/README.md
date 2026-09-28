@@ -764,6 +764,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   the shared structured, stream, and passthrough output contracts, semantic
   human views, host-focused rolling fleet progress, safe process-output
   policies, live activation logs, and TTY-only color behavior.
+- `.agents/docs/notes/tooling/abird-host-manager-task-steps-2026-09.md`: Records
+  the typed task/step contract for fleet progress, per-operation step ownership,
+  value-derived step outcomes, and first-class interruption.
 - `.agents/docs/notes/tooling/native-host-control-plane-2026-08.md`: Records the
   native Rust manager/agent ownership split, retired compatibility surfaces,
   durable hold boundary, lifecycle/retry/admission follow-ups, and narrow Pvl

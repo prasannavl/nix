@@ -616,36 +616,42 @@ fn periodic_lease_heartbeat_runs_before_the_console_progress_interval() {
     use abird_host_manager::fleet::cli::Options;
     use abird_host_manager::fleet::environment::Environment;
     use abird_host_manager::fleet::host_runtime::{
-        EffectKind, ProcessCompletion, ProcessEventObserver, ProcessOutputPolicy, ProcessRequest,
-        ProcessRunner, ProcessStream, ReportingProcessRunner,
+        EffectKind, ProcessExecutor, ProcessRequest, ProcessRunner, ProcessStream,
     };
+    use abird_host_manager::fleet::host_tasks::BuildStep;
     use abird_host_manager::fleet::presentation::FleetProgress;
+    use abird_host_manager::fleet::task::{Task, TaskOutcome, TaskScope};
 
-    struct CountingProgress {
-        inner: Arc<dyn ProcessEventObserver>,
+    #[derive(Debug)]
+    struct CountingTask {
+        inner: Arc<dyn Task>,
         heartbeats: Arc<AtomicUsize>,
     }
-    impl ProcessEventObserver for CountingProgress {
-        fn started(&self, request: &ProcessRequest) {
-            self.inner.started(request);
+    impl Task for CountingTask {
+        fn name(&self) -> &str {
+            self.inner.name()
         }
-        fn output(&self, request: &ProcessRequest, stream: ProcessStream, chunk: &str) {
-            self.inner.output(request, stream, chunk);
+        fn started(&self) {
+            self.inner.started();
         }
-        fn finished(
-            &self,
-            request: &ProcessRequest,
-            elapsed: Duration,
-            completion: ProcessCompletion,
-        ) {
-            self.inner.finished(request, elapsed, completion);
+        fn output(&self, stream: ProcessStream, chunk: &str) {
+            self.inner.output(stream, chunk);
         }
-        fn heartbeat_interval(&self, request: &ProcessRequest) -> Option<Duration> {
-            self.inner.heartbeat_interval(request)
-        }
-        fn heartbeat(&self, request: &ProcessRequest, elapsed: Duration) {
+        fn heartbeat(&self, elapsed: Duration) {
             self.heartbeats.fetch_add(1, Ordering::Relaxed);
-            self.inner.heartbeat(request, elapsed);
+            self.inner.heartbeat(elapsed);
+        }
+        fn finished(&self, elapsed: Duration, outcome: TaskOutcome) {
+            self.inner.finished(elapsed, outcome);
+        }
+        fn mark_interrupted(&self) {
+            self.inner.mark_interrupted();
+        }
+        fn was_interrupted(&self) -> bool {
+            self.inner.was_interrupted()
+        }
+        fn heartbeat_interval(&self) -> Option<Duration> {
+            self.inner.heartbeat_interval()
         }
     }
 
@@ -686,17 +692,16 @@ done"#
     )]))
     .settings()
     .unwrap();
-    let progress = FleetProgress::from_options(&Options::default())
-        .with_heartbeat_intervals(
-            settings.build_heartbeat_seconds,
-            settings.activation_heartbeat_seconds,
-        )
-        .process_observer();
+    let progress = FleetProgress::from_options(&Options::default()).with_heartbeat_intervals(
+        settings.build_heartbeat_seconds,
+        settings.activation_heartbeat_seconds,
+    );
     let heartbeats = Arc::new(AtomicUsize::new(0));
-    let observer: Arc<dyn ProcessEventObserver> = Arc::new(CountingProgress {
-        inner: progress,
+    let scope = progress.host_scope("fixture");
+    let task = CountingTask {
+        inner: scope.step(&BuildStep::Build),
         heartbeats: Arc::clone(&heartbeats),
-    });
+    };
     let request = ProcessRequest {
         // This process emits no progress and ends only after the transport
         // observes another PING, or at the fixture's bounded deadline.
@@ -714,14 +719,13 @@ done"#
         cwd: temporary.path().to_path_buf(),
         stdin: None,
         effect: EffectKind::ReadOnly,
-        output_policy: ProcessOutputPolicy::Curated,
-        label: "fixture-remote-build".to_owned(),
-        host: None,
+        task: Arc::new(task),
     };
-    let progress_interval = observer.heartbeat_interval(&request).unwrap();
+    let progress_interval = request.task.heartbeat_interval().unwrap();
     assert_eq!(progress_interval, Duration::from_secs(60));
     let started = Instant::now();
-    let output = ReportingProcessRunner::new(observer).run(&request).unwrap();
+    let mut executor = ProcessExecutor::new(None);
+    let output = executor.run(&request).unwrap();
     let elapsed = started.elapsed();
     coordinator.release();
 

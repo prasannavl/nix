@@ -479,15 +479,23 @@ esac
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(1500));
+    let signalled = Instant::now();
     // SAFETY: the child pid is live and belongs to this test.
     assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(130), "{output:?}");
-    assert!(started.elapsed() < Duration::from_secs(4));
+    // The first SIGINT must cancel the in-flight build promptly, not merely
+    // before the overall deadline.
+    assert!(
+        signalled.elapsed() < Duration::from_secs(2),
+        "interrupt response took {:?}",
+        signalled.elapsed()
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
     let progress = String::from_utf8_lossy(&output.stderr);
     assert!(progress.contains("Interrupt received"), "{progress}");
-    assert!(progress.contains("◇ Build app · interrupted"), "{progress}");
+    assert!(progress.contains("app · build · interrupted"), "{progress}");
     assert!(
         progress.contains("◇ Build systems · 1 host · phase 1/1 · interrupted"),
         "{progress}"
@@ -498,8 +506,7 @@ esac
     );
     assert!(progress.contains("app · interrupted"), "{progress}");
     assert!(!progress.contains("app · FAIL (build)"), "{progress}");
-    assert!(!progress.contains("✗ Build app"), "{progress}");
-    assert!(!progress.contains("✗ Build systems"), "{progress}");
+    assert!(!progress.contains("✗ "), "{progress}");
 }
 
 #[test]
@@ -982,6 +989,114 @@ esac
 }
 
 #[test]
+fn remote_builder_derivation_copy_failure_keeps_the_raw_evidence() {
+    let temporary = tempfile::tempdir().unwrap();
+    let repository = temporary.path().join("repository");
+    let tools = temporary.path().join("tools");
+    let ssh_log = temporary.path().join("ssh.log");
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&tools).unwrap();
+    fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
+    fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    run(git_command().args(["init", "-q"]).arg(&repository));
+    git(&repository, &["config", "user.name", "Fleet Test"]);
+    git(
+        &repository,
+        &["config", "user.email", "fleet@example.invalid"],
+    );
+    git(&repository, &["config", "commit.gpgsign", "false"]);
+    git(&repository, &["add", "."]);
+    git(&repository, &["commit", "-qm", "fixture"]);
+
+    let nix = tools.join("nix");
+    write_executable(
+        &nix,
+        r#"#!/bin/sh
+set -eu
+case "$*" in
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*)
+    printf '%s\n' '{"hosts":{"app":{"groups":["all"]},"builder":{"target":"10.10.30.80"}},"config":{}}'
+    ;;
+  *'.#nixbot.plans --apply builtins.attrNames') printf '["app"]\n' ;;
+  *'.#nixbot.plans.app.drvPath') printf '/nix/store/aaaaaaaa-system.drv\n' ;;
+  copy*)
+    echo "ControlPath too long ('/very/long/control/socket' >= 108 bytes)" >&2
+    exit 1
+    ;;
+  'build '*|*'store verify'*) ;;
+  *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
+esac
+"#,
+    )
+    .unwrap();
+    let ssh = tools.join("ssh");
+    write_executable(
+        &ssh,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$NATIVE_FLEET_SSH_LOG"
+case "$*" in
+  *nixbot-build-lease*hold*)
+    printf '%s\n' READY
+    while read -r command; do
+      [ "$command" = PING ] || exit 2
+      printf 'PONG\n'
+    done
+    exit 0
+    ;;
+esac
+cat >/dev/null
+exit 0
+"#,
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        tools.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .current_dir(&repository)
+        .args([
+            "build",
+            "--host",
+            "app",
+            "--config",
+            "hosts.nix",
+            "--no-override",
+            "--build-host=builder",
+        ])
+        .env("PATH", path)
+        .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .env("NATIVE_FLEET_SSH_LOG", &ssh_log)
+        .env("NIXBOT_BUILD_PLAN_CACHE", "0")
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
+        .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
+        .env(
+            "NIXBOT_RUNTIME_FALLBACK_ROOT",
+            temporary.path().join("fallback"),
+        )
+        .env(
+            "NIXBOT_DIAG_KEEP_ROOT",
+            temporary.path().join("diagnostics"),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("remote build derivation copy failed"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("ControlPath too long"), "{stderr}");
+    assert!(stderr.contains("108 bytes"), "{stderr}");
+}
+
+#[test]
 fn forced_bootstrap_streams_keys_and_keeps_deploy_on_the_operator_route() {
     let temporary = tempfile::tempdir().unwrap();
     let repository = temporary.path().join("repository");
@@ -1360,12 +1475,27 @@ exit 1
         .unwrap()
         .unwrap()
         .path();
-    let probe_error = fs::read_to_string(
-        retained
-            .join("commands")
-            .join("primary-connectivity-probe-app.stderr.log"),
-    )
-    .unwrap();
+    let commands_dir = retained.join("commands");
+    let entries = fs::read_dir(&commands_dir)
+        .map(|dir| {
+            dir.filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let probe_name = entries
+        .iter()
+        .find(|name| {
+            name.starts_with("primary-connectivity-probe") && name.ends_with(".stderr.log")
+        })
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "no probe diagnostics in {}: {entries:?}",
+                commands_dir.display()
+            )
+        });
+    let probe_error = fs::read_to_string(commands_dir.join(probe_name)).unwrap();
     assert_eq!(probe_error, "Connection refused\n");
 }
 

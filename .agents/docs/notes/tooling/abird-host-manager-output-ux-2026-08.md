@@ -33,6 +33,8 @@ The visual vocabulary is semantic:
   detached activation or rollback settles;
 - `◇` means work deliberately deferred to deployment or a dry-run check that was
   not executed;
+- `⊘` means interrupted or cancelled work: a distinct terminal outcome, not a
+  host failure, whose row keeps its bounded output tail; and
 - `✗` means failure; and
 - dry runs say that no changes will be made and never claim success.
 
@@ -135,22 +137,23 @@ detail, for example `build done via abird gondor ci` and
 - health hides the collector wire format and publishes parsed per-attempt
   healthy, settling, or failure facts from Rust.
 
-Every child process declares an output policy. Curated operational output and
-activation lifecycle output pass through terminal sanitization, whole-line
-secret redaction, and bounded phase-specific allowlists. Machine protocols,
-activation result frames, identity uploads, and control commands remain absent
-from human progress and retained human failure tails; their raw streams remain
-available only in private diagnostic files. `--verbose` independently shows
-sanitized and whole-line-redacted non-protocol subprocess output; dashboard
-admission never controls whether verbose output is emitted. Unknown default-mode
-output fails closed to a generic diagnostic pointer instead of relying on error
-keywords. SSH key discovery and local closure copies are attributed to the
-affected host instead of appearing as unrelated phase-level chatter. Nix store
-events must contain one validated store-root basename, and manually published
-SSH or health-operation lines pass a separate semantic allowlist. Health details
-expose only validated user and systemd-unit identifiers or a generic diagnostics
-pointer; decoded collector text is never copied directly into the default host
-tail.
+Every step's process output is governed by one presentation policy. Curated
+operational output and activation lifecycle output pass through terminal
+sanitization, whole-line secret redaction, and bounded phase-specific
+allowlists. Machine protocols, activation result frames, identity-upload
+contents, and control commands never reach human progress or retained human
+failure tails. Identity uploads and installs appear only as their own step rows;
+their raw streams remain available only in private diagnostic files. `--verbose`
+independently shows sanitized and whole-line-redacted non-protocol subprocess
+output; dashboard admission never controls whether verbose output is emitted.
+Unknown default-mode output fails closed to a generic diagnostic pointer instead
+of relying on error keywords. SSH key discovery and local closure copies are
+attributed to the affected host instead of appearing as unrelated phase-level
+chatter. Nix store events must contain one validated store-root basename, and
+manually published SSH or health-operation lines pass a separate semantic
+allowlist. Health details expose only validated user and systemd-unit
+identifiers or a generic diagnostics pointer; decoded collector text is never
+copied directly into the default host tail.
 
 The activation log follower is observational rather than authoritative. If it
 exits early, the observer continues bounded result polling and drains only new

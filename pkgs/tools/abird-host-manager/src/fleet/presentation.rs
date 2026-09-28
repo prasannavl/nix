@@ -13,13 +13,27 @@ use crate::progress::{ProgressReporter, command_reporter, format_duration};
 use crate::terminal_style::Tone;
 
 use super::cli::{LogFormat, Options};
-use super::host_runtime::{
-    ProcessCompletion, ProcessEventObserver, ProcessOutputPolicy, ProcessRequest, ProcessStream,
-};
+use super::host_runtime::{ProcessCompletion, ProcessRecorder, ProcessStream};
 use super::plan::Phase;
+use super::task::{StepSpecSource, Task, TaskOutcome, TaskScope};
 
 static FLEET_FAILURE_PRESENTED: AtomicBool = AtomicBool::new(false);
 static FLEET_WARNING_PRESENTED: AtomicBool = AtomicBool::new(false);
+
+/// Published into a failed step's retained tail so operators know where the
+/// raw output went. Execution never chooses wording; presentation owns it.
+const FAILURE_HINT: &str = "failed; see diagnostics";
+
+/// How one step's raw process output is filtered for humans. Derived from
+/// [`StepSpec::finalizing`](super::task::StepSpec::finalizing), so execution
+/// never selects an output policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutputPolicy {
+    /// Bounded, sanitized operational allowlist.
+    Curated,
+    /// Activation lifecycle allowlist while the detached unit runs.
+    Activation,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkflowResult {
@@ -118,30 +132,6 @@ impl FleetProgress {
     pub fn host_skipped(&self, host: &str, summary: impl Into<String>) {
         self.reporter
             .host_skipped(host, safe_host_summary(&summary.into()));
-    }
-
-    pub fn host_operation_started(&self, host: &str, key: &str, label: &str) {
-        let (running, _) = task_stage_labels(label);
-        self.reporter.host_task_started(host, key, &running);
-    }
-
-    pub fn host_operation_output(&self, host: &str, key: &str, line: &str) {
-        if let Some(line) = format_operation_dashboard_line(line) {
-            self.reporter.host_task_output(host, key, line);
-        }
-    }
-
-    pub fn host_operation_finished(
-        &self,
-        host: &str,
-        key: &str,
-        label: &str,
-        elapsed: Duration,
-        succeeded: bool,
-    ) {
-        let (running, done) = task_stage_labels(label);
-        self.reporter
-            .host_task_finished(host, key, &running, &done, elapsed, succeeded);
     }
 
     pub fn phase_completed(
@@ -391,15 +381,32 @@ impl FleetProgress {
         }
     }
 
-    pub fn process_observer(&self) -> Arc<dyn ProcessEventObserver> {
-        Arc::new(FleetProcessObserver {
+    /// Task factory for one host's steps.
+    pub fn host_scope(&self, host: &str) -> Arc<HostScope> {
+        self.scope(TaskTarget::Host(host.to_owned()))
+    }
+
+    /// Task factory for phase-level (non-host) operations.
+    pub fn phase_scope(&self) -> Arc<HostScope> {
+        self.scope(TaskTarget::Phase)
+    }
+
+    fn scope(&self, target: TaskTarget) -> Arc<HostScope> {
+        Arc::new(HostScope {
             reporter: self.reporter.clone(),
+            target,
             verbose: self.verbose,
             prefix: self.prefix_process_logs,
-            diagnostics: self.diagnostics.clone(),
             build_heartbeat: self.build_heartbeat,
             activation_heartbeat: self.activation_heartbeat,
         })
+    }
+
+    /// Display-independent diagnostic recorder for the steps' child processes.
+    pub fn recorder(&self) -> Option<Arc<dyn ProcessRecorder>> {
+        self.diagnostics
+            .clone()
+            .map(|sink| sink as Arc<dyn ProcessRecorder>)
     }
 }
 
@@ -411,143 +418,223 @@ pub fn take_warning_presented() -> bool {
     FLEET_WARNING_PRESENTED.swap(false, Ordering::AcqRel)
 }
 
-#[derive(Clone, Debug)]
-struct FleetProcessObserver {
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TaskTarget {
+    Host(String),
+    Phase,
+}
+
+/// Host- or phase-bound task factory. Mints one [`ProgressTask`] per step.
+pub struct HostScope {
     reporter: ProgressReporter,
+    target: TaskTarget,
     verbose: bool,
     prefix: bool,
-    diagnostics: Option<Arc<DiagnosticSink>>,
     build_heartbeat: Option<Duration>,
     activation_heartbeat: Option<Duration>,
 }
 
-impl ProcessEventObserver for FleetProcessObserver {
-    fn started(&self, request: &ProcessRequest) {
-        if let Some(diagnostics) = &self.diagnostics {
-            diagnostics.started(request);
+impl HostScope {
+    /// Display host these steps belong to; phase scopes have no host.
+    fn display_host(&self) -> &str {
+        match &self.target {
+            TaskTarget::Host(host) => host,
+            TaskTarget::Phase => "",
         }
-        if request.output_policy == ProcessOutputPolicy::HiddenProtocol {
-            return;
-        }
-        let label = process_label(&request.label);
-        if let Some(host) = &request.host {
-            let (running, _) = task_stage_labels(&request.label);
-            self.reporter
-                .host_task_started(host, &request.label, &running);
+    }
+}
+
+impl TaskScope for HostScope {
+    fn step(&self, step: &dyn StepSpecSource) -> Arc<dyn Task> {
+        let spec = step.spec(self.display_host());
+        let heartbeat = if spec.finalizing {
+            self.activation_heartbeat
         } else {
-            self.reporter.task_started(request.label.clone(), label);
+            self.build_heartbeat
+        };
+        Arc::new(ProgressTask {
+            reporter: self.reporter.clone(),
+            target: self.target.clone(),
+            heartbeat,
+            verbose: self.verbose,
+            prefix: self.prefix,
+            name: spec.name,
+            running: spec.running,
+            done: spec.done,
+            finalizing: spec.finalizing,
+            interrupted: AtomicBool::new(false),
+        })
+    }
+}
+
+/// Renders one step's lifecycle into the host dashboard or the phase line.
+#[derive(Debug)]
+pub struct ProgressTask {
+    reporter: ProgressReporter,
+    target: TaskTarget,
+    heartbeat: Option<Duration>,
+    verbose: bool,
+    prefix: bool,
+    name: String,
+    running: String,
+    done: String,
+    finalizing: bool,
+    interrupted: AtomicBool,
+}
+
+impl ProgressTask {
+    /// Activation output is admitted only for finalizing activation/rollback.
+    fn output_policy(&self) -> OutputPolicy {
+        if self.finalizing {
+            OutputPolicy::Activation
+        } else {
+            OutputPolicy::Curated
         }
     }
 
-    fn output(&self, request: &ProcessRequest, stream: ProcessStream, chunk: &str) {
-        if let Some(diagnostics) = &self.diagnostics {
-            diagnostics.output(request, stream, chunk);
+    /// Retain and render one semantic line for this step.
+    fn publish_line(&self, line: String) {
+        self.reporter
+            .task_output(self.name.clone(), &self.running, line.clone());
+        match &self.target {
+            TaskTarget::Host(host) => self.reporter.host_task_output(host, &self.name, line),
+            TaskTarget::Phase => {
+                self.reporter
+                    .task_live_output(self.name.clone(), &self.running, line)
+            }
         }
-        if request.output_policy == ProcessOutputPolicy::HiddenProtocol {
-            return;
+    }
+}
+
+impl Task for ProgressTask {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn started(&self) {
+        match &self.target {
+            TaskTarget::Host(host) => {
+                self.reporter
+                    .host_task_started(host, &self.name, &self.running)
+            }
+            TaskTarget::Phase => self
+                .reporter
+                .task_started(self.name.clone(), self.running.clone()),
         }
+    }
+
+    fn output(&self, stream: ProcessStream, chunk: &str) {
         for line in chunk.lines() {
             let (dashboard_line, verbose_line) =
-                format_process_line_views(request.output_policy, stream, line, self.verbose);
+                format_process_line_views(self.output_policy(), stream, line, self.verbose);
             if let Some(line) = verbose_line {
                 self.reporter.message(format_process_line(
-                    &process_label(&request.label),
+                    &process_label(&self.name),
                     Some(stream),
                     &line,
                     self.prefix,
                 ));
             }
-            let Some(dashboard_line) = dashboard_line else {
-                continue;
-            };
-            let label = process_label(&request.label);
-            self.reporter
-                .task_output(request.label.clone(), &label, dashboard_line.clone());
-            if let Some(host) = &request.host {
-                self.reporter
-                    .host_task_output(host, &request.label, dashboard_line);
-            } else {
-                self.reporter
-                    .task_live_output(request.label.clone(), &label, dashboard_line);
+            if let Some(dashboard_line) = dashboard_line {
+                self.publish_line(dashboard_line);
             }
         }
     }
 
-    fn finished(&self, request: &ProcessRequest, elapsed: Duration, completion: ProcessCompletion) {
-        if let Some(diagnostics) = &self.diagnostics {
-            diagnostics.finished(request, elapsed, completion);
+    fn note(&self, line: &str) {
+        if let Some(line) = format_operation_dashboard_line(line) {
+            self.publish_line(line);
         }
-        if request.output_policy == ProcessOutputPolicy::HiddenProtocol {
-            return;
-        }
-        if completion == ProcessCompletion::Interrupted {
-            self.reporter.task_interrupted(
-                request.label.clone(),
-                process_label(&request.label),
-                elapsed,
-            );
-            return;
-        }
-        let label = process_label(&request.label);
-        if completion == ProcessCompletion::Failed {
-            let line = "command failed; see diagnostics".to_owned();
-            self.reporter
-                .task_output(request.label.clone(), &label, line.clone());
-            if let Some(host) = &request.host {
-                self.reporter.host_task_output(host, &request.label, line);
+    }
+
+    fn heartbeat(&self, elapsed: Duration) {
+        match &self.target {
+            TaskTarget::Host(host) => {
+                self.reporter
+                    .host_task_heartbeat(host, &self.name, &self.running)
+            }
+            TaskTarget::Phase => {
+                self.reporter
+                    .task_heartbeat(self.name.clone(), &self.running, elapsed)
             }
         }
-        if let Some(host) = &request.host {
-            let (running, done) = task_stage_labels(&request.label);
-            if completion == ProcessCompletion::Succeeded
-                && request.output_policy == ProcessOutputPolicy::Activation
-            {
-                self.reporter
-                    .host_task_finalizing(host, &request.label, &running, &done, elapsed);
-            } else {
-                self.reporter.host_task_finished(
-                    host,
-                    &request.label,
-                    &running,
-                    &done,
+    }
+
+    fn finished(&self, elapsed: Duration, outcome: TaskOutcome) {
+        match &self.target {
+            TaskTarget::Host(host) => match outcome {
+                TaskOutcome::Interrupted => {
+                    self.reporter
+                        .host_task_interrupted(host, &self.name, &self.running, elapsed)
+                }
+                TaskOutcome::Succeeded if self.finalizing => {
+                    self.reporter.host_task_finalizing(
+                        host,
+                        &self.name,
+                        &self.running,
+                        &self.done,
+                        elapsed,
+                    );
+                }
+                TaskOutcome::Succeeded => {
+                    self.reporter.host_task_finished(
+                        host,
+                        &self.name,
+                        &self.running,
+                        &self.done,
+                        elapsed,
+                        true,
+                    );
+                }
+                TaskOutcome::Failed => {
+                    self.publish_line(FAILURE_HINT.to_owned());
+                    self.reporter.host_task_finished(
+                        host,
+                        &self.name,
+                        &self.running,
+                        &self.done,
+                        elapsed,
+                        false,
+                    );
+                }
+            },
+            TaskTarget::Phase => match outcome {
+                TaskOutcome::Interrupted => {
+                    self.reporter.task_interrupted(
+                        self.name.clone(),
+                        self.running.clone(),
+                        elapsed,
+                    );
+                }
+                TaskOutcome::Succeeded => self.reporter.task_finished(
+                    self.name.clone(),
+                    self.running.clone(),
                     elapsed,
-                    completion == ProcessCompletion::Succeeded,
-                );
-            }
-        } else {
-            self.reporter.task_finished(
-                request.label.clone(),
-                label,
-                elapsed,
-                completion == ProcessCompletion::Succeeded,
-            );
+                    true,
+                ),
+                TaskOutcome::Failed => {
+                    self.publish_line(FAILURE_HINT.to_owned());
+                    self.reporter.task_finished(
+                        self.name.clone(),
+                        self.running.clone(),
+                        elapsed,
+                        false,
+                    )
+                }
+            },
         }
     }
 
-    fn heartbeat_interval(&self, request: &ProcessRequest) -> Option<Duration> {
-        if request.output_policy == ProcessOutputPolicy::HiddenProtocol {
-            return None;
-        }
-        if request.label.contains("activation") || request.label.contains("rollback") {
-            self.activation_heartbeat
-        } else if request.label.contains("build") || request.label.contains("realize") {
-            self.build_heartbeat
-        } else {
-            None
-        }
+    fn heartbeat_interval(&self) -> Option<Duration> {
+        self.heartbeat
     }
 
-    fn heartbeat(&self, request: &ProcessRequest, elapsed: Duration) {
-        if let Some(host) = &request.host {
-            self.reporter
-                .host_task_heartbeat(host, &request.label, &process_label(&request.label));
-        } else {
-            self.reporter.task_heartbeat(
-                request.label.clone(),
-                process_label(&request.label),
-                elapsed,
-            );
-        }
+    fn mark_interrupted(&self) {
+        self.interrupted.store(true, Ordering::Release);
+    }
+
+    fn was_interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::Acquire)
     }
 }
 
@@ -578,27 +665,26 @@ impl DiagnosticSink {
             state: Mutex::new(DiagnosticState::default()),
         })
     }
+}
 
-    fn started(&self, request: &ProcessRequest) {
-        self.append(
-            &format!("{}.status", diagnostic_name(&request.label)),
-            b"started\n",
-        );
+impl ProcessRecorder for DiagnosticSink {
+    fn started(&self, name: &str) {
+        self.append(&format!("{}.status", diagnostic_name(name)), b"started\n");
     }
 
-    fn output(&self, request: &ProcessRequest, stream: ProcessStream, chunk: &str) {
+    fn output(&self, name: &str, stream: ProcessStream, chunk: &str) {
         let stream = match stream {
             ProcessStream::Stdout => "stdout",
             ProcessStream::Stderr => "stderr",
         };
         self.append(
-            &format!("{}.{}.log", diagnostic_name(&request.label), stream),
+            &format!("{}.{}.log", diagnostic_name(name), stream),
             chunk.as_bytes(),
         );
     }
 
-    fn finished(&self, request: &ProcessRequest, elapsed: Duration, completion: ProcessCompletion) {
-        let name = diagnostic_name(&request.label);
+    fn finished(&self, name: &str, elapsed: Duration, completion: ProcessCompletion) {
+        let name = diagnostic_name(name);
         self.append(
             &format!("{name}.status"),
             format!(
@@ -614,7 +700,9 @@ impl DiagnosticSink {
         );
         self.close_command_files(&name);
     }
+}
 
+impl DiagnosticSink {
     fn close_command_files(&self, name: &str) {
         let Ok(mut state) = self.state.lock() else {
             return;
@@ -686,148 +774,6 @@ fn process_label(label: &str) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
         None => String::new(),
     }
-}
-
-/// Lowercase stage phrasing shared by the running row and the non-terminal
-/// completion row. `running` labels the live task; `done` is the label left
-/// behind once it succeeds. Both drop the redundant host column (the row
-/// already names it) while keeping transport builders and readiness parents as
-/// detail. Activation and rollback keep their finalizing wording. Unknown
-/// labels fall back to the generic process label plus `done`.
-fn task_stage_labels(raw: &str) -> (String, String) {
-    let exact = [
-        (
-            "remote-build-copy-closure-local",
-            "closure copy",
-            "closure copy done",
-        ),
-        (
-            "remote-build-verify-local-closure",
-            "closure verify",
-            "closure verify done",
-        ),
-        (
-            "remote-build-verify-builder-closure",
-            "closure verify",
-            "closure verify done",
-        ),
-        ("deploy-copy-closure", "closure copy", "closure copy done"),
-        (
-            "Discover SSH host key",
-            "ssh key discover",
-            "ssh key discover done",
-        ),
-        ("Health check", "health check", "health check done"),
-    ];
-    for (label, running, done) in exact {
-        if raw == label {
-            return (running.to_owned(), done.to_owned());
-        }
-    }
-    if let Some(parent) = raw.strip_prefix("parent-reconcile-") {
-        return (
-            format!("parent reconcile {parent}"),
-            format!("parent reconcile done · {parent}"),
-        );
-    }
-    if let Some(parent) = raw.strip_prefix("parent-settle-") {
-        return (
-            format!("parent settle {parent}"),
-            format!("parent settle done · {parent}"),
-        );
-    }
-    if raw.starts_with("build-plan-") {
-        return ("build plan".to_owned(), "build plan done".to_owned());
-    }
-    if let Some(rest) = raw.strip_prefix("build-") {
-        if rest.ends_with("-copy-derivation") {
-            return ("build copy".to_owned(), "build copy done".to_owned());
-        }
-        if let Some((_, builder)) = rest.rsplit_once("-via-") {
-            return (
-                format!("build via {builder}"),
-                format!("build done via {builder}"),
-            );
-        }
-        return ("build".to_owned(), "build done".to_owned());
-    }
-    let prefixed = [
-        ("snapshot-", "snapshot", "snapshot done"),
-        ("target-cache-pull-", "cache pull", "cache pull done"),
-        (
-            "target-closure-verify-",
-            "closure verify",
-            "closure verify done",
-        ),
-        (
-            "relay-cache-to-local-",
-            "closure relay pull",
-            "closure relay pull done",
-        ),
-        (
-            "relay-cache-to-target-",
-            "closure relay push",
-            "closure relay push done",
-        ),
-        (
-            "host-age-identity-upload-",
-            "age identity upload",
-            "age identity upload done",
-        ),
-        (
-            "host-age-identity-install-",
-            "age identity install",
-            "age identity install done",
-        ),
-        (
-            "acquire-candidate-lease-",
-            "candidate lease acquire",
-            "candidate lease acquire done",
-        ),
-        (
-            "release-candidate-lease-",
-            "candidate lease release",
-            "candidate lease release done",
-        ),
-        (
-            "generation-admission-preflight-",
-            "generation admission",
-            "generation admission done",
-        ),
-        (
-            "prefetch-podman-image-",
-            "prefetch podman",
-            "prefetch podman done",
-        ),
-        (
-            "prefetch-ai-model-",
-            "prefetch models",
-            "prefetch models done",
-        ),
-        (
-            "pre-switch-preparation-",
-            "pre-switch prepare",
-            "pre-switch prepare done",
-        ),
-        (
-            "activation-observe-",
-            "activation observe",
-            "activation done, finalizing",
-        ),
-        (
-            "rollback-observe-",
-            "rollback observe",
-            "rollback done, finalizing",
-        ),
-    ];
-    for (prefix, running, done) in prefixed {
-        if raw.starts_with(prefix) {
-            return (running.to_owned(), done.to_owned());
-        }
-    }
-    let running = process_label(raw).to_lowercase();
-    let done = format!("{running} done");
-    (running, done)
 }
 
 pub fn phase_label(phase: Phase, hosts: usize, position: Option<(usize, usize)>) -> String {
@@ -908,14 +854,13 @@ fn format_dashboard_line(line: &str) -> Option<String> {
 }
 
 fn format_process_dashboard_line(
-    policy: ProcessOutputPolicy,
+    policy: OutputPolicy,
     stream: ProcessStream,
     line: &str,
 ) -> Option<String> {
     match policy {
-        ProcessOutputPolicy::Curated => format_dashboard_line(line),
-        ProcessOutputPolicy::Activation => format_activation_dashboard_line(line, stream),
-        ProcessOutputPolicy::HiddenProtocol => None,
+        OutputPolicy::Curated => format_dashboard_line(line),
+        OutputPolicy::Activation => format_activation_dashboard_line(line, stream),
     }
 }
 
@@ -952,7 +897,7 @@ fn format_operation_dashboard_line(line: &str) -> Option<String> {
     Some(rendered)
 }
 
-pub(crate) fn format_health_progress_detail(detail: &str) -> Option<String> {
+fn format_health_progress_detail(detail: &str) -> Option<String> {
     let detail = terminal_safe_line(detail);
     if detail.is_empty() {
         return None;
@@ -1022,12 +967,12 @@ pub(crate) fn format_health_progress_detail(detail: &str) -> Option<String> {
 }
 
 fn format_process_line_views(
-    policy: ProcessOutputPolicy,
+    policy: OutputPolicy,
     stream: ProcessStream,
     line: &str,
     verbose: bool,
 ) -> (Option<String>, Option<String>) {
-    let protocol = policy == ProcessOutputPolicy::Activation && activation_protocol_line(line);
+    let protocol = policy == OutputPolicy::Activation && activation_protocol_line(line);
     (
         format_process_dashboard_line(policy, stream, line),
         (verbose && !protocol)
@@ -1334,7 +1279,7 @@ fn format_verbose_line(line: &str) -> Option<String> {
     (!line.is_empty()).then_some(line)
 }
 
-pub(crate) fn format_failure_line(line: &str) -> Option<String> {
+fn format_failure_line(line: &str) -> Option<String> {
     let mut line = redact_sensitive_line(terminal_safe_line(line));
     if line.is_empty() {
         return None;
@@ -1528,82 +1473,6 @@ mod tests {
     }
 
     #[test]
-    fn task_stage_labels_pair_running_and_done_phrasing() {
-        let cases = [
-            (
-                "build-plan-abird-gondor-ci",
-                "build plan",
-                "build plan done",
-            ),
-            ("build-abird-gondor-srv", "build", "build done"),
-            (
-                "build-abird-gondor-srv-copy-derivation",
-                "build copy",
-                "build copy done",
-            ),
-            (
-                "build-abird-gondor-srv-via-abird-gondor-ci",
-                "build via abird-gondor-ci",
-                "build done via abird-gondor-ci",
-            ),
-            (
-                "parent-reconcile-gap3-gondor",
-                "parent reconcile gap3-gondor",
-                "parent reconcile done · gap3-gondor",
-            ),
-            ("snapshot-pvl-x2", "snapshot", "snapshot done"),
-            (
-                "relay-cache-to-local-pvl-x2",
-                "closure relay pull",
-                "closure relay pull done",
-            ),
-            (
-                "relay-cache-to-target-pvl-x2",
-                "closure relay push",
-                "closure relay push done",
-            ),
-            (
-                "prefetch-podman-image-pvl-x2",
-                "prefetch podman",
-                "prefetch podman done",
-            ),
-            (
-                "prefetch-ai-model-pvl-x2",
-                "prefetch models",
-                "prefetch models done",
-            ),
-            (
-                "generation-admission-preflight-pvl-x2",
-                "generation admission",
-                "generation admission done",
-            ),
-            (
-                "activation-observe-pvl-x2",
-                "activation observe",
-                "activation done, finalizing",
-            ),
-            (
-                "Discover SSH host key",
-                "ssh key discover",
-                "ssh key discover done",
-            ),
-            ("Health check", "health check", "health check done"),
-            (
-                "unknown-task-pvl-x2",
-                "unknown task pvl x2",
-                "unknown task pvl x2 done",
-            ),
-        ];
-        for (raw, running, done) in cases {
-            assert_eq!(
-                task_stage_labels(raw),
-                (running.to_owned(), done.to_owned()),
-                "{raw}"
-            );
-        }
-    }
-
-    #[test]
     fn verbose_lines_can_be_plain_or_attributed() {
         assert_eq!(
             format_process_line("build alpha", Some(ProcessStream::Stderr), "copying", false),
@@ -1730,7 +1599,7 @@ mod tests {
     fn verbose_output_is_independent_from_dashboard_admission() {
         assert_eq!(
             format_process_line_views(
-                ProcessOutputPolicy::Curated,
+                OutputPolicy::Curated,
                 ProcessStream::Stdout,
                 "ordinary child output",
                 true,
@@ -1739,7 +1608,7 @@ mod tests {
         );
         assert_eq!(
             format_process_line_views(
-                ProcessOutputPolicy::Curated,
+                OutputPolicy::Curated,
                 ProcessStream::Stderr,
                 "OPENAI_API_KEY=secret",
                 true,
@@ -1748,7 +1617,7 @@ mod tests {
         );
         assert_eq!(
             format_process_dashboard_line(
-                ProcessOutputPolicy::Curated,
+                OutputPolicy::Curated,
                 ProcessStream::Stderr,
                 "error: arbitrary subprocess payload",
             ),
@@ -1756,7 +1625,7 @@ mod tests {
         );
         assert_eq!(
             format_process_dashboard_line(
-                ProcessOutputPolicy::Activation,
+                OutputPolicy::Activation,
                 ProcessStream::Stderr,
                 "error: arbitrary activation payload",
             ),
@@ -1769,9 +1638,9 @@ mod tests {
         let health_record = "user-failed\tabird\tYWJpcmQtYWdlbnQuc2VydmljZQ==";
         assert_eq!(
             format_process_dashboard_line(
-                ProcessOutputPolicy::HiddenProtocol,
+                OutputPolicy::Curated,
                 ProcessStream::Stdout,
-                health_record,
+                health_record
             ),
             None
         );
@@ -1784,7 +1653,7 @@ mod tests {
         ] {
             assert_eq!(
                 format_process_dashboard_line(
-                    ProcessOutputPolicy::Activation,
+                    OutputPolicy::Activation,
                     ProcessStream::Stderr,
                     marker,
                 ),
@@ -1793,7 +1662,7 @@ mod tests {
             );
             assert_eq!(
                 format_process_line_views(
-                    ProcessOutputPolicy::Activation,
+                    OutputPolicy::Activation,
                     ProcessStream::Stderr,
                     marker,
                     true,
@@ -1882,24 +1751,12 @@ mod tests {
         let progress = FleetProgress::from_options(&Options::default())
             .with_diagnostics(temporary.path())
             .unwrap();
-        let observer = progress.process_observer();
-        let request = ProcessRequest {
-            program: "tool".to_owned(),
-            args: vec!["secret-argument-is-not-logged".to_owned()],
-            environment: Vec::new(),
-            clear_git_repository_environment: false,
-            cwd: temporary.path().to_path_buf(),
-            stdin: Some("secret-input-is-not-logged".to_owned()),
-            effect: super::super::host_runtime::EffectKind::ReadOnly,
-            output_policy: ProcessOutputPolicy::Curated,
-            label: "build alpha".to_owned(),
-            host: None,
-        };
-        observer.started(&request);
-        observer.output(&request, ProcessStream::Stdout, "plain output\n");
-        observer.output(&request, ProcessStream::Stderr, "plain error\n");
-        observer.finished(
-            &request,
+        let recorder = progress.recorder().expect("diagnostics recorder");
+        recorder.started("build alpha");
+        recorder.output("build alpha", ProcessStream::Stdout, "plain output\n");
+        recorder.output("build alpha", ProcessStream::Stderr, "plain error\n");
+        recorder.finished(
+            "build alpha",
             Duration::from_millis(5),
             ProcessCompletion::Succeeded,
         );
