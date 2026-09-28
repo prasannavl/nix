@@ -37,9 +37,14 @@ switch those callers and only then remove the Bash/Python implementation.
   activation starts. Required failure remains outside the rollback boundary and
   releases completed leases; optional failure excludes only that target after
   its lease cleanup is confirmed, while unresolved cleanup fails the barrier.
-- The first `INT` or `TERM` waits for an admitted activation. Three signals
-  within three seconds force remote cancellation. `HUP` terminates local work
-  without claiming remote cancellation.
+- The first `INT` or `TERM` requests graceful shutdown and waits for an
+  admitted activation. A second signal within three seconds confirms escalation;
+  the third exits directly from the signal handler, matching Bash Nixbot's
+  three-signal policy while ensuring a blocked worker, renderer, or cleanup path
+  cannot suppress force-exit. This emergency exit intentionally bypasses local
+  cleanup and leaves independently supervised remote activations to finish or
+  be reconciled. `HUP` terminates local work without claiming remote
+  cancellation.
 - Managed-user health convergence distinguishes structural failures, settling
   state, service failures, holds, deferred resources, and exhausted retry
   budgets. Pvl's exact `healthCheck.ignore` unit names are filtered at the
@@ -180,6 +185,27 @@ and warnings-denied Clippy gate pass. The first packaged release-test run hit a
 transient `Broken pipe` in the unchanged
 `deferred_job_polling_survives_a_transient_transport_drop` fixture; the isolated
 release test, complete direct release suite, and packaged retry all passed.
+
+A September 28 Pvl deploy exposed an observed-process lifetime boundary after
+all build plans completed. The direct `nix copy` process exited, but an external
+writer retained one of its output pipes. Rust had already obtained the child
+status and then joined blocking stdout/stderr reader threads, so the fleet
+operation could neither complete nor process Ctrl-C. Its in-place dashboard had
+cleared the prior frame and appeared blank while the join remained blocked. The
+builder GC lease was the only remaining child; remote build, acquisition, and
+activation had not begun.
+
+Observed Unix streams now poll instead of relying on EOF as the sole completion
+signal. Once the direct child exits, each reader drains bytes already available
+and stops even if a daemon or detached descendant retains a duplicate writer.
+This preserves normal exact output while restoring bounded command completion,
+interrupt handling, and dashboard finalization. Command diagnostics also drop
+completed status/stdout/stderr handles instead of retaining every descriptor for
+the whole fleet invocation. One regression reproduces the inherited-descriptor
+shape with a direct child that exits while a background descendant keeps both
+pipes open. A second exercises cancellation while a TERM-resistant descendant
+retains the streams and verifies that the runner still returns in under one
+second.
 
 The September 27 progress and incident follow-up exposes deploy phase position
 (`1/5` through `5/5`) and records successful, warning, failed, interrupted, and

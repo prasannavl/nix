@@ -6,12 +6,18 @@
 // forced-command readiness probe, whose arguments are validated first.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, Read, Write};
+#[cfg(not(unix))]
+use std::io::{BufRead, BufReader};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
@@ -336,24 +342,29 @@ fn run_observed_process(
         .stderr
         .take()
         .ok_or_else(|| io::Error::other("child stderr pipe is unavailable"))?;
+    let child_exited = Arc::new(AtomicBool::new(false));
     let stdout_observer = Arc::clone(&observer);
     let stdout_request = request.clone();
+    let stdout_child_exited = Arc::clone(&child_exited);
     let stdout_thread = std::thread::spawn(move || {
         observe_stream(
             stdout,
             &stdout_request,
             ProcessStream::Stdout,
             stdout_observer,
+            &stdout_child_exited,
         )
     });
     let stderr_request = request.clone();
     let stderr_observer = Arc::clone(&observer);
+    let stderr_child_exited = Arc::clone(&child_exited);
     let stderr_thread = std::thread::spawn(move || {
         observe_stream(
             stderr,
             &stderr_request,
             ProcessStream::Stderr,
             stderr_observer,
+            &stderr_child_exited,
         )
     });
     let heartbeat_interval = observer.heartbeat_interval(request);
@@ -372,6 +383,11 @@ fn run_observed_process(
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    // A daemon or detached descendant can retain a duplicate of a child's
+    // output descriptor after the direct child has exited. Do not let that
+    // unrelated writer keep process completion or signal handling blocked.
+    // Stream readers drain bytes already available, then stop at this boundary.
+    child_exited.store(true, Ordering::Release);
     let stdout = stdout_thread
         .join()
         .map_err(|_| io::Error::other("stdout observer thread panicked"))??;
@@ -433,11 +449,74 @@ fn terminate_process_group(child: &mut std::process::Child) -> io::Result<()> {
     child.kill()
 }
 
+#[cfg(unix)]
+fn observe_stream(
+    mut reader: impl Read + AsRawFd,
+    request: &ProcessRequest,
+    stream: ProcessStream,
+    observer: Arc<dyn ProcessEventObserver>,
+    child_exited: &AtomicBool,
+) -> io::Result<String> {
+    const POLL_INTERVAL_MILLIS: i32 = 50;
+    let mut bytes = Vec::new();
+    let mut emitted = 0;
+    let mut buffer = [0_u8; 8192];
+    let mut descriptor = libc::pollfd {
+        fd: reader.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        descriptor.revents = 0;
+        // SAFETY: `descriptor` points to one initialized pollfd for the live
+        // reader descriptor, and the call cannot outlive `reader`.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, POLL_INTERVAL_MILLIS) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if ready > 0 && descriptor.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    bytes.extend_from_slice(&buffer[..count]);
+                    while let Some(relative) =
+                        bytes[emitted..].iter().position(|byte| *byte == b'\n')
+                    {
+                        let end = emitted + relative + 1;
+                        observer.output(
+                            request,
+                            stream,
+                            &String::from_utf8_lossy(&bytes[emitted..end]),
+                        );
+                        emitted = end;
+                    }
+                    continue;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        if child_exited.load(Ordering::Acquire) {
+            break;
+        }
+    }
+    if emitted < bytes.len() {
+        observer.output(request, stream, &String::from_utf8_lossy(&bytes[emitted..]));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[cfg(not(unix))]
 fn observe_stream(
     reader: impl Read,
     request: &ProcessRequest,
     stream: ProcessStream,
     observer: Arc<dyn ProcessEventObserver>,
+    _child_exited: &AtomicBool,
 ) -> io::Result<String> {
     let mut reader = BufReader::new(reader);
     let mut bytes = Vec::new();

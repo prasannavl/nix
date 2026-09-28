@@ -1806,6 +1806,39 @@ fn local_repository_processes_clear_git_selectors_after_request_environment() {
 }
 
 #[test]
+fn reporting_process_runner_does_not_wait_for_inherited_output_descriptors() {
+    let observer = Arc::new(RecordingObserver::default());
+    let mut runner = ReportingProcessRunner::new(observer.clone());
+    let started = Instant::now();
+    let output = runner
+        .run(&ProcessRequest {
+            program: "/bin/sh".to_owned(),
+            args: strings(&[
+                "-c",
+                "printf 'complete\\n'; (sleep 2; printf 'late\\n' >&2) &",
+            ]),
+            environment: Vec::new(),
+            clear_git_repository_environment: false,
+            cwd: PathBuf::from("/"),
+            stdin: None,
+            effect: EffectKind::ReadOnly,
+            output_policy: ProcessOutputPolicy::Curated,
+            label: "descriptor leak".to_owned(),
+            host: None,
+        })
+        .unwrap();
+
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(output.succeeded());
+    assert_eq!(output.stdout, "complete\n");
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        observer.events.lock().unwrap().last().unwrap(),
+        "finish:descriptor leak:Succeeded"
+    );
+}
+
+#[test]
 fn reporting_process_runner_emits_configured_heartbeats_for_quiet_commands() {
     let observer = Arc::new(RecordingObserver::default());
     let mut runner = ReportingProcessRunner::new(observer.clone());
@@ -1885,4 +1918,37 @@ fn reporting_process_runner_terminates_the_complete_child_process_group() {
         .unwrap();
     assert!(started.elapsed() < Duration::from_secs(3));
     assert!(matches!(output.status, ProcessStatus::Signal(_)));
+}
+
+#[test]
+fn cancellation_does_not_wait_for_a_surviving_output_writer() {
+    let observer = Arc::new(RecordingObserver::default());
+    let cancellation = Arc::new(TimedCancellation {
+        started: Instant::now(),
+        delay: Duration::from_millis(100),
+        activations: AtomicUsize::new(0),
+        force: AtomicBool::new(false),
+    });
+    let mut runner = ReportingProcessRunner::new(observer).with_cancellation(cancellation);
+    let started = Instant::now();
+    let output = runner
+        .run(&ProcessRequest {
+            program: "/bin/sh".to_owned(),
+            args: strings(&[
+                "-c",
+                "trap 'exit 0' TERM; (trap '' TERM; sleep 2; printf 'late\\n' >&2) & wait",
+            ]),
+            environment: Vec::new(),
+            clear_git_repository_environment: false,
+            cwd: PathBuf::from("/"),
+            stdin: None,
+            effect: EffectKind::ReadOnly,
+            output_policy: ProcessOutputPolicy::Curated,
+            label: "cancel descriptor leak".to_owned(),
+            host: None,
+        })
+        .unwrap();
+
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(output.stderr.is_empty());
 }

@@ -593,8 +593,9 @@ impl DiagnosticSink {
     }
 
     fn finished(&self, request: &ProcessRequest, elapsed: Duration, completion: ProcessCompletion) {
+        let name = diagnostic_name(&request.label);
         self.append(
-            &format!("{}.status", diagnostic_name(&request.label)),
+            &format!("{name}.status"),
             format!(
                 "{} {}\n",
                 match completion {
@@ -606,6 +607,16 @@ impl DiagnosticSink {
             )
             .as_bytes(),
         );
+        self.close_command_files(&name);
+    }
+
+    fn close_command_files(&self, name: &str) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        for suffix in ["status", "stdout.log", "stderr.log"] {
+            state.files.remove(&format!("{name}.{suffix}"));
+        }
     }
 
     fn append(&self, name: &str, bytes: &[u8]) {
@@ -1689,6 +1700,17 @@ mod tests {
                 .mode()
                 & 0o777,
             0o600
+        );
+        assert!(
+            progress
+                .diagnostics
+                .as_ref()
+                .unwrap()
+                .state
+                .lock()
+                .unwrap()
+                .files
+                .is_empty()
         );
     }
 }

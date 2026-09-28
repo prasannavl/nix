@@ -6,8 +6,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 
-use crate::progress::command_reporter;
-
 use super::host_runtime::ProcessCancellation;
 use super::orchestration::{
     CancellationController, CancellationDecision, DeployActivity, TerminationSignal,
@@ -15,6 +13,11 @@ use super::orchestration::{
 
 static SIGNAL_RUNTIME: OnceLock<Arc<SignalCoordinator>> = OnceLock::new();
 static SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
+// Hard escalation must not depend on the coordinator thread: that thread and
+// the graceful path may themselves be blocked. The worker resets this counter
+// after the bounded double-signal window when it remains healthy.
+static TERMINATION_SIGNAL_COUNT: AtomicUsize = AtomicUsize::new(0);
+const FORCE_EXIT_WINDOW: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Interrupted {
@@ -210,6 +213,7 @@ pub fn check_interrupted() -> Result<()> {
 }
 
 fn signal_loop(read_fd: RawFd, coordinator: Arc<SignalCoordinator>) {
+    let mut last_termination = None;
     loop {
         let mut byte = 0_u8;
         // SAFETY: `read_fd` is the retained read end of the process signal
@@ -222,38 +226,24 @@ fn signal_loop(read_fd: RawFd, coordinator: Arc<SignalCoordinator>) {
                 libc::SIGTERM => TerminationSignal::Terminate,
                 _ => continue,
             };
-            let decision = coordinator.receive_now(signal);
-            command_reporter().message(cancellation_message(decision));
+            if signal != TerminationSignal::Hangup {
+                last_termination = Some(Instant::now());
+            }
+            coordinator.receive_now(signal);
             continue;
+        }
+        if last_termination.is_some_and(|last| last.elapsed() > FORCE_EXIT_WINDOW) {
+            TERMINATION_SIGNAL_COUNT.store(0, Ordering::Release);
+            last_termination = None;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
 }
 
-fn cancellation_message(decision: CancellationDecision) -> String {
-    match decision {
-        CancellationDecision::HangupExit { .. } => {
-            "Hangup received · stopping local work; remote activations remain untouched".to_owned()
-        }
-        CancellationDecision::WaitForActiveDeploys { .. } => {
-            "Interrupt received · waiting for admitted activations; press twice more to force"
-                .to_owned()
-        }
-        CancellationDecision::CancelLocalAndExit { .. } => {
-            "Interrupt received · stopping local work".to_owned()
-        }
-        CancellationDecision::AwaitEscalation { remaining, .. } => format!(
-            "Interrupt received · admitted activations still running · {remaining} more to force"
-        ),
-        CancellationDecision::ForceCancelRemoteAndExit { .. } => {
-            "Forced interruption · cancelling admitted remote activations".to_owned()
-        }
-    }
-}
-
 fn install_handler(signal: i32) -> Result<()> {
     // SAFETY: zeroed `sigaction` is initialized before use, the handler has the
-    // required C ABI, and its body only performs atomic operations and write(2).
+    // required C ABI, and its body uses only atomics plus async-signal-safe
+    // write(2) and _exit(2).
     let mut action = unsafe { std::mem::zeroed::<libc::sigaction>() };
     action.sa_sigaction = signal_handler as *const () as usize;
     action.sa_flags = libc::SA_RESTART;
@@ -275,10 +265,37 @@ extern "C" fn signal_handler(signal: i32) {
     if fd < 0 {
         return;
     }
+    if matches!(signal, libc::SIGINT | libc::SIGTERM) {
+        let previous = TERMINATION_SIGNAL_COUNT.fetch_add(1, Ordering::AcqRel);
+        if previous >= 2 {
+            write_signal_message(b"\nForced interruption received; exiting immediately\n");
+            // SAFETY: _exit is async-signal-safe and intentionally bypasses
+            // cleanup when graceful cancellation itself is not responsive.
+            unsafe { libc::_exit(128 + signal) };
+        }
+        if previous == 0 {
+            write_signal_message(
+                b"\nInterrupt received; graceful shutdown requested; press Ctrl-C twice more within 3s to force exit\n",
+            );
+        } else {
+            write_signal_message(
+                b"\nInterrupt received again; press Ctrl-C once more within 3s to force exit\n",
+            );
+        }
+    } else if signal == libc::SIGHUP {
+        write_signal_message(b"\nHangup received; stopping local work\n");
+    }
     let byte = signal as u8;
     // SAFETY: `fd` is a nonblocking pipe descriptor and `byte` is valid for the
     // one-byte write. Errors are intentionally ignored in signal context.
     let _ = unsafe { libc::write(fd, (&byte as *const u8).cast(), 1) };
+}
+
+fn write_signal_message(message: &'static [u8]) {
+    // SAFETY: stderr is process-owned, `message` is valid for the complete
+    // static lifetime, and write(2) is async-signal-safe. A partial write is
+    // acceptable for best-effort emergency feedback.
+    let _ = unsafe { libc::write(libc::STDERR_FILENO, message.as_ptr().cast(), message.len()) };
 }
 
 #[cfg(test)]
@@ -319,5 +336,68 @@ mod tests {
         assert!(coordinator.cancel_local());
         assert!(coordinator.force_remote());
         assert_eq!(coordinator.interruption().unwrap().status(), 143);
+    }
+
+    #[test]
+    fn third_interrupt_forces_exit_when_graceful_path_is_stuck() {
+        const CHILD_ENV: &str = "ABIRD_TEST_STUCK_SIGNAL_CHILD";
+        const TEST_NAME: &str =
+            "fleet::signal::tests::third_interrupt_forces_exit_when_graceful_path_is_stuck";
+        if let Some(marker) = std::env::var_os(CHILD_ENV) {
+            install().unwrap();
+            std::fs::write(marker, b"ready\n").unwrap();
+            loop {
+                std::thread::park_timeout(Duration::from_secs(60));
+            }
+        }
+
+        let temporary = tempfile::tempdir().unwrap();
+        let marker = temporary.path().join("ready");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST_NAME, "--nocapture"])
+            .env(CHILD_ENV, &marker)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        while !marker.exists() && started.elapsed() < Duration::from_secs(5) {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "signal child exited early"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(marker.exists(), "signal child did not become ready");
+
+        // SAFETY: the child pid is live and dedicated to this test.
+        assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the first interrupt must remain graceful"
+        );
+        // SAFETY: the child pid remains live after the graceful interrupt.
+        assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the second interrupt must request escalation without hard exit"
+        );
+        let forced_at = Instant::now();
+        // SAFETY: the child pid remains live after two interrupts.
+        assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                forced_at.elapsed() < Duration::from_secs(1),
+                "forced interrupt did not terminate promptly"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(status.code(), Some(130));
     }
 }

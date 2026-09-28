@@ -370,7 +370,7 @@ fn first_interrupt_waits_for_active_deploy_but_exits_when_none_is_active() {
 
 #[test]
 fn repeated_interrupts_escalate_within_window_and_reset_after_window() {
-    let mut controller = CancellationController::new(3, Duration::from_secs(3)).unwrap();
+    let mut controller = CancellationController::default();
     assert!(matches!(
         controller.receive(
             TerminationSignal::Interrupt,
@@ -401,7 +401,7 @@ fn repeated_interrupts_escalate_within_window_and_reset_after_window() {
     );
     assert!(controller.force_requested());
 
-    let mut reset = CancellationController::new(3, Duration::from_secs(3)).unwrap();
+    let mut reset = CancellationController::default();
     reset.receive(
         TerminationSignal::Interrupt,
         Duration::from_secs(1),
