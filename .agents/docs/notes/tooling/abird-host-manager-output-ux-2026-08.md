@@ -125,10 +125,11 @@ derivable pending count. Host rows use one lowercase stage vocabulary for every
 task: the live row reads `● <stage> · task elapsed <t>`, and a task that
 finishes before the host reaches its terminal outcome leaves
 `○ <stage> done · <t>` instead of the stale running label. While a running step
-declares a heartbeat, its live glyph pulses `●`/`○` once per second; once a
-declared heartbeat is overdue (twice its interval), the glyph turns warning and
-the row reports `no heartbeat · <age>`. Activation and rollback keep their stage
-and read `○ activation done, finalizing · <t>` while the detached unit settles.
+declares a heartbeat, a live row stays plain `●` while it is producing output
+and pulses `●`/`○` once it has been quiet for a few seconds; once a declared
+heartbeat is overdue (twice its interval), the glyph turns warning and the row
+reports `no heartbeat · <age>`. Activation and rollback keep their stage and
+read `○ activation done, finalizing · <t>` while the detached unit settles.
 Terminal tasks whose outcome carries no duration keep the last task's elapsed
 time, so completion rows still report how long the host took. Stage labels drop
 the redundant host column but keep transport builders and readiness parents as

@@ -106,6 +106,7 @@ struct HostRow {
     failure_output: VecDeque<String>,
     heartbeat_interval: Option<Duration>,
     last_heartbeat: Option<Instant>,
+    last_output: Option<Instant>,
 }
 
 /// Liveness of a running step's heartbeat, for the dashboard indicator.
@@ -138,6 +139,14 @@ fn heartbeat_state(row: &HostRow) -> Heartbeat {
 }
 
 impl HostRow {
+    /// A running row is "quiet" once no output has arrived for a few seconds;
+    /// only then does a live heartbeat pulse, so active streams stay steady.
+    fn is_quiet(&self) -> bool {
+        self.last_output
+            .or(self.task_started)
+            .is_some_and(|last| last.elapsed() >= QUIET_BLINK_AFTER)
+    }
+
     /// Interruption is a terminal host state: any later host-level outcome for
     /// the same row keeps it instead of downgrading it to failed or skipped.
     fn keep_interrupted(&mut self, elapsed: Option<Duration>) -> bool {
@@ -165,6 +174,7 @@ impl Default for HostRow {
             failure_output: VecDeque::new(),
             heartbeat_interval: None,
             last_heartbeat: None,
+            last_output: None,
         }
     }
 }
@@ -217,6 +227,9 @@ const RETAINED_OUTPUT_LINES_PER_TASK: usize = 5;
 const RETAINED_ACTIVE_TASK_TAILS: usize = 128;
 const RETAINED_FAILED_TASK_TAILS: usize = 8;
 const SCROLLING_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(5);
+/// A running host row pulses its live heartbeat only after this much silence,
+/// so rows that are actively streaming output stay steady.
+const QUIET_BLINK_AFTER: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StepProgress {
@@ -335,6 +348,7 @@ impl ProgressReporter {
             row.output.clear();
             row.heartbeat_interval = heartbeat_interval;
             row.last_heartbeat = None;
+            row.last_output = Some(Instant::now());
         });
     }
 
@@ -364,6 +378,7 @@ impl ProgressReporter {
             while row.output.len() > LIVE_OUTPUT_LINES_PER_TASK {
                 row.output.pop_front();
             }
+            row.last_output = Some(Instant::now());
         });
     }
 
@@ -1462,8 +1477,8 @@ fn host_dashboard_lines(
     elapsed: Duration,
     viewport: Option<(usize, usize)>,
 ) -> Vec<String> {
-    // Heartbeat pulses alternate once per second; the dashboard redraws on the
-    // same cadence, so a running step visibly blinks while it is reporting.
+    // The quiet-heartbeat pulse alternates once per second; the dashboard
+    // redraws on the same cadence, so only silent rows visibly blink.
     let blink_on = elapsed.as_secs().is_multiple_of(2);
     let running = dashboard
         .rows
@@ -1600,7 +1615,9 @@ fn host_dashboard_lines(
                     .unwrap_or_default();
                 let mut metadata = format!(" · task elapsed {}", format_duration(elapsed));
                 let (tone, glyph) = match heartbeat_state(row) {
-                    Heartbeat::Live => (Tone::Active, if blink_on { "●" } else { "○" }),
+                    Heartbeat::Live if row.is_quiet() => {
+                        (Tone::Active, if blink_on { "●" } else { "○" })
+                    }
                     Heartbeat::Stalled => {
                         let age = row
                             .last_heartbeat
@@ -1610,7 +1627,7 @@ fn host_dashboard_lines(
                         metadata.push_str(&format!(" · no heartbeat · {}", format_duration(age)));
                         (Tone::Warning, "●")
                     }
-                    Heartbeat::Absent => (Tone::Active, "●"),
+                    Heartbeat::Live | Heartbeat::Absent => (Tone::Active, "●"),
                 };
                 (
                     tone,
@@ -2325,7 +2342,7 @@ mod tests {
     }
 
     #[test]
-    fn running_heartbeat_blinks_then_warns_when_overdue() {
+    fn quiet_running_heartbeat_pulses_and_warns_when_overdue() {
         set_json_output(false);
         let reporter = ProgressReporter {
             enabled: true,
@@ -2340,25 +2357,38 @@ mod tests {
         reporter.started("Build systems · 1 host");
         reporter.begin_host_dashboard(&["app".to_owned()]);
         reporter.host_task_started("app", "build-app", "build", Some(Duration::from_secs(30)));
+        reporter.host_task_output("app", "build-app", "compiling".to_owned());
 
-        // A fresh heartbeat is live and pulses between the two glyphs.
-        let live_on = dashboard_lines(
-            TerminalStyle::from_capabilities(false, false),
-            reporter.state.lock().unwrap().stack.last().unwrap(),
-            Duration::from_secs(4),
-        )
-        .join("\n");
-        assert!(live_on.contains("app  ● build · task elapsed"), "{live_on}");
-        let live_off = dashboard_lines(
-            TerminalStyle::from_capabilities(false, false),
-            reporter.state.lock().unwrap().stack.last().unwrap(),
-            Duration::from_secs(5),
-        )
-        .join("\n");
-        assert!(
-            live_off.contains("app  ○ build · task elapsed"),
-            "{live_off}"
-        );
+        let render = |secs: u64| {
+            dashboard_lines(
+                TerminalStyle::from_capabilities(false, false),
+                reporter.state.lock().unwrap().stack.last().unwrap(),
+                Duration::from_secs(secs),
+            )
+            .join("\n")
+        };
+
+        // Active output keeps the live row steady on both pulse ticks.
+        assert!(render(4).contains("app  ● build · task elapsed"));
+        assert!(render(5).contains("app  ● build · task elapsed"));
+
+        // Quiet past the pulse window: the live heartbeat blinks.
+        {
+            let mut state = reporter.state.lock().unwrap();
+            let row = state
+                .stack
+                .last_mut()
+                .unwrap()
+                .host_dashboard
+                .as_mut()
+                .unwrap()
+                .rows
+                .get_mut("app")
+                .unwrap();
+            row.last_output = Some(Instant::now() - Duration::from_secs(10));
+        }
+        assert!(render(4).contains("app  ● build · task elapsed"));
+        assert!(render(5).contains("app  ○ build · task elapsed"));
 
         // Past twice the interval with no beat: warned and explained.
         {
@@ -2375,12 +2405,7 @@ mod tests {
                 .unwrap();
             row.task_started = Some(Instant::now() - Duration::from_secs(70));
         }
-        let stalled = dashboard_lines(
-            TerminalStyle::from_capabilities(false, false),
-            reporter.state.lock().unwrap().stack.last().unwrap(),
-            Duration::from_secs(6),
-        )
-        .join("\n");
+        let stalled = render(6);
         assert!(stalled.contains("app  ● build · task elapsed"), "{stalled}");
         assert!(stalled.contains("no heartbeat"), "{stalled}");
     }
