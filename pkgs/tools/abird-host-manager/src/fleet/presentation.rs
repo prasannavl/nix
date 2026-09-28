@@ -121,7 +121,8 @@ impl FleetProgress {
     }
 
     pub fn host_operation_started(&self, host: &str, key: &str, label: &str) {
-        self.reporter.host_task_started(host, key, label);
+        let (running, _) = task_stage_labels(label);
+        self.reporter.host_task_started(host, key, &running);
     }
 
     pub fn host_operation_output(&self, host: &str, key: &str, line: &str) {
@@ -138,8 +139,9 @@ impl FleetProgress {
         elapsed: Duration,
         succeeded: bool,
     ) {
+        let (running, done) = task_stage_labels(label);
         self.reporter
-            .host_task_finished(host, key, label, elapsed, succeeded);
+            .host_task_finished(host, key, &running, &done, elapsed, succeeded);
     }
 
     pub fn phase_completed(
@@ -429,8 +431,9 @@ impl ProcessEventObserver for FleetProcessObserver {
         }
         let label = process_label(&request.label);
         if let Some(host) = &request.host {
+            let (running, _) = task_stage_labels(&request.label);
             self.reporter
-                .host_task_started(host, &request.label, &label);
+                .host_task_started(host, &request.label, &running);
         } else {
             self.reporter.task_started(request.label.clone(), label);
         }
@@ -495,16 +498,18 @@ impl ProcessEventObserver for FleetProcessObserver {
             }
         }
         if let Some(host) = &request.host {
+            let (running, done) = task_stage_labels(&request.label);
             if completion == ProcessCompletion::Succeeded
                 && request.output_policy == ProcessOutputPolicy::Activation
             {
                 self.reporter
-                    .host_task_finalizing(host, &request.label, &label, elapsed);
+                    .host_task_finalizing(host, &request.label, &running, &done, elapsed);
             } else {
                 self.reporter.host_task_finished(
                     host,
                     &request.label,
-                    &label,
+                    &running,
+                    &done,
                     elapsed,
                     completion == ProcessCompletion::Succeeded,
                 );
@@ -681,6 +686,148 @@ fn process_label(label: &str) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
         None => String::new(),
     }
+}
+
+/// Lowercase stage phrasing shared by the running row and the non-terminal
+/// completion row. `running` labels the live task; `done` is the label left
+/// behind once it succeeds. Both drop the redundant host column (the row
+/// already names it) while keeping transport builders and readiness parents as
+/// detail. Activation and rollback keep their finalizing wording. Unknown
+/// labels fall back to the generic process label plus `done`.
+fn task_stage_labels(raw: &str) -> (String, String) {
+    let exact = [
+        (
+            "remote-build-copy-closure-local",
+            "closure copy",
+            "closure copy done",
+        ),
+        (
+            "remote-build-verify-local-closure",
+            "closure verify",
+            "closure verify done",
+        ),
+        (
+            "remote-build-verify-builder-closure",
+            "closure verify",
+            "closure verify done",
+        ),
+        ("deploy-copy-closure", "closure copy", "closure copy done"),
+        (
+            "Discover SSH host key",
+            "ssh key discover",
+            "ssh key discover done",
+        ),
+        ("Health check", "health check", "health check done"),
+    ];
+    for (label, running, done) in exact {
+        if raw == label {
+            return (running.to_owned(), done.to_owned());
+        }
+    }
+    if let Some(parent) = raw.strip_prefix("parent-reconcile-") {
+        return (
+            format!("parent reconcile {parent}"),
+            format!("parent reconcile done · {parent}"),
+        );
+    }
+    if let Some(parent) = raw.strip_prefix("parent-settle-") {
+        return (
+            format!("parent settle {parent}"),
+            format!("parent settle done · {parent}"),
+        );
+    }
+    if raw.starts_with("build-plan-") {
+        return ("build plan".to_owned(), "build plan done".to_owned());
+    }
+    if let Some(rest) = raw.strip_prefix("build-") {
+        if rest.ends_with("-copy-derivation") {
+            return ("build copy".to_owned(), "build copy done".to_owned());
+        }
+        if let Some((_, builder)) = rest.rsplit_once("-via-") {
+            return (
+                format!("build via {builder}"),
+                format!("build done via {builder}"),
+            );
+        }
+        return ("build".to_owned(), "build done".to_owned());
+    }
+    let prefixed = [
+        ("snapshot-", "snapshot", "snapshot done"),
+        ("target-cache-pull-", "cache pull", "cache pull done"),
+        (
+            "target-closure-verify-",
+            "closure verify",
+            "closure verify done",
+        ),
+        (
+            "relay-cache-to-local-",
+            "closure relay pull",
+            "closure relay pull done",
+        ),
+        (
+            "relay-cache-to-target-",
+            "closure relay push",
+            "closure relay push done",
+        ),
+        (
+            "host-age-identity-upload-",
+            "age identity upload",
+            "age identity upload done",
+        ),
+        (
+            "host-age-identity-install-",
+            "age identity install",
+            "age identity install done",
+        ),
+        (
+            "acquire-candidate-lease-",
+            "candidate lease acquire",
+            "candidate lease acquire done",
+        ),
+        (
+            "release-candidate-lease-",
+            "candidate lease release",
+            "candidate lease release done",
+        ),
+        (
+            "generation-admission-preflight-",
+            "generation admission",
+            "generation admission done",
+        ),
+        (
+            "prefetch-podman-image-",
+            "prefetch podman",
+            "prefetch podman done",
+        ),
+        (
+            "prefetch-ai-model-",
+            "prefetch models",
+            "prefetch models done",
+        ),
+        (
+            "pre-switch-preparation-",
+            "pre-switch prepare",
+            "pre-switch prepare done",
+        ),
+        (
+            "activation-observe-",
+            "activation observe",
+            "activation done, finalizing",
+        ),
+        (
+            "rollback-observe-",
+            "rollback observe",
+            "rollback done, finalizing",
+        ),
+    ];
+    for (prefix, running, done) in prefixed {
+        if raw.starts_with(prefix) {
+            return (running.to_owned(), done.to_owned());
+        }
+    }
+    let running = process_label(raw).to_lowercase();
+    let done = format!("{running} done");
+    (running, done)
 }
 
 pub fn phase_label(phase: Phase, hosts: usize, position: Option<(usize, usize)>) -> String {
@@ -1378,6 +1525,82 @@ mod tests {
             phase_label(Phase::TerraformDns, 0, None),
             "Apply DNS infrastructure"
         );
+    }
+
+    #[test]
+    fn task_stage_labels_pair_running_and_done_phrasing() {
+        let cases = [
+            (
+                "build-plan-abird-gondor-ci",
+                "build plan",
+                "build plan done",
+            ),
+            ("build-abird-gondor-srv", "build", "build done"),
+            (
+                "build-abird-gondor-srv-copy-derivation",
+                "build copy",
+                "build copy done",
+            ),
+            (
+                "build-abird-gondor-srv-via-abird-gondor-ci",
+                "build via abird-gondor-ci",
+                "build done via abird-gondor-ci",
+            ),
+            (
+                "parent-reconcile-gap3-gondor",
+                "parent reconcile gap3-gondor",
+                "parent reconcile done · gap3-gondor",
+            ),
+            ("snapshot-pvl-x2", "snapshot", "snapshot done"),
+            (
+                "relay-cache-to-local-pvl-x2",
+                "closure relay pull",
+                "closure relay pull done",
+            ),
+            (
+                "relay-cache-to-target-pvl-x2",
+                "closure relay push",
+                "closure relay push done",
+            ),
+            (
+                "prefetch-podman-image-pvl-x2",
+                "prefetch podman",
+                "prefetch podman done",
+            ),
+            (
+                "prefetch-ai-model-pvl-x2",
+                "prefetch models",
+                "prefetch models done",
+            ),
+            (
+                "generation-admission-preflight-pvl-x2",
+                "generation admission",
+                "generation admission done",
+            ),
+            (
+                "activation-observe-pvl-x2",
+                "activation observe",
+                "activation done, finalizing",
+            ),
+            (
+                "Discover SSH host key",
+                "ssh key discover",
+                "ssh key discover done",
+            ),
+            ("Health check", "health check", "health check done"),
+            (
+                "unknown-task-pvl-x2",
+                "unknown task pvl x2",
+                "unknown task pvl x2 done",
+            ),
+        ];
+        for (raw, running, done) in cases {
+            assert_eq!(
+                task_stage_labels(raw),
+                (running.to_owned(), done.to_owned()),
+                "{raw}"
+            );
+        }
     }
 
     #[test]

@@ -28,10 +28,19 @@ The visual vocabulary is semantic:
 - read-only inspection reports facts without a success glyph;
 - `✓` means terminal success or an already-satisfied postcondition;
 - `●` means accepted, running, or otherwise nonterminal work;
+- `○` is a neutral, nonterminal row: `○ pending` before a task starts,
+  `○ <stage> done` after one finishes, and `○ <stage> done, finalizing` while a
+  detached activation or rollback settles;
 - `◇` means work deliberately deferred to deployment or a dry-run check that was
   not executed;
 - `✗` means failure; and
 - dry runs say that no changes will be made and never claim success.
+
+Completion phrases are lowercase and consistent: running rows use the stage noun
+(`build plan`, `build`, `snapshot`, `closure relay push`, `prefetch podman`,
+`health check`) and completion rows append `done`. Every phase's terminal
+success summary uses the same wording, such as `✓ build done`,
+`✓ snapshot done`, `✓ acquire done`, `✓ deploy done`, and `✓ health done`.
 
 Durable agent submission is not completion. Job views derive their state from
 the retained job record. Fleet output retains one row per host and one overall
@@ -51,9 +60,13 @@ yellow, active work is cyan, headings alone are bold, rolling progress details
 are dimmed, neutral or skipped outcomes and completed-line metadata use nixbot
 gray, and structured field labels are blue. Completed phase rows color only the
 primary phase outcome; host summaries color successful status values while
-skipped host lines remain wholly gray. The same palette applies across all
-structured command families, transient and durable progress, terminal failure
-rendering, deprecation warnings, and the closeout confirmation prompt.
+skipped host lines remain wholly gray. Host names are the one non-semantic use
+of color: each takes a stable identity color from the shared nine-color nixbot
+host palette, hashed with FNV-1a, so parallel rows stay distinguishable while
+the glyph and status word remain authoritative for state. The same palette
+applies across all structured command families, transient and durable progress,
+terminal failure rendering, deprecation warnings, and the closeout confirmation
+prompt.
 
 Color is automatic only when the destination stream is a terminal. Stdout and
 stderr are detected independently, `NO_COLOR` and `TERM=dumb` disable ANSI, and
@@ -102,11 +115,16 @@ Fleet deployment phases keep the complete selected-host roster visible. Each
 running host owns a bounded rolling tail of up to five safe semantic lines;
 successful work collapses, while failed work retains its tail. The phase header
 reports stage, wave, concurrency, running, completed, pending, and elapsed
-counts. After a successful activation or rollback observer exits but before the
-host reaches its terminal outcome, its row reads `completed, finalizing` instead
-of retaining the stale observer name and duration. Parent-readiness task labels
-state the action before the parent endpoint, such as
-`Reconcile parent gap3 gondor`. Output ownership is consistent by phase:
+counts. Host rows use one lowercase stage vocabulary for every task: the live
+row reads `● <stage> · task elapsed <t>`, and a task that finishes before the
+host reaches its terminal outcome leaves `○ <stage> done · <t>` instead of the
+stale running label. Activation and rollback keep their stage and read
+`○ activation done, finalizing · <t>` while the detached unit settles. Terminal
+tasks whose outcome carries no duration keep the last task's elapsed time, so
+completion rows still report how long the host took. Stage labels drop the
+redundant host column but keep transport builders and readiness parents as
+detail, for example `build done via abird gondor ci` and
+`parent reconcile done · gap3 gondor`. Output ownership is consistent by phase:
 
 - build shows normalized Nix evaluation, realization, copy, and store events;
 - snapshot shows parent-readiness lifecycle events and the captured generation;

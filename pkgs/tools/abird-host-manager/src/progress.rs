@@ -125,9 +125,19 @@ impl Default for HostRow {
 enum HostRowState {
     Pending,
     Running,
+    Completed,
     Finalizing,
     Succeeded,
     Skipped,
+    Failed,
+}
+
+/// Terminal-ish outcome of a host-attributed task. Success is either a plain
+/// completed stage or a finalizing activation/rollback observer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostTaskOutcome {
+    Done,
+    Finalizing,
     Failed,
 }
 
@@ -302,14 +312,33 @@ impl ProgressReporter {
         host: &str,
         key: &str,
         label: &str,
+        done: &str,
         elapsed: Duration,
         succeeded: bool,
     ) {
-        self.finish_host_task(host, key, label, elapsed, succeeded, HostRowState::Pending);
+        self.finish_host_task(
+            host,
+            key,
+            label,
+            done,
+            elapsed,
+            if succeeded {
+                HostTaskOutcome::Done
+            } else {
+                HostTaskOutcome::Failed
+            },
+        );
     }
 
-    pub fn host_task_finalizing(&self, host: &str, key: &str, label: &str, elapsed: Duration) {
-        self.finish_host_task(host, key, label, elapsed, true, HostRowState::Finalizing);
+    pub fn host_task_finalizing(
+        &self,
+        host: &str,
+        key: &str,
+        label: &str,
+        done: &str,
+        elapsed: Duration,
+    ) {
+        self.finish_host_task(host, key, label, done, elapsed, HostTaskOutcome::Finalizing);
     }
 
     fn finish_host_task(
@@ -317,10 +346,11 @@ impl ProgressReporter {
         host: &str,
         key: &str,
         label: &str,
+        done: &str,
         elapsed: Duration,
-        succeeded: bool,
-        succeeded_state: HostRowState,
+        outcome: HostTaskOutcome,
     ) {
+        let succeeded = !matches!(outcome, HostTaskOutcome::Failed);
         self.finish_task_tail(
             key,
             format!(
@@ -331,8 +361,12 @@ impl ProgressReporter {
         );
         if !self.shows_recent_updates() {
             self.detail(format!(
-                "{host} · {label} · {} · {}",
-                if succeeded { "done" } else { "failed" },
+                "{host} · {} · {}",
+                if succeeded {
+                    done.to_owned()
+                } else {
+                    format!("{label} · failed")
+                },
                 format_duration(elapsed)
             ));
             return;
@@ -341,15 +375,14 @@ impl ProgressReporter {
             if row.task_key.as_deref() != Some(key) {
                 return;
             }
-            row.task = Some(label.to_owned());
+            row.task = Some(done.to_owned());
             row.task_started = None;
             row.elapsed = Some(elapsed);
             if succeeded {
-                row.state = succeeded_state;
-                if succeeded_state == HostRowState::Finalizing {
-                    row.task = None;
-                    row.elapsed = None;
-                }
+                row.state = match outcome {
+                    HostTaskOutcome::Finalizing => HostRowState::Finalizing,
+                    HostTaskOutcome::Done | HostTaskOutcome::Failed => HostRowState::Completed,
+                };
                 row.output.clear();
             } else {
                 row.state = HostRowState::Failed;
@@ -379,7 +412,12 @@ impl ProgressReporter {
             } else {
                 HostRowState::Failed
             };
-            row.elapsed = elapsed;
+            // Preserve the elapsed time recorded by the host's last task when
+            // the terminal outcome does not carry its own duration, so a
+            // completed row still reports how long the host actually took.
+            if elapsed.is_some() {
+                row.elapsed = elapsed;
+            }
             row.summary = (!summary.is_empty()).then_some(summary);
             row.task_started = None;
             if succeeded {
@@ -1439,26 +1477,13 @@ fn host_dashboard_lines(
             continue;
         };
         let (tone, status, metadata) = match row.state {
-            HostRowState::Pending => {
-                if let Some(task) = &row.task {
-                    (
-                        Tone::Muted,
-                        format!("○ {task}"),
-                        format!(
-                            " · {}",
-                            row.elapsed
-                                .map(format_duration)
-                                .unwrap_or_else(|| "pending".to_owned())
-                        ),
-                    )
-                } else {
-                    (Tone::Muted, "○ pending".to_owned(), String::new())
-                }
-            }
-            HostRowState::Finalizing => (
+            HostRowState::Pending => (Tone::Muted, "○ pending".to_owned(), String::new()),
+            HostRowState::Completed | HostRowState::Finalizing => (
                 Tone::Muted,
-                "○ completed, finalizing".to_owned(),
-                String::new(),
+                format!("○ {}", row.task.as_deref().unwrap_or("done")),
+                row.elapsed
+                    .map(|elapsed| format!(" · {}", format_duration(elapsed)))
+                    .unwrap_or_default(),
             ),
             HostRowState::Running => {
                 let elapsed = row
@@ -1914,6 +1939,7 @@ mod tests {
             "host-1",
             "activation-host-1",
             "Activation",
+            "activation done",
             Duration::from_secs(2),
             false,
         );
@@ -1923,6 +1949,7 @@ mod tests {
             "host-1",
             "rollback-host-1",
             "Rollback",
+            "rollback done",
             Duration::from_secs(1),
             true,
         );
@@ -1980,7 +2007,8 @@ mod tests {
         reporter.host_task_finalizing(
             "app",
             "activation-app",
-            "Activation observe app",
+            "activation observe",
+            "activation done, finalizing",
             Duration::from_secs(11),
         );
 
@@ -1992,14 +2020,89 @@ mod tests {
         )
         .join("\n");
         assert!(
-            rendered.contains("app  ○ completed, finalizing"),
+            rendered.contains("app  ○ activation done, finalizing · 11.0s"),
             "{rendered}"
         );
-        assert!(!rendered.contains("Activation observe app"), "{rendered}");
+        assert!(!rendered.contains("activation observe"), "{rendered}");
         assert!(
             !rendered.contains("starting the following units"),
             "{rendered}"
         );
+    }
+
+    #[test]
+    fn terminal_host_success_retains_the_last_task_elapsed() {
+        set_json_output(false);
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::new(Mutex::new(Vec::new()))),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+
+        reporter.started("Deploy systems · 1 host");
+        reporter.begin_host_dashboard(&["app".to_owned()]);
+        reporter.host_task_started("app", "activation-app", "Activation observe app");
+        reporter.host_task_finalizing(
+            "app",
+            "activation-app",
+            "activation observe",
+            "activation done, finalizing",
+            Duration::from_secs(11),
+        );
+        reporter.host_finished("app", true, None, "deploy done");
+
+        let state = reporter.state.lock().unwrap();
+        let rendered = dashboard_lines(
+            TerminalStyle::from_capabilities(false, false),
+            state.stack.last().unwrap(),
+            Duration::from_secs(12),
+        )
+        .join("\n");
+        assert!(
+            rendered.contains("app  ✓ deploy done · 11.0s"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn completed_host_task_renders_the_done_label() {
+        set_json_output(false);
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::new(Mutex::new(Vec::new()))),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+
+        reporter.started("Build systems · 1 host");
+        reporter.begin_host_dashboard(&["app".to_owned()]);
+        reporter.host_task_started("app", "build-app", "build");
+        reporter.host_task_output("app", "build-app", "[build] compiling".to_owned());
+        reporter.host_task_finished(
+            "app",
+            "build-app",
+            "build",
+            "build done",
+            Duration::from_secs(3),
+            true,
+        );
+
+        let state = reporter.state.lock().unwrap();
+        let rendered = dashboard_lines(
+            TerminalStyle::from_capabilities(false, false),
+            state.stack.last().unwrap(),
+            Duration::from_secs(3),
+        )
+        .join("\n");
+        assert!(rendered.contains("app  ○ build done · 3.0s"), "{rendered}");
+        assert!(!rendered.contains("compiling"), "{rendered}");
     }
 
     #[test]

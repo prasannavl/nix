@@ -71,17 +71,27 @@ impl TerminalStyle {
         }
     }
 
-    /// Give host identities a stable, non-bold color so parallel rows remain
-    /// easy to track without confusing identity with status.
+    /// Give host identities a stable color from the shared nixbot host palette
+    /// so parallel rows stay easy to track. State remains owned by the status
+    /// glyph and word; this color only distinguishes one host from another.
+    /// Mirrors `host_color_code` in `pkgs/tools/nixbot/nixbot.sh`.
     pub fn paint_host(self, host: &str) -> String {
         if !self.enabled {
             return host.to_owned();
         }
-        const HOST_COLORS: [&str; 3] = ["\x1b[34m", "\x1b[35m", "\x1b[94m"];
-        let hash = host.bytes().fold(0usize, |hash, byte| {
-            hash.wrapping_mul(31).wrapping_add(usize::from(byte))
+        const HOST_COLORS: [&str; 9] = [
+            "\x1b[36m", "\x1b[34m", "\x1b[35m", "\x1b[33m", "\x1b[94m", "\x1b[95m", "\x1b[96m",
+            "\x1b[92m", "\x1b[93m",
+        ];
+        // FNV-1a (32-bit), matching nixbot's host color index. A plain
+        // polynomial hash clusters shared host prefixes onto one color.
+        let hash = host.bytes().fold(2_166_136_261u32, |hash, byte| {
+            (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
         });
-        format!("{}{host}{RESET}", HOST_COLORS[hash % HOST_COLORS.len()])
+        format!(
+            "{}{host}{RESET}",
+            HOST_COLORS[(hash % HOST_COLORS.len() as u32) as usize]
+        )
     }
 
     pub fn semantic_document(self, document: &str) -> String {
@@ -197,6 +207,46 @@ mod tests {
             style.paint(Tone::Neutral, "skipped"),
             "\x1b[90mskipped\x1b[0m"
         );
+    }
+
+    #[test]
+    fn host_identity_colors_are_stable_and_spread_across_the_palette() {
+        let style = TerminalStyle::from_capabilities(true, false);
+        const PALETTE: [&str; 9] = [
+            "\x1b[36m", "\x1b[34m", "\x1b[35m", "\x1b[33m", "\x1b[94m", "\x1b[95m", "\x1b[96m",
+            "\x1b[92m", "\x1b[93m",
+        ];
+        assert_eq!(style.paint_host("alpha"), style.paint_host("alpha"));
+        assert_eq!(
+            TerminalStyle::from_capabilities(false, false).paint_host("alpha"),
+            "alpha"
+        );
+
+        let hosts = [
+            "gap3-gondor",
+            "abird-gondor-data",
+            "abird-gondor-dev",
+            "abird-gondor-id",
+            "abird-gondor-obs",
+            "abird-gondor-proxy",
+            "abird-gondor-srv",
+            "abird-gondor-tictactoe",
+            "abird-gondor-zulip",
+            "abird-gondor-corp",
+            "abird-gondor-ci",
+        ];
+        let mut distinct = std::collections::BTreeSet::new();
+        for host in hosts {
+            let painted = style.paint_host(host);
+            let code = PALETTE
+                .iter()
+                .find(|code| painted.starts_with(**code))
+                .unwrap_or_else(|| panic!("{painted} did not use the host palette"));
+            distinct.insert(*code);
+        }
+        // Regression guard: the shared `abird-gondor-` prefix must not collapse
+        // the roster onto one or two identity colors.
+        assert!(distinct.len() >= 5, "{distinct:?}");
     }
 
     #[test]

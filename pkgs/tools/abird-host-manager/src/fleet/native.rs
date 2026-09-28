@@ -734,9 +734,15 @@ impl<'a> NativeFleetEffects<'a> {
                         .get(&host)
                         .cloned()
                         .with_context(|| format!("missing evaluated derivation for {host}"))?;
-                    let closure = self.build_one(&host, development, &derivation, &build_args)?;
+                    let closure = self
+                        .build_one(&host, development, &derivation, &build_args)
+                        .inspect_err(|error| {
+                            self.progress
+                                .host_failed(&host, format!("build failed: {error:#}"));
+                        })
+                        .with_context(|| format!("build {host}"))?;
                     self.closures.insert(host.clone(), closure);
-                    self.progress.host_completed(&host, "built");
+                    self.progress.host_completed(&host, "build done");
                 }
             }
         }
@@ -763,6 +769,10 @@ impl<'a> NativeFleetEffects<'a> {
                 Ok((host, derivation))
             })
             .collect::<Result<Vec<_>>>()?;
+        let ordered_hosts = tasks
+            .iter()
+            .map(|(host, _)| host.clone())
+            .collect::<Vec<_>>();
         let invocation = self.invocation;
         let nix_program = self.nix_program;
         let repository = self.repository;
@@ -792,16 +802,22 @@ impl<'a> NativeFleetEffects<'a> {
             },
         )?;
         let mut failures = Vec::new();
-        for result in built {
+        // `bounded_parallel_map` returns results in input order, so each result
+        // pairs with the host that produced it even when the build failed.
+        for (host, result) in ordered_hosts.into_iter().zip(built) {
             match result {
-                Ok((host, closure, builder_closure)) => {
+                Ok((_host, closure, builder_closure)) => {
                     self.closures.insert(host.clone(), closure);
                     if let Some(builder_closure) = builder_closure {
                         self.builder_closures.insert(host.clone(), builder_closure);
                     }
-                    self.progress.host_completed(&host, "built");
+                    self.progress.host_completed(&host, "build done");
                 }
-                Err(error) => failures.push(format!("{error:#}")),
+                Err(error) => {
+                    self.progress
+                        .host_failed(&host, format!("build failed: {error:#}"));
+                    failures.push(format!("{error:#}"));
+                }
             }
         }
         if !failures.is_empty() {
@@ -2042,7 +2058,7 @@ impl<'a> NativeFleetEffects<'a> {
                     self.progress
                         .host_skipped(&host, "optional snapshot unavailable");
                 } else {
-                    self.progress.host_completed(&host, "snapshot captured");
+                    self.progress.host_completed(&host, "snapshot done");
                 }
                 self.snapshots.insert(host, snapshot);
             }
@@ -2683,8 +2699,7 @@ impl<'a> NativeFleetEffects<'a> {
                     }
                     if let Some(generation) = outcome.acquired {
                         self.acquired.insert(outcome.host.clone(), generation);
-                        self.progress
-                            .host_completed(&outcome.host, "artifacts acquired");
+                        self.progress.host_completed(&outcome.host, "acquire done");
                     }
                     if let Err(error) = outcome.result {
                         self.deploy_failed.insert(outcome.host.clone());
@@ -2911,7 +2926,7 @@ impl<'a> NativeFleetEffects<'a> {
                     if let Some(detail) = host_failure {
                         self.progress.host_failed(&host, detail);
                     } else if outcome.successful {
-                        self.progress.host_completed(&host, "deployed");
+                        self.progress.host_completed(&host, "deploy done");
                     }
                 }
                 if required_failed {
@@ -3029,7 +3044,7 @@ impl<'a> NativeFleetEffects<'a> {
                         }
                         match &report.decision {
                             super::health::HealthDecision::Healthy { .. } => {
-                                self.progress.host_completed(&host, "healthy");
+                                self.progress.host_completed(&host, "health done");
                                 self.progress.detail(format!(
                                     "{host} · health ok · {} attempt{}",
                                     report.attempts,
