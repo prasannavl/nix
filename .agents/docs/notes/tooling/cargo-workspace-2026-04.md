@@ -118,3 +118,16 @@ feature needs.
 For future isolated-flake work, keep monorepo mode efficient while making Nix
 package definitions ready to receive `src`, `Cargo.lock`, and `projectDir` from
 the caller.
+
+## Correction (2026-09)
+
+The dependency-reuse boundary described above does not hold in the current
+helper: `mkRustDerivation` passes the real filtered source as crane's explicit
+`dummySrc` (`lib/flake/pkg-helper.nix:2136-2138`), so the `*-deps` derivation
+depends on the whole source tree and compiles the crate's real code. A source
+edit therefore invalidates the dependency artifact (verified by comparing
+`abird-host-manager-deps` derivation paths before and after a `.rs` edit), and
+each package still builds its own dependency artifact. The redesign that fixes
+this, and the staged path to a shared demand-set DAG, is recorded in
+`.agents/docs/plans/rust-workspace-build-graph-2026-09.md`, which supersedes
+this note's caching claims.

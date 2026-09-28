@@ -582,6 +582,11 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/rust-build-graph-decision-2026-09.md`: Decision
+  log for the repo-wide Rust build/caching redesign: the `dummySrc` root cause,
+  the L-now/F-later decision, the no-IFD prerequisite, per-state optimization,
+  and the observed derivation evidence. Points to
+  `.agents/docs/plans/rust-workspace-build-graph-2026-09.md`.
 - `.agents/docs/notes/tooling/abird-host-manager-fleet-dependency-audit-2026-09.md`:
   Read-only audit of the `abird-host-manager fleet` external dependency surface
   across controller PATH, target SSH scripts, and embedded Bash, with
@@ -885,6 +890,12 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/plans/nixbot-target-local-rollback-supervisor-2026-06.md`:
   Design plan for a target-local rollback runner that preserves rollback
   semantics after SSH transport loss during activation.
+- `.agents/docs/plans/rust-workspace-build-graph-2026-09.md`: Handoff and staged
+  plan for the repo-wide Rust build graph: compile every dependency once, keep
+  the minimal change unit, no-IFD contract, Design L (shared laundered source +
+  shared dependency base + layered member builds) chosen near-term, Design F
+  (demand-set dependency DAG with generated group stubs) as the future end
+  state, and the L-to-F migration seams and validation gates.
 
 ## Playbooks
 
