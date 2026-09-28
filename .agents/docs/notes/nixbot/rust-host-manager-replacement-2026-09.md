@@ -37,14 +37,13 @@ switch those callers and only then remove the Bash/Python implementation.
   activation starts. Required failure remains outside the rollback boundary and
   releases completed leases; optional failure excludes only that target after
   its lease cleanup is confirmed, while unresolved cleanup fails the barrier.
-- The first `INT` or `TERM` requests graceful shutdown and waits for an
-  admitted activation. A second signal within three seconds confirms escalation;
-  the third exits directly from the signal handler, matching Bash Nixbot's
+- The first `INT` or `TERM` requests graceful shutdown and waits for an admitted
+  activation. A second signal within three seconds confirms escalation; the
+  third exits directly from the signal handler, matching Bash Nixbot's
   three-signal policy while ensuring a blocked worker, renderer, or cleanup path
   cannot suppress force-exit. This emergency exit intentionally bypasses local
-  cleanup and leaves independently supervised remote activations to finish or
-  be reconciled. `HUP` terminates local work without claiming remote
-  cancellation.
+  cleanup and leaves independently supervised remote activations to finish or be
+  reconciled. `HUP` terminates local work without claiming remote cancellation.
 - Managed-user health convergence distinguishes structural failures, settling
   state, service failures, holds, deferred resources, and exhausted retry
   budgets. Pvl's exact `healthCheck.ignore` unit names are filtered at the
