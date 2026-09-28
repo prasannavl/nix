@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::progress::command_reporter;
+use crate::terminal_mode;
 
 /// Shared verbose state. Published only when an interactive reader owns the
 /// terminal, so non-interactive and test runs keep private per-view state.
@@ -38,13 +39,11 @@ impl Drop for InteractiveVerbose {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         KEYS_ACTIVE.store(false, Ordering::Release);
-        // SAFETY: `original` was captured from the same stdin descriptor that
-        // this guard put into raw mode.
-        let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.original) };
+        terminal_mode::restore(&self.original);
     }
 }
 
-/// Whether the interactive `l` toggle is currently readable.
+/// Whether the interactive `v` toggle is currently readable.
 pub fn keys_available() -> bool {
     KEYS_ACTIVE.load(Ordering::Acquire)
 }
@@ -70,35 +69,12 @@ pub fn install(initial_verbose: bool) -> Option<InteractiveVerbose> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() || !command_reporter().enabled() {
         return None;
     }
-    let original = enter_raw_mode()?;
+    let original = terminal_mode::enter_raw_mode()?;
     let verbose = Arc::clone(VERBOSE.get_or_init(|| Arc::new(AtomicBool::new(initial_verbose))));
     let stop = Arc::new(AtomicBool::new(false));
     spawn_reader(verbose, Arc::clone(&stop));
     KEYS_ACTIVE.store(true, Ordering::Release);
     Some(InteractiveVerbose { original, stop })
-}
-
-fn enter_raw_mode() -> Option<libc::termios> {
-    // SAFETY: zeroed `termios` is initialized by `tcgetattr` before use.
-    let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
-    if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original) } != 0 {
-        return None;
-    }
-    let mut raw = original;
-    raw.c_lflag = raw_local_flags(raw.c_lflag);
-    raw.c_cc[libc::VMIN] = 0;
-    raw.c_cc[libc::VTIME] = 0;
-    // SAFETY: `raw` is a fully initialized termios for the same descriptor.
-    if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) } != 0 {
-        return None;
-    }
-    Some(original)
-}
-
-/// Disable line buffering and echo while leaving signal generation (`ISIG`)
-/// enabled so Ctrl-C still interrupts the run.
-fn raw_local_flags(current: libc::tcflag_t) -> libc::tcflag_t {
-    current & !(libc::ICANON | libc::ECHO)
 }
 
 fn spawn_reader(verbose: Arc<AtomicBool>, stop: Arc<AtomicBool>) {
@@ -138,7 +114,7 @@ fn stdin_ready() -> bool {
     ready > 0 && descriptor.revents & libc::POLLIN != 0
 }
 
-/// Consume every pending stdin byte and report whether `l`/`L` appeared.
+/// Consume every pending stdin byte and report whether `v`/`V` appeared.
 fn drain_verbose_key() -> bool {
     let mut verbose = false;
     let mut byte = 0_u8;
@@ -153,14 +129,6 @@ fn drain_verbose_key() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn raw_mode_disables_echo_and_canonical_input_but_keeps_signals() {
-        let current = libc::ICANON | libc::ECHO | libc::ISIG;
-        let raw = raw_local_flags(current);
-        assert_eq!(raw & (libc::ICANON | libc::ECHO), 0);
-        assert_ne!(raw & libc::ISIG, 0);
-    }
 
     #[test]
     fn private_verbose_handles_start_at_the_requested_value_and_are_independent() {

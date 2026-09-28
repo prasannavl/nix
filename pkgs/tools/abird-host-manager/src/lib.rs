@@ -23,6 +23,7 @@ pub mod repository;
 pub mod selector;
 pub mod service_registry;
 pub mod ssh_runtime;
+pub mod terminal_mode;
 pub mod terminal_style;
 pub mod workflow;
 pub mod workflow_runtime;

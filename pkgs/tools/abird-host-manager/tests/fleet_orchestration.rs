@@ -338,7 +338,8 @@ fn hangup_is_immediate_local_cleanup_without_remote_cancellation() {
         controller.receive(
             TerminationSignal::Hangup,
             Duration::from_secs(10),
-            DeployActivity::active()
+            DeployActivity::active(),
+            true
         ),
         CancellationDecision::HangupExit { status: 129 }
     );
@@ -346,56 +347,72 @@ fn hangup_is_immediate_local_cleanup_without_remote_cancellation() {
 }
 
 #[test]
-fn first_interrupt_waits_for_active_deploy_but_exits_when_none_is_active() {
+fn first_interrupt_arms_and_second_interrupt_decides_the_cancel() {
     let mut waiting = CancellationController::default();
     assert_eq!(
         waiting.receive(
             TerminationSignal::Interrupt,
             Duration::from_secs(10),
-            DeployActivity::active()
+            DeployActivity::active(),
+            true
+        ),
+        CancellationDecision::PendingCancel { status: 130 }
+    );
+    assert_eq!(
+        waiting.receive(
+            TerminationSignal::Interrupt,
+            Duration::from_secs(11),
+            DeployActivity::active(),
+            true
         ),
         CancellationDecision::WaitForActiveDeploys { status: 130 }
     );
 
     let mut idle = CancellationController::default();
+    idle.receive(
+        TerminationSignal::Terminate,
+        Duration::from_secs(10),
+        DeployActivity::idle(),
+        true,
+    );
     assert_eq!(
         idle.receive(
             TerminationSignal::Terminate,
-            Duration::from_secs(10),
-            DeployActivity::idle()
+            Duration::from_secs(11),
+            DeployActivity::idle(),
+            true
         ),
         CancellationDecision::CancelLocalAndExit { status: 143 }
     );
 }
 
 #[test]
-fn repeated_interrupts_escalate_within_window_and_reset_after_window() {
+fn confirmed_interrupts_escalate_within_window_and_reset_after_window() {
     let mut controller = CancellationController::default();
     assert!(matches!(
         controller.receive(
             TerminationSignal::Interrupt,
             Duration::from_secs(10),
-            DeployActivity::active()
+            DeployActivity::active(),
+            true
         ),
-        CancellationDecision::WaitForActiveDeploys { .. }
+        CancellationDecision::PendingCancel { .. }
     ));
     assert_eq!(
         controller.receive(
             TerminationSignal::Terminate,
             Duration::from_secs(12),
-            DeployActivity::active()
+            DeployActivity::active(),
+            true
         ),
-        CancellationDecision::AwaitEscalation {
-            status: 143,
-            received: 2,
-            remaining: 1,
-        }
+        CancellationDecision::WaitForActiveDeploys { status: 143 }
     );
     assert_eq!(
         controller.receive(
             TerminationSignal::Interrupt,
             Duration::from_secs(13),
-            DeployActivity::active()
+            DeployActivity::active(),
+            true
         ),
         CancellationDecision::ForceCancelRemoteAndExit { status: 130 }
     );
@@ -406,15 +423,17 @@ fn repeated_interrupts_escalate_within_window_and_reset_after_window() {
         TerminationSignal::Interrupt,
         Duration::from_secs(1),
         DeployActivity::active(),
+        true,
     );
-    assert_eq!(
+    assert!(matches!(
         reset.receive(
             TerminationSignal::Interrupt,
             Duration::from_secs(5),
-            DeployActivity::active()
+            DeployActivity::active(),
+            true
         ),
-        CancellationDecision::WaitForActiveDeploys { status: 130 }
-    );
+        CancellationDecision::PendingCancel { .. }
+    ));
     assert_eq!(reset.requested_count(), 1);
 }
 
@@ -427,7 +446,8 @@ fn cancellation_configuration_rejects_zero_and_honors_immediate_threshold() {
         immediate.receive(
             TerminationSignal::Interrupt,
             Duration::from_secs(1),
-            DeployActivity::active()
+            DeployActivity::active(),
+            true
         ),
         CancellationDecision::ForceCancelRemoteAndExit { status: 130 }
     );

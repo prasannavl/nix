@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::{self, IsTerminal, Write};
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
@@ -3125,22 +3125,11 @@ struct InteractiveLogToggle {
 
 impl InteractiveLogToggle {
     fn new(requested: bool) -> Self {
-        if !requested || !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-            return Self { original: None };
-        }
-        let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
-        if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original) } != 0 {
-            return Self { original: None };
-        }
-        let mut raw = original;
-        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
-        raw.c_cc[libc::VMIN] = 0;
-        raw.c_cc[libc::VTIME] = 0;
-        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) } != 0 {
+        if !requested {
             return Self { original: None };
         }
         Self {
-            original: Some(original),
+            original: crate::terminal_mode::enter_raw_mode(),
         }
     }
 
@@ -3179,7 +3168,7 @@ impl InteractiveLogToggle {
 impl Drop for InteractiveLogToggle {
     fn drop(&mut self) {
         if let Some(original) = &self.original {
-            let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) };
+            crate::terminal_mode::restore(original);
         }
     }
 }

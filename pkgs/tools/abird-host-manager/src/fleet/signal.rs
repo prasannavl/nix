@@ -52,6 +52,7 @@ pub struct SignalCoordinator {
     started: Instant,
     active_activations: AtomicUsize,
     requested: AtomicBool,
+    pending: AtomicBool,
     cancel_local: AtomicBool,
     force_remote: AtomicBool,
     status: AtomicI32,
@@ -70,13 +71,19 @@ impl SignalCoordinator {
             started: Instant::now(),
             active_activations: AtomicUsize::new(0),
             requested: AtomicBool::new(false),
+            pending: AtomicBool::new(false),
             cancel_local: AtomicBool::new(false),
             force_remote: AtomicBool::new(false),
             status: AtomicI32::new(0),
         }
     }
 
-    pub fn receive(&self, signal: TerminationSignal, elapsed: Duration) -> CancellationDecision {
+    pub fn receive(
+        &self,
+        signal: TerminationSignal,
+        elapsed: Duration,
+        confirm: bool,
+    ) -> CancellationDecision {
         let active = self.active_activations.load(Ordering::Acquire) > 0;
         let decision = self
             .controller
@@ -90,9 +97,16 @@ impl SignalCoordinator {
                 } else {
                     DeployActivity::idle()
                 },
+                confirm,
             );
-        self.requested.store(true, Ordering::Release);
-        self.status.store(signal.exit_status(), Ordering::Release);
+        // A pending first interrupt only arms a confirmable cancel; it must not
+        // stop any work or mark the run interrupted.
+        let pending = matches!(decision, CancellationDecision::PendingCancel { .. });
+        self.pending.store(pending, Ordering::Release);
+        if !pending {
+            self.requested.store(true, Ordering::Release);
+            self.status.store(signal.exit_status(), Ordering::Release);
+        }
         match decision {
             CancellationDecision::HangupExit { .. }
             | CancellationDecision::CancelLocalAndExit { .. } => {
@@ -102,10 +116,33 @@ impl SignalCoordinator {
                 self.force_remote.store(true, Ordering::Release);
                 self.cancel_local.store(true, Ordering::Release);
             }
-            CancellationDecision::WaitForActiveDeploys { .. }
+            CancellationDecision::PendingCancel { .. }
+            | CancellationDecision::WaitForActiveDeploys { .. }
             | CancellationDecision::AwaitEscalation { .. } => {}
         }
         decision
+    }
+
+    /// Whether a first interrupt is armed and awaiting confirmation.
+    pub fn pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire)
+    }
+
+    /// Disarm a pending cancel once its confirmation window elapses with no
+    /// second interrupt, so an accidental first press self-heals instead of
+    /// cancelling later.
+    pub fn expire_pending(&self, now: Duration) {
+        if !self.pending.load(Ordering::Acquire) {
+            return;
+        }
+        let elapsed = self
+            .controller
+            .lock()
+            .expect("signal cancellation policy poisoned")
+            .confirmation_window_elapsed(now);
+        if elapsed {
+            self.pending.store(false, Ordering::Release);
+        }
     }
 
     pub fn activation(self: &Arc<Self>) -> ActivationGuard {
@@ -130,7 +167,13 @@ impl SignalCoordinator {
     }
 
     fn receive_now(&self, signal: TerminationSignal) -> CancellationDecision {
-        self.receive(signal, self.started.elapsed())
+        // Only an interactive run shows the confirm state in its footer, so only
+        // there does the first interrupt require a second press.
+        self.receive(
+            signal,
+            self.started.elapsed(),
+            crate::fleet::interactive::keys_available(),
+        )
     }
 
     fn begin_activation(&self) {
@@ -230,10 +273,15 @@ fn signal_loop(read_fd: RawFd, coordinator: Arc<SignalCoordinator>) {
                 last_termination = Some(Instant::now());
             }
             coordinator.receive_now(signal);
+            // Re-render so an interactive footer reflects the pending state.
+            if crate::fleet::interactive::keys_available() {
+                crate::progress::command_reporter().refresh();
+            }
             continue;
         }
         if last_termination.is_some_and(|last| last.elapsed() > FORCE_EXIT_WINDOW) {
             TERMINATION_SIGNAL_COUNT.store(0, Ordering::Release);
+            coordinator.expire_pending(coordinator.started.elapsed());
             last_termination = None;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -268,19 +316,26 @@ extern "C" fn signal_handler(signal: i32) {
     if matches!(signal, libc::SIGINT | libc::SIGTERM) {
         let previous = TERMINATION_SIGNAL_COUNT.fetch_add(1, Ordering::AcqRel);
         if previous >= 2 {
+            // The guard's destructor cannot run on this path, so restore the
+            // terminal mode before the hard exit.
+            crate::terminal_mode::restore_for_forced_exit();
             write_signal_message(b"\nForced interruption received; exiting immediately\n");
             // SAFETY: _exit is async-signal-safe and intentionally bypasses
             // cleanup when graceful cancellation itself is not responsive.
             unsafe { libc::_exit(128 + signal) };
         }
-        if previous == 0 {
-            write_signal_message(
-                b"\nInterrupt received; graceful shutdown requested; press Ctrl-C twice more within 3s to force exit\n",
-            );
-        } else {
-            write_signal_message(
-                b"\nInterrupt received again; press Ctrl-C once more within 3s to force exit\n",
-            );
+        // On an interactive dashboard the runner renders the pending/confirm
+        // state in its footer, so writing a line here would corrupt that region.
+        if !crate::fleet::interactive::keys_available() {
+            if previous == 0 {
+                write_signal_message(
+                    b"\nInterrupt received; graceful shutdown requested; press Ctrl-C twice more within 3s to force exit\n",
+                );
+            } else {
+                write_signal_message(
+                    b"\nInterrupt received again; press Ctrl-C once more within 3s to force exit\n",
+                );
+            }
         }
     } else if signal == libc::SIGHUP {
         write_signal_message(b"\nHangup received; stopping local work\n");
@@ -303,24 +358,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_interrupt_waits_for_activation_then_releases_local_cancellation() {
+    fn first_interrupt_only_arms_and_second_confirms_the_cancel() {
         let coordinator = Arc::new(SignalCoordinator::new());
         let guard = coordinator.activation();
         assert!(matches!(
-            coordinator.receive(TerminationSignal::Interrupt, Duration::from_secs(1)),
+            coordinator.receive(TerminationSignal::Interrupt, Duration::from_secs(1), true),
+            CancellationDecision::PendingCancel { status: 130 }
+        ));
+        assert!(coordinator.pending());
+        assert!(!coordinator.cancel_local());
+        assert!(coordinator.interruption().is_none());
+        // Confirming while an activation is live waits for it, then cancels.
+        assert!(matches!(
+            coordinator.receive(TerminationSignal::Interrupt, Duration::from_secs(2), true),
             CancellationDecision::WaitForActiveDeploys { status: 130 }
         ));
+        assert!(!coordinator.pending());
+        assert!(coordinator.interruption().is_some());
         assert!(!coordinator.cancel_local());
         drop(guard);
         assert!(coordinator.cancel_local());
-        assert_eq!(coordinator.interruption().unwrap().status(), 130);
+    }
+
+    #[test]
+    fn confirmed_cancel_with_nothing_in_flight_stops_local_work() {
+        let coordinator = Arc::new(SignalCoordinator::new());
+        assert!(matches!(
+            coordinator.receive(TerminationSignal::Interrupt, Duration::from_secs(1), true),
+            CancellationDecision::PendingCancel { .. }
+        ));
+        assert!(!coordinator.cancel_local());
+        assert!(matches!(
+            coordinator.receive(TerminationSignal::Interrupt, Duration::from_secs(2), true),
+            CancellationDecision::CancelLocalAndExit { .. }
+        ));
+        assert!(coordinator.cancel_local());
+    }
+
+    #[test]
+    fn a_lone_interrupt_expires_without_cancelling() {
+        let coordinator = Arc::new(SignalCoordinator::new());
+        coordinator.receive(TerminationSignal::Interrupt, Duration::from_secs(1), true);
+        assert!(coordinator.pending());
+        coordinator.expire_pending(Duration::from_secs(1));
+        assert!(coordinator.pending(), "still inside the window");
+        coordinator.expire_pending(Duration::from_secs(5));
+        assert!(!coordinator.pending());
+        assert!(!coordinator.cancel_local());
+        assert!(coordinator.interruption().is_none());
     }
 
     #[test]
     fn hangup_never_requests_remote_cancellation() {
         let coordinator = Arc::new(SignalCoordinator::new());
         let _guard = coordinator.activation();
-        coordinator.receive(TerminationSignal::Hangup, Duration::from_secs(1));
+        coordinator.receive(TerminationSignal::Hangup, Duration::from_secs(1), true);
         assert!(coordinator.cancel_local());
         assert!(!coordinator.force_remote());
         assert_eq!(coordinator.interruption().unwrap().status(), 129);
@@ -330,9 +422,9 @@ mod tests {
     fn third_interrupt_inside_window_forces_remote_cancellation() {
         let coordinator = Arc::new(SignalCoordinator::new());
         let _guard = coordinator.activation();
-        coordinator.receive(TerminationSignal::Interrupt, Duration::from_secs(1));
-        coordinator.receive(TerminationSignal::Interrupt, Duration::from_secs(2));
-        coordinator.receive(TerminationSignal::Terminate, Duration::from_secs(3));
+        coordinator.receive(TerminationSignal::Interrupt, Duration::from_secs(1), true);
+        coordinator.receive(TerminationSignal::Interrupt, Duration::from_secs(2), true);
+        coordinator.receive(TerminationSignal::Terminate, Duration::from_secs(3), true);
         assert!(coordinator.cancel_local());
         assert!(coordinator.force_remote());
         assert_eq!(coordinator.interruption().unwrap().status(), 143);

@@ -539,17 +539,29 @@ pub enum CancellationDecision {
     HangupExit {
         status: i32,
     },
+    /// First interrupt when confirmation is required: arm a confirmable cancel.
+    /// Nothing is stopped yet, and the request expires if no second interrupt
+    /// arrives inside the window.
+    PendingCancel {
+        status: i32,
+    },
+    /// Confirmed cancel while a deploy/activation is still in flight: wait for
+    /// it to finish, then release local cancellation.
     WaitForActiveDeploys {
         status: i32,
     },
+    /// Cancel with nothing in flight: stop local work now.
     CancelLocalAndExit {
         status: i32,
     },
+    /// Interrupt counted toward the force threshold with no action of its own
+    /// (the unconfirmed second press).
     AwaitEscalation {
         status: i32,
         received: u32,
         remaining: u32,
     },
+    /// Force threshold reached: force remote cancellation and exit.
     ForceCancelRemoteAndExit {
         status: i32,
     },
@@ -596,6 +608,7 @@ impl CancellationController {
         signal: TerminationSignal,
         now: Duration,
         activity: DeployActivity,
+        confirm: bool,
     ) -> CancellationDecision {
         let status = signal.exit_status();
         if signal == TerminationSignal::Hangup {
@@ -616,7 +629,14 @@ impl CancellationController {
         if self.force_requested() {
             return CancellationDecision::ForceCancelRemoteAndExit { status };
         }
-        if self.requested == 1 {
+        // With confirmation the first interrupt only arms the cancel and the
+        // second performs it; without it the first interrupt cancels and the
+        // second is a countdown toward force.
+        let cancel_at = if confirm { 2 } else { 1 };
+        if self.requested < cancel_at {
+            return CancellationDecision::PendingCancel { status };
+        }
+        if self.requested == cancel_at {
             return if activity.active_deploy_jobs {
                 CancellationDecision::WaitForActiveDeploys { status }
             } else {
@@ -626,8 +646,17 @@ impl CancellationController {
         CancellationDecision::AwaitEscalation {
             status,
             received: self.requested,
-            remaining: self.force_signal_count - self.requested,
+            remaining: self.force_signal_count.saturating_sub(self.requested),
         }
+    }
+
+    /// Whether the last interrupt is now outside the confirmation window, so a
+    /// pending cancel should expire.
+    pub fn confirmation_window_elapsed(&self, now: Duration) -> bool {
+        self.last_request_at.is_none_or(|last| {
+            now.checked_sub(last)
+                .is_none_or(|elapsed| elapsed > self.escalation_window)
+        })
     }
 }
 

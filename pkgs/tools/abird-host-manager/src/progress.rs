@@ -248,11 +248,9 @@ const MAX_LIVE_VERBOSE_LINES: usize = 500;
 const VERBOSE_REDRAW_INTERVAL: Duration = Duration::from_millis(50);
 /// Interactive key hints shown as the final row of the live region while a
 /// span is active. Uses the same `·` separator as the dashboard metadata and
-/// stays all lowercase to match the other live labels. The `v` action names
-/// what the next press does, so the toggle feels responsive on the key press.
-const KEY_FOOTER_VERBOSE_ON: &str = "keys: v: verbose on · ctrl-c: cancel · ctrl-c x3: force exit";
-const KEY_FOOTER_VERBOSE_OFF: &str =
-    "keys: v: verbose off · ctrl-c: cancel · ctrl-c x3: force exit";
+/// stays all lowercase to match the other live labels. The footer reports live
+/// state: `verbose on`/`verbose off` for the toggle and `confirm cancel` while
+/// an interrupt is armed.
 const RETAINED_OUTPUT_LINES_PER_TASK: usize = 5;
 const RETAINED_ACTIVE_TASK_TAILS: usize = 128;
 const RETAINED_FAILED_TASK_TAILS: usize = 8;
@@ -1305,6 +1303,13 @@ impl ProgressReporter {
         }
     }
 
+    /// Re-render the live region after an out-of-band state change, such as an
+    /// armed interrupt, so the footer reflects it immediately.
+    pub fn refresh(&self) {
+        let _output = self.output.lock().ok();
+        self.redraw_current();
+    }
+
     pub fn message_primary_with_metadata(
         &self,
         prefix: impl std::fmt::Display,
@@ -1411,14 +1416,16 @@ impl ProgressReporter {
             return None;
         }
         let verbose_on = crate::fleet::interactive::verbose_handle(false).load(Ordering::Relaxed);
-        let text = if verbose_on {
-            KEY_FOOTER_VERBOSE_OFF
+        let verbose = if verbose_on { "on" } else { "off" };
+        let cancel = if crate::fleet::signal::runtime().is_some_and(|runtime| runtime.pending()) {
+            "confirm cancel"
         } else {
-            KEY_FOOTER_VERBOSE_ON
+            "cancel"
         };
+        let text = format!("keys: v: verbose {verbose} · ctrl-c: {cancel} · ctrl-c x3: force exit");
         let text = match self.destination.viewport() {
-            Some((_, columns)) => truncate_text(text, columns),
-            None => text.to_owned(),
+            Some((_, columns)) => truncate_text(&text, columns),
+            None => text,
         };
         Some(self.style.paint(Tone::Muted, text))
     }
@@ -1591,22 +1598,14 @@ fn live_region_lines(
         lines.push(String::new());
         lines.push(footer.to_owned());
     }
-    // Keep every line on exactly one terminal row and the region a constant
-    // height. A redraw that changes the region size moves the cursor onto a new
-    // row, which makes the terminal scroll; bottom-anchoring pads above the
-    // content instead so the region never grows or shrinks once drawn.
-    if let Some((rows, columns)) = viewport {
+    // Keep every line on one terminal row (a wrapped line would occupy rows
+    // that `rendered_lines` does not count), but let the region take only the
+    // space it needs from the current cursor and scroll the terminal naturally
+    // as it grows; do not reserve a fixed block at the bottom of the screen.
+    if let Some((_, columns)) = viewport {
         let width = columns.saturating_sub(1).max(1);
         for line in &mut lines {
             *line = truncate_ansi(line, width);
-        }
-        let target = rows.saturating_sub(1);
-        if lines.len() > target {
-            lines.drain(..lines.len() - target);
-        } else if lines.len() < target {
-            let mut padded = vec![String::new(); target - lines.len()];
-            padded.append(&mut lines);
-            lines = padded;
         }
     }
     Some(lines)
@@ -2528,7 +2527,7 @@ mod tests {
     }
 
     #[test]
-    fn live_region_keeps_a_constant_height_across_content_changes() {
+    fn live_region_is_content_sized_and_grows_without_reserving_space() {
         let style = TerminalStyle::from_capabilities(false, false);
         let mut state = ProgressState::default();
         state.stack.push(ActiveProgress {
@@ -2542,6 +2541,13 @@ mod tests {
         });
         let small = live_region_lines(style, Some("keys"), &state, Some((24, 80)), true)
             .expect("active span renders a region");
+        // No reserved rows: the region is content-sized and starts at the
+        // cursor rather than being padded to the bottom of the screen.
+        assert!(small.len() < 5, "region should be compact: {}", small.len());
+        assert!(
+            !small.first().expect("non-empty").is_empty(),
+            "no leading blank padding"
+        );
         state.verbose_active = true;
         for index in 0..100 {
             state
@@ -2550,12 +2556,8 @@ mod tests {
         }
         let large = live_region_lines(style, Some("keys"), &state, Some((24, 80)), true)
             .expect("active span renders a region");
-        assert_eq!(
-            small.len(),
-            large.len(),
-            "region height must not change with content"
-        );
-        assert_eq!(small.len(), 23, "region fills the viewport minus one row");
+        assert!(large.len() > small.len(), "region grows with the tail");
+        assert!(large.len() < 24, "region still fits the viewport");
     }
 
     #[test]

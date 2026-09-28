@@ -344,11 +344,15 @@ whole region sized to the viewport, so the stream is cleared and redrawn like
 progress rather than appended. Redirected output still appends plain lines.
 Native fleet runs on an interactive terminal capture the `v` key and advertise
 it in a footer while running:
-`keys: v: verbose on · ctrl-c: cancel · ctrl-c x3: force exit`. The `v` action
-names what the next press does and flips the moment the key is pressed
-(`verbose on` while off, `verbose off` while on); hiding drops the tail so the
+`keys: v: verbose on · ctrl-c: cancel · ctrl-c x3: force exit`. The `v` hint
+shows whether verbose is on and flips the moment the key is pressed
+(`verbose on` while on, `verbose off` while off); hiding drops the tail so the
 screen looks as if it had never been shown, and no hint is printed after the run
-summary.
+summary. Ctrl-C is a two-step confirm: the first press only arms the cancel and
+the footer flips to `ctrl-c: confirm cancel`; a lone first press expires after
+the confirmation window without cancelling. The confirmed second press cancels
+gracefully (waiting for an in-flight activation), and the third press forces an
+immediate exit.
 
 The Rust compatibility binary remains covered by the Cargo suite so the later
 cutover is packaging and caller wiring rather than another implementation port.
