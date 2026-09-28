@@ -249,7 +249,7 @@ Demand-factored dependency DAG. Same model, finer factoring.
 
 Inputs: repo root, root `Cargo.toml`, member manifests, `Cargo.lock`. Output:
 
-```
+```text
 {
   sources;      # workspaceRoot path + realSrc spec
   groups;       # [{ key = <sorted member list>, label, roots, parents }]

@@ -367,7 +367,7 @@ the `ssh-keyscan` binary with ~50 lines and no protocol code, at the cost of a
 full handshake/auth attempt. Plan the native scanner as primary; fall back if
 KEX compatibility proves fragile.
 
-**3b.3 metadata**
+#### 3b.3 metadata
 
 - Remove `ssh-keygen` and `ssh-keyscan` from `REQUIRED_PROGRAMS`.
 - `openssh` stays in `fleetRuntimeInputs` for `ssh`.
