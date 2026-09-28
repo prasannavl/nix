@@ -582,6 +582,14 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/abird-host-manager-fleet-dependency-audit-2026-09.md`:
+  Read-only audit of the `abird-host-manager fleet` external dependency surface
+  across controller PATH, target SSH scripts, and embedded Bash, with
+  keep/drop/library classifications, the bootstrap safety boundary for hosts
+  without a `nixbot`/`abird-host-manager` closure, and the locked Tier 0-2
+  implementation plan (metadata cleanup, libc in-binary helpers, the `age`
+  crate, target-side `jq` removal, and native `ssh-keygen`/`ssh-keyscan`) with
+  Tier 3 kept wrapped.
 - `.agents/docs/notes/tooling/abird-post-278a2cba-audit-2026-09.md`: Complete
   12-commit audit of `6fe3b63a..278a2cba`, the Abird mirror of Pvl-authored
   shared work plus ledger/lint commits (PI fetcher v2, NVIDIA discovery, VS Code
