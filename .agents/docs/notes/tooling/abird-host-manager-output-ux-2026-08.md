@@ -116,8 +116,11 @@ preserve `--local` whenever repository evidence or retained command steps show
 local authority, preventing an operator from crossing journal/publication
 authority modes between lifecycle commands.
 
-Fleet deployment phases keep the complete selected-host roster visible. Each
-running host owns a bounded rolling tail of up to five safe semantic lines;
+Fleet deployment phases keep the selected-host roster visible. In the verbose
+dashboard an oversized roster windows to its last hosts with a muted
+`▲ N hosts above` marker, so the bottom of the roster stays on screen; the plain
+dashboard still appends the full roster through the append-only snapshot path.
+Each running host owns a bounded rolling tail of up to five safe semantic lines;
 successful work collapses, while failed work retains its tail. The phase header
 reports stage, wave (only when the phase has multiple waves), running slots
 (`<running>/<concurrency>`), completed, and elapsed counts, and omits the
@@ -183,10 +186,14 @@ happened at a width we cannot see, so a wrapped line would understate the rows
 and the next frame wipes rather than trust the count. The first readable size
 after an unknown first paint wipes the same way, and a frame that replaces an
 append-only snapshot wipes so an oversized roster cannot strand stale frames
-behind a shorter one. A `● Logs` header opens the block whenever verbose is
-active, naming the active view (`run` or `errors`) and when the oldest line that
-view still holds was recorded (`● Logs · run · since 14:32:05`), so it is the
-verbose indicator; the footer adds the view keys only while the section is open
+behind a shorter one. A terminal that never reports a size at all (a pty whose
+window size is never set) has no width to wrap or count against and no size
+change to detect, so its live region keeps the fixed default budget and can
+wrap; that is the one case the reset cannot correct. A `● Logs` header opens the
+block whenever verbose is active, naming the active view (`run` or `errors`) and
+when the oldest line that view still holds was recorded
+(`● Logs · run · since 14:32:05`), so it is the verbose indicator; the footer
+adds the view keys only while the section is open
 (`keys: v: verbose · ctrl/alt-r: run · ctrl/alt-e: errors · ctrl-c: …`). Hiding
 with `v` drops the live ring so the next redraw shrinks the region back to just
 the dashboard; redirecting output still appends plain lines. The section has two
@@ -209,48 +216,51 @@ no dashboard. Every shortcut also has an `alt` form (`alt-r`, `alt-e`,
 the key with it, and the footer drops whole groups of hints on a narrow terminal
 (the view pair leaves together) so the escalating `ctrl-c` label is never cut.
 When the active view is taller than the window, `ctrl-k`/`ctrl-j` scroll by
-lines and `ctrl-h`/`ctrl-l` by half-viewport pages, and the separator row below
-the logs becomes a muted `▲ N above · ▼ M below · ctrl/alt-h/j/k/l: scroll`
-marker instead of crowding the footer. Four details keep the toggle honest: the
-dashboard and verbose state live in the shared progress state so the key
-reader's reporter clone redraws the same region, the heartbeat renders through
-the same builder so it can never clear a different region, the footer only shows
-when a key reader owns stdin, and every writer holds the output lock across its
-region redraw so two writers cannot each append a region while `rendered_lines`
-tracks only one. Every region line is truncated ANSI-aware to the terminal width
-so it stays on a single row, because `rendered_lines` counts rows and a wrapped
-line would leave its extra rows uncleared on hide. Nothing is printed after the
-run summary. Native fleet runs capture the `v` key on an interactive terminal,
-streaming the tail at runtime without restarting the command. Verbose
-attribution drops the duplicate host when a step already names its executor
-(`build via pvl-x2`, not `build via pvl-x2 pvl-x2`). The reporter owns the
-single open/closed state, so the key reader and `--verbose`/`--build-logs` drive
-one source of truth that nested in-process workers share. The command seeds it
-once, at startup (`FleetProgress::begin_command`), because a run builds a view
-per phase and per host: a constructor that also reset the section closed it and
-wiped its history on every host. One reader owns the terminal while any producer
-holds it and releases it on the last drop, so a multi-job agent run keeps one
-reader across every job. The reader keeps `ISIG` intact so Ctrl-C still
-interrupts, restores the original terminal attributes when the last owner drops,
-and is not installed when stdin is not a terminal, when a repository-script
-re-exec will own the process, when the run reads a staged patch from stdin, or
-when JSON output suppresses human progress. Ctrl-C is a two-step confirm: a
-first press only arms the cancel and expires after the confirmation window with
-no cancel; the second press cancels gracefully, waiting for an in-flight
-activation; the third forces an immediate `_exit`. The footer's `ctrl-c` label
-tracks that escalation (`cancel`, then `confirm cancel`, then `force exit`), and
-once the cancel is confirmed a `Cancel interrupt received · cancelling` line
-appears just above the footer so the unwind reads as deliberate. On an
-interactive terminal the handler does not write to stderr, so the state is
-rendered through the normal live region instead of corrupting it. Unknown
-default-mode output fails closed to a generic diagnostic pointer instead of
-relying on error keywords. SSH key discovery and local closure copies are
-attributed to the affected host instead of appearing as unrelated phase-level
-chatter. Nix store events must contain one validated store-root basename, and
-manually published SSH or health-operation lines pass a separate semantic
-allowlist. Health details expose only validated user and systemd-unit
-identifiers or a generic diagnostics pointer; decoded collector text is never
-copied directly into the default host tail.
+lines and `ctrl-h`/`ctrl-l` by half-viewport pages, `esc`/`ctrl-g`/`alt-g`
+return to the newest content (a bare `esc` resolves after the alt-key window),
+and the separator row below the logs becomes a muted
+`▲ N above · ▼ M below · ctrl/alt-h/j/k/l: scroll · esc/ctrl/alt-g: newest`
+marker instead of crowding the footer. A terminal resize re-fits the window and
+returns it to the newest content rather than leaving it scrolled against the old
+height. Four details keep the toggle honest: the dashboard and verbose state
+live in the shared progress state so the key reader's reporter clone redraws the
+same region, the heartbeat renders through the same builder so it can never
+clear a different region, the footer only shows when a key reader owns stdin,
+and every writer holds the output lock across its region redraw so two writers
+cannot each append a region while `rendered_lines` tracks only one. Every region
+line is truncated ANSI-aware to the terminal width so it stays on a single row,
+because `rendered_lines` counts rows and a wrapped line would leave its extra
+rows uncleared on hide. Nothing is printed after the run summary. Native fleet
+runs capture the `v` key on an interactive terminal, streaming the tail at
+runtime without restarting the command. Verbose attribution drops the duplicate
+host when a step already names its executor (`build via pvl-x2`, not
+`build via pvl-x2 pvl-x2`). The reporter owns the single open/closed state, so
+the key reader and `--verbose`/`--build-logs` drive one source of truth that
+nested in-process workers share. The command seeds it once, at startup
+(`FleetProgress::begin_command`), because a run builds a view per phase and per
+host: a constructor that also reset the section closed it and wiped its history
+on every host. One reader owns the terminal while any producer holds it and
+releases it on the last drop, so a multi-job agent run keeps one reader across
+every job. The reader keeps `ISIG` intact so Ctrl-C still interrupts, restores
+the original terminal attributes when the last owner drops, and is not installed
+when stdin is not a terminal, when a repository-script re-exec will own the
+process, when the run reads a staged patch from stdin, or when JSON output
+suppresses human progress. Ctrl-C is a two-step confirm: a first press only arms
+the cancel and expires after the confirmation window with no cancel; the second
+press cancels gracefully, waiting for an in-flight activation; the third forces
+an immediate `_exit`. The footer's `ctrl-c` label tracks that escalation
+(`cancel`, then `confirm cancel`, then `force exit`), and once the cancel is
+confirmed a `Cancel interrupt received · cancelling` line appears just above the
+footer so the unwind reads as deliberate. On an interactive terminal the handler
+does not write to stderr, so the state is rendered through the normal live
+region instead of corrupting it. Unknown default-mode output fails closed to a
+generic diagnostic pointer instead of relying on error keywords. SSH key
+discovery and local closure copies are attributed to the affected host instead
+of appearing as unrelated phase-level chatter. Nix store events must contain one
+validated store-root basename, and manually published SSH or health-operation
+lines pass a separate semantic allowlist. Health details expose only validated
+user and systemd-unit identifiers or a generic diagnostics pointer; decoded
+collector text is never copied directly into the default host tail.
 
 The activation log follower is observational rather than authoritative. If it
 exits early, the observer continues bounded result polling and drains only new

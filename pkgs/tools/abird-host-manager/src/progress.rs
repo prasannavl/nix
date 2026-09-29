@@ -93,6 +93,16 @@ struct FrameSize {
     layout: Option<(usize, usize)>,
 }
 
+/// Whether a host roster may overflow its line budget. The plain dashboard keeps
+/// every host and lets the append-only snapshot path scroll the terminal; the
+/// verbose dashboard shares the screen with the logs, so it windows the roster
+/// to its last hosts so the bottom stays visible.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RosterPolicy {
+    Full,
+    Windowed,
+}
+
 #[derive(Clone, Debug, Default)]
 struct ProgressState {
     stack: Vec<ActiveProgress>,
@@ -137,6 +147,19 @@ struct ProgressState {
     retained_verbose: VecDeque<VerboseLine>,
     /// Trailing context lines the open digest run still wants.
     after_context_remaining: usize,
+}
+
+impl ProgressState {
+    /// Whether `live` differs from the size the painted region was laid out for,
+    /// so the terminal may have reflowed. An unreadable size after a known one
+    /// counts, because the reflow may have happened at a width we cannot see.
+    fn reflowed(&self, live: Option<(usize, usize)>) -> bool {
+        self.painted != Painted::None
+            && match live {
+                Some(live) => self.region_viewport != Some(live),
+                None => self.region_viewport.is_some(),
+            }
+    }
 }
 
 /// One verbose line, shared by the live ring and the retained digest. Its stream
@@ -1468,6 +1491,21 @@ impl ProgressReporter {
         }
     }
 
+    /// Return the open verbose view to the newest content, so a scrolled reader
+    /// can jump back with `esc` instead of scrolling line by line.
+    pub fn scroll_verbose_newest(&self) {
+        let _output = self.output.lock().ok();
+        let changed = self.state.lock().ok().is_some_and(|mut state| {
+            let changed = state.verbose_active && state.verbose_scroll != 0;
+            state.verbose_scroll = 0;
+            state.verbose_redraw_at = None;
+            changed
+        });
+        if changed {
+            self.redraw_current();
+        }
+    }
+
     /// Disable verbose streaming and drop the live tail so the next redraw
     /// shrinks the region back to just the dashboard, as if the stream had
     /// never been shown.
@@ -1636,6 +1674,8 @@ impl ProgressReporter {
     /// cursor (scrollback survives). An unreadable size after a known one is
     /// treated the same way, because the reflow may have happened at a width we
     /// cannot see and wrapped rows would otherwise survive the counted clear.
+    /// A size that is never readable has no known width to compare against and
+    /// no reflow to detect, so this reset cannot engage for it.
     ///
     /// `appending` is true when the next frame is an append-only snapshot.
     /// A snapshot draws no counted rows, so any frame that replaces it (rather
@@ -1646,11 +1686,7 @@ impl ProgressReporter {
             return;
         }
         let (rows, wipe) = self.state.lock().map_or((0, false), |mut state| {
-            let resized = state.painted != Painted::None
-                && match frame.live {
-                    Some(live) => state.region_viewport != Some(live),
-                    None => state.region_viewport.is_some(),
-                };
+            let resized = state.reflowed(frame.live);
             if frame.live.is_some() {
                 state.region_viewport = frame.live;
             }
@@ -1660,6 +1696,11 @@ impl ProgressReporter {
                 Painted::None | Painted::Snapshot => 0,
             };
             let wipe = resized || (!appending && snapshot);
+            if resized {
+                // A resize re-fits the log window, so return it to the newest
+                // content instead of leaving it scrolled against the old height.
+                state.verbose_scroll = 0;
+            }
             if wipe || rows > 0 {
                 state.painted = Painted::None;
                 // Clearing a painted region lets the next snapshot paint at
@@ -1691,6 +1732,15 @@ impl ProgressReporter {
         // through.
         let frame = self.frame_size();
         let viewport = frame.layout;
+        // A resize re-fits the log window before this frame is laid out, so the
+        // wiping frame already shows the newest content instead of the window it
+        // was scrolled against at the old height. `clear_region` resets it again
+        // for the `clear_line` path, which is then idempotent.
+        if let Ok(mut state) = self.state.lock()
+            && state.reflowed(frame.live)
+        {
+            state.verbose_scroll = 0;
+        }
         let dashboard = self.shows_recent_updates();
         let lines = self.state.lock().ok().and_then(|state| {
             let footer = self.key_footer(&state, viewport);
@@ -2093,7 +2143,7 @@ fn verbose_window_bounds(len: usize, budget: usize, scroll: usize) -> (usize, us
 
 /// Muted elision row placed between the logs and the dashboard when the active
 /// view has more content than the window shows, naming the scroll keys instead
-/// of crowding the footer.
+/// of crowding the footer. `esc`/`ctrl-g`/`alt-g` returns to the newest content.
 fn verbose_overflow_line(style: TerminalStyle, above: usize, below: usize) -> Option<String> {
     let mut parts = Vec::new();
     if above > 0 {
@@ -2106,6 +2156,7 @@ fn verbose_overflow_line(style: TerminalStyle, above: usize, below: usize) -> Op
         return None;
     }
     parts.push("ctrl/alt-h/j/k/l: scroll".to_owned());
+    parts.push("esc/ctrl/alt-g: newest".to_owned());
     Some(style.paint(Tone::Muted, parts.join(" · ")))
 }
 
@@ -2150,18 +2201,19 @@ fn live_region_lines(
         let stream_room = room.saturating_sub(footer_rows + 1 + header_rows);
         let dashboard_budget = (stream_room / 2).max(1);
         let dashboard_lines = match active {
-            Some(active) if dashboard => dashboard_lines_with_viewport(
+            Some(active) if dashboard => dashboard_lines_with_viewport_mode(
                 style,
                 active,
                 active.started.elapsed(),
                 viewport.map(|(_, columns)| (dashboard_budget + 1, columns)),
+                RosterPolicy::Windowed,
             ),
             Some(active) => vec![active_line(style, &active.label, active.detail.as_deref())],
             // A long wait may own no dashboard; the logs still render.
             None => Vec::new(),
         };
-        // A dashboard taller than its budget (many hosts) is truncated from the
-        // bottom so the tail still gets a row.
+        // The windowed dashboard already fits its budget; this is a last-resort
+        // guard so the log tail always keeps a row.
         let dashboard_limit = stream_room.saturating_sub(1).max(1);
         let dashboard_lines = if dashboard_lines.len() > dashboard_limit {
             dashboard_lines[..dashboard_limit].to_vec()
@@ -2247,8 +2299,23 @@ fn dashboard_lines_with_viewport(
     elapsed: Duration,
     viewport: Option<(usize, usize)>,
 ) -> Vec<String> {
+    dashboard_lines_with_viewport_mode(style, active, elapsed, viewport, RosterPolicy::Full)
+}
+
+/// `roster` windows an oversized host roster to its last rows (with a marker for
+/// the hidden ones) instead of letting it overflow the budget; the verbose
+/// dashboard asks for that so a full roster reads from the bottom, and the plain
+/// dashboard passes [`RosterPolicy::Full`] so the append-only snapshot path can
+/// still scroll a roster taller than the screen.
+fn dashboard_lines_with_viewport_mode(
+    style: TerminalStyle,
+    active: &ActiveProgress,
+    elapsed: Duration,
+    viewport: Option<(usize, usize)>,
+    roster: RosterPolicy,
+) -> Vec<String> {
     if let Some(dashboard) = &active.host_dashboard {
-        return host_dashboard_lines(style, active, dashboard, elapsed, viewport);
+        return host_dashboard_lines(style, active, dashboard, elapsed, viewport, roster);
     }
     let mut lines = vec![format!(
         "{} {}",
@@ -2281,6 +2348,7 @@ fn host_dashboard_lines(
     dashboard: &HostDashboard,
     elapsed: Duration,
     viewport: Option<(usize, usize)>,
+    roster: RosterPolicy,
 ) -> Vec<String> {
     // The quiet-heartbeat pulse alternates once per second; the dashboard
     // redraws on the same cadence, so only silent rows visibly blink.
@@ -2340,10 +2408,29 @@ fn host_dashboard_lines(
         )
     }];
 
-    let base_lines = 1 + dashboard.order.len();
+    // Window an oversized roster to its last rows so the bottom of the roster
+    // stays visible, naming how many rows were dropped above. The marker is
+    // only emitted when there is a row budgeted for it, so the result never
+    // exceeds `max_lines`.
+    let roster_overflow = roster == RosterPolicy::Windowed && 1 + dashboard.order.len() > max_lines;
+    let marker_rows = usize::from(roster_overflow && max_lines > 1);
+    let shown_hosts = if roster_overflow {
+        max_lines.saturating_sub(1 + marker_rows)
+    } else {
+        dashboard.order.len()
+    };
+    let host_start = dashboard.order.len().saturating_sub(shown_hosts);
+    let shown_order = &dashboard.order[host_start..];
+    if marker_rows > 0 {
+        lines.push(format!(
+            "  {}",
+            style.paint(Tone::Muted, format!("▲ {host_start} hosts above"))
+        ));
+    }
+
+    let base_lines = 1 + marker_rows + shown_order.len();
     let available_detail_lines = max_lines.saturating_sub(base_lines);
-    let detailed_hosts = dashboard
-        .order
+    let detailed_hosts = shown_order
         .iter()
         .filter(|host| {
             dashboard.rows.get(*host).is_some_and(|row| {
@@ -2400,7 +2487,7 @@ fn host_dashboard_lines(
         0
     };
     let mut detailed_host_index = 0;
-    for host in &dashboard.order {
+    for host in shown_order {
         let Some(row) = dashboard.rows.get(host) else {
             continue;
         };
@@ -3003,6 +3090,7 @@ mod tests {
             .unwrap_or_else(|| panic!("no overflow row in {lines:?}"));
         assert!(overflow.contains("above"), "{overflow:?}");
         assert!(overflow.contains("ctrl/alt-h/j/k/l"), "{overflow:?}");
+        assert!(overflow.contains("esc/ctrl/alt-g: newest"), "{overflow:?}");
     }
 
     #[test]
@@ -4035,6 +4123,212 @@ mod tests {
         );
         assert!(rendered.contains("● Logs"), "the header must redraw");
         assert!(rendered.contains("log 29"), "the tail must redraw");
+    }
+
+    #[test]
+    fn scroll_verbose_newest_returns_the_window_to_the_newest_line() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((24usize, 100usize))));
+        let reporter = reporter_with_viewport(&buffer, &viewport);
+        push_active_span(&reporter);
+        {
+            let mut state = reporter.state.lock().unwrap();
+            state.verbose_active = true;
+            for index in 0..30 {
+                state.verbose_tail.push_back(line(
+                    index,
+                    Tone::Neutral,
+                    &format!("  │ log {index}"),
+                ));
+            }
+        }
+        reporter.refresh();
+        reporter.scroll_verbose_lines(5);
+        assert!(reporter.state.lock().unwrap().verbose_scroll > 0);
+
+        reporter.scroll_verbose_newest();
+
+        assert_eq!(reporter.state.lock().unwrap().verbose_scroll, 0);
+        buffer.lock().unwrap().clear();
+        reporter.refresh();
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            rendered.contains("log 29"),
+            "the newest line is shown: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_resize_returns_the_log_view_to_the_newest() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((24usize, 100usize))));
+        let reporter = reporter_with_viewport(&buffer, &viewport);
+        push_active_span(&reporter);
+        {
+            let mut state = reporter.state.lock().unwrap();
+            state.verbose_active = true;
+            for index in 0..30 {
+                state.verbose_tail.push_back(line(
+                    index,
+                    Tone::Neutral,
+                    &format!("  │ log {index}"),
+                ));
+            }
+        }
+        reporter.refresh();
+        reporter.scroll_verbose_lines(5);
+        assert!(reporter.state.lock().unwrap().verbose_scroll > 0);
+        buffer.lock().unwrap().clear();
+
+        *viewport.lock().unwrap() = Some((12, 100));
+        reporter.refresh();
+
+        assert_eq!(
+            reporter.state.lock().unwrap().verbose_scroll,
+            0,
+            "a resize re-fits the window to the newest content"
+        );
+        // The wiping frame itself must already show the newest, not the window
+        // it was scrolled against at the old height.
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            rendered.contains("\x1b[2J\x1b[H") && rendered.contains("log 29"),
+            "the resize frame shows the newest line: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains('▼'),
+            "the resize frame is not still scrolled: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn an_oversized_verbose_roster_keeps_the_newest_hosts() {
+        let hosts = (0..20)
+            .map(|index| format!("host-{index:02}"))
+            .collect::<Vec<_>>();
+        let dashboard = HostDashboard {
+            order: hosts.clone(),
+            rows: hosts
+                .iter()
+                .map(|host| (host.clone(), HostRow::default()))
+                .collect(),
+            ..HostDashboard::default()
+        };
+        let active = ActiveProgress {
+            id: 1,
+            label: "Build systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: Some(dashboard.clone()),
+            started: Instant::now(),
+        };
+        let lines = host_dashboard_lines(
+            TerminalStyle::from_capabilities(false, false),
+            &active,
+            &dashboard,
+            Duration::from_secs(1),
+            Some((8, 80)),
+            RosterPolicy::Windowed,
+        )
+        .join("\n");
+
+        assert!(
+            lines.contains("▲ 15 hosts above"),
+            "the hidden count is exact: {lines:?}"
+        );
+        assert!(
+            lines.contains("host-19"),
+            "the newest host stays: {lines:?}"
+        );
+        assert!(
+            !lines.contains("host-00"),
+            "the oldest host is dropped: {lines:?}"
+        );
+        assert!(
+            lines.lines().count() <= 7,
+            "roster fits its budget: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_single_row_dashboard_budget_never_overflows() {
+        let hosts = (0..5)
+            .map(|index| format!("host-{index}"))
+            .collect::<Vec<_>>();
+        let dashboard = HostDashboard {
+            order: hosts.clone(),
+            rows: hosts
+                .iter()
+                .map(|host| (host.clone(), HostRow::default()))
+                .collect(),
+            ..HostDashboard::default()
+        };
+        let active = ActiveProgress {
+            id: 1,
+            label: "Build systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: Some(dashboard.clone()),
+            started: Instant::now(),
+        };
+        // A two-row terminal leaves a one-row dashboard budget: only the heading
+        // fits, so the marker row is omitted rather than overflowing.
+        let lines = host_dashboard_lines(
+            TerminalStyle::from_capabilities(false, false),
+            &active,
+            &dashboard,
+            Duration::from_secs(1),
+            Some((2, 80)),
+            RosterPolicy::Windowed,
+        );
+        assert_eq!(
+            lines.len(),
+            1,
+            "a one-row budget emits only the heading: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_verbose_region_windows_an_oversized_roster() {
+        let hosts = (0..20)
+            .map(|index| format!("host-{index:02}"))
+            .collect::<Vec<_>>();
+        let mut state = ProgressState::default();
+        state.verbose_active = true;
+        state.stack.push(ActiveProgress {
+            id: 1,
+            label: "Build systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: Some(HostDashboard {
+                order: hosts.clone(),
+                rows: hosts
+                    .iter()
+                    .map(|host| (host.clone(), HostRow::default()))
+                    .collect(),
+                ..HostDashboard::default()
+            }),
+            started: Instant::now(),
+        });
+        let lines = live_region_lines(
+            TerminalStyle::from_capabilities(false, false),
+            Some("keys"),
+            None,
+            &state,
+            Some((20, 80)),
+            true,
+        )
+        .expect("a span renders a region");
+        let rendered = lines.join("\n");
+
+        // The integration path actually passes `RosterPolicy::Windowed`.
+        assert!(rendered.contains("hosts above"), "{rendered:?}");
+        assert!(rendered.contains("host-19"), "{rendered:?}");
+        assert!(!rendered.contains("host-00"), "{rendered:?}");
+        assert!(lines.len() < 20, "the region fits the viewport");
     }
 
     #[test]

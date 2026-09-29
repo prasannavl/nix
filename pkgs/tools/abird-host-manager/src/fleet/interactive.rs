@@ -113,6 +113,8 @@ enum VerboseKey {
     Lines(isize),
     /// `ctrl-h`/`ctrl-l`: scroll by half-viewport pages, positive toward older.
     Pages(isize),
+    /// `esc`/`ctrl-g`/`alt-g`: return the window to the newest content.
+    Newest,
 }
 
 /// Every verbose key recognised in one read of stdin, folded into one action.
@@ -124,11 +126,12 @@ struct VerboseInput {
     view: Option<VerboseView>,
     lines: isize,
     pages: isize,
+    newest: bool,
 }
 
 impl VerboseInput {
     fn is_empty(&self) -> bool {
-        !self.toggle && self.view.is_none() && self.lines == 0 && self.pages == 0
+        !self.toggle && self.view.is_none() && self.lines == 0 && self.pages == 0 && !self.newest
     }
 
     /// Fold one recognised key in: scroll deltas accumulate, the last view key
@@ -139,6 +142,7 @@ impl VerboseInput {
             VerboseKey::View(view) => self.view = Some(view),
             VerboseKey::Lines(delta) => self.lines = self.lines.saturating_add(delta),
             VerboseKey::Pages(delta) => self.pages = self.pages.saturating_add(delta),
+            VerboseKey::Newest => self.newest = true,
         }
     }
 }
@@ -152,22 +156,39 @@ struct AltPrefix {
 
 impl AltPrefix {
     /// Fold one stdin byte into `input`, reading it as the key of an `alt+`
-    /// shortcut while a fresh escape prefix is open.
+    /// shortcut while a fresh escape prefix is open. A prefix that aged out, or
+    /// a second escape inside the window, is a bare `esc` and returns to the
+    /// newest content.
     fn feed(&mut self, byte: u8, at: Instant, input: &mut VerboseInput) {
-        let prefixed = self
-            .started_at
-            .take()
-            .is_some_and(|started| at.duration_since(started) <= ALT_PREFIX_WINDOW);
-        if prefixed {
-            if let Some(key) = alt_verbose_key(byte) {
-                input.record(key);
+        if let Some(started) = self.started_at.take() {
+            if at.duration_since(started) <= ALT_PREFIX_WINDOW {
+                if byte == ESCAPE {
+                    input.record(VerboseKey::Newest);
+                } else if let Some(key) = alt_verbose_key(byte) {
+                    input.record(key);
+                }
+                return;
             }
-            return;
+            // The prefix aged out before this byte arrived: it was a bare `esc`.
+            input.record(VerboseKey::Newest);
         }
         if byte == ESCAPE {
             self.started_at = Some(at);
         } else if let Some(key) = verbose_key(byte) {
             input.record(key);
+        }
+    }
+
+    /// Emit the bare-`Esc` action once its `alt+` window closes with no key, so
+    /// a lone `Esc` returns the view to the newest content instead of being
+    /// swallowed as an unfinished prefix.
+    fn expire(&mut self, at: Instant, input: &mut VerboseInput) {
+        if self
+            .started_at
+            .is_some_and(|started| at.duration_since(started) > ALT_PREFIX_WINDOW)
+        {
+            self.started_at = None;
+            input.record(VerboseKey::Newest);
         }
     }
 }
@@ -180,11 +201,13 @@ fn spawn_reader(stop: Arc<AtomicBool>) -> std::io::Result<std::thread::JoinHandl
         .spawn(move || {
             let mut alt = AltPrefix::default();
             while !stop.load(Ordering::Acquire) {
-                if !stdin_ready() {
-                    std::thread::sleep(POLL_INTERVAL);
-                    continue;
-                }
-                let input = drain_verbose_keys(&mut alt);
+                let mut input = if stdin_ready() {
+                    drain_verbose_keys(&mut alt)
+                } else {
+                    VerboseInput::default()
+                };
+                // A lone `esc` resolves to "newest" once its alt window closes.
+                alt.expire(Instant::now(), &mut input);
                 if input.is_empty() {
                     // Nothing recognised: back off rather than spinning on a
                     // descriptor that stays readable without yielding keys.
@@ -207,6 +230,9 @@ fn spawn_reader(stop: Arc<AtomicBool>) -> std::io::Result<std::thread::JoinHandl
                 }
                 if input.pages != 0 {
                     reporter.scroll_verbose_pages(input.pages);
+                }
+                if input.newest {
+                    reporter.scroll_verbose_newest();
                 }
             }
         })
@@ -240,8 +266,8 @@ fn drain_verbose_keys(alt: &mut AltPrefix) -> VerboseInput {
 }
 
 /// The verbose key one stdin byte selects, if any. `ctrl-r`/`ctrl-e` pick the
-/// view, `ctrl-k`/`ctrl-j` scroll by lines toward older/newer output, and
-/// `ctrl-h`/`ctrl-l` scroll by half-viewport pages.
+/// view, `ctrl-k`/`ctrl-j` scroll by lines toward older/newer output, `ctrl-h`/
+/// `ctrl-l` scroll by half-viewport pages, and `ctrl-g` returns to the newest.
 fn verbose_key(byte: u8) -> Option<VerboseKey> {
     match byte {
         0x05 => Some(VerboseKey::View(VerboseView::Errors)), // ctrl-e
@@ -250,6 +276,7 @@ fn verbose_key(byte: u8) -> Option<VerboseKey> {
         0x0a => Some(VerboseKey::Lines(-1)),                 // ctrl-j
         0x08 => Some(VerboseKey::Pages(1)),                  // ctrl-h
         0x0c => Some(VerboseKey::Pages(-1)),                 // ctrl-l
+        0x07 => Some(VerboseKey::Newest),                    // ctrl-g
         b'v' | b'V' => Some(VerboseKey::Toggle),
         _ => None,
     }
@@ -266,6 +293,7 @@ fn alt_verbose_key(byte: u8) -> Option<VerboseKey> {
         b'j' | b'J' => Some(VerboseKey::Lines(-1)),
         b'h' | b'H' => Some(VerboseKey::Pages(1)),
         b'l' | b'L' => Some(VerboseKey::Pages(-1)),
+        b'g' | b'G' => Some(VerboseKey::Newest),
         // `alt+v` toggles as well, which also keeps a quick `Escape` followed by
         // `v` from being swallowed as an unrecognised `alt+` key.
         b'v' | b'V' => Some(VerboseKey::Toggle),
@@ -290,6 +318,7 @@ mod tests {
         assert_eq!(verbose_key(0x0a), Some(VerboseKey::Lines(-1)));
         assert_eq!(verbose_key(0x08), Some(VerboseKey::Pages(1)));
         assert_eq!(verbose_key(0x0c), Some(VerboseKey::Pages(-1)));
+        assert_eq!(verbose_key(0x07), Some(VerboseKey::Newest));
         // Enter arrives as a carriage return once raw mode stops translating it
         // into the line feed `ctrl-j` sends, so it must not scroll anything.
         assert_eq!(verbose_key(0x0d), None);
@@ -310,6 +339,7 @@ mod tests {
         assert_eq!(alt_verbose_key(b'j'), Some(VerboseKey::Lines(-1)));
         assert_eq!(alt_verbose_key(b'h'), Some(VerboseKey::Pages(1)));
         assert_eq!(alt_verbose_key(b'l'), Some(VerboseKey::Pages(-1)));
+        assert_eq!(alt_verbose_key(b'g'), Some(VerboseKey::Newest));
         assert_eq!(alt_verbose_key(b'v'), Some(VerboseKey::Toggle));
         assert_eq!(alt_verbose_key(b'x'), None);
     }
@@ -323,8 +353,8 @@ mod tests {
         alt.feed(b'r', start + Duration::from_millis(5), &mut input);
         assert_eq!(input.view, Some(VerboseView::Run));
 
-        // A lone Escape must not swallow the next deliberate key press, and the
-        // escape byte itself is never a key of its own.
+        // A stale prefix must not swallow the next deliberate key press: it was
+        // a bare `esc`, so it returns to the newest, and the key still applies.
         let mut input = VerboseInput::default();
         let mut alt = AltPrefix::default();
         alt.feed(ESCAPE, start, &mut input);
@@ -334,7 +364,39 @@ mod tests {
             start + ALT_PREFIX_WINDOW + Duration::from_millis(1),
             &mut input,
         );
+        assert!(input.newest, "a stale prefix is a bare esc");
         assert!(input.toggle, "a stale prefix must not consume the key");
+    }
+
+    #[test]
+    fn a_double_escape_returns_to_the_newest() {
+        let start = Instant::now();
+        let mut input = VerboseInput::default();
+        let mut alt = AltPrefix::default();
+        alt.feed(ESCAPE, start, &mut input);
+        alt.feed(ESCAPE, start + Duration::from_millis(5), &mut input);
+        assert!(input.newest, "two quick escapes are a bare esc");
+    }
+
+    #[test]
+    fn a_lone_escape_returns_to_the_newest_once_its_window_closes() {
+        let start = Instant::now();
+        let mut input = VerboseInput::default();
+        let mut alt = AltPrefix::default();
+        alt.feed(ESCAPE, start, &mut input);
+        assert!(input.is_empty(), "a pending prefix is not a key yet");
+
+        // Still inside the alt window: not a bare `esc`.
+        alt.expire(start + Duration::from_millis(5), &mut input);
+        assert!(input.is_empty());
+
+        // Window closed with no key: the bare `esc` resets to the newest.
+        alt.expire(
+            start + ALT_PREFIX_WINDOW + Duration::from_millis(1),
+            &mut input,
+        );
+        assert!(input.newest);
+        assert!(!input.is_empty());
     }
 
     #[test]
