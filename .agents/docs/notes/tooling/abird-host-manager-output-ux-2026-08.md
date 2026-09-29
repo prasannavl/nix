@@ -214,29 +214,32 @@ streaming the tail at runtime without restarting the command. Verbose
 attribution drops the duplicate host when a step already names its executor
 (`build via pvl-x2`, not `build via pvl-x2 pvl-x2`). The reporter owns the
 single open/closed state, so the key reader and `--verbose`/`--build-logs` drive
-one source of truth that nested in-process workers share; one reader owns the
-terminal while any producer holds it and releases it on the last drop, so a
-multi-job agent run keeps one reader across every job. The reader keeps `ISIG`
-intact so Ctrl-C still interrupts, restores the original terminal attributes
-when the last owner drops, and is not installed when stdin is not a terminal,
-when a repository-script re-exec will own the process, when the run reads a
-staged patch from stdin, or when JSON output suppresses human progress. Ctrl-C
-is a two-step confirm: a first press only arms the cancel and expires after the
-confirmation window with no cancel; the second press cancels gracefully, waiting
-for an in-flight activation; the third forces an immediate `_exit`. The footer's
-`ctrl-c` label tracks that escalation (`cancel`, then `confirm cancel`, then
-`force exit`), and once the cancel is confirmed a
-`Cancel interrupt received · cancelling` line appears just above the footer so
-the unwind reads as deliberate. On an interactive terminal the handler does not
-write to stderr, so the state is rendered through the normal live region instead
-of corrupting it. Unknown default-mode output fails closed to a generic
-diagnostic pointer instead of relying on error keywords. SSH key discovery and
-local closure copies are attributed to the affected host instead of appearing as
-unrelated phase-level chatter. Nix store events must contain one validated
-store-root basename, and manually published SSH or health-operation lines pass a
-separate semantic allowlist. Health details expose only validated user and
-systemd-unit identifiers or a generic diagnostics pointer; decoded collector
-text is never copied directly into the default host tail.
+one source of truth that nested in-process workers share. The command seeds it
+once, at startup (`FleetProgress::begin_command`), because a run builds a view
+per phase and per host: a constructor that also reset the section closed it and
+wiped its history on every host. One reader owns the terminal while any producer
+holds it and releases it on the last drop, so a multi-job agent run keeps one
+reader across every job. The reader keeps `ISIG` intact so Ctrl-C still
+interrupts, restores the original terminal attributes when the last owner drops,
+and is not installed when stdin is not a terminal, when a repository-script
+re-exec will own the process, when the run reads a staged patch from stdin, or
+when JSON output suppresses human progress. Ctrl-C is a two-step confirm: a
+first press only arms the cancel and expires after the confirmation window with
+no cancel; the second press cancels gracefully, waiting for an in-flight
+activation; the third forces an immediate `_exit`. The footer's `ctrl-c` label
+tracks that escalation (`cancel`, then `confirm cancel`, then `force exit`), and
+once the cancel is confirmed a `Cancel interrupt received · cancelling` line
+appears just above the footer so the unwind reads as deliberate. On an
+interactive terminal the handler does not write to stderr, so the state is
+rendered through the normal live region instead of corrupting it. Unknown
+default-mode output fails closed to a generic diagnostic pointer instead of
+relying on error keywords. SSH key discovery and local closure copies are
+attributed to the affected host instead of appearing as unrelated phase-level
+chatter. Nix store events must contain one validated store-root basename, and
+manually published SSH or health-operation lines pass a separate semantic
+allowlist. Health details expose only validated user and systemd-unit
+identifiers or a generic diagnostics pointer; decoded collector text is never
+copied directly into the default host tail.
 
 The activation log follower is observational rather than authoritative. If it
 exits early, the observer continues bounded result polling and drains only new

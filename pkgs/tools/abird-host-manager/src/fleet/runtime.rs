@@ -186,6 +186,9 @@ fn create_private_known_hosts(path: &Path) -> Result<()> {
 
 pub fn run(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
     super::signal::install()?;
+    // Seed the verbose section once, before any phase or host builds a view over
+    // the same reporter. Later views must leave the operator's section alone.
+    FleetProgress::begin_command(&invocation.options);
     if invocation.options.ci_trigger {
         return run_auxiliary_step(&invocation, "Trigger remote fleet command", || {
             run_ci_trigger(&invocation, &runtime)

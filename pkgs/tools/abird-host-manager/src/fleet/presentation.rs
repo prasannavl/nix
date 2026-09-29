@@ -65,6 +65,22 @@ pub struct FleetProgress {
 }
 
 impl FleetProgress {
+    /// Start a command's presentation: forget anything an earlier command left
+    /// behind, and open the verbose section up front when `--verbose` or
+    /// `--build-logs` asks for it. Call this once, from the command entry.
+    ///
+    /// The section is operator state, so [`Self::from_options`] deliberately does
+    /// not touch it: a run builds a view for every phase and every host, and none
+    /// of those may close a section the operator opened or discard its history.
+    pub fn begin_command(options: &Options) {
+        let reporter = command_reporter();
+        reporter.reset_verbose_history();
+        reporter.set_verbose_open(options.verbose || options.build_logs);
+    }
+
+    /// Build a view of the command's progress. Constructing one never changes the
+    /// verbose section, so a view built mid-run inherits whatever the operator has
+    /// open.
     pub fn from_options(options: &Options) -> Self {
         let github_actions = github_actions_mode(
             options.log_format,
@@ -75,13 +91,6 @@ impl FleetProgress {
         } else {
             command_reporter().clone().with_recent_updates(10)
         };
-        // One command owns one verbose history, so a process that runs more than
-        // one command never inherits the previous run's ring or errors view.
-        reporter.reset_verbose_history();
-        // The reporter owns the open/closed state, so every producer has one
-        // source of truth: the key reader flips it, and `--verbose`/`--build-logs`
-        // open it up front without redrawing.
-        reporter.set_verbose_open(options.verbose || options.build_logs);
         Self {
             reporter,
             prefix_process_logs: options.prefix_host_logs,
@@ -1980,34 +1989,50 @@ mod tests {
 
     #[test]
     fn verbose_options_open_the_section_when_the_command_starts() {
-        // `from_options` owns the initial open state, so dropping that call would
+        // `begin_command` owns the initial open state, so dropping that call would
         // silently leave `--verbose`/`--build-logs` rendering nothing until the
         // reader toggled it.
-        let verbose = FleetProgress::from_options(&Options {
+        FleetProgress::begin_command(&Options {
             verbose: true,
             ..Options::default()
         });
-        assert!(
-            verbose.reporter.verbose_showing(),
-            "--verbose opens the section"
-        );
+        assert!(command_reporter().verbose_showing(), "--verbose opens it");
 
-        let build_logs = FleetProgress::from_options(&Options {
+        FleetProgress::begin_command(&Options {
             build_logs: true,
             ..Options::default()
         });
         assert!(
-            build_logs.reporter.verbose_showing(),
-            "--build-logs opens the section"
+            command_reporter().verbose_showing(),
+            "--build-logs opens it"
         );
 
-        // A plain run starts closed, and leaves the shared reporter closed for
-        // the tests that follow.
-        let quiet = FleetProgress::from_options(&Options::default());
+        // A plain command starts closed, and leaves the shared reporter closed
+        // for the tests that follow.
+        FleetProgress::begin_command(&Options::default());
         assert!(
-            !quiet.reporter.verbose_showing(),
+            !command_reporter().verbose_showing(),
             "a plain run starts closed"
         );
+    }
+
+    #[test]
+    fn a_view_built_mid_run_keeps_the_open_section() {
+        // One view is built per phase and per host, so none of them may reset the
+        // history or close a section the operator opened.
+        FleetProgress::begin_command(&Options {
+            verbose: true,
+            ..Options::default()
+        });
+        assert!(command_reporter().verbose_showing(), "the command opens it");
+
+        let _mid_run = FleetProgress::from_options(&Options::default());
+
+        assert!(
+            command_reporter().verbose_showing(),
+            "a view built mid-run must not close the operator's section"
+        );
+        FleetProgress::begin_command(&Options::default());
     }
 
     #[test]

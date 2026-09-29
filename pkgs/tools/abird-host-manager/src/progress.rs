@@ -2951,6 +2951,58 @@ mod tests {
     }
 
     #[test]
+    fn a_scrolled_errors_window_holds_its_rows_as_problems_arrive() {
+        let reporter = interactive_reporter();
+        reporter.set_verbose_view(VerboseView::Errors);
+        for index in 0..40 {
+            reporter.retain_verbose_line(Tone::Failure, format!("error {index}"));
+        }
+        reporter.scroll_verbose_lines(10);
+        let before = region_lines(&reporter, (20, 100));
+        assert_ne!(before[1], "error 39", "the window left the newest rows");
+
+        reporter.retain_verbose_line(Tone::Failure, "error 40");
+
+        // The top row stays put, so the reader keeps the problem they were on;
+        // only the hidden-row count moves.
+        let after = region_lines(&reporter, (20, 100));
+        assert_eq!(before[1], after[1], "the window slid");
+    }
+
+    #[test]
+    fn a_scrolled_run_window_holds_its_rows_when_the_ring_evicts() {
+        let reporter = interactive_reporter();
+        reporter.set_verbose_view(VerboseView::Run);
+        {
+            let mut state = reporter.state.lock().unwrap();
+            for index in 0..VERBOSE_MAX_LIVE_LINES {
+                state.verbose_tail.push_back(line(
+                    index as u64,
+                    Tone::Neutral,
+                    &format!("live {index}"),
+                ));
+            }
+        }
+        reporter.scroll_verbose_lines(10);
+        let before = region_lines(&reporter, (20, 100));
+
+        // Every line past the cap evicts one from the front while the window
+        // holds the rows the reader is on.
+        for index in 0..5 {
+            reporter.verbose_line(
+                Tone::Neutral,
+                format!("live {}", VERBOSE_MAX_LIVE_LINES + index),
+            );
+        }
+
+        let after = region_lines(&reporter, (20, 100));
+        assert_eq!(
+            before[1], after[1],
+            "the window slid while the ring evicted"
+        );
+    }
+
+    #[test]
     fn errors_windows_count_elisions_as_rows() {
         let reporter = interactive_reporter();
         reporter.retain_verbose_line(Tone::Failure, "error 0");
