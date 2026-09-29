@@ -1,5 +1,11 @@
 #![allow(dead_code)]
 
+mod programs {
+    pub mod age {
+        pub use abird_host_manager::programs::age::Age;
+    }
+}
+
 use abird_host_manager::fleet::repository;
 
 #[path = "../src/fleet/ci_runtime.rs"]
@@ -23,6 +29,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
 use tempfile::TempDir;
+
+use age::secrecy::ExposeSecret;
 
 use ci_runtime::{
     AgeOrFileCredentialMaterializer, CiConnectionInput, CiCredentialMaterializer, CiPrivateKey,
@@ -430,17 +438,15 @@ fn configured_material_is_private_and_ssh_receives_only_safe_argv_and_exact_stdi
         &connection,
         fixture.path(),
         fixture.path(),
-        &CiPrograms::new("ssh", "ssh-keyscan"),
+        &CiPrograms::new("ssh"),
         &mut runner,
         &mut CopyMaterializer,
-        5,
     )
     .unwrap();
 
     assert_eq!(report.status, 17);
     assert!(report.dry_run);
     assert_eq!(report.stdin_bytes, patch.len());
-    assert!(!report.used_keyscan);
     assert_eq!(
         runner.private_key,
         Some((0o600, "SYNTHETIC PRIVATE KEY\n".to_owned()))
@@ -459,7 +465,10 @@ fn configured_material_is_private_and_ssh_receives_only_safe_argv_and_exact_stdi
         .iter()
         .map(|arg| arg.to_string_lossy())
         .collect::<Vec<_>>();
-    assert!(args.iter().any(|arg| arg == "StrictHostKeyChecking=yes"));
+    assert!(
+        args.iter()
+            .any(|arg| arg == "StrictHostKeyChecking=accept-new")
+    );
     assert!(args.iter().any(|arg| arg == "IdentitiesOnly=yes"));
     let remote = args.last().unwrap();
     assert!(remote.starts_with("__nixbot_argv64 "));
@@ -474,7 +483,7 @@ fn configured_material_is_private_and_ssh_receives_only_safe_argv_and_exact_stdi
 }
 
 #[test]
-fn absent_known_hosts_uses_bounded_keyscan_and_propagates_remote_status() {
+fn absent_known_hosts_uses_an_empty_file_and_propagates_remote_status() {
     let fixture = TempDir::new().unwrap();
     let connection = ci_runtime::CiConnection {
         inventory_name: None,
@@ -486,14 +495,11 @@ fn absent_known_hosts_uses_bounded_keyscan_and_propagates_remote_status() {
         proxy_jump: None,
     };
     let mut runner = RecordingRunner {
-        outputs: VecDeque::from([
-            CommandOutput::success(b"[ci.example]:2222 ssh-ed25519 scanned\n".to_vec()),
-            CommandOutput {
-                status: 23,
-                stdout: Vec::new(),
-                stderr: b"remote failed".to_vec(),
-            },
-        ]),
+        outputs: VecDeque::from([CommandOutput {
+            status: 23,
+            stdout: Vec::new(),
+            stderr: b"remote failed".to_vec(),
+        }]),
         ..RecordingRunner::default()
     };
     let report = execute_ci_trigger(
@@ -501,59 +507,23 @@ fn absent_known_hosts_uses_bounded_keyscan_and_propagates_remote_status() {
         &connection,
         fixture.path(),
         fixture.path(),
-        &CiPrograms::new("ssh", "ssh-keyscan"),
+        &CiPrograms::new("ssh"),
         &mut runner,
         &mut CopyMaterializer,
-        7,
     )
     .unwrap();
 
     assert_eq!(report.status, 23);
-    assert!(report.used_keyscan);
-    assert_eq!(runner.requests.len(), 2);
-    assert_eq!(
-        runner.requests[0].args,
-        ["-T", "7", "-H", "-p", "2222", "ci.example"]
-            .into_iter()
-            .map(OsString::from)
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(runner.known_hosts.as_ref().unwrap().0, 0o600);
-}
-
-#[test]
-fn empty_keyscan_result_fails_closed_without_attempting_ssh() {
-    let fixture = TempDir::new().unwrap();
-    let connection = ci_runtime::CiConnection {
-        inventory_name: None,
-        target: "ci.example".to_owned(),
-        user: "nixbot".to_owned(),
-        port: 22,
-        private_key: None,
-        known_hosts: None,
-        proxy_jump: None,
-    };
-    let mut runner = RecordingRunner {
-        outputs: VecDeque::from([CommandOutput {
-            status: 1,
-            stdout: Vec::new(),
-            stderr: b"scan failed".to_vec(),
-        }]),
-        ..RecordingRunner::default()
-    };
-    let error = execute_ci_trigger(
-        &trigger_plan(false, None),
-        &connection,
-        fixture.path(),
-        fixture.path(),
-        &CiPrograms::new("ssh", "ssh-keyscan"),
-        &mut runner,
-        &mut CopyMaterializer,
-        5,
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("determine CI host key"));
+    // No scan process is launched: the CI host is the only SSH request, and its
+    // transport trusts the host key on first use through an empty pin file.
     assert_eq!(runner.requests.len(), 1);
+    let ssh = runner.requests.last().unwrap();
+    assert!(
+        ssh.args
+            .iter()
+            .any(|arg| arg == "StrictHostKeyChecking=accept-new")
+    );
+    assert_eq!(runner.known_hosts, Some((0o600, String::new())));
 }
 
 fn executable(directory: &Path, name: &str, body: &str) -> PathBuf {
@@ -591,10 +561,9 @@ fn system_executor_runs_the_argv_request_without_a_shell_wrapper() {
         &connection,
         fixture.path(),
         fixture.path(),
-        &CiPrograms::new(ssh, "ssh-keyscan"),
+        &CiPrograms::new(ssh),
         &mut SystemCiExecutor,
         &mut CopyMaterializer,
-        5,
     )
     .unwrap();
 
@@ -657,9 +626,13 @@ fn age_key_materializer_uses_declared_identity_and_private_output_lifecycle() {
     let fixture = TempDir::new().unwrap();
     let source = fixture.path().join("synthetic.age");
     let identity = fixture.path().join("synthetic.identity");
-    fs::write(&source, "SYNTHETIC DECRYPTED KEY\n").unwrap();
-    fs::write(&identity, "synthetic identity marker").unwrap();
-    let age = executable(fixture.path(), "age", "cp \"$6\" \"$5\"");
+    let recipient = age::x25519::Identity::generate();
+    fs::write(&identity, recipient.to_string().expose_secret()).unwrap();
+    fs::write(
+        &source,
+        age::encrypt(&recipient.to_public(), b"SYNTHETIC DECRYPTED KEY\n").unwrap(),
+    )
+    .unwrap();
     let connection = ci_runtime::CiConnection {
         inventory_name: None,
         target: "ci.example".to_owned(),
@@ -678,13 +651,11 @@ fn age_key_materializer_uses_declared_identity_and_private_output_lifecycle() {
         &connection,
         fixture.path(),
         fixture.path(),
-        &CiPrograms::new("ssh", "ssh-keyscan"),
+        &CiPrograms::new("ssh"),
         &mut runner,
         &mut AgeOrFileCredentialMaterializer {
-            age_program: age,
             identities: vec![identity],
         },
-        5,
     )
     .unwrap();
 
@@ -693,6 +664,30 @@ fn age_key_materializer_uses_declared_identity_and_private_output_lifecycle() {
         Some((0o600, "SYNTHETIC DECRYPTED KEY\n".to_owned()))
     );
     assert!(runner.credential_paths.iter().all(|path| !path.exists()));
+}
+
+#[test]
+fn age_key_materializer_reports_missing_identities_without_an_age_program() {
+    let fixture = TempDir::new().unwrap();
+    let source = fixture.path().join("synthetic.age");
+    let recipient = age::x25519::Identity::generate();
+    fs::write(
+        &source,
+        age::encrypt(&recipient.to_public(), b"unused").unwrap(),
+    )
+    .unwrap();
+    let error = AgeOrFileCredentialMaterializer {
+        identities: vec![fixture.path().join("missing.identity")],
+    }
+    .materialize(&source, &fixture.path().join("ci-key"))
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("no readable age identity is available for the CI private key"),
+        "{error:#}"
+    );
 }
 
 #[test]
@@ -713,10 +708,9 @@ fn empty_inline_private_key_is_rejected_before_ssh() {
         &connection,
         fixture.path(),
         fixture.path(),
-        &CiPrograms::new("ssh", "ssh-keyscan"),
+        &CiPrograms::new("ssh"),
         &mut runner,
         &mut CopyMaterializer,
-        5,
     )
     .unwrap_err();
     assert!(error.to_string().contains("private key is empty"));

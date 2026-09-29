@@ -7,12 +7,12 @@ use abird_host_manager::fleet::bootstrap::{
     BootstrapReadiness, CheckBootstrapResult, FileMode, ForcedCommandInput,
     ForcedCommandObservation, ForcedCommandReadiness, HostAgeIdentityAction, HostAgeIdentityInput,
     IdentityMaterializationPlan, KnownHostsInput, KnownHostsSeed, PathInspector, PrimaryRoute,
-    ProbeObservation, ScanAlgorithm, SecretPathError, SshHostKeyPolicy, SudoAdmission,
-    TransportDecision, TransportInput, VisibilityPlan, age_identity_candidates,
-    authorized_key_action, bootstrap_key_install_plan, build_forced_command_check,
-    check_bootstrap_results, classify_forced_command_readiness, host_age_identity_action,
-    host_age_identity_install_plan, known_hosts_plan, plan_identity_materialization,
-    prepare_transport, resolve_key_source_path, sudo_admission, temporary_transport_failure,
+    ProbeObservation, SecretPathError, SshHostKeyPolicy, SudoAdmission, TransportDecision,
+    TransportInput, VisibilityPlan, age_identity_candidates, authorized_key_action,
+    bootstrap_key_install_plan, build_forced_command_check, check_bootstrap_results,
+    classify_forced_command_readiness, host_age_identity_action, host_age_identity_install_plan,
+    known_hosts_plan, plan_identity_materialization, prepare_transport, resolve_key_source_path,
+    sudo_admission, temporary_transport_failure,
 };
 
 #[derive(Default)]
@@ -179,7 +179,7 @@ fn identity_materialization_distinguishes_plain_missing_and_encrypted_sources() 
 }
 
 #[test]
-fn configured_known_hosts_is_strict_and_never_scanned() {
+fn configured_known_hosts_seeds_the_file_and_still_uses_accept_new() {
     let plan = known_hosts_plan(&KnownHostsInput {
         node: "app".to_owned(),
         target_host: "10.0.0.5".to_owned(),
@@ -195,12 +195,11 @@ fn configured_known_hosts_is_strict_and_never_scanned() {
         }
     );
     assert_eq!(plan.mode, FileMode(0o600));
-    assert_eq!(plan.host_key_policy, SshHostKeyPolicy::Strict);
-    assert!(plan.scans.is_empty());
+    assert_eq!(plan.host_key_policy, SshHostKeyPolicy::AcceptNew);
 }
 
 #[test]
-fn direct_known_hosts_scans_ed25519_then_falls_back_to_any_key() {
+fn direct_known_hosts_uses_an_empty_file_with_accept_new() {
     let plan = known_hosts_plan(&KnownHostsInput {
         node: "app".to_owned(),
         target_host: "10.0.0.5".to_owned(),
@@ -210,15 +209,13 @@ fn direct_known_hosts_scans_ed25519_then_falls_back_to_any_key() {
         output_file: PathBuf::from("/runtime/known_hosts.app"),
     });
     assert_eq!(plan.seed, KnownHostsSeed::Empty);
-    assert_eq!(plan.host_key_policy, SshHostKeyPolicy::Strict);
-    assert_eq!(plan.scans.len(), 2);
-    assert_eq!(plan.scans[0].algorithm, ScanAlgorithm::Ed25519);
-    assert_eq!(plan.scans[1].algorithm, ScanAlgorithm::Any);
-    assert!(plan.scans[1].only_if_host_still_missing);
+    assert_eq!(plan.host_key_policy, SshHostKeyPolicy::AcceptNew);
 }
 
 #[test]
-fn proxied_known_hosts_uses_accept_new_and_scans_only_direct_first_hop() {
+fn proxied_known_hosts_seeds_an_empty_file() {
+    // `known_hosts_plan` is a uniform contract now: no route scans a hop, so
+    // proxied and direct inputs differ only in the seed they carry.
     let plan = known_hosts_plan(&KnownHostsInput {
         node: "app".to_owned(),
         target_host: "10.0.0.5".to_owned(),
@@ -236,12 +233,11 @@ fn proxied_known_hosts_uses_accept_new_and_scans_only_direct_first_hop() {
         proxy_command: None,
         output_file: PathBuf::from("/runtime/known_hosts.app"),
     });
-    assert_eq!(plan.host_key_policy, SshHostKeyPolicy::AcceptNew);
-    assert!(plan.scans.iter().all(|scan| scan.host == "jump.example"));
-    assert!(!plan.scans.iter().any(|scan| scan.host == "10.0.0.5"));
+    assert_eq!(plan.seed, KnownHostsSeed::Empty);
+    assert_eq!(plan.output_file, PathBuf::from("/runtime/known_hosts.app"));
+    assert_eq!(plan.mode, FileMode(0o600));
 
     let custom_proxy = known_hosts_plan(&KnownHostsInput {
-        proxy_chain: Vec::new(),
         proxy_command: Some("cloudflared access ssh --hostname %h".to_owned()),
         ..KnownHostsInput {
             node: "app".to_owned(),
@@ -252,8 +248,7 @@ fn proxied_known_hosts_uses_accept_new_and_scans_only_direct_first_hop() {
             output_file: PathBuf::from("/runtime/known_hosts.app"),
         }
     });
-    assert_eq!(custom_proxy.host_key_policy, SshHostKeyPolicy::AcceptNew);
-    assert!(custom_proxy.scans.is_empty());
+    assert_eq!(custom_proxy.seed, KnownHostsSeed::Empty);
 }
 
 #[test]
@@ -446,7 +441,7 @@ fn forced_command_plan_replaces_identity_and_forwards_safe_repo_config() {
             "-o".to_owned(),
             "IdentitiesOnly=yes".to_owned(),
             "-o".to_owned(),
-            "StrictHostKeyChecking=yes".to_owned(),
+            "StrictHostKeyChecking=accept-new".to_owned(),
         ],
         override_identity: Some(PathBuf::from("/runtime/check-key")),
         sha: Some("abc123".to_owned()),
@@ -463,7 +458,7 @@ fn forced_command_plan_replaces_identity_and_forwards_safe_repo_config() {
     assert!(
         plan.ssh_args
             .iter()
-            .any(|arg| arg == "StrictHostKeyChecking=yes")
+            .any(|arg| arg == "StrictHostKeyChecking=accept-new")
     );
     assert_eq!(
         plan.remote_command,

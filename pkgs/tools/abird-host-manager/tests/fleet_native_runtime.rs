@@ -4,10 +4,33 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use abird_host_manager::programs::clear_git_repository_environment;
+use age::secrecy::ExposeSecret;
 
 #[path = "../src/test_support.rs"]
 mod test_support;
 use test_support::write_executable;
+
+/// Throwaway `ssh-ed25519` key pair generated for this test suite only. The
+/// manager derives the public line in-process, so the private key must parse as
+/// real OpenSSH material.
+const BOOTSTRAP_ED25519_PRIVATE_KEY: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACCQnHU3VS3K3jkmnEaaHFcozUvZy0zS0EPn5jUATg1rBAAAAKhIj7rISI+6
+yAAAAAtzc2gtZWQyNTUxOQAAACCQnHU3VS3K3jkmnEaaHFcozUvZy0zS0EPn5jUATg1rBA
+AAAEDkzBKB91su4AW3mj8r2WxzSKJZZ1qA3qqCn2jB5vqr0ZCcdTdVLcreOSacRpocVyjN
+S9nLTNLQQ+fmNQBODWsEAAAAH2FiaXJkLWhvc3QtbWFuYWdlciB0ZXN0IGZpeHR1cmUBAg
+MEBQY=
+-----END OPENSSH PRIVATE KEY-----
+";
+
+/// A base64 line from the fixture private key body.
+const BOOTSTRAP_ED25519_PRIVATE_KEY_MARKER: &str = "QyNTUxOQAAACCQnHU3VS3K3jkmnEaaHFco";
+
+/// Base64 body of the public line derived in-process from the fixture private
+/// key. Key material must never reach an SSH argv.
+const BOOTSTRAP_ED25519_PUBLIC_KEY_BODY: &str =
+    "AAAAC3NzaC1lZDI1NTE5AAAAIJCcdTdVLcreOSacRpocVyjNS9nLTNLQQ+fmNQBODWsE";
 
 /// A `git` command that ignores the ambient repository environment, so a test
 /// repository is never re-resolved onto the caller's checkout.
@@ -31,6 +54,20 @@ fn git(root: &Path, args: &[&str]) -> String {
     run(git_command().arg("-C").arg(root).args(args))
 }
 
+/// A test temp root short enough for OpenSSH control paths.
+///
+/// The native fleet materializes SSH control sockets in a transport directory
+/// beside the repository, and OpenSSH rejects control paths at or above 108
+/// bytes. The Nix build sandbox runs the suite with a `TMPDIR` deep enough that
+/// the default `tempfile` root can cross that limit, so anchor the suite to a
+/// short `/tmp` prefix instead.
+fn tempdir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("nb-")
+        .tempdir_in("/tmp")
+        .expect("create short-lived test directory")
+}
+
 fn control_paths(log: &str) -> Vec<String> {
     log.split_whitespace()
         .filter_map(|token| {
@@ -45,7 +82,7 @@ fn control_paths(log: &str) -> Vec<String> {
 
 #[test]
 fn compatibility_build_runs_the_native_evaluate_and_build_pipeline() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let log = temporary.path().join("nix.log");
@@ -234,7 +271,7 @@ esac
 
 #[test]
 fn deploy_skips_an_external_host_without_a_native_build_plan() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let log = temporary.path().join("nix.log");
@@ -338,7 +375,7 @@ esac
 
 #[test]
 fn use_repo_script_reexecutes_the_rust_app_from_the_exact_worktree() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let log = temporary.path().join("nix.log");
@@ -415,7 +452,7 @@ esac
 
 #[test]
 fn interrupt_stops_a_running_build_process_group_and_preserves_exit_status() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     fs::create_dir_all(&repository).unwrap();
@@ -511,7 +548,7 @@ esac
 
 #[test]
 fn parallel_build_failure_keeps_the_host_label() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     fs::create_dir_all(&repository).unwrap();
@@ -587,7 +624,7 @@ esac
 
 #[test]
 fn dry_deploy_builds_the_plan_without_contacting_deploy_targets() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let log = temporary.path().join("nix.log");
@@ -672,7 +709,7 @@ esac
 
 #[test]
 fn remote_build_holds_gc_lease_and_returns_verified_closure_to_local_store() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let nix_log = temporary.path().join("nix.log");
@@ -795,7 +832,7 @@ esac
     assert_eq!(fs::read_to_string(&ssh_count).unwrap().trim(), "2");
     assert!(
         !keyscan_log.exists(),
-        "a ProxyCommand-routed first hop must not launch direct ssh-keyscan"
+        "a routed deploy must not launch ssh-keyscan"
     );
     let nix_commands = fs::read_to_string(&nix_log).unwrap();
     assert!(nix_commands.contains("copy --to ssh-ng://root@10.10.30.80"));
@@ -806,6 +843,9 @@ esac
     assert!(nix_commands.contains("cloudflared access ssh --hostname z.gap3.ai"));
     let ssh_commands = fs::read_to_string(&ssh_log).unwrap();
     assert_eq!(ssh_commands.matches("root@10.10.30.80").count(), 2);
+    // Every routed connection trusts the host key on first use instead of a
+    // separate pre-scan of the first hop.
+    assert!(ssh_commands.contains("StrictHostKeyChecking=accept-new"));
     assert!(ssh_commands.contains("nixbot-build-lease"));
     assert!(ssh_commands.contains("/run/current-system/sw/bin/flock"));
     assert!(ssh_commands.contains("/nix/var/nix"));
@@ -835,18 +875,22 @@ esac
 
 #[test]
 fn parallel_remote_builds_share_semantic_lease_authority_with_materialized_identity() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let nix_log = temporary.path().join("nix.log");
     let ssh_log = temporary.path().join("ssh.log");
-    let age_log = temporary.path().join("age.log");
     let encrypted_key = repository.join("builder.key.age");
     let age_identity = temporary.path().join("age-identity");
     fs::create_dir_all(&repository).unwrap();
     fs::create_dir_all(&tools).unwrap();
-    fs::write(&encrypted_key, "ENCRYPTED-FIXTURE\n").unwrap();
-    fs::write(&age_identity, "AGE-SECRET-KEY-FIXTURE\n").unwrap();
+    let recipient = age::x25519::Identity::generate();
+    fs::write(
+        &encrypted_key,
+        age::encrypt(&recipient.to_public(), b"PRIVATE-KEY-FIXTURE\n").unwrap(),
+    )
+    .unwrap();
+    fs::write(&age_identity, recipient.to_string().expose_secret()).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
     run(git_command().args(["init", "-q"]).arg(&repository));
@@ -879,30 +923,19 @@ esac
 "#,
     )
     .unwrap();
-    let age = tools.join("age");
-    write_executable(
-        &age,
-        r#"#!/bin/sh
-set -eu
-destination=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -o) destination=$2; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[ -n "$destination" ]
-printf '%s\n' "$destination" >> "$NATIVE_FLEET_AGE_LOG"
-printf '%s\n' 'PRIVATE-KEY-FIXTURE' > "$destination"
-"#,
-    )
-    .unwrap();
     let ssh = tools.join("ssh");
     write_executable(
         &ssh,
         r#"#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$NATIVE_FLEET_SSH_LOG"
+previous=
+for argument in "$@"; do
+  if [ "$previous" = -i ]; then
+    printf 'IDENTITY %s %s\n' "$argument" "$(cat "$argument")" >> "$NATIVE_FLEET_SSH_LOG"
+  fi
+  previous=$argument
+done
 case "$*" in
   *nixbot-build-lease*hold*)
     printf '%s\n' READY
@@ -947,7 +980,6 @@ esac
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_NIX_LOG", &nix_log)
         .env("NATIVE_FLEET_SSH_LOG", &ssh_log)
-        .env("NATIVE_FLEET_AGE_LOG", &age_log)
         .env("NIXBOT_BUILD_PLAN_CACHE", "0")
         .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
         .env(
@@ -976,21 +1008,44 @@ esac
         1,
         "{ssh_commands}"
     );
-    let materialized = fs::read_to_string(&age_log).unwrap();
-    assert_eq!(materialized.lines().count(), 4, "{materialized}");
+    let materialized = fs::read_to_string(&ssh_log).unwrap();
+    // The in-binary decryptor replaces the external `age` program, so the only
+    // remaining observation is what `ssh` receives: a materialized identity path
+    // under the runtime work root whose plaintext is the encrypted fixture.
+    let mut paths = materialized
+        .split_whitespace()
+        .filter(|token| token.contains("/key-builder-"))
+        .map(|token| token.trim_matches(['\'', '"']).to_owned())
+        .collect::<Vec<_>>();
+    paths.sort_unstable();
+    paths.dedup();
+    assert_eq!(paths.len(), 2, "one materialized identity per build lane");
     assert!(
-        materialized.lines().all(|path| {
-            path.contains("/t-")
-                && (path.ends_with("/key-builder-primary")
-                    || path.ends_with("/key-builder-proxy-primary"))
-        }),
+        paths
+            .iter()
+            .all(|path| path.contains("/t-") && path.ends_with("/key-builder-primary")),
+        "{materialized}"
+    );
+
+    let mut identities = materialized
+        .lines()
+        .filter_map(|line| line.strip_prefix("IDENTITY "))
+        .map(|line| line.split_once(' ').unwrap())
+        .collect::<Vec<_>>();
+    identities.sort_unstable();
+    identities.dedup();
+    assert_eq!(identities.len(), 2, "{materialized}");
+    assert!(
+        identities
+            .iter()
+            .all(|(_, contents)| *contents == "PRIVATE-KEY-FIXTURE"),
         "{materialized}"
     );
 }
 
 #[test]
 fn remote_builder_derivation_copy_failure_keeps_the_raw_evidence() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let ssh_log = temporary.path().join("ssh.log");
@@ -1098,16 +1153,17 @@ exit 0
 
 #[test]
 fn forced_bootstrap_streams_keys_and_keeps_deploy_on_the_operator_route() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let ssh_log = temporary.path().join("ssh.log");
+    let ssh_stdin_log = temporary.path().join("ssh.stdin");
     let ssh_count = temporary.path().join("ssh.count");
     let bootstrap = temporary.path().join("bootstrap.key");
     let operator = temporary.path().join("operator.key");
     fs::create_dir_all(&repository).unwrap();
     fs::create_dir_all(&tools).unwrap();
-    fs::write(&bootstrap, "PRIVATE-BOOTSTRAP-FIXTURE\n").unwrap();
+    fs::write(&bootstrap, BOOTSTRAP_ED25519_PRIVATE_KEY).unwrap();
     fs::write(&operator, "OPERATOR-FIXTURE\n").unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts.app = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
@@ -1139,12 +1195,6 @@ esac
 "#,
     )
     .unwrap();
-    let ssh_keygen = tools.join("ssh-keygen");
-    write_executable(
-        &ssh_keygen,
-        "#!/bin/sh\nset -eu\nprintf '%s\\n' 'ssh-ed25519 PUBLIC-FIXTURE'\n",
-    )
-    .unwrap();
     let ssh = tools.join("ssh");
     write_executable(
         &ssh,
@@ -1155,7 +1205,7 @@ count=0
 count=$((count + 1))
 printf '%s\n' "$count" > "$NATIVE_FLEET_SSH_COUNT"
 printf '%s\n' "$*" >> "$NATIVE_FLEET_SSH_LOG"
-cat >/dev/null
+cat >> "$NATIVE_FLEET_SSH_STDIN_LOG"
 if [ "$count" -eq 4 ]; then
   exit 1
 fi
@@ -1191,6 +1241,7 @@ fi
         )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_SSH_LOG", &ssh_log)
+        .env("NATIVE_FLEET_SSH_STDIN_LOG", &ssh_stdin_log)
         .env("NATIVE_FLEET_SSH_COUNT", &ssh_count)
         .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
         .env(
@@ -1221,13 +1272,23 @@ fi
         1
     );
     assert!(!commands.contains("root@host.invalid"));
-    assert!(!commands.contains("PRIVATE-BOOTSTRAP-FIXTURE"));
-    assert!(!commands.contains("PUBLIC-FIXTURE"));
+    // The private key body and the public line derived in-process from it only
+    // travel over stdin, never through an SSH argv.
+    assert!(!commands.contains(BOOTSTRAP_ED25519_PRIVATE_KEY_MARKER));
+    assert!(!commands.contains(BOOTSTRAP_ED25519_PUBLIC_KEY_BODY));
+    let streamed = fs::read_to_string(&ssh_stdin_log).unwrap();
+    assert!(streamed.contains(BOOTSTRAP_ED25519_PRIVATE_KEY_MARKER));
+    assert!(
+        streamed.contains(&format!(
+            "ssh-ed25519 {BOOTSTRAP_ED25519_PUBLIC_KEY_BODY} abird-host-manager test fixture"
+        )),
+        "{streamed}"
+    );
 }
 
 #[test]
 fn automatic_transport_uses_forced_command_evidence_before_operator_fallback() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let ssh_log = temporary.path().join("ssh.log");
@@ -1350,11 +1411,12 @@ esac
 
 #[test]
 fn failed_trimmed_route_retries_the_complete_configured_proxy_chain() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let ssh_log = temporary.path().join("ssh.log");
     let ssh_count = temporary.path().join("ssh.count");
+    let keyscan_log = temporary.path().join("ssh-keyscan.log");
     fs::create_dir_all(&repository).unwrap();
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
@@ -1419,6 +1481,12 @@ exit 1
 "#,
     )
     .unwrap();
+    let ssh_keyscan = tools.join("ssh-keyscan");
+    write_executable(
+        &ssh_keyscan,
+        "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$NATIVE_FLEET_KEYSCAN_LOG\"\nexit 93\n",
+    )
+    .unwrap();
     let path = format!(
         "{}:{}",
         tools.display(),
@@ -1444,6 +1512,7 @@ exit 1
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_SSH_LOG", &ssh_log)
         .env("NATIVE_FLEET_SSH_COUNT", &ssh_count)
+        .env("NATIVE_FLEET_KEYSCAN_LOG", &keyscan_log)
         .env("NIXBOT_LOCAL_SELF_TARGET", "on")
         .env("NIXBOT_TRANSPORT_RETRY_ATTEMPTS", "1")
         .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
@@ -1465,6 +1534,14 @@ exit 1
         .collect::<Vec<_>>();
     assert!(operational.len() >= 3, "{commands}");
     assert!(!operational[0].contains("ProxyCommand="), "{commands}");
+    assert!(
+        operational[0].contains("StrictHostKeyChecking=accept-new"),
+        "the trimmed direct route must trust on first use: {commands}"
+    );
+    assert!(
+        !keyscan_log.exists(),
+        "a direct route must not launch ssh-keyscan"
+    );
     assert!(operational[1].contains("ProxyCommand="), "{commands}");
     assert!(operational[1].contains(&current_host), "{commands}");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1500,8 +1577,146 @@ exit 1
 }
 
 #[test]
+fn local_self_target_deploy_uses_an_isolated_known_hosts_file() {
+    let temporary = tempdir();
+    let repository = temporary.path().join("repository");
+    let tools = temporary.path().join("tools");
+    let nix_log = temporary.path().join("nix.log");
+    let ssh_log = temporary.path().join("ssh.log");
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&tools).unwrap();
+    fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
+    fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    run(git_command().args(["init", "-q"]).arg(&repository));
+    git(&repository, &["config", "user.name", "Fleet Test"]);
+    git(
+        &repository,
+        &["config", "user.email", "fleet@example.invalid"],
+    );
+    git(&repository, &["config", "commit.gpgsign", "false"]);
+    git(&repository, &["add", "."]);
+    git(&repository, &["commit", "-qm", "fixture"]);
+
+    let current_user = run(Command::new("id").arg("-un"));
+    let inventory = format!(
+        r#"{{"hosts":{{"app":{{"target":"localhost","user":"{current_user}","groups":["all"]}}}},"config":{{}}}}"#
+    );
+    let nix = tools.join("nix");
+    write_executable(
+        &nix,
+        format!(
+            r#"#!/bin/sh
+set -eu
+printf 'argv=%s env=%s\n' "$*" "${{NIX_SSHOPTS:-}}" >> "$NATIVE_FLEET_NIX_LOG"
+case "$*" in
+  *'.#nixbot.deployDependencies'*) printf '{{}}\n' ;;
+  *'--file '*'hosts.nix'*) printf '%s\n' '{inventory}' ;;
+  *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
+  *'.#nixbot.plans.app.drvPath') printf '%s\n' '/nix/store/aaaaaaaa-system.drv' ;;
+  'build '*) printf '%s\n' '/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-nixos-system-app' ;;
+  *) : ;;
+esac
+"#
+        ),
+    )
+    .unwrap();
+    let ssh = tools.join("ssh");
+    write_executable(
+        &ssh,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$NATIVE_FLEET_SSH_LOG"
+case "$*" in *'-O exit'*) exit 0;; esac
+cat >/dev/null
+exit 0
+"#,
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        tools.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .current_dir(&repository)
+        .args([
+            "deploy",
+            "--host",
+            "app",
+            "--config",
+            "hosts.nix",
+            "--no-override",
+            "--build-host",
+            "local",
+            // The snapshot phase runs the absolute target tool
+            // `/run/current-system/sw/bin/readlink`, which only exists on a
+            // real NixOS host, not in the Nix build sandbox. Disabling
+            // rollback skips that phase while still exercising the local
+            // `ssh-ng://` copy that this test is about.
+            "--no-rollback",
+        ])
+        .env("PATH", path)
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
+        .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .env("NATIVE_FLEET_NIX_LOG", &nix_log)
+        .env("NATIVE_FLEET_SSH_LOG", &ssh_log)
+        .env("NIXBOT_BUILD_PLAN_CACHE", "0")
+        .env("NIXBOT_LOCAL_SELF_TARGET", "on")
+        .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
+        .env(
+            "NIXBOT_RUNTIME_FALLBACK_ROOT",
+            temporary.path().join("fallback"),
+        )
+        .env(
+            "NIXBOT_DIAG_KEEP_ROOT",
+            temporary.path().join("diagnostics"),
+        )
+        .output()
+        .unwrap();
+
+    // A local (self) target still pushes over `ssh-ng://`, so `accept-new`
+    // must be paired with an isolated known-hosts file rather than the
+    // operator's ambient trust store.
+    let nix_commands = fs::read_to_string(&nix_log).unwrap();
+    let copy = nix_commands
+        .lines()
+        .find(|line| line.contains("argv=copy ") && line.contains("--to ssh-ng://"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no ssh-ng copy captured: {nix_commands}\nstderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+    assert!(copy.contains("UserKnownHostsFile="), "{copy}");
+    assert!(copy.contains("StrictHostKeyChecking=accept-new"), "{copy}");
+    assert!(
+        copy.contains(&format!("--to ssh-ng://{current_user}@localhost")),
+        "{copy}"
+    );
+    assert!(
+        copy.contains(&format!(
+            "UserKnownHostsFile={}",
+            temporary.path().display()
+        )),
+        "the isolated pin file must live under the run directory: {copy}"
+    );
+    assert!(
+        !copy.contains("ControlPath="),
+        "local targets must not open a control socket: {copy}"
+    );
+    assert!(
+        !ssh_log.exists(),
+        "a local self-target must not spawn ssh: {}",
+        ssh_log.display()
+    );
+}
+
+#[test]
 fn local_relay_preserves_primary_target_failure_instead_of_using_operator_fallback() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let nix_log = temporary.path().join("nix.log");
@@ -1652,7 +1867,7 @@ esac
 
 #[test]
 fn terraform_phase_uses_native_secret_safe_planner_and_executor() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let tofu_log = temporary.path().join("tofu.log");
@@ -1745,7 +1960,7 @@ esac
 
 #[test]
 fn required_host_coverage_is_checked_before_native_build_or_host_effects() {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempdir();
     let repository = temporary.path().join("repository");
     let tools = temporary.path().join("tools");
     let log = temporary.path().join("effects.log");
@@ -1873,7 +2088,7 @@ fn native_health_uses_inventory_policy_instead_of_ssh_alias() {
         (false, false, false),
         (true, true, false),
     ] {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = tempdir();
         let repository = temporary.path().join("repository");
         let tools = temporary.path().join("tools");
         let log = temporary.path().join("effects.log");
@@ -1921,7 +2136,21 @@ fn native_health_uses_inventory_policy_instead_of_ssh_alias() {
                         .join("\t")
                 )
             };
-        let mut records = emit("hold-absent", &[]) + &emit("status-absent", &[]);
+        let mut records = emit("status-absent", &[]);
+        records.push_str(&emit("user", &["app", "1000", "active", "ok", "ok"]));
+        records.push_str(&emit(
+            "unit",
+            &[
+                "app",
+                "held",
+                "app.service",
+                "loaded",
+                "inactive",
+                "dead",
+                "no",
+                "",
+            ],
+        ));
         for failure in &system_failures {
             records.push_str(&emit("system-failed", &[failure]));
         }
@@ -1980,7 +2209,11 @@ decoded=$(printf '%s\n' "$payload" | {
 case "$* $decoded" in
   *'healthcheck_unit()'*)
     printf 'health-collected\n' >> "$NATIVE_HEALTH_LOG"
+    printf 'collector-argv:%s\n' "$decoded" >> "$NATIVE_HEALTH_LOG"
     cat "$NATIVE_HEALTH_RECORDS"
+    ;;
+  *'hold list'*)
+    printf 'hold-response\t%s\n' "$(printf '%s' '{"ok":true,"operation":"hold_list","result":{"holds":[{"resource":"service:web","services":[{"scope":"user","user":"app","unit":"app.service"}]}]}}' | base64 -w0)"
     ;;
   *) exit 0 ;;
 esac
@@ -2055,6 +2288,7 @@ esac
             "{effects}"
         );
         assert!(effects.contains("root@ssh-alias.invalid"), "{effects}");
+        assert!(effects.contains("app\tapp.service"), "{effects}");
         if !policy_present {
             for failure in &system_failures {
                 assert!(stderr.contains(failure), "{stderr}");

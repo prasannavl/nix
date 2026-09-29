@@ -10,10 +10,11 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use tempfile::{Builder as TempBuilder, TempDir};
+
+use crate::programs::age::Age;
 
 use super::cli::{LogFormat, Options};
 use super::inventory::Inventory;
@@ -398,10 +399,9 @@ pub trait CiCredentialMaterializer {
 }
 
 /// Materialize direct key files by copying and encrypted `.age` declarations
-/// by trying the declared identities in order.
+/// by decrypting in-process with the declared identities in order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgeOrFileCredentialMaterializer {
-    pub age_program: PathBuf,
     pub identities: Vec<PathBuf>,
 }
 
@@ -412,31 +412,18 @@ impl CiCredentialMaterializer for AgeOrFileCredentialMaterializer {
                 .with_context(|| format!("copy CI private key declaration {}", source.display()))?;
             return Ok(());
         }
-        let identities = self
-            .identities
-            .iter()
-            .filter(|identity| identity.is_file())
-            .collect::<Vec<_>>();
-        if identities.is_empty() {
+        if !self.identities.iter().any(|identity| identity.is_file()) {
             bail!("no readable age identity is available for the CI private key");
         }
-        for identity in identities {
+        if let Err(error) = Age::new().decrypt(source, &self.identities, destination) {
+            // Defensive: never expose partial plaintext from a failed decrypt,
+            // even if a future decryptor is not atomic.
             let _ = fs::remove_file(destination);
-            let status = Command::new(&self.age_program)
-                .arg("--decrypt")
-                .arg("-i")
-                .arg(identity)
-                .arg("-o")
-                .arg(destination)
-                .arg(source)
-                .status()
-                .with_context(|| format!("execute {}", self.age_program.display()))?;
-            if status.success() {
-                return Ok(());
-            }
+            bail!(
+                "unable to decrypt the CI private key with the available age identities: {error:#}"
+            );
         }
-        let _ = fs::remove_file(destination);
-        bail!("unable to decrypt the CI private key with the available age identities")
+        Ok(())
     }
 }
 
@@ -541,15 +528,11 @@ fn valid_known_hosts(contents: &str) -> bool {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CiPrograms {
     pub ssh: PathBuf,
-    pub ssh_keyscan: PathBuf,
 }
 
 impl CiPrograms {
-    pub fn new(ssh: impl Into<PathBuf>, ssh_keyscan: impl Into<PathBuf>) -> Self {
-        Self {
-            ssh: ssh.into(),
-            ssh_keyscan: ssh_keyscan.into(),
-        }
+    pub fn new(ssh: impl Into<PathBuf>) -> Self {
+        Self { ssh: ssh.into() }
     }
 }
 
@@ -569,14 +552,12 @@ pub struct CiExecutionReport {
     pub stderr: Vec<u8>,
     pub dry_run: bool,
     pub stdin_bytes: usize,
-    pub used_keyscan: bool,
     pub ssh_argv: Vec<OsString>,
 }
 
-/// Execute a prepared CI plan over one strictly checked SSH transport. A dry
-/// run still reaches the CI host because `--dry` belongs to the remote action;
-/// the report makes that mode explicit to callers.
-#[allow(clippy::too_many_arguments)]
+/// Execute a prepared CI plan over one trusting-on-first-use SSH transport. A
+/// dry run still reaches the CI host because `--dry` belongs to the remote
+/// action; the report makes that mode explicit to callers.
 pub fn execute_ci_trigger<E: CommandRunner, M: CiCredentialMaterializer>(
     plan: &CiTriggerPlan,
     connection: &CiConnection,
@@ -585,7 +566,6 @@ pub fn execute_ci_trigger<E: CommandRunner, M: CiCredentialMaterializer>(
     programs: &CiPrograms,
     executor: &mut E,
     materializer: &mut M,
-    keyscan_timeout_seconds: u64,
 ) -> Result<CiExecutionReport> {
     validate_remote_command(plan)?;
     validate_ssh_target(&connection.target)?;
@@ -601,45 +581,20 @@ pub fn execute_ci_trigger<E: CommandRunner, M: CiCredentialMaterializer>(
         .map(|key| store.materialize_key(key, repository_root, materializer))
         .transpose()?;
 
-    let (known_hosts, used_keyscan) = if let Some(configured) = &connection.known_hosts {
+    let known_hosts = if let Some(configured) = &connection.known_hosts {
         if !valid_known_hosts(configured) {
             bail!("configured CI known-hosts material contains no host key");
         }
-        (configured.clone(), false)
+        configured.clone()
     } else {
-        if keyscan_timeout_seconds == 0 {
-            bail!("CI host-key scan timeout must be positive");
-        }
-        let mut arguments = vec![
-            OsString::from("-T"),
-            OsString::from(keyscan_timeout_seconds.to_string()),
-            OsString::from("-H"),
-        ];
-        if connection.port != 22 {
-            arguments.extend([
-                OsString::from("-p"),
-                OsString::from(connection.port.to_string()),
-            ]);
-        }
-        arguments.push(OsString::from(&connection.target));
-        let output = executor.run(
-            &CommandRequest::new(&programs.ssh_keyscan)
-                .args(arguments)
-                .current_dir(repository_root),
-        )?;
-        let scanned = std::str::from_utf8(&output.stdout)
-            .context("CI host-key scan output was not UTF-8")?
-            .to_owned();
-        if !valid_known_hosts(&scanned) {
-            bail!(
-                "could not determine CI host key for {}; configure known-hosts or ensure bounded keyscan access",
-                connection.target
-            );
-        }
-        (scanned, true)
+        String::new()
     };
+    // No configured pin leaves the file empty: `accept-new` trusts the CI host
+    // on first contact and still rejects a changed key afterwards.
     let mut known_hosts_bytes = known_hosts.trim_end_matches('\n').as_bytes().to_vec();
-    known_hosts_bytes.push(b'\n');
+    if !known_hosts_bytes.is_empty() {
+        known_hosts_bytes.push(b'\n');
+    }
     let known_hosts_path = store.write_private("known-hosts", &known_hosts_bytes)?;
 
     let mut args = vec![
@@ -650,7 +605,7 @@ pub fn execute_ci_trigger<E: CommandRunner, M: CiCredentialMaterializer>(
         OsString::from("-o"),
         OsString::from("GlobalKnownHostsFile=/dev/null"),
         OsString::from("-o"),
-        OsString::from("StrictHostKeyChecking=yes"),
+        OsString::from("StrictHostKeyChecking=accept-new"),
         OsString::from("-o"),
         OsString::from(format!("UserKnownHostsFile={}", known_hosts_path.display())),
     ];
@@ -693,7 +648,6 @@ pub fn execute_ci_trigger<E: CommandRunner, M: CiCredentialMaterializer>(
         stderr: output.stderr,
         dry_run: plan.argv.iter().any(|argument| argument == "--dry"),
         stdin_bytes,
-        used_keyscan,
         ssh_argv: args,
     })
 }

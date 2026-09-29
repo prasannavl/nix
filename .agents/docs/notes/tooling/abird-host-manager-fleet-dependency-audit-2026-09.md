@@ -12,6 +12,41 @@ bootstrapped before `abird-host-manager` exists on it.
 
 The audit is read-only. No implementation change is made by this note.
 
+## Status (2026-09-29)
+
+The reduction plan
+(`.agents/docs/plans/host-manager-fleet-dependency-reduction-2026-09.md`) is
+implemented across WP1-WP6 in the Pvl tree. The audit body below is the
+pre-implementation snapshot; its tables and `fleetRuntimeInputs` list describe
+the "before" state. Outcomes:
+
+- `fleetRuntimeInputs` is now `cloudflared`, `git`, `nix`, `openssh`, `opentofu`
+  (was `age`, `cloudflared`, `coreutils`, `findutils`, `gawk`, `git`, `jq`,
+  `getent`, `inetutils`, `iproute2`, `nix`, `openssh`, `opentofu`, `procps`,
+  `util-linux`).
+- `REQUIRED_PROGRAMS` is now `git`, `nix`, `ssh`, `tofu`. (The WP1 intermediate
+  was `age`, `git`, `nix`, `ssh`, `ssh-keygen`, `ssh-keyscan`, `tofu`; the
+  pre-effort value was wider, including `cloudflared` and `jq`.)
+- Replaced natively: `age` (RustCrypto `age` crate), host-key discovery
+  (`accept-new` instead of `ssh-keyscan`/`ssh-keygen`; `openssh`/`ssh` stays),
+  hostname/address/uid discovery (`libc`), bounded reads (in-process
+  process-group deadline), and target-side `jq` in the health collector (holds
+  parsed in Rust).
+- The `ABIRD_HOST_MANAGER_AGE` and `ABIRD_HOST_MANAGER_DEFAULT_AGE_PROGRAM`
+  overrides are gone. Only wrapped-tool overrides survive:
+  `ABIRD_HOST_MANAGER_NIX`, `_GIT`, `_SSH`, `_NIXOS_INSTALL`,
+  `_NIXOS_GENERATE_CONFIG`, `_PRIVILEGE`, `_PUBLISH_GIT_SSH_COMMAND`.
+
+`nixbot`/`abird-host-manager` divergence: the active Bash
+`pkgs/tools/nixbot/default.nix` keeps the wider `runtimeInputs` (`age`,
+`cloudflared`, `coreutils`, `findutils`, `gawk`, `git`, `jq`, `getent`,
+`inetutils`, `iproute2`, `nix`, `openssh`, `opentofu`, `procps`, `util-linux`)
+until the explicit cutover. `lib/services/abird-host-manager/default.nix`
+additionally pins
+`GIT_SSH_COMMAND`/`ABIRD_HOST_MANAGER_PUBLISH_GIT_SSH_COMMAND`; the published
+route keeps a configured known-hosts pin with `StrictHostKeyChecking=yes`,
+unchanged. The Rust `fleet` reductions do not apply to the Bash path.
+
 ## How external dependencies are resolved
 
 There are three independent resolution surfaces. They must not be conflated:
@@ -508,6 +543,7 @@ Decided:
 
 Remaining questions:
 
-- Keep the external `ABIRD_HOST_MANAGER_AGE` override for `age-plugin-*`
-  recipients, or accept the crate-only path?
+- `age-plugin-*` recipients and passphrase-protected keys remain unsupported on
+  the crate-only path; the `ABIRD_HOST_MANAGER_AGE` override was removed under
+  WP3, so a plugin recipient would need a new in-binary path if required.
 - When to schedule `gix`/`russh` work; both remain out of scope.

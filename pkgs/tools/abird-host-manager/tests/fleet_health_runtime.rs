@@ -49,10 +49,20 @@ impl ProcessRunner for FakeRunner {
             .expect("unexpected collector invocation"))
     }
 
+    fn run_with_timeout(
+        &mut self,
+        request: &ProcessRequest,
+        _timeout: Duration,
+    ) -> io::Result<ProcessOutput> {
+        self.run(request)
+    }
+
     fn wait(&mut self, duration: Duration) {
         self.waits.push(duration);
     }
 }
+
+const HOLD_LIST_JSON: &str = r#"{"ok":true,"operation":"hold_list","result":{"holds":[{"resource":"service:web","services":[{"scope":"user","user":"app","unit":"app.service"}]}]}}"#;
 
 fn record(kind: &str, fields: &[&str]) -> String {
     let fields = fields
@@ -63,16 +73,19 @@ fn record(kind: &str, fields: &[&str]) -> String {
     format!("{kind}\t{fields}\n")
 }
 
-fn sample(records: &[String]) -> String {
-    [
-        record("hold-absent", &[]),
-        record("status-absent", &[]),
-        records.concat(),
-    ]
-    .concat()
+fn probe_absent() -> String {
+    record("hold-absent", &[])
 }
 
-fn target() -> HostExecutionTarget {
+fn probe_response(holds_json: &str) -> String {
+    record("hold-response", &[holds_json])
+}
+
+fn sample(records: &[String]) -> String {
+    [record("status-absent", &[]), records.concat()].concat()
+}
+
+fn target_with_local(local: bool) -> HostExecutionTarget {
     let host = ResolvedHost {
         inventory_name: "inventory-node".into(),
         resource: "host:inventory-node".into(),
@@ -108,9 +121,13 @@ fn target() -> HostExecutionTarget {
         },
         Path::new("/repo"),
         None,
-        false,
+        local,
     )
     .unwrap()
+}
+
+fn target() -> HostExecutionTarget {
+    target_with_local(false)
 }
 
 #[test]
@@ -144,7 +161,7 @@ fn ignored_system_unit_does_not_mask_same_name_failed_user_unit() {
     ]
     .concat();
     let mut runtime = HostRuntime::new(
-        FakeRunner::samples([observation, diagnostics]),
+        FakeRunner::samples([probe_absent(), observation, diagnostics]),
         PathBuf::from("/repo"),
         DryRun::No,
     )
@@ -169,7 +186,7 @@ fn ignored_system_unit_does_not_mask_same_name_failed_user_unit() {
         ]
     );
     assert_eq!(report.attempts, 1);
-    assert_eq!(runtime.into_runner().requests.len(), 2);
+    assert_eq!(runtime.into_runner().requests.len(), 3);
 }
 
 #[test]
@@ -214,7 +231,7 @@ fn multiple_ignored_system_units_remain_in_healthy_evidence_across_samples() {
         ),
     ]);
     let mut runtime = HostRuntime::new(
-        FakeRunner::samples([settling, healthy]),
+        FakeRunner::samples([probe_absent(), settling, probe_absent(), healthy]),
         PathBuf::from("/repo"),
         DryRun::No,
     )
@@ -262,7 +279,15 @@ fn failed_or_malformed_collectors_stay_hidden_protocol() {
     for output in cases {
         let mut runtime = HostRuntime::new(
             FakeRunner {
-                outputs: VecDeque::from([output]),
+                outputs: VecDeque::from([
+                    ProcessOutput {
+                        status: ProcessStatus::Code(0),
+                        stdout: probe_absent(),
+                        stderr: String::new(),
+                        skipped: false,
+                    },
+                    output,
+                ]),
                 ..FakeRunner::default()
             },
             PathBuf::from("/repo"),
@@ -282,8 +307,12 @@ fn failed_or_malformed_collectors_stay_hidden_protocol() {
         );
         assert!(progress.is_empty());
         let requests = &runtime.runner().requests;
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].task.name().starts_with("post-switch-health"));
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.task.name().starts_with("post-switch-health"))
+        );
     }
 }
 
@@ -292,7 +321,10 @@ fn explicit_ignore_policy_survives_distinct_inventory_and_transport_names() {
     // Inventory policy resolution belongs to the fleet engine. This exercises
     // its explicit policy handoff through the public remote-health boundary.
     let failure = "ignored.service loaded failed failed ignored failure";
-    let runner = FakeRunner::samples([sample(&[record("system-failed", &[failure])])]);
+    let runner = FakeRunner::samples([
+        probe_absent(),
+        sample(&[record("system-failed", &[failure])]),
+    ]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let target = target();
     assert_ne!(target.route.endpoint.node, target.route.endpoint.host);
@@ -305,11 +337,120 @@ fn explicit_ignore_policy_survives_distinct_inventory_and_transport_names() {
     assert!(matches!(report.decision, HealthDecision::Healthy { .. }));
     assert_eq!(report.ignored_system_failures, [failure]);
     let requests = runtime.into_runner().requests;
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
     assert!(
         requests[0]
             .args
             .iter()
             .any(|arg| arg == "root@ssh-alias.example")
+    );
+}
+
+#[test]
+fn held_pairs_reach_the_collector_as_argv_without_jq() {
+    let observation = sample(&[
+        record("user", &["app", "1000", "active", "ok", "ok"]),
+        record(
+            "unit",
+            &[
+                "app",
+                "held",
+                "app.service",
+                "loaded",
+                "inactive",
+                "dead",
+                "no",
+                "",
+            ],
+        ),
+    ]);
+    let mut runtime = HostRuntime::new(
+        FakeRunner::samples([probe_response(HOLD_LIST_JSON), observation]),
+        PathBuf::from("/repo"),
+        DryRun::No,
+    )
+    .unwrap();
+    let report = check_managed_health_with_ignored_system_units(
+        &mut runtime,
+        &target_with_local(true),
+        &BTreeSet::new(),
+    )
+    .unwrap();
+    assert!(matches!(report.decision, HealthDecision::Healthy { .. }));
+    let requests = runtime.into_runner().requests;
+    assert_eq!(requests.len(), 2);
+    // The probe transports the raw hold JSON to Rust; the collector then
+    // receives each held pair as one argv entry, so `--exclude-unit` and the
+    // held snapshot keep working with no target-side jq.
+    assert!(
+        requests[0]
+            .args
+            .iter()
+            .any(|arg| arg.contains("--json hold list"))
+    );
+    assert!(requests[1].args.iter().any(|arg| arg == "app\tapp.service"));
+    assert!(
+        !requests
+            .iter()
+            .flat_map(|request| request.args.iter())
+            .any(|arg| arg.contains("jq"))
+    );
+}
+
+#[test]
+fn hold_probe_error_surfaces_as_a_service_failure() {
+    let observation = sample(&[record("user", &["app", "1000", "active", "ok", "ok"])]);
+    let mut runtime = HostRuntime::new(
+        FakeRunner::samples([record("hold-error", &[]), observation]),
+        PathBuf::from("/repo"),
+        DryRun::No,
+    )
+    .unwrap();
+    let report =
+        check_managed_health_with_ignored_system_units(&mut runtime, &target(), &BTreeSet::new())
+            .unwrap();
+    assert!(matches!(
+        report.decision,
+        HealthDecision::ServiceFailure { .. }
+    ));
+}
+
+#[test]
+fn failed_hold_probe_stays_hidden_protocol() {
+    let mut runtime = HostRuntime::new(
+        FakeRunner {
+            outputs: VecDeque::from([ProcessOutput {
+                status: ProcessStatus::Code(1),
+                stdout: String::new(),
+                stderr: "OPENAI_API_KEY=must-not-be-progress".into(),
+                skipped: false,
+            }]),
+            ..FakeRunner::default()
+        },
+        PathBuf::from("/repo"),
+        DryRun::No,
+    )
+    .unwrap();
+    let mut progress = Vec::new();
+    let error = check_managed_health_with_progress(
+        &mut runtime,
+        &target(),
+        &BTreeSet::new(),
+        None,
+        |attempt, _, _| progress.push(attempt),
+    )
+    .unwrap_err();
+    assert!(
+        !format!("{error:#}").contains("must-not-be-progress"),
+        "{error:#}"
+    );
+    assert!(progress.is_empty());
+    let requests = &runtime.runner().requests;
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .task
+            .name()
+            .starts_with("post-switch-health-hold")
     );
 }

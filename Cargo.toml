@@ -9,6 +9,8 @@ members = [
 ]
 
 [workspace.dependencies]
+# 0.11.5 is the same maintenance release as 0.12.1; 0.12 adds post-quantum types we do not need, and i18n-embed is mandatory in both.
+age = "0.11"
 anyhow = "1"
 async-nats = "0.47"
 base64 = "0.22"
@@ -24,8 +26,11 @@ serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
 shlex = "1"
+# Parse-only: no key generation, so no `rand_core`/`ed25519`/`rsa` features.
+ssh-key = { version = "0.6", default-features = false, features = ["std"] }
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = "1"
+zeroize = "1.8"

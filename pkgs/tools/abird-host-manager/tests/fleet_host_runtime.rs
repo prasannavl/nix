@@ -92,6 +92,10 @@ fn success(stdout: &str) -> ProcessOutput {
     }
 }
 
+fn probe_absent() -> ProcessOutput {
+    success(&health_record("hold-absent", &[]))
+}
+
 fn failure(code: i32, stderr: &str) -> ProcessOutput {
     ProcessOutput {
         status: ProcessStatus::Code(code),
@@ -105,6 +109,7 @@ fn failure(code: i32, stderr: &str) -> ProcessOutput {
 struct FakeRunner {
     outputs: VecDeque<ProcessOutput>,
     requests: Vec<ProcessRequest>,
+    timeouts: Vec<Duration>,
     waits: Vec<Duration>,
 }
 
@@ -124,6 +129,15 @@ impl ProcessRunner for FakeRunner {
             .outputs
             .pop_front()
             .expect("missing fake process output"))
+    }
+
+    fn run_with_timeout(
+        &mut self,
+        request: &ProcessRequest,
+        timeout: Duration,
+    ) -> io::Result<ProcessOutput> {
+        self.timeouts.push(timeout);
+        self.run(request)
     }
 
     fn wait(&mut self, duration: Duration) {
@@ -1106,19 +1120,8 @@ fn snapshot_admission_activation_observer_and_health_are_ordered() {
     let runner = runtime.into_runner();
     assert_eq!(runner.requests.len(), 5);
     assert!(runner.requests[0].task.name().contains("snapshot"));
-    assert_eq!(runner.requests[0].program, "timeout");
-    assert!(
-        runner.requests[0]
-            .args
-            .iter()
-            .any(|argument| argument == "20s")
-    );
-    assert!(
-        runner.requests[0]
-            .args
-            .iter()
-            .any(|argument| argument == "ssh")
-    );
+    assert_eq!(runner.requests[0].program, "ssh");
+    assert_eq!(runner.timeouts, [Duration::from_secs(20)]);
     assert_eq!(
         runner.requests[1].task.name(),
         "pre-switch-preparation-gap3"
@@ -1320,12 +1323,13 @@ fn transport_loss_after_submission_can_be_recovered_by_authoritative_verificatio
         ActivationExecution::SucceededAfterVerification
     );
     let runner = runtime.into_runner();
-    assert_eq!(runner.requests[2].program, "timeout");
+    assert_eq!(runner.requests[2].program, "ssh");
+    assert!(!runner.timeouts.is_empty());
     assert!(
-        runner.requests[2]
-            .args
+        runner
+            .timeouts
             .iter()
-            .any(|argument| argument == "20s")
+            .all(|timeout| *timeout == Duration::from_secs(20))
     );
 }
 
@@ -1581,7 +1585,6 @@ fn health_record(kind: &str, fields: &[&str]) -> String {
 #[test]
 fn managed_health_runtime_retries_settling_units_then_converges() {
     let settling = [
-        health_record("hold-absent", &[]),
         health_record("status-absent", &[]),
         health_record("user", &["app", "1000", "active", "ok", "ok"]),
         health_record("expected-unit", &["app", "app.service"]),
@@ -1601,7 +1604,6 @@ fn managed_health_runtime_retries_settling_units_then_converges() {
     ]
     .concat();
     let healthy = [
-        health_record("hold-absent", &[]),
         health_record("status-absent", &[]),
         health_record("user", &["app", "1000", "active", "ok", "ok"]),
         health_record("expected-unit", &["app", "app.service"]),
@@ -1620,16 +1622,29 @@ fn managed_health_runtime_retries_settling_units_then_converges() {
         ),
     ]
     .concat();
-    let runner = FakeRunner::with_outputs([success(&settling), success(&healthy)]);
+    let runner = FakeRunner::with_outputs([
+        probe_absent(),
+        success(&settling),
+        probe_absent(),
+        success(&healthy),
+    ]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let report = health_runtime::check_managed_health(&mut runtime, &target()).unwrap();
     assert!(matches!(report.decision, HealthDecision::Healthy { .. }));
     assert_eq!(report.attempts, 2);
     let runner = runtime.into_runner();
     assert_eq!(runner.waits, [Duration::from_secs(5)]);
-    assert_eq!(runner.requests.len(), 2);
-    assert_eq!(runner.requests[0].program, "timeout");
-    assert!(runner.requests[0].args.iter().any(|arg| arg == "20s"));
+    assert_eq!(runner.requests.len(), 4);
+    assert_eq!(runner.requests[0].program, "ssh");
+    assert_eq!(
+        runner.timeouts,
+        [
+            Duration::from_secs(20),
+            Duration::from_secs(20),
+            Duration::from_secs(20),
+            Duration::from_secs(20)
+        ]
+    );
 }
 
 #[test]
@@ -1637,12 +1652,11 @@ fn managed_health_runtime_preserves_ignored_system_failure_with_healthy_verdict(
     let ignored_unit = "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service";
     let ignored_failure = format!("{ignored_unit} loaded failed failed NVIDIA WMI backlight");
     let healthy = [
-        health_record("hold-absent", &[]),
         health_record("status-absent", &[]),
         health_record("system-failed", &[&ignored_failure]),
     ]
     .concat();
-    let runner = FakeRunner::with_outputs([success(&healthy)]);
+    let runner = FakeRunner::with_outputs([probe_absent(), success(&healthy)]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let report = health_runtime::check_managed_health_with_ignored_system_units(
         &mut runtime,
@@ -1658,7 +1672,6 @@ fn managed_health_runtime_preserves_ignored_system_failure_with_healthy_verdict(
 #[test]
 fn managed_health_runtime_turns_expired_settling_into_service_failure() {
     let settling = [
-        health_record("hold-absent", &[]),
         health_record("status-absent", &[]),
         health_record("user", &["app", "1000", "active", "ok", "ok"]),
         health_record(
@@ -1668,7 +1681,12 @@ fn managed_health_runtime_turns_expired_settling_into_service_failure() {
         health_record("timeout", &["1"]),
     ]
     .concat();
-    let runner = FakeRunner::with_outputs([success(&settling), success(&settling)]);
+    let runner = FakeRunner::with_outputs([
+        probe_absent(),
+        success(&settling),
+        probe_absent(),
+        success(&settling),
+    ]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let report = health_runtime::check_managed_health(&mut runtime, &target()).unwrap();
     assert!(matches!(

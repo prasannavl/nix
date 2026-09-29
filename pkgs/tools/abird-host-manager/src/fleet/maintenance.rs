@@ -8,22 +8,14 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 
-pub const REQUIRED_PROGRAMS: &[&str] = &[
-    "nix",
-    "age",
-    "cloudflared",
-    "git",
-    "jq",
-    "nproc",
-    "pgrep",
-    "ssh",
-    "scp",
-    "ssh-keyscan",
-    "ssh-keygen",
-    "stty",
-    "timeout",
-    "tofu",
-];
+/// Programs the manager spawns directly that a NixOS base system does not
+/// already guarantee.
+///
+/// Target-side tools, conditional tools such as `cloudflared` (needed only for
+/// a configured `proxy_command`), and core utilities provided by the packaged
+/// runtime PATH are intentionally absent, so this list tracks real controller
+/// spawn sites rather than every provisioned binary.
+pub const REQUIRED_PROGRAMS: &[&str] = &["git", "nix", "ssh", "tofu"];
 
 #[derive(Clone, Copy, Debug)]
 pub enum CleanMode {

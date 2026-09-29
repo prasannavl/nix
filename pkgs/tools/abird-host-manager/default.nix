@@ -4,21 +4,11 @@
   abirdHostAgent ? null,
 }: let
   fleetRuntimeInputs = with pkgs; [
-    age
     cloudflared
-    coreutils
-    findutils
-    gawk
     git
-    jq
-    getent
-    inetutils
-    iproute2
     nix
     openssh
     opentofu
-    procps
-    util-linux
   ];
 in
   pkgHelper.mkRustDerivation {
@@ -31,13 +21,16 @@ in
     # standalone child-flake build has none).
     deps = ["pkgs/tools/abird-host-agent"];
     internalDeps = pkgs.lib.optional (abirdHostAgent != null) abirdHostAgent;
+    # `jq` stays in the check environment only: the service-move fake-nix
+    # fixture in src/repository.rs transforms a declared move document with it.
+    # It is not a runtime or controller-wrapper input; the target health
+    # collector carries holds to Rust instead of parsing JSON in-shell.
     nativeCheckInputs = [pkgs.bash pkgs.coreutils pkgs.gitMinimal pkgs.jq pkgs.util-linux];
     # Executable fixtures are published by an isolated writer process so the
     # ordinary parallel Cargo test schedule is safe from ETXTBSY races.
     enableDevShell = true;
     extraPassthru = {fleetRuntimeInputs = fleetRuntimeInputs;};
     buildAttrs = {
-      ABIRD_HOST_MANAGER_DEFAULT_AGE_PROGRAM = "${pkgs.age}/bin/age";
       nativeBuildInputs = [pkgs.makeWrapper];
       postInstall = ''
         if [ -x "$out/bin/abird-host-manager" ]; then

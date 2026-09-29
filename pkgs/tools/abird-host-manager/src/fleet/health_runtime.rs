@@ -60,6 +60,16 @@ struct Observation {
     registry_timeouts: Vec<u64>,
 }
 
+/// Result of the dedicated target-side hold probe. Holds are the only health
+/// input that must cross the wire as JSON, and the target has no `jq`, so this
+/// is parsed in Rust and then replayed to the collector as held pairs.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct HoldProbe {
+    absent: bool,
+    error: bool,
+    response: Option<DurableHoldResponse>,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum FailedUnitScope {
     System,
@@ -74,10 +84,31 @@ struct FailedUnit {
 
 const MAX_FAILURE_UNITS: usize = 3;
 
-pub fn managed_health_command() -> CommandSpec {
+/// Name passed as `$0` to the collector; held `user<TAB>unit` pairs follow it
+/// as `$@`.
+const HEALTH_COLLECTOR_ARGV0: &str = "abird-health-collector";
+
+/// Build the collector invocation. Held pairs travel as argv because the
+/// target has no `jq` and the hold list is JSON; passing them here lets the
+/// collector keep `--exclude-unit`, held-only-user enumeration, and
+/// `unit … held …` snapshots without parsing JSON in shell.
+pub fn managed_health_command(held_pairs: &[String]) -> CommandSpec {
+    let mut args = vec![
+        "-c".to_owned(),
+        HEALTH_COLLECTOR.to_owned(),
+        HEALTH_COLLECTOR_ARGV0.to_owned(),
+    ];
+    args.extend(held_pairs.iter().cloned());
+    CommandSpec::new("/run/current-system/sw/bin/bash", args)
+}
+
+/// The hold list is the only agent query that returns JSON the collector would
+/// otherwise need `jq` to read. Run it as its own bounded read-only remote
+/// command and hand the parsed pairs back to `managed_health_command`.
+fn hold_probe_command() -> CommandSpec {
     CommandSpec::new(
         "/run/current-system/sw/bin/bash",
-        ["-c".to_owned(), HEALTH_COLLECTOR.to_owned()],
+        ["-c".to_owned(), HEALTH_HOLD_PROBE.to_owned()],
     )
 }
 
@@ -87,7 +118,25 @@ fn health_probe_task(
     target: &HostExecutionTarget,
     parent: Option<&Arc<dyn Task>>,
 ) -> Arc<dyn Task> {
-    let name = format!("post-switch-health-{}", target.route.endpoint.node);
+    health_named_task(
+        format!("post-switch-health-{}", target.route.endpoint.node),
+        parent,
+    )
+}
+
+/// The hold probe runs before the collector in the same health attempt, so it
+/// carries a distinct task name for diagnostics.
+fn health_hold_probe_task(
+    target: &HostExecutionTarget,
+    parent: Option<&Arc<dyn Task>>,
+) -> Arc<dyn Task> {
+    health_named_task(
+        format!("post-switch-health-hold-{}", target.route.endpoint.node),
+        parent,
+    )
+}
+
+fn health_named_task(name: String, parent: Option<&Arc<dyn Task>>) -> Arc<dyn Task> {
     match parent {
         Some(parent) => InternalTask::child(name, Arc::clone(parent)),
         None => InternalTask::new(name),
@@ -122,13 +171,30 @@ where
     R: ProcessRunner,
     F: FnMut(usize, &HealthDecision, &[String]),
 {
-    let command = managed_health_command();
+    let hold_command = hold_probe_command();
     let mut attempts = 0usize;
     let mut baseline = BaselineTimerUnits::default();
     let mut budget = None;
     let mut ignored_system_failures = BTreeSet::new();
     loop {
         attempts += 1;
+        let hold_output = runtime.execute_remote_root_command_bounded(
+            target,
+            &hold_command,
+            EffectKind::ReadOnly,
+            health_hold_probe_task(target, parent),
+        )?;
+        if !hold_output.succeeded() {
+            // Report status and stdout only: the target's stderr can carry
+            // unrelated secret material that must not reach progress output.
+            bail!(
+                "managed health hold probe failed with {:?}: {}",
+                hold_output.status,
+                hold_output.stdout.trim()
+            );
+        }
+        let probe = parse_hold_probe(&hold_output.stdout)?;
+        let command = managed_health_command(&held_pairs(probe.response.as_ref()));
         let output = runtime.execute_remote_root_command_bounded(
             target,
             &command,
@@ -136,13 +202,18 @@ where
             health_probe_task(target, parent),
         )?;
         if !output.succeeded() {
+            // Stdout only, matching the hold probe: target stderr must not
+            // reach progress output (full output stays in diagnostics).
             bail!(
                 "managed health collector failed with {:?}: {}",
                 output.status,
-                output.combined_output().trim()
+                output.stdout.trim()
             );
         }
         let mut observation = parse_observation(&output.stdout)?;
+        observation.hold_absent = probe.absent;
+        observation.hold_error = probe.error;
+        observation.hold_response = probe.response;
         ignored_system_failures.extend(take_ignored_system_failures(
             &mut observation,
             ignored_system_units,
@@ -666,6 +737,53 @@ fn holds_by_user(holds: &[DurableUserHold]) -> BTreeMap<String, BTreeSet<String>
     grouped
 }
 
+/// Held `user<TAB>unit` argv entries for the collector. Sourced from the same
+/// validated hold response the classifier consumes, so a missing, failed, or
+/// malformed hold list yields no pairs and is reported by `validate_durable_holds`.
+fn held_pairs(response: Option<&DurableHoldResponse>) -> Vec<String> {
+    validate_durable_holds(response)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|hold| format!("{}\t{}", hold.user, hold.unit))
+        .collect()
+}
+
+fn parse_hold_probe(value: &str) -> Result<HoldProbe> {
+    let mut probe = HoldProbe::default();
+    for (line_number, line) in value.lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut fields = line.split('\t');
+        let kind = fields.next().context("hold probe record has no kind")?;
+        let fields = fields
+            .map(decode_field)
+            .collect::<Result<Vec<_>>>()
+            .with_context(|| format!("decode hold probe record on line {}", line_number + 1))?;
+        match kind {
+            "hold-absent" => probe.absent = true,
+            "hold-error" => probe.error = true,
+            "hold-response" => {
+                probe.response = Some(
+                    serde_json::from_str(
+                        fields
+                            .first()
+                            .context("hold-response probe record is missing its payload")?,
+                    )
+                    .context("decode host-agent hold response")?,
+                )
+            }
+            _ => bail!("unknown hold probe record kind: {kind}"),
+        }
+    }
+    let records =
+        u8::from(probe.absent) + u8::from(probe.error) + u8::from(probe.response.is_some());
+    if records != 1 {
+        bail!("hold probe must emit exactly one record, saw {records}");
+    }
+    Ok(probe)
+}
+
 fn service_failure(scope: &str, detail: &str) -> HealthDecision {
     HealthDecision::ServiceFailure {
         evidence: vec![HealthEvidence::ReportedFailure {
@@ -717,9 +835,6 @@ fn parse_record(observation: &mut Observation, kind: &str, fields: &[String]) ->
             .with_context(|| format!("{kind} record is missing field {index}"))
     };
     match kind {
-        "hold-absent" => observation.hold_absent = true,
-        "hold-error" => observation.hold_error = true,
-        "hold-response" => observation.hold_response = Some(serde_json::from_str(field(0)?)?),
         "status-absent" => observation.status_absent = true,
         "status-error" => observation.status_error = true,
         "status-response" => observation.status_response = Some(serde_json::from_str(field(0)?)?),
@@ -862,6 +977,28 @@ fn parse_container(health: &str, name: &str, status: &str) -> Result<PodmanConta
     })
 }
 
+const HEALTH_HOLD_PROBE: &str = r#"set -Eeuo pipefail
+base64_bin=/run/current-system/sw/bin/base64
+agent=/run/current-system/sw/bin/abird-host-agent
+emit() {
+    local kind="$1" value encoded
+    shift
+    printf '%s' "$kind"
+    for value in "$@"; do
+        encoded="$(printf '%s' "$value" | "$base64_bin" -w0)"
+        printf '\t%s' "$encoded"
+    done
+    printf '\n'
+}
+if [ ! -x "$agent" ]; then
+    emit hold-absent
+elif hold_json="$($agent --json hold list 2>/dev/null)"; then
+    emit hold-response "$hold_json"
+else
+    emit hold-error
+fi
+"#;
+
 const HEALTH_COLLECTOR: &str = r#"set -Eeuo pipefail
 base64_bin=/run/current-system/sw/bin/base64
 agent=/run/current-system/sw/bin/abird-host-agent
@@ -883,17 +1020,17 @@ healthcheck_unit() {
         *) return 1 ;;
     esac
 }
-hold_json= status_json= held_tsv=
+status_json=
+held_pairs=
+for pair in "$@"; do
+    [ -n "$pair" ] || continue
+    case "$pair" in
+        *$'\t'*) held_pairs+="$pair"$'\n' ;;
+    esac
+done
 if [ ! -x "$agent" ]; then
-    emit hold-absent
     emit status-absent
 else
-    if hold_json="$($agent --json hold list 2>/dev/null)"; then
-        emit hold-response "$hold_json"
-        held_tsv="$(printf '%s' "$hold_json" | jq -r '.result.holds[]?.services[]? | select(.scope == "user") | [.user,.unit] | @tsv' 2>/dev/null || true)"
-    else
-        emit hold-error
-    fi
     if status_json="$($agent --json status 2>/dev/null)"; then
         emit status-response "$status_json"
     else
@@ -926,11 +1063,11 @@ users="$({
         [ -e "$file" ] || continue
         awk -F= '$1 == "ConditionUser" { print $2; exit }' "$file" 2>/dev/null || true
     done
-    printf '%s\n' "$held_tsv" | cut -f1
+    printf '%s' "$held_pairs" | cut -f1
 } | sed '/^$/d;/^!/d;/@/d' | sort -u)"
 while IFS= read -r user; do
     [ -n "$user" ] || continue
-    held_units="$(printf '%s\n' "$held_tsv" | awk -F '\t' -v user="$user" '$1 == user {print $2}')"
+    held_units="$(printf '%s' "$held_pairs" | awk -F '\t' -v user="$user" '$1 == user {print $2}')"
     uid="$(id -u "$user" 2>/dev/null || true)"
     if [ -z "$uid" ]; then
         emit user "$user" '' inactive skipped skipped
@@ -1066,6 +1203,8 @@ mod tests {
 
     use super::*;
 
+    const HOLD_LIST_JSON: &str = r#"{"ok":true,"operation":"hold_list","result":{"holds":[{"resource":"service:web","services":[{"scope":"user","user":"app","unit":"app.service"}]}]}}"#;
+
     fn encoded(kind: &str, fields: &[&str]) -> String {
         let fields = fields
             .iter()
@@ -1076,9 +1215,21 @@ mod tests {
     }
 
     #[test]
+    fn hold_probe_requires_exactly_one_record() {
+        assert!(parse_hold_probe("").is_err());
+        assert!(parse_hold_probe(&encoded("hold-absent", &[])).is_ok());
+        assert!(parse_hold_probe(&encoded("hold-error", &[])).is_ok());
+        let two = format!(
+            "{}{}",
+            encoded("hold-absent", &[]),
+            encoded("hold-error", &[])
+        );
+        assert!(parse_hold_probe(&two).is_err());
+    }
+
+    #[test]
     fn parser_and_classifier_cover_managed_user_success() {
         let mut input = String::new();
-        input.push_str(&encoded("hold-absent", &[]));
         input.push_str(&encoded("status-absent", &[]));
         input.push_str(&encoded("user", &["app", "1000", "active", "ok", "ok"]));
         input.push_str(&encoded("expected-unit", &["app", "app.service"]));
@@ -1103,7 +1254,11 @@ mod tests {
 
     #[test]
     fn collector_is_valid_bash_and_keeps_classification_out_of_shell() {
-        for script in [HEALTH_COLLECTOR, HEALTH_FAILURE_DIAGNOSTICS] {
+        for script in [
+            HEALTH_COLLECTOR,
+            HEALTH_HOLD_PROBE,
+            HEALTH_FAILURE_DIAGNOSTICS,
+        ] {
             let mut child = Command::new("bash")
                 .arg("-n")
                 .stdin(Stdio::piped())
@@ -1123,9 +1278,131 @@ mod tests {
     }
 
     #[test]
+    fn embedded_target_scripts_are_jq_free_and_consume_held_pairs_as_argv() {
+        for script in [
+            HEALTH_COLLECTOR,
+            HEALTH_HOLD_PROBE,
+            HEALTH_FAILURE_DIAGNOSTICS,
+        ] {
+            assert!(!script.contains("jq"), "embedded script still invokes jq");
+            assert!(!script.contains("held_tsv"));
+        }
+        // Held pairs arrive as `$@`, so held-only users are enumerated from
+        // argv instead of a shell-side JSON extraction.
+        assert!(HEALTH_COLLECTOR.contains(r#"for pair in "$@""#));
+        assert!(HEALTH_COLLECTOR.contains(r#"printf '%s' "$held_pairs" | cut -f1"#));
+        assert!(HEALTH_COLLECTOR.contains("--exclude-unit"));
+        assert!(HEALTH_HOLD_PROBE.contains("--json hold list"));
+    }
+
+    #[test]
+    fn managed_health_command_passes_held_pairs_as_argv() {
+        let command = managed_health_command(&["app\tapp.service".to_owned()]);
+        assert_eq!(command.program, "/run/current-system/sw/bin/bash");
+        assert_eq!(command.args[0], "-c");
+        assert_eq!(command.args[1], HEALTH_COLLECTOR);
+        assert_eq!(command.args[2], HEALTH_COLLECTOR_ARGV0);
+        assert_eq!(command.args[3], "app\tapp.service");
+        assert_eq!(command.args.len(), 4);
+    }
+
+    #[test]
+    fn hold_probe_records_map_to_hold_state_and_pairs() {
+        let absent = parse_hold_probe(&encoded("hold-absent", &[])).unwrap();
+        assert!(absent.absent);
+        assert!(!absent.error);
+        assert!(absent.response.is_none());
+        assert!(held_pairs(absent.response.as_ref()).is_empty());
+
+        let error = parse_hold_probe(&encoded("hold-error", &[])).unwrap();
+        assert!(error.error);
+        assert!(!error.absent);
+        assert!(error.response.is_none());
+        assert!(held_pairs(error.response.as_ref()).is_empty());
+
+        let response = parse_hold_probe(&encoded("hold-response", &[HOLD_LIST_JSON])).unwrap();
+        assert!(!response.absent);
+        assert!(!response.error);
+        assert_eq!(held_pairs(response.response.as_ref()), ["app\tapp.service"]);
+    }
+
+    #[test]
+    fn hold_probe_error_is_a_service_failure() {
+        let mut observation = parse_observation(&encoded("status-absent", &[])).unwrap();
+        observation.hold_error = true;
+        let report = classify_observation(&observation, &BaselineTimerUnits::default()).unwrap();
+        assert!(matches!(
+            report.decision,
+            HealthDecision::ServiceFailure { .. }
+        ));
+        assert!(
+            report
+                .details
+                .iter()
+                .any(|detail| detail.contains("durable host-agent hold state is unavailable"))
+        );
+    }
+
+    #[test]
+    fn held_unit_state_is_classified_from_probe_response() {
+        let held_inactive = [
+            encoded("status-absent", &[]),
+            encoded("user", &["app", "1000", "active", "ok", "ok"]),
+            encoded(
+                "unit",
+                &[
+                    "app",
+                    "held",
+                    "app.service",
+                    "loaded",
+                    "inactive",
+                    "dead",
+                    "no",
+                    "",
+                ],
+            ),
+        ]
+        .concat();
+        let mut observation = parse_observation(&held_inactive).unwrap();
+        observation.hold_response = Some(serde_json::from_str(HOLD_LIST_JSON).unwrap());
+        assert!(matches!(
+            classify_observation(&observation, &BaselineTimerUnits::default())
+                .unwrap()
+                .decision,
+            HealthDecision::Healthy { .. }
+        ));
+
+        let held_running = [
+            encoded("status-absent", &[]),
+            encoded("user", &["app", "1000", "active", "ok", "ok"]),
+            encoded(
+                "unit",
+                &[
+                    "app",
+                    "held",
+                    "app.service",
+                    "loaded",
+                    "active",
+                    "running",
+                    "no",
+                    "",
+                ],
+            ),
+        ]
+        .concat();
+        let mut observation = parse_observation(&held_running).unwrap();
+        observation.hold_response = Some(serde_json::from_str(HOLD_LIST_JSON).unwrap());
+        assert!(matches!(
+            classify_observation(&observation, &BaselineTimerUnits::default())
+                .unwrap()
+                .decision,
+            HealthDecision::ServiceFailure { .. }
+        ));
+    }
+
+    #[test]
     fn inactive_expected_unit_with_start_job_is_settling() {
         let mut input = String::new();
-        input.push_str(&encoded("hold-absent", &[]));
         input.push_str(&encoded("status-absent", &[]));
         input.push_str(&encoded("user", &["app", "1000", "active", "ok", "ok"]));
         input.push_str(&encoded("expected-unit", &["app", "app.service"]));
@@ -1157,7 +1434,6 @@ mod tests {
     #[test]
     fn unsafe_deferred_resource_is_structural_failure() {
         let mut input = String::new();
-        input.push_str(&encoded("hold-absent", &[]));
         input.push_str(&encoded(
             "status-response",
             &[r#"{"ok":true,"operation":"agent_status","result":{"status_schema_version":2,"deferred_resources":{"count":1,"resources":[{"resource":"db","reason":"held","generation":4,"isolated":false}]}}}"#],
@@ -1213,8 +1489,7 @@ mod tests {
                 }
                 _ => {}
             }
-            let mut input = encoded("hold-absent", &[]);
-            input.push_str(&encoded("status-response", &[&wire.to_string()]));
+            let input = encoded("status-response", &[&wire.to_string()]);
             let report = classify_observation(
                 &parse_observation(&input).unwrap(),
                 &BaselineTimerUnits::default(),
@@ -1243,7 +1518,6 @@ mod tests {
         let ignored = "systemd-backlight@backlight:nvidia_wmi_ec_backlight.service";
         let similar = "systemd-backlight@backlight:nvidia_wmi_ec_backlight-similar.service";
         let mut input = String::new();
-        input.push_str(&encoded("hold-absent", &[]));
         input.push_str(&encoded("status-absent", &[]));
         input.push_str(&encoded(
             "system-failed",
@@ -1275,7 +1549,6 @@ mod tests {
     #[test]
     fn unhealthy_container_is_only_settling_with_active_deployment_work() {
         let base = [
-            encoded("hold-absent", &[]),
             encoded("status-absent", &[]),
             encoded("user", &["app", "1000", "active", "ok", "ok"]),
             encoded(

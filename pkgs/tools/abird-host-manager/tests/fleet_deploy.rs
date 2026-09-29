@@ -102,7 +102,7 @@ fn snapshots_accept_exactly_one_generation_and_tolerate_warnings() {
     assert_eq!(
         snapshot_command(),
         deploy::CommandSpec::new(
-            "readlink",
+            "/run/current-system/sw/bin/readlink",
             ["-f".to_owned(), "/run/current-system".to_owned()]
         )
     );

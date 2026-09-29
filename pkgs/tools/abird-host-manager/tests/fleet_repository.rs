@@ -359,14 +359,14 @@ fn staged_patch_application_uses_git_apply_stdin_without_shell_interpolation() {
 }
 
 #[test]
-fn repository_git_transport_is_strict_and_propagated_to_every_git_request() {
+fn repository_git_transport_trusts_on_first_use_and_is_propagated_to_every_git_request() {
     let temporary = tempfile::tempdir().unwrap();
     let known_hosts = temporary.path().join("known hosts");
     let identity = temporary.path().join("identity's key");
     fs::write(&known_hosts, "git.example ssh-ed25519 AAAA\n").unwrap();
     fs::write(&identity, "fixture\n").unwrap();
     let command = repo_git_ssh_command(&known_hosts, std::slice::from_ref(&identity)).unwrap();
-    assert!(command.contains("StrictHostKeyChecking=yes"));
+    assert!(command.contains("StrictHostKeyChecking=accept-new"));
     assert!(command.contains("GlobalKnownHostsFile=/dev/null"));
     assert!(command.contains("IdentitiesOnly=yes"));
     assert!(command.contains(&format!(

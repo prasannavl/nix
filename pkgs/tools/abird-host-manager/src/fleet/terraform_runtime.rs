@@ -13,6 +13,7 @@ use std::process::Command;
 
 use tempfile::{Builder as TempBuilder, TempDir};
 
+use crate::programs::age::Age;
 use crate::programs::clear_git_repository_environment;
 
 use super::terraform::{
@@ -190,39 +191,20 @@ pub trait Decryptor {
     fn decrypt(&mut self, source: &Path, destination: &Path) -> Result<(), String>;
 }
 
+/// Decrypts age secrets in-process with the declared identities, in order.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AgeCommandDecryptor {
-    pub program: PathBuf,
+pub struct AgeDecryptor {
     pub identities: Vec<PathBuf>,
 }
 
-impl Decryptor for AgeCommandDecryptor {
+impl Decryptor for AgeDecryptor {
     fn decrypt(&mut self, source: &Path, destination: &Path) -> Result<(), String> {
-        let identities = self
-            .identities
-            .iter()
-            .filter(|identity| identity.is_file())
-            .collect::<Vec<_>>();
-        if identities.is_empty() {
+        if !self.identities.iter().any(|identity| identity.is_file()) {
             return Err("no readable age identities".to_owned());
         }
-        for identity in identities {
-            let _ = fs::remove_file(destination);
-            let status = Command::new(&self.program)
-                .arg("--decrypt")
-                .arg("-i")
-                .arg(identity)
-                .arg("-o")
-                .arg(destination)
-                .arg(source)
-                .status()
-                .map_err(|error| format!("cannot execute age: {error}"))?;
-            if status.success() {
-                return Ok(());
-            }
-        }
-        let _ = fs::remove_file(destination);
-        Err("unable to decrypt with available age identities".to_owned())
+        Age::new()
+            .decrypt(source, &self.identities, destination)
+            .map_err(|error| format!("unable to decrypt with available age identities: {error:#}"))
     }
 }
 
@@ -279,6 +261,8 @@ impl<D: Decryptor> SecureMaterializer<D> {
             .path()
             .join(format!("{safe_label}-{:06}", self.next_file));
         if let Err(message) = self.decryptor.decrypt(source, &destination) {
+            // This materializer is generic over decryptors, so clear any partial
+            // output a non-atomic implementation could leave behind.
             let _ = fs::remove_file(&destination);
             return Err(RuntimeError::Decrypt {
                 source: source.to_path_buf(),

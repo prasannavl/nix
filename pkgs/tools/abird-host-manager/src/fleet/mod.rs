@@ -31,6 +31,7 @@ pub mod runtime;
 pub mod selection;
 pub mod signal;
 pub mod system;
+pub mod system_identity;
 pub mod task;
 pub mod terraform;
 pub mod terraform_runtime;

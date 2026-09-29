@@ -867,15 +867,6 @@ fn format_process_dashboard_line(
 
 fn format_operation_dashboard_line(line: &str) -> Option<String> {
     let line = terminal_safe_line(line);
-    if line.starts_with("[ssh] scanning ") {
-        return Some("[ssh] scanning configured endpoint".to_owned());
-    }
-    if line.starts_with("[ssh] no host key returned by ") {
-        return Some("[ssh] no host key returned".to_owned());
-    }
-    if line.starts_with("[ssh] host key discovered via ") {
-        return Some("[ssh] host key discovered".to_owned());
-    }
     let rest = line.strip_prefix("[health-check] attempt ")?;
     let (attempt, status) = rest.split_once(" · ")?;
     if !ascii_digits(attempt) {
@@ -1738,10 +1729,6 @@ mod tests {
 
     #[test]
     fn semantic_host_operation_lines_are_allowlisted_and_normalized() {
-        assert_eq!(
-            format_operation_dashboard_line("[ssh] scanning secret-host.example:22"),
-            Some("[ssh] scanning configured endpoint".to_owned())
-        );
         assert_eq!(
             format_operation_dashboard_line(
                 "[health-check] attempt 2 · service failure · user=abird failed-unit=abird-agent.service"

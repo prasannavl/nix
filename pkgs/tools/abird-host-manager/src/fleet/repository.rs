@@ -84,7 +84,7 @@ pub fn repo_git_ssh_command(known_hosts: &Path, identities: &[PathBuf]) -> Resul
         );
     }
     let mut command = format!(
-        "ssh -F /dev/null -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile={} -o StrictHostKeyChecking=yes",
+        "ssh -F /dev/null -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile={} -o StrictHostKeyChecking=accept-new",
         shell_quote(&known_hosts.display().to_string())
     );
     for identity in identities {

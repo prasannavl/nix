@@ -311,12 +311,21 @@ deterministic projection if it did not. Runtime reconciliation cannot start
 until that exact revision is confirmed published, so the retry neither creates a
 second transaction nor replays a migration job.
 
-The host-manager fleet package explicitly carries the hostname and
-address-discovery tools used to classify a controller self-deployment. A
-self-target reuses the outer host-local deployment lock instead of attempting to
-acquire it again inside its transient activation unit. This keeps controller
-closeout deployment serialized without allowing a nested lock to deadlock its
-own deploy.
+The host-manager classifies a controller self-deployment in-process from the
+local host name and interface addresses, so it does not depend on external
+hostname or address-discovery tools. A self-target reuses the outer host-local
+deployment lock instead of attempting to acquire it again inside its transient
+activation unit. This keeps controller closeout deployment serialized without
+allowing a nested lock to deadlock its own deploy.
+
+The package's controller wrapper carries only `cloudflared`, `git`, `nix`,
+`openssh`, and `opentofu`. Identity decryption, hostname and address discovery,
+and hold parsing happen in-process; host-key trust uses the retained `ssh` with
+`accept-new`; the remaining target-side scripts use NixOS-core tools. The
+wrapper therefore no longer carries `age`, `jq`, `gawk`, `coreutils`,
+`findutils`, `getent`, `inetutils`, `iproute2`, `procps`, or `util-linux`. The
+active Bash `nixbot` package keeps its wider runtime set until the explicit
+cutover; see the dependency audit note for the divergence.
 
 ## Fleet commands
 
@@ -410,11 +419,13 @@ Plain identity paths are used directly. An identity ending in `.age` is
 decrypted lazily into a private process-owned temporary directory, cached for
 the process lifetime, and removed on exit. `AGE_KEY_FILE` selects the decrypt
 identity; otherwise the manager checks the same user and Nixbot identity paths
-as Nixbot. `ABIRD_HOST_MANAGER_AGE` overrides the external Age program path.
-Configured known-hosts data remains strict. With no configured host keys, the
-manager follows Nixbot's process-isolated trust model: `accept-new` writes only
-to a private temporary known-hosts file and never reads or mutates the
-operator's persistent SSH configuration or trust store.
+as Nixbot. Decryption happens in-process with the RustCrypto `age` crate, so
+there is no external Age program and no program-path override; `age-plugin-*`
+identities and passphrase-protected keys are unsupported. Configured known-hosts
+data is seeded into the per-host private file as an authenticated pin; the route
+uses `accept-new`, so a first-contact key is trusted while a changed key is
+still rejected. The manager never reads or mutates the operator's persistent SSH
+configuration or trust store.
 
 It maps Nixbot targets, users, nested proxy hops, groups, resource IDs, and
 deployment identities without a generated mirror file. Proxy hops are resolved

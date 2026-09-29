@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::io::{Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::io::Read;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
@@ -130,7 +130,7 @@ struct RepositoryRuntime {
 fn repository_manager(runtime: &RuntimeConfig, url: Option<&str>) -> Result<RepositoryRuntime> {
     let mut temporary = None;
     let environment = match url.map(ssh_repository_endpoint).transpose()? {
-        Some(Some((host, port))) => {
+        Some(Some(_)) => {
             let known_hosts = if let Some(path) = runtime.repo_known_hosts_file.clone() {
                 if !path.is_absolute() {
                     bail!("NIXBOT_REPO_KNOWN_HOSTS_FILE must be absolute");
@@ -143,6 +143,9 @@ fn repository_manager(runtime: &RuntimeConfig, url: Option<&str>) -> Result<Repo
                         )
                     })?;
                 }
+                if !path.is_file() {
+                    create_private_known_hosts(&path)?;
+                }
                 path
             } else {
                 let directory = tempfile::Builder::new()
@@ -150,31 +153,10 @@ fn repository_manager(runtime: &RuntimeConfig, url: Option<&str>) -> Result<Repo
                     .tempdir()
                     .context("create repository transport directory")?;
                 let path = directory.path().join("known_hosts");
+                create_private_known_hosts(&path)?;
                 temporary = Some(directory);
                 path
             };
-            let populated = known_hosts
-                .metadata()
-                .map(|metadata| metadata.is_file() && metadata.len() > 0)
-                .unwrap_or(false);
-            if !populated {
-                let scanned = scan_repository_host_key(&host, port)?;
-                let mut file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&known_hosts)
-                    .with_context(|| {
-                        format!(
-                            "write repository known-hosts file {}",
-                            known_hosts.display()
-                        )
-                    })?;
-                file.write_all(&scanned)?;
-                file.write_all(b"\n")?;
-                std::fs::set_permissions(&known_hosts, std::fs::Permissions::from_mode(0o600))?;
-            }
             vec![(
                 "GIT_SSH_COMMAND".to_owned(),
                 repo_git_ssh_command(&known_hosts, &runtime.repo_ssh_key_paths)?,
@@ -189,26 +171,17 @@ fn repository_manager(runtime: &RuntimeConfig, url: Option<&str>) -> Result<Repo
     })
 }
 
-fn scan_repository_host_key(host: &str, port: u16) -> Result<Vec<u8>> {
-    for algorithm in [Some("ed25519"), None] {
-        let mut command = Command::new("ssh-keyscan");
-        command.args(["-T", "10", "-H", "-p", &port.to_string()]);
-        if let Some(algorithm) = algorithm {
-            command.args(["-t", algorithm]);
-        }
-        let output = command
-            .arg(host)
-            .output()
-            .with_context(|| format!("scan repository SSH host key for {host}"))?;
-        if output
-            .stdout
-            .split(|byte| *byte == b'\n')
-            .any(|line| !line.is_empty() && !line.starts_with(b"#"))
-        {
-            return Ok(output.stdout);
-        }
-    }
-    bail!("could not determine repository SSH host key for {host}")
+/// Create an empty `0600` known-hosts file. Repository transport uses
+/// `accept-new`, so an unpinned file trusts the host on first contact and still
+/// rejects a changed key afterwards.
+fn create_private_known_hosts(path: &Path) -> Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("create repository known-hosts file {}", path.display()))?;
+    Ok(())
 }
 
 pub fn run(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
@@ -477,7 +450,6 @@ fn run_ci_trigger(invocation: &Invocation, runtime: &RuntimeConfig) -> Result<()
         default_private_key: Some(&default_key),
     })?;
     let mut materializer = AgeOrFileCredentialMaterializer {
-        age_program: PathBuf::from("age"),
         identities: super::native::age_identities(&invocation.options),
     };
     let temporary = tempfile::Builder::new()
@@ -489,10 +461,9 @@ fn run_ci_trigger(invocation: &Invocation, runtime: &RuntimeConfig) -> Result<()
         &connection,
         &repository_root,
         temporary.path(),
-        &CiPrograms::new("ssh", "ssh-keyscan"),
+        &CiPrograms::new("ssh"),
         &mut SystemCiExecutor,
         &mut materializer,
-        10,
     )?;
     std::io::Write::write_all(&mut std::io::stdout(), &report.stdout)?;
     std::io::Write::write_all(&mut std::io::stderr(), &report.stderr)?;
@@ -838,8 +809,7 @@ fn run_tofu(arguments: &[String], invocation: &Invocation, runtime: &RuntimeConf
         .find(|directory| directory.join("flake.nix").is_file())
         .map(Path::to_path_buf)
         .unwrap_or_else(|| current_dir.clone());
-    let decryptor = super::terraform_runtime::AgeCommandDecryptor {
-        program: PathBuf::from("age"),
+    let decryptor = super::terraform_runtime::AgeDecryptor {
         identities: super::native::age_identities(&invocation.options),
     };
     let temporary = tempfile::tempdir().context("create tofu secret runtime")?;

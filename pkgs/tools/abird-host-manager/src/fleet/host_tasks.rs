@@ -80,19 +80,6 @@ impl StepSpecSource for ReadinessStep {
     }
 }
 
-/// Discover an SSH host key.
-pub enum SshKeyStep {
-    Discover,
-}
-
-impl StepSpecSource for SshKeyStep {
-    fn spec(&self, host: &str) -> StepSpec {
-        match self {
-            SshKeyStep::Discover => StepSpec::stage(format!("ssh-key-{host}"), "ssh key discover"),
-        }
-    }
-}
-
 /// Transfer a closure for a target.
 pub enum TransferStep {
     /// Target pulls directly from a configured cache.

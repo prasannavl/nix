@@ -158,7 +158,10 @@ pub enum DeployDecision {
 }
 
 pub fn snapshot_command() -> CommandSpec {
-    CommandSpec::new("readlink", ["-f".to_owned(), CURRENT_SYSTEM.to_owned()])
+    CommandSpec::new(
+        SYSTEM_READLINK,
+        ["-f".to_owned(), CURRENT_SYSTEM.to_owned()],
+    )
 }
 
 const DEFAULT_PARENT_RECONCILE: &str =

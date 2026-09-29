@@ -10,9 +10,10 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 
+use crate::programs::age::Age;
 use crate::programs::clear_git_repository_environment;
 
 use super::bootstrap::{
@@ -44,13 +45,14 @@ use super::host_runtime::{
 };
 use super::host_tasks::{
     AcquireStep, BootstrapStep, BuildStep, DeployStep, HealthStep, PhaseStep, ReadinessStep,
-    SnapshotStep, SshKeyStep, TransferStep, VerifyStep, run_step, run_step_with,
+    SnapshotStep, TransferStep, VerifyStep, run_step, run_step_with,
 };
 use super::inventory::{DeployMode, Inventory};
 use super::plan::{Phase, WorkflowPlan};
 use super::presentation::{FleetProgress, WorkflowResult, phase_label};
 use super::selection::Selection;
 use super::system::{ResolvedHost, resolve_host};
+use super::system_identity;
 use super::task::{InternalTask, StepSpecSource, TaskOutcome, TaskScope};
 use super::transport::{
     HostKeyPolicy, HostTransport, ProcessStatus, ProxyCommandTemplate, SelfTargetDecision,
@@ -60,6 +62,9 @@ use super::transport::{
 
 const SSH_CONTROL_PATH_LIMIT: usize = 108;
 const CONTROL_SOCKET_DIGEST_HEX_LEN: usize = 20;
+/// System `true`, used for the transport connectivity probe without relying on
+/// the ambient remote PATH.
+const SYSTEM_TRUE: &str = "/run/current-system/sw/bin/true";
 
 fn health_failure_message(
     host: &str,
@@ -915,10 +920,7 @@ impl<'a> NativeFleetEffects<'a> {
             }
             let context = super::terraform::project_context(&selection.run.directory)?;
             let identities = age_identities(&self.invocation.options);
-            let decryptor = super::terraform_runtime::AgeCommandDecryptor {
-                program: PathBuf::from("age"),
-                identities,
-            };
+            let decryptor = super::terraform_runtime::AgeDecryptor { identities };
             let mut materializer = super::terraform_runtime::SecureMaterializer::new(
                 self.transport_store.path(),
                 decryptor,
@@ -1025,7 +1027,7 @@ impl<'a> NativeFleetEffects<'a> {
             },
         );
         if matches!(self.invocation.action, Action::Build) {
-            let pull = with_nix_sshopts(
+            let (pull, environment) = with_nix_sshopts(
                 CommandSpec::new(
                     self.nix_program.to_string_lossy(),
                     [
@@ -1039,9 +1041,12 @@ impl<'a> NativeFleetEffects<'a> {
             )?;
             let scope: Arc<dyn TaskScope> = self.progress.host_scope(host);
             run_step(&scope, BuildStep::ClosureCopy, |task| {
-                let output =
-                    self.host_runtime
-                        .execute_local_command(&pull, EffectKind::Build, task)?;
+                let output = self.host_runtime.execute_local_command_with_env(
+                    &pull,
+                    &environment,
+                    EffectKind::Build,
+                    task,
+                )?;
                 if !output.succeeded() {
                     bail!("copy remote build closure to local store failed for {host}");
                 }
@@ -1126,7 +1131,7 @@ impl<'a> NativeFleetEffects<'a> {
         build_args: &BuildArgs,
     ) -> Result<NixStorePath> {
         let commands = plan_remote_build(&remote_build_tools()?, derivation, build_args);
-        let copy_derivation = with_nix_sshopts(
+        let (copy_derivation, environment) = with_nix_sshopts(
             copy_derivation_command(&self.nix_program.to_string_lossy(), store_uri, derivation),
             target,
         )?;
@@ -1137,8 +1142,9 @@ impl<'a> NativeFleetEffects<'a> {
         let scope: Arc<dyn TaskScope> = self.progress.host_scope(subject);
         let builder = target.route.endpoint.node.clone();
         run_step(&scope, BuildStep::Copy, |task| {
-            let copied = self.host_runtime.execute_local_command(
+            let copied = self.host_runtime.execute_local_command_with_env(
                 &copy_derivation,
+                &environment,
                 EffectKind::Build,
                 task,
             )?;
@@ -1357,7 +1363,7 @@ impl<'a> NativeFleetEffects<'a> {
         for attempt in 1..=attempts {
             let output = self.host_runtime.execute_remote_command(
                 target,
-                &CommandSpec::new("true", Vec::<String>::new()),
+                &CommandSpec::new(SYSTEM_TRUE, Vec::<String>::new()),
                 EffectKind::ReadOnly,
                 InternalTask::new(format!(
                     "primary-connectivity-probe-{}",
@@ -1487,11 +1493,11 @@ impl<'a> NativeFleetEffects<'a> {
             proxy
         };
         let local = self.local_target(&resolved)?;
-        let known_hosts_file = if local {
-            None
-        } else {
-            Some(self.prepare_known_hosts(&resolved, &proxy)?)
-        };
+        // Local (self) targets still connect over SSH for `nix copy --to
+        // ssh-ng://…`, so they get the same isolated known-hosts file as remote
+        // targets; otherwise `accept-new` could append to the operator's
+        // ambient trust store.
+        let known_hosts_file = Some(self.prepare_known_hosts(&resolved)?);
         let endpoint = primary_endpoint(&resolved)?;
         let route = if let Some(command) = &resolved.proxy_command {
             SshRoutePlan::via_command(endpoint, ProxyCommandTemplate::new(command.clone())?)
@@ -1562,23 +1568,13 @@ impl<'a> NativeFleetEffects<'a> {
             safe_component(&resolved.inventory_name)
         ));
         if !public.is_file() {
-            let output = Command::new("ssh-keygen")
-                .args(["-y", "-f"])
-                .arg(&bootstrap)
-                .output()
-                .with_context(|| {
-                    format!(
-                        "derive bootstrap public key for {}",
-                        resolved.inventory_name
-                    )
-                })?;
-            if !output.status.success() || output.stdout.is_empty() {
-                bail!(
-                    "unable to derive bootstrap public key for {}",
+            let line = bootstrap_public_key_line(&bootstrap).with_context(|| {
+                format!(
+                    "derive bootstrap public key for {}",
                     resolved.inventory_name
-                );
-            }
-            std::fs::write(&public, output.stdout)?;
+                )
+            })?;
+            std::fs::write(&public, line)?;
             std::fs::set_permissions(&public, std::fs::Permissions::from_mode(0o600))?;
         }
         let component = format!(
@@ -1806,58 +1802,23 @@ impl<'a> NativeFleetEffects<'a> {
             "127.0.0.1".to_owned(),
             "::1".to_owned(),
         ]);
-        for arguments in [vec!["-s"], Vec::new(), vec!["-f"]] {
-            if let Ok(output) = run_output(
-                self.repository,
-                &CommandSpec::new("hostname", arguments.into_iter().map(str::to_owned)),
-            ) && output.status.success()
-            {
-                for alias in String::from_utf8_lossy(&output.stdout).split_whitespace() {
-                    aliases.insert(alias.to_owned());
-                    aliases.insert(alias.split('.').next().unwrap_or(alias).to_owned());
-                }
-            }
-        }
+        aliases.extend(system_identity::local_host_aliases());
         let target = host.target.trim_start_matches('[').trim_end_matches(']');
         let target_short = target.split('.').next().unwrap_or(target);
         let alias_matches = aliases.contains(target) || aliases.contains(target_short);
         let mut local_addresses = BTreeSet::from(["127.0.0.1".to_owned(), "::1".to_owned()]);
-        if let Ok(output) = run_output(
-            self.repository,
-            &CommandSpec::new("ip", ["-o", "addr", "show", "up"].map(str::to_owned)),
-        ) && output.status.success()
-        {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                if let Some(address) = line.split_whitespace().nth(3) {
-                    local_addresses.insert(address.split('/').next().unwrap_or(address).to_owned());
-                }
-            }
-        }
-        let resolved = run_output(
-            self.repository,
-            &CommandSpec::new("getent", ["ahosts".to_owned(), target.to_owned()]),
-        );
+        local_addresses.extend(system_identity::local_ip_addresses().unwrap_or_default());
         let address_matches = is_ip_address(target) && local_addresses.contains(target)
-            || resolved.is_ok_and(|output| {
-                output.status.success()
-                    && String::from_utf8_lossy(&output.stdout)
-                        .lines()
-                        .filter_map(|line| line.split_whitespace().next())
-                        .any(|address| local_addresses.contains(address))
+            || system_identity::resolve_peer_addresses(target).is_ok_and(|addresses| {
+                addresses
+                    .iter()
+                    .any(|address| local_addresses.contains(address))
             });
-        let uid = run_output(self.repository, &CommandSpec::new("id", ["-u".to_owned()]))?;
-        let user = run_output(self.repository, &CommandSpec::new("id", ["-un".to_owned()]))?;
-        if !uid.status.success() || !user.status.success() {
-            bail!("could not determine local user identity for self-target planning");
-        }
         Ok(SelfTargetEvidence {
             alias_matches,
             address_matches,
-            effective_uid: String::from_utf8_lossy(&uid.stdout)
-                .trim()
-                .parse()
-                .context("local effective uid is not an unsigned integer")?,
-            current_user: String::from_utf8_lossy(&user.stdout).trim().to_owned(),
+            effective_uid: system_identity::effective_uid(),
+            current_user: system_identity::current_user()?,
             deploy_user: host.user.clone(),
         })
     }
@@ -1888,33 +1849,24 @@ impl<'a> NativeFleetEffects<'a> {
             safe_component(role)
         ));
         if destination.is_file() {
+            // `Age::decrypt` writes to a sibling temporary file and renames it
+            // into place only on success, so a failed attempt never leaves a
+            // partial `destination` behind. This cache check therefore only
+            // ever observes complete plaintext, and no explicit `remove_file`
+            // cleanup is needed on failure.
             return Ok(destination);
         }
         let identities = age_identities(&self.invocation.options);
         if identities.is_empty() {
             bail!("no age identity is configured to decrypt the {role} SSH key for {host}");
         }
-        let mut last_status = None;
-        for identity in identities.into_iter().filter(|path| path.is_file()) {
-            let status = Command::new("age")
-                .args(["--decrypt", "-i"])
-                .arg(&identity)
-                .arg("-o")
-                .arg(&destination)
-                .arg(&source)
-                .status()
-                .with_context(|| format!("decrypt {role} SSH key for {host}"))?;
-            last_status = status.code();
-            if status.success() {
-                std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o600))?;
-                return Ok(destination);
-            }
-            let _ = std::fs::remove_file(&destination);
-        }
-        bail!(
-            "unable to decrypt the {role} SSH key for {host} (last status {:?})",
-            last_status
-        )
+        Age::new()
+            .decrypt(&source, &identities, &destination)
+            .map_err(|error| {
+                anyhow!("unable to decrypt the {role} SSH key for {host}: {error:#}")
+            })?;
+        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o600))?;
+        Ok(destination)
     }
 
     fn write_known_hosts(&self, host: &str, contents: &str) -> Result<PathBuf> {
@@ -1944,11 +1896,10 @@ impl<'a> NativeFleetEffects<'a> {
         Ok(path)
     }
 
-    fn prepare_known_hosts(
-        &self,
-        host: &ResolvedHost,
-        proxy: &super::transport::ProxyPlan,
-    ) -> Result<PathBuf> {
+    /// Isolated `0600` known-hosts file for one host. Configured inventory
+    /// material is an authenticated pin; otherwise the file starts empty and
+    /// the route trusts on first use through `StrictHostKeyChecking=accept-new`.
+    fn prepare_known_hosts(&self, host: &ResolvedHost) -> Result<PathBuf> {
         if let Some(contents) = host.known_hosts.as_deref() {
             return self.write_known_hosts(&host.inventory_name, contents);
         }
@@ -1959,52 +1910,7 @@ impl<'a> NativeFleetEffects<'a> {
         if path.exists() {
             return Ok(path);
         }
-        let scan_host = if host.proxy_command.is_some() {
-            None
-        } else if proxy.is_empty() {
-            Some((&host.target, host.port))
-        } else {
-            proxy
-                .directly_scannable_first_hop()
-                .map(|first| (&first.endpoint.host, first.endpoint.port))
-        };
-        let mut contents = Vec::new();
-        if let Some((target, port)) = scan_host {
-            let scope: Arc<dyn TaskScope> = self.progress.host_scope(&host.inventory_name);
-            contents = run_step(&scope, SshKeyStep::Discover, |task| -> Result<Vec<u8>> {
-                let note = |line: String| task.note(&line);
-                note(format!("[ssh] scanning {target}:{port}"));
-                let mut contents = Vec::new();
-                for algorithm in [Some("ed25519"), None] {
-                    let mut command = Command::new("ssh-keyscan");
-                    command.args([
-                        "-T",
-                        &self.settings.ssh_connect_timeout_seconds.to_string(),
-                        "-p",
-                        &port.to_string(),
-                    ]);
-                    if let Some(algorithm) = algorithm {
-                        command.args(["-t", algorithm]);
-                    }
-                    let output = command
-                        .arg(target)
-                        .current_dir(self.repository)
-                        .output()
-                        .with_context(|| format!("scan SSH host key for {target}"))?;
-                    if output.status.success() && !output.stdout.is_empty() {
-                        contents = output.stdout;
-                        break;
-                    }
-                }
-                if contents.is_empty() {
-                    note(format!("[ssh] no host key returned by {target}:{port}"));
-                    bail!("could not determine SSH host key for {target}:{port}");
-                }
-                note(format!("[ssh] host key discovered via {target}:{port}"));
-                Ok(contents)
-            })?;
-        }
-        let mut file = OpenOptions::new()
+        OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
@@ -2015,7 +1921,6 @@ impl<'a> NativeFleetEffects<'a> {
                     host.inventory_name
                 )
             })?;
-        file.write_all(&contents)?;
         Ok(path)
     }
 
@@ -2120,7 +2025,7 @@ impl<'a> NativeFleetEffects<'a> {
         let build_host = self.build_host();
         if build_host == "local" {
             let target = self.execution_target(&resolved)?;
-            let command = with_nix_sshopts(
+            let (command, environment) = with_nix_sshopts(
                 CommandSpec::new(
                     self.nix_program.to_string_lossy(),
                     [
@@ -2135,8 +2040,9 @@ impl<'a> NativeFleetEffects<'a> {
             )?;
             let scope: Arc<dyn TaskScope> = self.progress.host_scope(host);
             run_step(&scope, TransferStep::DirectPush, |task| {
-                let output = self.host_runtime.execute_local_command(
+                let output = self.host_runtime.execute_local_command_with_env(
                     &command,
+                    &environment,
                     EffectKind::Mutation,
                     task,
                 )?;
@@ -3302,28 +3208,16 @@ impl<'a> NativeFleetEffects<'a> {
                     continue;
                 }
             };
-            let output = Command::new("ssh-keygen")
-                .args(["-lf"])
-                .arg(&materialized)
-                .output()
-                .with_context(|| format!("inspect bootstrap key for {host}"))?;
-            if !output.status.success() {
-                self.bootstrap_failed.insert(host.clone());
-                failures.push(format!("{host}: bootstrap key is unreadable"));
-                continue;
-            }
-            let fingerprint = String::from_utf8_lossy(&output.stdout)
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or_default()
-                .to_owned();
-            if fingerprint.is_empty() {
-                self.bootstrap_failed.insert(host.clone());
-                failures.push(format!("{host}: bootstrap key has no fingerprint"));
-            } else {
-                self.progress
-                    .detail(format!("{host} · bootstrap key valid · {fingerprint}"));
-            }
+            let fingerprint = match bootstrap_key_fingerprint(&materialized) {
+                Ok(fingerprint) => fingerprint,
+                Err(_) => {
+                    self.bootstrap_failed.insert(host.clone());
+                    failures.push(format!("{host}: bootstrap key is unreadable"));
+                    continue;
+                }
+            };
+            self.progress
+                .detail(format!("{host} · bootstrap key valid · {fingerprint}"));
         }
         if failures.is_empty() {
             Ok(())
@@ -3594,6 +3488,39 @@ fn is_ip_address(value: &str) -> bool {
     value.parse::<std::net::IpAddr>().is_ok()
 }
 
+/// Parse a bootstrap private key in-process. Encrypted keys have no
+/// non-interactive unlock path, so they are rejected rather than prompting.
+fn read_bootstrap_private_key(private_key: &Path) -> Result<ssh_key::PrivateKey> {
+    let contents = std::fs::read(private_key)
+        .with_context(|| format!("read bootstrap private key {}", private_key.display()))?;
+    let key = ssh_key::PrivateKey::from_openssh(&contents)
+        .with_context(|| format!("parse bootstrap private key {}", private_key.display()))?;
+    if key.is_encrypted() {
+        bail!(
+            "bootstrap private key {} is encrypted and has no non-interactive unlock path",
+            private_key.display()
+        );
+    }
+    Ok(key)
+}
+
+/// OpenSSH public-key line derived from a bootstrap private key, equivalent to
+/// the `ssh-keygen -y` output streamed to the target.
+fn bootstrap_public_key_line(private_key: &Path) -> Result<String> {
+    Ok(read_bootstrap_private_key(private_key)?
+        .public_key()
+        .to_openssh()?)
+}
+
+/// `SHA256:` fingerprint of a bootstrap private key, in the same form
+/// `ssh-keygen -lf` prints as its second field.
+fn bootstrap_key_fingerprint(private_key: &Path) -> Result<String> {
+    Ok(read_bootstrap_private_key(private_key)?
+        .public_key()
+        .fingerprint(ssh_key::HashAlg::Sha256)
+        .to_string())
+}
+
 fn bootstrap_install_command(remote_key: &Path, remote_public: &Path) -> Result<CommandSpec> {
     let path = |value: &Path| -> Result<String> {
         value
@@ -3801,16 +3728,17 @@ fn include_successful_for_interrupted_rollback(
     }
 }
 
-fn with_nix_sshopts(command: CommandSpec, target: &HostExecutionTarget) -> Result<CommandSpec> {
+fn with_nix_sshopts(
+    command: CommandSpec,
+    target: &HostExecutionTarget,
+) -> Result<(CommandSpec, Vec<(String, String)>)> {
     let options = ssh_connection_args(target)?;
     let rendered = options
         .iter()
         .map(|option| quote_nix_sshopts(option))
         .collect::<Vec<_>>()
         .join(" ");
-    let mut args = vec![format!("NIX_SSHOPTS={rendered}"), command.program];
-    args.extend(command.args);
-    Ok(CommandSpec::new("env", args))
+    Ok((command, vec![("NIX_SSHOPTS".to_owned(), rendered)]))
 }
 
 fn remote_build_tools() -> Result<RemoteBuildTools> {
@@ -3986,6 +3914,142 @@ pub fn action_needs_inventory(action: &Action) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Throwaway OpenSSH key pairs generated for this test suite only.
+    const ED25519_PRIVATE_KEY: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACCQnHU3VS3K3jkmnEaaHFcozUvZy0zS0EPn5jUATg1rBAAAAKhIj7rISI+6
+yAAAAAtzc2gtZWQyNTUxOQAAACCQnHU3VS3K3jkmnEaaHFcozUvZy0zS0EPn5jUATg1rBA
+AAAEDkzBKB91su4AW3mj8r2WxzSKJZZ1qA3qqCn2jB5vqr0ZCcdTdVLcreOSacRpocVyjN
+S9nLTNLQQ+fmNQBODWsEAAAAH2FiaXJkLWhvc3QtbWFuYWdlciB0ZXN0IGZpeHR1cmUBAg
+MEBQY=
+-----END OPENSSH PRIVATE KEY-----
+";
+    const ED25519_PUBLIC_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJCcdTdVLcreOSacRpocVyjNS9nLTNLQQ+fmNQBODWsE abird-host-manager test fixture";
+    const ED25519_FINGERPRINT: &str = "SHA256:Q/rWFyBY9l0AYppaCCUlFtTg32cu5xk6GBpOvbjk4Vk";
+
+    const RSA_PRIVATE_KEY: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABFwAAAAdzc2gtcn
+NhAAAAAwEAAQAAAQEA8UWC3ai+BGnl4K6Kbx7LHRLe06pYTi0601Dhoun1Vcez717nT/zr
+vqSj6I5njZ0O8KBTXf1cuabVFlajswticy552LsG9lIeKrldOCh0zl+xlpy9vFDKUWSjZj
+pdzUFoprC0Ll/xaIu3kXTh/8magVt5kJio8CEjcC7chAVT0tOy9OmXIKHp24UzuoGjhTek
+eq1+R36QJzq0F3d5rOsKB+96VR7+ypc0WPOR7lJhZeLYQo3kFVQvb4PzTybIN0ajlnvp3P
+XVhm7aCvDmQlSpB8iUKjIvg13NHeKDG3bq+9YEjMTFM9rg4NvMdO9E2PC2WP/APzn7UmTW
+44q4GqjKZwAAA9ivdAGbr3QBmwAAAAdzc2gtcnNhAAABAQDxRYLdqL4EaeXgropvHssdEt
+7TqlhOLTrTUOGi6fVVx7PvXudP/Ou+pKPojmeNnQ7woFNd/Vy5ptUWVqOzC2JzLnnYuwb2
+Uh4quV04KHTOX7GWnL28UMpRZKNmOl3NQWimsLQuX/Foi7eRdOH/yZqBW3mQmKjwISNwLt
+yEBVPS07L06ZcgoenbhTO6gaOFN6R6rX5HfpAnOrQXd3ms6woH73pVHv7KlzRY85HuUmFl
+4thCjeQVVC9vg/NPJsg3RqOWe+nc9dWGbtoK8OZCVKkHyJQqMi+DXc0d4oMbdur71gSMxM
+Uz2uDg28x070TY8LZY/8A/OftSZNbjirgaqMpnAAAAAwEAAQAAAQATCl1NiOeWCZVuqdea
+9V8qKDcVlTfq03709kkYRkZqQpxco6y1j0w7e1rEG5jogCCRtNVfcYND03q1jJjWpGtck6
+piBECEZ+6hiIdmyyqMrtig/jWrCuUsjzil9K06aZMMtJ1Dm6a9jWkrPYIoYYyj8MgjNSj/
+6l2VmN0mPhVjadJWqtgaACaZ+O+Z5Fn8N6CsRv83qZ/oDjjNIjBOf8lvHTwmD7hKj7gBk6
+5KLAWYHIMJi6xl6+s3Hx/7WAws1BJZ5T+Tbil3Qd/t4nKDXkEaKz1QaXSAWHn76KlKQsT8
+epBjXMWBKpkUc3CPmxTqBLfMXWblsuc9kQuNf+BItQ+hAAAAgQCW55JJgVHj0DwRJ5+No6
+9y5EVM3PKeePT4JQk0CYV/JQ6GaXy0SInwV0bq/ZiVcKzILG9jsxa+i8L9NJtO1KFDc57L
+FF5Qi9oKTvZ7sZ7NntQK8hGpq1tp0tQiVtSghvHIYC2Vmyqav2BdpM5gUbmworzbnqR9E3
+Mo7QwoOKK4kAAAAIEA+/6aKaqQ90zrQqcGpQbb6eFpHMNNBG1+4zyYxEJvTk9epXlITKSs
+Jx/iTO91QUrKiD4hRlwiMLB2CTBYaCPD8lWSNBBcktVc6inOtIlsE+SNxcDaoLpYAaloj6
+9jdnjiqD1PDVNAI1KPuHGiLyWWEQ6tDctkLfkwN2g1C4wHTisAAACBAPUbRpQ5qsFZwtj6
+u/DN3sDwZhBoPEIwOUxunq/WlK7n83dxU7VmqP6B8WZdMLA8QL6XZWRs9CqMpjZsBT36jT
+n3epC93IhQSTddjRa0tnfQdAz+SnH82O8S70ySFkOlOZqU5YoLwtIxnM7DkPglUKgCMhC9
+ZeRKvPtruMdBvpK1AAAAH2FiaXJkLWhvc3QtbWFuYWdlciB0ZXN0IGZpeHR1cmUBAgM=
+-----END OPENSSH PRIVATE KEY-----
+";
+    const RSA_PUBLIC_KEY: &str = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDxRYLdqL4EaeXgropvHssdEt7TqlhOLTrTUOGi6fVVx7PvXudP/Ou+pKPojmeNnQ7woFNd/Vy5ptUWVqOzC2JzLnnYuwb2Uh4quV04KHTOX7GWnL28UMpRZKNmOl3NQWimsLQuX/Foi7eRdOH/yZqBW3mQmKjwISNwLtyEBVPS07L06ZcgoenbhTO6gaOFN6R6rX5HfpAnOrQXd3ms6woH73pVHv7KlzRY85HuUmFl4thCjeQVVC9vg/NPJsg3RqOWe+nc9dWGbtoK8OZCVKkHyJQqMi+DXc0d4oMbdur71gSMxMUz2uDg28x070TY8LZY/8A/OftSZNbjirgaqMpn abird-host-manager test fixture";
+    const RSA_FINGERPRINT: &str = "SHA256:3uZzW3pDHgjkmvEG1PXN9BEXT4N1gb0PuiInQzUyxmo";
+
+    /// The `ssh-ed25519` fixture protected with a passphrase, which has no
+    /// non-interactive unlock path.
+    const ENCRYPTED_PRIVATE_KEY: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABDoa+NFG6
+o0CVzqmgpbwF4GAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIIuxkpGM/cX5cQjX
+Crw8JqVPao1X5z+gCP4SFHK+b7tbAAAAsOl4Ha//Cx/t7F4pbfmxMP/Cy2xv3qmmOOQP1Y
+7Mrxy1zymryym3chXpOckZZzafv3SotPSZ5uoXzP2o51qqYukgWQgH+8SZ5rurXv/rYzYE
+WK2RuW0p77MMbXuYMdQ9J6l/aLoeL9Ao9Gu04iS4qs0eKrf7UhZyuXlUVpU2si4lFkdgUt
+yqPpbFFUX2lXWPH9I3zqYt2VnWDScGTitnk6RpLFwc3nSFWiDm1rkzj/Tf
+-----END OPENSSH PRIVATE KEY-----
+";
+
+    #[test]
+    fn bootstrap_public_key_and_fingerprint_are_derived_in_process() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        for (name, private_key, public_key, fingerprint) in [
+            (
+                "ed25519",
+                ED25519_PRIVATE_KEY,
+                ED25519_PUBLIC_KEY,
+                ED25519_FINGERPRINT,
+            ),
+            ("rsa", RSA_PRIVATE_KEY, RSA_PUBLIC_KEY, RSA_FINGERPRINT),
+        ] {
+            let path = directory.path().join(name);
+            std::fs::write(&path, private_key)?;
+            assert_eq!(bootstrap_public_key_line(&path)?, public_key, "{name}");
+            assert_eq!(bootstrap_key_fingerprint(&path)?, fingerprint, "{name}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn encrypted_bootstrap_private_key_has_no_non_interactive_unlock_path() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("bootstrap.key");
+        std::fs::write(&path, ENCRYPTED_PRIVATE_KEY)?;
+        for error in [
+            bootstrap_public_key_line(&path).unwrap_err().to_string(),
+            bootstrap_key_fingerprint(&path).unwrap_err().to_string(),
+        ] {
+            assert!(error.contains("is encrypted"), "{error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nix_ssh_options_are_delivered_as_environment_not_an_env_wrapper() -> anyhow::Result<()> {
+        let endpoint = SshEndpoint::new(
+            "builder",
+            "builder.example",
+            "root",
+            22,
+            TransportRole::Primary,
+            None,
+        )?;
+        let target = HostExecutionTarget {
+            route: SshRoutePlan::direct(endpoint),
+            cwd: PathBuf::from("/repo"),
+            known_hosts_file: None,
+            local: false,
+            ssh_connect_timeout_seconds: 30,
+            ssh_server_alive_interval_seconds: 5,
+            ssh_server_alive_count_max: 3,
+            remote_read_timeout_seconds: 20,
+            control_master: None,
+        };
+        let command = CommandSpec::new(
+            "nix",
+            [
+                "copy".to_owned(),
+                "--to".to_owned(),
+                "ssh-ng://root@builder.example".to_owned(),
+            ],
+        );
+        let expected = command.clone();
+        let (command, environment) = with_nix_sshopts(command, &target)?;
+        // The command must not gain an `env` wrapper; the transport options
+        // travel as a process environment entry instead.
+        assert_eq!(command, expected);
+        assert_eq!(environment.len(), 1);
+        let (name, value) = &environment[0];
+        assert_eq!(name, "NIX_SSHOPTS");
+        assert!(value.contains("-o"), "{value}");
+        assert!(value.contains("BatchMode=yes"), "{value}");
+        assert!(!value.contains("env"), "{value}");
+        Ok(())
+    }
 
     #[test]
     fn health_progress_line_carries_attempt_state_and_raw_detail() {

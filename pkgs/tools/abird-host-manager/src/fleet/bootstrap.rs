@@ -191,68 +191,22 @@ pub enum SshHostKeyPolicy {
     AcceptNew,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ScanAlgorithm {
-    Ed25519,
-    Any,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct KnownHostScan {
-    pub host: String,
-    pub algorithm: ScanAlgorithm,
-    pub only_if_host_still_missing: bool,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KnownHostsPlan {
     pub output_file: PathBuf,
     pub seed: KnownHostsSeed,
     pub mode: FileMode,
     pub host_key_policy: SshHostKeyPolicy,
-    pub scans: Vec<KnownHostScan>,
 }
 
-fn scans_for(host: &str) -> Vec<KnownHostScan> {
-    vec![
-        KnownHostScan {
-            host: host.to_owned(),
-            algorithm: ScanAlgorithm::Ed25519,
-            only_if_host_still_missing: false,
-        },
-        KnownHostScan {
-            host: host.to_owned(),
-            algorithm: ScanAlgorithm::Any,
-            only_if_host_still_missing: true,
-        },
-    ]
-}
-
-/// Plan isolated known_hosts creation and scanning. Proxied connections use
-/// `accept-new`, which still rejects changed keys.
+/// Plan isolated known_hosts creation. Configured inventory material seeds the
+/// file as an authenticated pin; every other route starts empty and trusts on
+/// first use through `accept-new`, which still rejects changed keys.
 pub fn known_hosts_plan(input: &KnownHostsInput) -> KnownHostsPlan {
     let configured = input
         .configured_contents
         .as_deref()
         .is_some_and(|contents| !contents.is_empty());
-    let proxied = !input.proxy_chain.is_empty()
-        || input
-            .proxy_command
-            .as_deref()
-            .is_some_and(|command| !command.is_empty());
-    let scans = if configured {
-        Vec::new()
-    } else if !proxied {
-        scans_for(&input.target_host)
-    } else if let Some(first) = input
-        .proxy_chain
-        .first()
-        .filter(|hop| !hop.has_proxy_command)
-    {
-        scans_for(&first.target)
-    } else {
-        Vec::new()
-    };
 
     KnownHostsPlan {
         output_file: input.output_file.clone(),
@@ -264,12 +218,7 @@ pub fn known_hosts_plan(input: &KnownHostsInput) -> KnownHostsPlan {
             KnownHostsSeed::Empty
         },
         mode: FileMode(0o600),
-        host_key_policy: if proxied {
-            SshHostKeyPolicy::AcceptNew
-        } else {
-            SshHostKeyPolicy::Strict
-        },
-        scans,
+        host_key_policy: SshHostKeyPolicy::AcceptNew,
     }
 }
 

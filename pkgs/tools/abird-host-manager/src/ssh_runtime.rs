@@ -6,15 +6,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use tempfile::{Builder, NamedTempFile, TempDir};
 
 use crate::programs::age::Age;
 
-const DEFAULT_AGE_PROGRAM: &str = match option_env!("ABIRD_HOST_MANAGER_DEFAULT_AGE_PROGRAM") {
-    Some(path) => path,
-    None => "/run/current-system/sw/bin/age",
-};
 const NIXBOT_PRIMARY_IDENTITY: &str = "/var/lib/nixbot/.ssh/id_ed25519";
 const NIXBOT_AGE_IDENTITY: &str = "/var/lib/nixbot/.age/identity";
 
@@ -34,10 +30,7 @@ struct RuntimeState {
 
 impl SshRuntime {
     pub fn from_environment() -> Result<Self> {
-        let age_program = env::var_os("ABIRD_HOST_MANAGER_AGE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_AGE_PROGRAM));
-        Self::new(Age::new(age_program)?, decrypt_identity_candidates()?)
+        Self::new(Age::new(), decrypt_identity_candidates()?)
     }
 
     fn new(age: Age, decrypt_identities: Vec<PathBuf>) -> Result<Self> {
@@ -73,33 +66,21 @@ impl SshRuntime {
             return Ok(identity.path().to_path_buf());
         }
 
-        let mut errors = Vec::new();
-        for decrypt_identity in &self.decrypt_identities {
-            if !decrypt_identity.is_file() {
-                continue;
-            }
-            let output = Builder::new()
-                .prefix("identity-")
-                .tempfile_in(state._directory.path())?;
-            match self.age.decrypt(source, decrypt_identity, output.path()) {
-                Ok(()) => {
-                    fs::set_permissions(output.path(), fs::Permissions::from_mode(0o600))?;
-                    let path = output.path().to_path_buf();
-                    state.identities.insert(source.to_path_buf(), output);
-                    return Ok(path);
-                }
-                Err(error) => errors.push(format!("{}: {error:#}", decrypt_identity.display())),
-            }
-        }
-        bail!(
-            "cannot decrypt SSH identity {}; {}",
-            source.display(),
-            if errors.is_empty() {
-                "no usable age identities were found".to_owned()
-            } else {
-                format!("attempts failed: {}", errors.join("; "))
-            }
-        )
+        let output = Builder::new()
+            .prefix("identity-")
+            .tempfile_in(state._directory.path())?;
+        self.age
+            .decrypt(source, &self.decrypt_identities, output.path())
+            .map_err(|error| {
+                anyhow!(
+                    "cannot decrypt SSH identity {}; {error:#}",
+                    source.display()
+                )
+            })?;
+        fs::set_permissions(output.path(), fs::Permissions::from_mode(0o600))?;
+        let path = output.path().to_path_buf();
+        state.identities.insert(source.to_path_buf(), output);
+        Ok(path)
     }
 
     pub fn materialize_known_hosts(&self, label: &str, contents: &str) -> Result<PathBuf> {
@@ -146,15 +127,18 @@ fn absolute_from_current_dir(path: PathBuf) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use age::secrecy::ExposeSecret;
+
     use super::*;
-    use crate::test_support::write_executable;
 
     #[test]
     fn plain_identity_is_returned_without_materialization() {
         let temp = tempfile::tempdir().unwrap();
         let identity = temp.path().join("identity");
         fs::write(&identity, "private\n").unwrap();
-        let runtime = SshRuntime::new(Age::new("/bin/false").unwrap(), Vec::new()).unwrap();
+        let runtime = SshRuntime::new(Age::new(), Vec::new()).unwrap();
 
         assert_eq!(runtime.resolve_identity(&identity).unwrap(), identity);
     }
@@ -162,13 +146,16 @@ mod tests {
     #[test]
     fn encrypted_identity_is_materialized_once_with_private_permissions() {
         let temp = tempfile::tempdir().unwrap();
-        let age = temp.path().join("age");
-        write_executable(&age, "#!/bin/sh\nset -eu\ncp -- \"$6\" \"$5\"\n").unwrap();
+        let recipient = age::x25519::Identity::generate();
         let decrypt_identity = temp.path().join("decrypt-identity");
-        fs::write(&decrypt_identity, "dummy\n").unwrap();
+        fs::write(&decrypt_identity, recipient.to_string().expose_secret()).unwrap();
         let source = temp.path().join("nixbot.key.age");
-        fs::write(&source, "decrypted-private-key\n").unwrap();
-        let runtime = SshRuntime::new(Age::new(age).unwrap(), vec![decrypt_identity]).unwrap();
+        fs::write(
+            &source,
+            age::encrypt(&recipient.to_public(), b"decrypted-private-key\n").unwrap(),
+        )
+        .unwrap();
+        let runtime = SshRuntime::new(Age::new(), vec![decrypt_identity]).unwrap();
 
         let first = runtime.resolve_identity(&source).unwrap();
         let second = runtime.resolve_identity(&source).unwrap();
@@ -181,6 +168,21 @@ mod tests {
         assert_eq!(
             fs::metadata(first).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+    }
+
+    #[test]
+    fn unreadable_identities_are_named_in_the_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("nixbot.key.age");
+        fs::write(&source, b"not an age file").unwrap();
+        let runtime = SshRuntime::new(Age::new(), Vec::new()).unwrap();
+
+        let error = runtime.resolve_identity(&source).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("no usable age identities were found"),
+            "{message}"
         );
     }
 }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use abird_host_manager::fleet::transport::{
     BuildLocation, CacheEndpoint, CacheFallback, CacheTransferPolicy, DistributionInput,
     DistributionPlan, FailureClass, FailureEvidence, HostKeyPolicy, HostTransport, ProcessStatus,
-    ProxyCommandTemplate, RetryDecision, RetryPolicy, RetryScope, SelfTargetDecision,
+    ProxyCommandTemplate, ProxyPlan, RetryDecision, RetryPolicy, RetryScope, SelfTargetDecision,
     SelfTargetEvidence, SelfTargetMode, SelfTargetRemoteReason, SshEndpoint, SshRoutePlan,
     TransportRole, plan_cache_distribution, plan_proxy_chain, plan_self_target,
 };
@@ -97,28 +97,6 @@ fn proxy_chain_is_outermost_first_and_prefers_operator_endpoints() {
 }
 
 #[test]
-fn proxy_keyscan_requires_a_directly_reachable_first_hop() {
-    let mut direct = host("edge", None, false);
-    let direct_plan = plan_proxy_chain(
-        &BTreeMap::from([("edge".to_owned(), direct.clone())]),
-        Some("edge"),
-    )
-    .unwrap();
-    assert_eq!(
-        direct_plan
-            .directly_scannable_first_hop()
-            .map(|hop| hop.node.as_str()),
-        Some("edge")
-    );
-
-    direct.proxy_command =
-        Some(ProxyCommandTemplate::new("cloudflared access ssh --hostname %h").unwrap());
-    let proxied_plan =
-        plan_proxy_chain(&BTreeMap::from([("edge".to_owned(), direct)]), Some("edge")).unwrap();
-    assert!(proxied_plan.directly_scannable_first_hop().is_none());
-}
-
-#[test]
 fn proxy_chain_rejects_cycles_and_unknown_hops() {
     let cycle = BTreeMap::from([
         ("a".to_owned(), host("a", Some("b"), false)),
@@ -162,7 +140,10 @@ fn ssh_routes_encode_role_address_and_trust_policy() {
     assert_eq!(ipv6.forward_destination(), "[2001:db8::10]:2200");
 
     let direct = SshRoutePlan::direct(primary.clone());
-    assert_eq!(direct.host_key_policy, HostKeyPolicy::Strict);
+    assert_eq!(direct.host_key_policy, HostKeyPolicy::AcceptNew);
+    // An empty proxy chain is still a trust-on-first-use route.
+    let empty_chain = SshRoutePlan::via_chain(primary.clone(), ProxyPlan::default());
+    assert_eq!(empty_chain.host_key_policy, HostKeyPolicy::AcceptNew);
     let proxied = SshRoutePlan::via_chain(
         primary,
         plan_proxy_chain(

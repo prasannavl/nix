@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use abird_host_manager::fleet::forced_command::{ARGUMENT_PREFIX, encode_arguments};
 use abird_host_manager::fleet::maintenance::REQUIRED_PROGRAMS;
+use age::secrecy::ExposeSecret;
 
 #[path = "../src/test_support.rs"]
 mod test_support;
@@ -471,12 +472,18 @@ fn project_tofu_wrapper_materializes_encrypted_environment_and_redacts_output() 
     let temporary = tempfile::tempdir().unwrap();
     let repository = temporary.path().join("repo");
     let tools = temporary.path().join("tools");
+    let home = temporary.path().join("home");
     let project = repository.join("tf/cloudflare-dns");
     let secret_root = repository.join("data/secrets/globals/cloudflare");
     fs::create_dir_all(&project).unwrap();
     fs::create_dir_all(&secret_root).unwrap();
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("flake.nix"), "{}\n").unwrap();
+
+    let recipient = age::x25519::Identity::generate();
+    let identity = home.join(".ssh/id_ed25519");
+    fs::create_dir_all(identity.parent().unwrap()).unwrap();
+    fs::write(&identity, recipient.to_string().expose_secret()).unwrap();
 
     for (name, value) in [
         ("r2-account-id.key.age", "account"),
@@ -485,15 +492,13 @@ fn project_tofu_wrapper_materializes_encrypted_environment_and_redacts_output() 
         ("r2-secret-access-key.key.age", "backend-secret-value"),
         ("api-token.key.age", "provider-token-value"),
     ] {
-        fs::write(secret_root.join(name), format!("{value}\n")).unwrap();
+        fs::write(
+            secret_root.join(name),
+            age::encrypt(&recipient.to_public(), format!("{value}\n").as_bytes()).unwrap(),
+        )
+        .unwrap();
     }
-    let identity = temporary.path().join("identity");
-    fs::write(&identity, "test identity\n").unwrap();
 
-    executable(
-        &tools.join("age"),
-        "#!/bin/sh\nset -eu\nout=\nsource=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -o) shift; out=$1 ;;\n    --decrypt|-i) if [ \"$1\" = -i ]; then shift; fi ;;\n    *) source=$1 ;;\n  esac\n  shift\ndone\nIFS= read -r value < \"$source\"\nprintf '%s\\n' \"$value\" > \"$out\"\n",
-    );
     let argv = temporary.path().join("tofu-argv");
     executable(
         &tools.join("tofu"),
@@ -503,10 +508,23 @@ fn project_tofu_wrapper_materializes_encrypted_environment_and_redacts_output() 
         ),
     );
 
+    // `age` is no longer an external program and its overrides are gone. Point
+    // both the PATH entry and the removed runtime override at a stub that would
+    // record any invocation, proving neither can influence decryption.
+    let age_log = temporary.path().join("age-invocation.log");
+    executable(
+        &tools.join("age"),
+        &format!(
+            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> '{}'\nexit 97\n",
+            age_log.display()
+        ),
+    );
+
     let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
         .args(["tofu", "-chdir=tf/cloudflare-dns", "init"])
         .env("PATH", &tools)
-        .env("AGE_KEY_FILE", &identity)
+        .env("HOME", &home)
+        .env("ABIRD_HOST_MANAGER_AGE", tools.join("age"))
         .current_dir(&repository)
         .output()
         .unwrap();
@@ -526,4 +544,9 @@ fn project_tofu_wrapper_materializes_encrypted_environment_and_redacts_output() 
     let arguments = fs::read_to_string(argv).unwrap();
     assert!(arguments.contains("-chdir=tf/cloudflare-dns init"));
     assert!(arguments.contains("-backend-config=bucket=bucket"));
+    assert!(
+        !age_log.exists(),
+        "the removed age override or PATH stub was invoked: {}",
+        fs::read_to_string(&age_log).unwrap_or_default()
+    );
 }

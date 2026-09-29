@@ -495,8 +495,10 @@ sibling override for one run.
   choices.
 - `config.hostDefaults.bootstrapKey` may point at the key material to install as
   `/var/lib/nixbot/.ssh/id_ed25519`; if unset, nixbot uses the deploy key.
-- `config.hostDefaults.knownHosts = null` means temporary `ssh-keyscan` host
-  pinning.
+- `config.hostDefaults.knownHosts = null` means temporary host-key pinning: the
+  active Bash `nixbot` scans with `ssh-keyscan`, while the Rust
+  `abird-host-manager` trusts on first use (`accept-new`) in a private
+  known-hosts file.
 - `hosts.<name>.ageIdentityKey` can define the host-specific runtime age key
   secret to inject.
 

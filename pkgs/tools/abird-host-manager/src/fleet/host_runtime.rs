@@ -52,6 +52,10 @@ const SYSTEM_ENV: &str = "/run/current-system/sw/bin/env";
 const SYSTEM_SUDO: &str = "/run/wrappers/bin/sudo";
 const REMOTE_RUNTIME_PATH: &str = "/run/wrappers/bin:/run/current-system/sw/bin";
 const UNIX_SOCKET_PATH_LIMIT_BYTES: usize = 108;
+/// Grace between SIGTERM and SIGKILL when a bounded read exceeds its deadline.
+const BOUNDED_READ_KILL_AFTER: Duration = Duration::from_secs(5);
+/// Exit status reported for a bounded read that exceeded its deadline.
+const TIMEOUT_EXIT_CODE: i32 = 124;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DryRun {
@@ -115,6 +119,17 @@ impl ProcessOutput {
 
 pub trait ProcessRunner {
     fn run(&mut self, request: &ProcessRequest) -> io::Result<ProcessOutput>;
+
+    /// Run `request`, terminating it if it does not finish within `timeout`.
+    ///
+    /// Required rather than defaulted so a runner that cannot enforce a
+    /// deadline must decide explicitly instead of silently accepting one.
+    fn run_with_timeout(
+        &mut self,
+        request: &ProcessRequest,
+        timeout: Duration,
+    ) -> io::Result<ProcessOutput>;
+
     fn wait(&mut self, duration: Duration);
 
     fn activation_started(&self) {}
@@ -172,48 +187,32 @@ pub trait ProcessCancellation: Send + Sync {
 #[derive(Default)]
 pub struct SystemProcessRunner;
 
+impl SystemProcessRunner {
+    fn run_with_deadline(
+        &self,
+        request: &ProcessRequest,
+        timeout: Option<Duration>,
+    ) -> io::Result<ProcessOutput> {
+        let sink = ProcessSink {
+            name: request.task.name().to_owned(),
+            task: Arc::clone(&request.task),
+            recorder: None,
+        };
+        run_process(request, sink, None, timeout)
+    }
+}
+
 impl ProcessRunner for SystemProcessRunner {
     fn run(&mut self, request: &ProcessRequest) -> io::Result<ProcessOutput> {
-        let mut command = Command::new(&request.program);
-        command
-            .args(&request.args)
-            .current_dir(&request.cwd)
-            .stdin(if request.stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for (name, value) in &request.environment {
-            command.env(name, value);
-        }
-        if request.clear_git_repository_environment {
-            clear_git_repository_environment(&mut command);
-        }
-        let mut child = command.spawn()?;
-        if let (Some(input), Some(mut stdin)) = (&request.stdin, child.stdin.take()) {
-            stdin.write_all(input.as_bytes())?;
-        }
-        let output = child.wait_with_output()?;
-        #[cfg(unix)]
-        let status = {
-            use std::os::unix::process::ExitStatusExt as _;
-            output
-                .status
-                .code()
-                .map(ProcessStatus::Code)
-                .or_else(|| output.status.signal().map(ProcessStatus::Signal))
-                .unwrap_or(ProcessStatus::Code(1))
-        };
-        #[cfg(not(unix))]
-        let status = ProcessStatus::Code(output.status.code().unwrap_or(1));
-        Ok(ProcessOutput {
-            status,
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            skipped: false,
-        })
+        self.run_with_deadline(request, None)
+    }
+
+    fn run_with_timeout(
+        &mut self,
+        request: &ProcessRequest,
+        timeout: Duration,
+    ) -> io::Result<ProcessOutput> {
+        self.run_with_deadline(request, Some(timeout))
     }
 
     fn wait(&mut self, duration: Duration) {
@@ -240,8 +239,12 @@ impl ProcessExecutor {
     }
 }
 
-impl ProcessRunner for ProcessExecutor {
-    fn run(&mut self, request: &ProcessRequest) -> io::Result<ProcessOutput> {
+impl ProcessExecutor {
+    fn run_inner(
+        &mut self,
+        request: &ProcessRequest,
+        timeout: Option<Duration>,
+    ) -> io::Result<ProcessOutput> {
         let started = Instant::now();
         let name = request.task.name().to_owned();
         if let Some(recorder) = &self.recorder {
@@ -252,7 +255,7 @@ impl ProcessRunner for ProcessExecutor {
             task: Arc::clone(&request.task),
             recorder: self.recorder.clone(),
         };
-        let result = run_process(request, sink, self.cancellation.as_deref());
+        let result = run_process(request, sink, self.cancellation.as_deref(), timeout);
         let completion = if result.as_ref().is_ok_and(ProcessOutput::succeeded) {
             ProcessCompletion::Succeeded
         } else if self
@@ -271,6 +274,20 @@ impl ProcessRunner for ProcessExecutor {
             recorder.finished(&name, started.elapsed(), completion);
         }
         result
+    }
+}
+
+impl ProcessRunner for ProcessExecutor {
+    fn run(&mut self, request: &ProcessRequest) -> io::Result<ProcessOutput> {
+        self.run_inner(request, None)
+    }
+
+    fn run_with_timeout(
+        &mut self,
+        request: &ProcessRequest,
+        timeout: Duration,
+    ) -> io::Result<ProcessOutput> {
+        self.run_inner(request, Some(timeout))
     }
 
     fn wait(&mut self, duration: Duration) {
@@ -314,6 +331,7 @@ fn run_process(
     request: &ProcessRequest,
     sink: ProcessSink,
     cancellation: Option<&dyn ProcessCancellation>,
+    timeout: Option<Duration>,
 ) -> io::Result<ProcessOutput> {
     let started = Instant::now();
     let mut command = Command::new(&request.program);
@@ -373,6 +391,14 @@ fn run_process(
     });
     let heartbeat_interval = sink.task.heartbeat_interval();
     let mut next_heartbeat = heartbeat_interval;
+    #[cfg(unix)]
+    let deadline = timeout.map(|timeout| started + timeout);
+    #[cfg(unix)]
+    let mut timed_out = false;
+    #[cfg(unix)]
+    let mut kill_deadline: Option<Instant> = None;
+    #[cfg(not(unix))]
+    let _ = timeout;
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -380,6 +406,16 @@ fn run_process(
         if cancellation.is_some_and(ProcessCancellation::cancel_local) {
             terminate_process_group(&mut child)?;
             break child.wait()?;
+        }
+        #[cfg(unix)]
+        if let Some(deadline) = deadline {
+            if kill_deadline.is_none() && Instant::now() >= deadline {
+                timed_out = true;
+                signal_process_group(&child, libc::SIGTERM)?;
+                kill_deadline = Some(Instant::now() + BOUNDED_READ_KILL_AFTER);
+            } else if kill_deadline.is_some_and(|kill_at| Instant::now() >= kill_at) {
+                signal_process_group(&child, libc::SIGKILL)?;
+            }
         }
         if next_heartbeat.is_some_and(|next| started.elapsed() >= next) {
             sink.task.heartbeat(started.elapsed());
@@ -399,7 +435,9 @@ fn run_process(
         .join()
         .map_err(|_| io::Error::other("stderr observer thread panicked"))??;
     #[cfg(unix)]
-    let status = {
+    let status = if timed_out {
+        ProcessStatus::Code(TIMEOUT_EXIT_CODE)
+    } else {
         use std::os::unix::process::ExitStatusExt as _;
         status
             .code()
@@ -417,18 +455,25 @@ fn run_process(
     })
 }
 
+/// Signal the process group created for `child` without reaping it.
 #[cfg(unix)]
-fn terminate_process_group(child: &mut std::process::Child) -> io::Result<()> {
+fn signal_process_group(child: &std::process::Child, signal: i32) -> io::Result<()> {
     let process_group = -(child.id() as i32);
-    // SAFETY: the child was placed in a process group whose id is its pid.
-    // Negative pid targets that group and does not affect the manager itself.
-    let result = unsafe { libc::kill(process_group, libc::SIGTERM) };
+    // SAFETY: the child is placed in a process group whose id is its pid at
+    // spawn, so a negative pid targets that group and never the manager.
+    let result = unsafe { libc::kill(process_group, signal) };
     if result != 0 {
         let error = io::Error::last_os_error();
         if error.raw_os_error() != Some(libc::ESRCH) {
             return Err(error);
         }
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn terminate_process_group(child: &mut std::process::Child) -> io::Result<()> {
+    signal_process_group(child, libc::SIGTERM)?;
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(2) {
         if child.try_wait()?.is_some() {
@@ -436,15 +481,7 @@ fn terminate_process_group(child: &mut std::process::Child) -> io::Result<()> {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    // SAFETY: same validated process-group target as above. SIGKILL is only
-    // used after the bounded TERM grace has expired.
-    let result = unsafe { libc::kill(process_group, libc::SIGKILL) };
-    if result != 0 {
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ESRCH) {
-            return Err(error);
-        }
-    }
+    signal_process_group(child, libc::SIGKILL)?;
     Ok(())
 }
 
@@ -1136,12 +1173,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
     }
 
     fn run(&mut self, request: ProcessRequest) -> Result<ProcessOutput> {
-        if self.dry_run == DryRun::Yes && request.effect == EffectKind::Mutation {
-            return Ok(ProcessOutput::dry_run());
-        }
-        self.runner
-            .run(&request)
-            .with_context(|| format!("failed to execute {}", request.task.name()))
+        self.dispatch(request, None)
     }
 
     fn run_bounded_read(
@@ -1152,34 +1184,23 @@ impl<R: ProcessRunner> HostRuntime<R> {
         if timeout_seconds == 0 {
             bail!("bounded read timeout must be positive");
         }
-        let ProcessRequest {
-            program,
-            args,
-            environment,
-            clear_git_repository_environment,
-            cwd,
-            stdin,
-            effect,
-            task,
-        } = request;
-        let mut timeout_args = vec![
-            "--foreground".to_owned(),
-            "--signal=TERM".to_owned(),
-            "--kill-after=5s".to_owned(),
-            format!("{timeout_seconds}s"),
-            program,
-        ];
-        timeout_args.extend(args);
-        self.run(ProcessRequest {
-            program: "timeout".to_owned(),
-            args: timeout_args,
-            environment,
-            clear_git_repository_environment,
-            cwd,
-            stdin,
-            effect,
-            task,
-        })
+        self.dispatch(request, Some(Duration::from_secs(timeout_seconds)))
+    }
+
+    /// Apply the dry-run rule once, then run with an optional deadline.
+    fn dispatch(
+        &mut self,
+        request: ProcessRequest,
+        timeout: Option<Duration>,
+    ) -> Result<ProcessOutput> {
+        if self.dry_run == DryRun::Yes && request.effect == EffectKind::Mutation {
+            return Ok(ProcessOutput::dry_run());
+        }
+        let result = match timeout {
+            Some(timeout) => self.runner.run_with_timeout(&request, timeout),
+            None => self.runner.run(&request),
+        };
+        result.with_context(|| format!("failed to execute {}", request.task.name()))
     }
 
     fn local_request(
@@ -1362,6 +1383,21 @@ impl<R: ProcessRunner> HostRuntime<R> {
         task: Arc<dyn Task>,
     ) -> Result<ProcessOutput> {
         let request = self.local_request(command, effect, task);
+        self.run(request)
+    }
+
+    /// Run a command locally with an explicit environment, used where a program
+    /// relies on an environment variable rather than a wrapper process (for
+    /// example `NIX_SSHOPTS` for `nix copy`).
+    pub fn execute_local_command_with_env(
+        &mut self,
+        command: &CommandSpec,
+        environment: &[(String, String)],
+        effect: EffectKind,
+        task: Arc<dyn Task>,
+    ) -> Result<ProcessOutput> {
+        let mut request = self.local_request(command, effect, task);
+        request.environment = environment.to_vec();
         self.run(request)
     }
 
@@ -2287,4 +2323,72 @@ fn uri_authority_component(value: &str) -> Result<&str> {
         bail!("SSH store URI authority contains unsafe characters");
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod bounded_read_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn bounded_read_kills_a_child_that_exceeds_its_deadline() {
+        let mut executor = ProcessExecutor::new(None);
+        let request = ProcessRequest {
+            // A self-contained busy loop needs no external tool and would run
+            // forever without an enforced deadline.
+            program: "/bin/sh".to_owned(),
+            args: vec!["-c".to_owned(), "while :; do :; done".to_owned()],
+            environment: Vec::new(),
+            clear_git_repository_environment: false,
+            cwd: std::env::current_dir().unwrap(),
+            stdin: None,
+            effect: EffectKind::ReadOnly,
+            task: InternalTask::new("bounded-read-timeout-probe"),
+        };
+        let started = Instant::now();
+        let output = executor
+            .run_with_timeout(&request, Duration::from_millis(250))
+            .unwrap();
+        assert_eq!(output.status, ProcessStatus::Code(TIMEOUT_EXIT_CODE));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "deadline was not enforced promptly: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn bounded_read_escalates_to_sigkill_when_the_child_ignores_term() {
+        let mut executor = ProcessExecutor::new(None);
+        let request = ProcessRequest {
+            // The child ignores SIGTERM, so only the SIGKILL escalation can end
+            // it; this proves the grace period does not leave a runaway process.
+            program: "/bin/sh".to_owned(),
+            args: vec![
+                "-c".to_owned(),
+                "trap '' TERM; while :; do :; done".to_owned(),
+            ],
+            environment: Vec::new(),
+            clear_git_repository_environment: false,
+            cwd: std::env::current_dir().unwrap(),
+            stdin: None,
+            effect: EffectKind::ReadOnly,
+            task: InternalTask::new("bounded-read-kill-escalation-probe"),
+        };
+        let started = Instant::now();
+        let output = executor
+            .run_with_timeout(&request, Duration::from_millis(100))
+            .unwrap();
+        assert_eq!(output.status, ProcessStatus::Code(TIMEOUT_EXIT_CODE));
+        assert!(
+            started.elapsed() >= BOUNDED_READ_KILL_AFTER,
+            "child ignored SIGTERM for less than the grace period: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            started.elapsed() < BOUNDED_READ_KILL_AFTER + Duration::from_secs(5),
+            "SIGKILL escalation did not terminate the child: {:?}",
+            started.elapsed()
+        );
+    }
 }

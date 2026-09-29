@@ -791,6 +791,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/abird-host-manager-task-steps-2026-09.md`: Records
   the typed task/step contract for fleet progress, per-operation step ownership,
   value-derived step outcomes, and first-class interruption.
+- `.agents/docs/notes/tooling/abird-host-manager-age-armor-2026-09.md`: Records
+  the ported fix enabling age `armor` plus `ArmoredReader` in the in-binary
+  decryptor; `Header is invalid` can mean armored ciphertext rather than a bad
+  identity.
 - `.agents/docs/notes/tooling/native-host-control-plane-2026-08.md`: Records the
   native Rust manager/agent ownership split, retired compatibility surfaces,
   durable hold boundary, lifecycle/retry/admission follow-ups, and narrow Pvl
@@ -912,6 +916,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   dependency base, artifacts-only member layers, in-repo dependency wiring,
   multi-parent join helper, optional feature normalization, risks, and
   validation.
+- `.agents/docs/plans/host-manager-fleet-dependency-reduction-2026-09.md`:
+  Design plan to shrink the `abird-host-manager` fleet runtime dependency
+  surface (Tier 0 metadata cleanup, Tier 1 libc in-binary helpers, Tier 2 `age`
+  crate/native `ssh-keygen`/`ssh-keyscan` removal via `accept-new`/target `jq`
+  removal) with Tier 3 kept wrapped and the bootstrap safety boundary preserved.
 
 ## Playbooks
 

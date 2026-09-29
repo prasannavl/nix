@@ -167,13 +167,6 @@ impl ProxyPlan {
     pub fn is_empty(&self) -> bool {
         self.hops.is_empty()
     }
-
-    /// Return the first hop only when it is directly reachable for keyscan.
-    /// A hop with its own ProxyCommand must establish trust on first SSH
-    /// contact because `ssh-keyscan` cannot use that transport.
-    pub fn directly_scannable_first_hop(&self) -> Option<&ProxyHop> {
-        self.hops.first().filter(|hop| hop.proxy_command.is_none())
-    }
 }
 
 pub fn plan_proxy_chain(
@@ -237,26 +230,24 @@ pub struct SshRoutePlan {
 }
 
 impl SshRoutePlan {
+    /// Direct routes trust on first use: the isolated known-hosts file starts
+    /// empty unless inventory configured an authenticated pin, and
+    /// `accept-new` still rejects a changed key.
     pub fn direct(endpoint: SshEndpoint) -> Self {
         Self {
             endpoint,
             proxy: ProxyPlan::default(),
             proxy_command: None,
-            host_key_policy: HostKeyPolicy::Strict,
+            host_key_policy: HostKeyPolicy::AcceptNew,
         }
     }
 
     pub fn via_chain(endpoint: SshEndpoint, proxy: ProxyPlan) -> Self {
-        let host_key_policy = if proxy.is_empty() {
-            HostKeyPolicy::Strict
-        } else {
-            HostKeyPolicy::AcceptNew
-        };
         Self {
             endpoint,
             proxy,
             proxy_command: None,
-            host_key_policy,
+            host_key_policy: HostKeyPolicy::AcceptNew,
         }
     }
 
