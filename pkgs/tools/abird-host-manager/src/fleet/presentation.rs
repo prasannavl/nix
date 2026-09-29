@@ -57,7 +57,6 @@ impl WorkflowResult {
 #[derive(Clone, Debug)]
 pub struct FleetProgress {
     reporter: ProgressReporter,
-    verbose: Arc<AtomicBool>,
     prefix_process_logs: bool,
     github_actions: bool,
     diagnostics: Option<Arc<DiagnosticSink>>,
@@ -76,9 +75,15 @@ impl FleetProgress {
         } else {
             command_reporter().clone().with_recent_updates(10)
         };
+        // One command owns one verbose history, so a process that runs more than
+        // one command never inherits the previous run's ring or errors view.
+        reporter.reset_verbose_history();
+        // The reporter owns the open/closed state, so every producer has one
+        // source of truth: the key reader flips it, and `--verbose`/`--build-logs`
+        // open it up front without redrawing.
+        reporter.set_verbose_open(options.verbose || options.build_logs);
         Self {
             reporter,
-            verbose: super::interactive::verbose_handle(options.verbose || options.build_logs),
             prefix_process_logs: options.prefix_host_logs,
             github_actions,
             diagnostics: None,
@@ -369,13 +374,14 @@ impl FleetProgress {
     }
 
     pub fn log_block(&self, subject: &str, output: &str) {
-        if !self.verbose.load(Ordering::Relaxed) {
-            return;
-        }
         for line in output.lines() {
-            self.reporter.verbose_line(
-                verbose_line_tone(line),
-                format_process_line(subject, None, line, self.prefix_process_logs),
+            report_verbose_line(
+                &self.reporter,
+                subject,
+                None,
+                line,
+                self.prefix_process_logs,
+                true,
             );
         }
     }
@@ -394,7 +400,6 @@ impl FleetProgress {
         Arc::new(HostScope {
             reporter: self.reporter.clone(),
             target,
-            verbose: Arc::clone(&self.verbose),
             prefix: self.prefix_process_logs,
             build_heartbeat: self.build_heartbeat,
             activation_heartbeat: self.activation_heartbeat,
@@ -427,7 +432,6 @@ enum TaskTarget {
 pub struct HostScope {
     reporter: ProgressReporter,
     target: TaskTarget,
-    verbose: Arc<AtomicBool>,
     prefix: bool,
     build_heartbeat: Option<Duration>,
     activation_heartbeat: Option<Duration>,
@@ -455,7 +459,6 @@ impl TaskScope for HostScope {
             reporter: self.reporter.clone(),
             target: self.target.clone(),
             heartbeat,
-            verbose: Arc::clone(&self.verbose),
             prefix: self.prefix,
             name: spec.name,
             running: spec.running,
@@ -472,7 +475,6 @@ pub struct ProgressTask {
     reporter: ProgressReporter,
     target: TaskTarget,
     heartbeat: Option<Duration>,
-    verbose: Arc<AtomicBool>,
     prefix: bool,
     name: String,
     running: String,
@@ -541,26 +543,17 @@ impl Task for ProgressTask {
     }
 
     fn output(&self, stream: ProcessStream, chunk: &str) {
+        let policy = self.output_policy();
         for line in chunk.lines() {
-            let tone = verbose_line_tone(line);
-            let (dashboard_line, verbose_line) = format_process_line_views(
-                self.output_policy(),
-                stream,
+            report_verbose_line(
+                &self.reporter,
+                &self.verbose_subject(),
+                Some(stream),
                 line,
-                self.verbose.load(Ordering::Relaxed),
+                self.prefix,
+                verbose_line_eligible(policy, line),
             );
-            if let Some(verbose_line) = verbose_line {
-                self.reporter.verbose_line(
-                    tone,
-                    format_process_line(
-                        &self.verbose_subject(),
-                        Some(stream),
-                        &verbose_line,
-                        self.prefix,
-                    ),
-                );
-            }
-            if let Some(dashboard_line) = dashboard_line {
+            if let Some(dashboard_line) = format_process_dashboard_line(policy, stream, line) {
                 self.publish_line(dashboard_line);
             }
         }
@@ -974,19 +967,10 @@ fn format_health_progress_detail(detail: &str) -> Option<String> {
     Some("detail available; see diagnostics".to_owned())
 }
 
-fn format_process_line_views(
-    policy: OutputPolicy,
-    stream: ProcessStream,
-    line: &str,
-    verbose: bool,
-) -> (Option<String>, Option<String>) {
-    let protocol = policy == OutputPolicy::Activation && activation_protocol_line(line);
-    (
-        format_process_dashboard_line(policy, stream, line),
-        (verbose && !protocol)
-            .then(|| format_verbose_line(line))
-            .flatten(),
-    )
+/// Whether a streamed line may reach the verbose stream. Activation result
+/// frames are structured protocol, not human output, so they are excluded.
+fn verbose_line_eligible(policy: OutputPolicy, line: &str) -> bool {
+    policy != OutputPolicy::Activation || !activation_protocol_line(line)
 }
 
 fn format_activation_dashboard_line(line: &str, _stream: ProcessStream) -> Option<String> {
@@ -1553,6 +1537,53 @@ pub fn format_process_line(
     format!("  │ [{subject} {stream}] {line}")
 }
 
+/// Classify, sanitize, and attribute one streamed line for the verbose section,
+/// or `None` when nothing survives sanitizing. Tone is read from the raw line,
+/// so a secret-bearing error line still classifies as a failure even though its
+/// body is replaced by the redaction marker.
+fn verbose_stream_line(
+    subject: &str,
+    stream: Option<ProcessStream>,
+    line: &str,
+    prefix: bool,
+) -> Option<(Tone, String)> {
+    let tone = verbose_line_tone(line);
+    let line = format_verbose_line(line)?;
+    Some((tone, format_process_line(subject, stream, &line, prefix)))
+}
+
+/// Feed one streamed output line into the verbose section. The reporter decides
+/// whether to show it live while the section is open or retain it for the errors
+/// view while it is closed, so every producer — native child processes and
+/// host-agent jobs alike — routes lines through this one entry point.
+///
+/// `eligible` lets a producer suppress lines that must never reach the verbose
+/// stream, such as activation protocol frames.
+pub fn report_verbose_line(
+    reporter: &ProgressReporter,
+    subject: &str,
+    stream: Option<ProcessStream>,
+    line: &str,
+    prefix: bool,
+    eligible: bool,
+) {
+    if !eligible {
+        return;
+    }
+    let showing = reporter.verbose_showing();
+    if !showing && !reporter.retains_verbose_history() {
+        return;
+    }
+    let Some((tone, formatted)) = verbose_stream_line(subject, stream, line, prefix) else {
+        return;
+    };
+    if showing {
+        reporter.verbose_line(tone, formatted);
+    } else {
+        reporter.retain_verbose_line(tone, formatted);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1597,7 +1628,6 @@ mod tests {
             reporter: command_reporter().clone(),
             target,
             heartbeat: None,
-            verbose: Arc::new(AtomicBool::new(false)),
             prefix: false,
             name: "build".to_owned(),
             running: running.to_owned(),
@@ -1739,22 +1769,28 @@ mod tests {
     #[test]
     fn verbose_output_is_independent_from_dashboard_admission() {
         assert_eq!(
-            format_process_line_views(
-                OutputPolicy::Curated,
-                ProcessStream::Stdout,
+            verbose_stream_line(
+                "host",
+                Some(ProcessStream::Stdout),
                 "ordinary child output",
                 true,
             ),
-            (None, Some("ordinary child output".to_owned()))
+            Some((
+                Tone::Neutral,
+                "  │ [host out] ordinary child output".to_owned()
+            ))
         );
         assert_eq!(
-            format_process_line_views(
-                OutputPolicy::Curated,
-                ProcessStream::Stderr,
+            verbose_stream_line(
+                "host",
+                Some(ProcessStream::Stderr),
                 "OPENAI_API_KEY=secret",
                 true,
             ),
-            (None, Some("[sensitive output redacted]".to_owned()))
+            Some((
+                Tone::Neutral,
+                "  │ [host err] [sensitive output redacted]".to_owned()
+            ))
         );
         assert_eq!(
             format_process_dashboard_line(
@@ -1772,6 +1808,21 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn a_redacted_error_line_is_still_classified_as_a_failure() {
+        // The errors view keeps a secret-bearing failure even though its body is
+        // replaced, so tone must come from the raw line before redaction.
+        let (tone, text) = verbose_stream_line(
+            "host",
+            Some(ProcessStream::Stderr),
+            "error: token=sk-live-value",
+            false,
+        )
+        .expect("a redacted line still renders");
+        assert_eq!(tone, Tone::Failure);
+        assert_eq!(text, "  │ [sensitive output redacted]");
     }
 
     #[test]
@@ -1801,14 +1852,8 @@ mod tests {
                 None,
                 "{marker}"
             );
-            assert_eq!(
-                format_process_line_views(
-                    OutputPolicy::Activation,
-                    ProcessStream::Stderr,
-                    marker,
-                    true,
-                ),
-                (None, None),
+            assert!(
+                !verbose_line_eligible(OutputPolicy::Activation, marker),
                 "{marker}"
             );
         }
@@ -1943,6 +1988,38 @@ mod tests {
         assert_eq!(
             github_command_value("failed 100%\r\nsecond line"),
             "failed 100%25%0D%0Asecond line"
+        );
+    }
+
+    #[test]
+    fn verbose_options_open_the_section_when_the_command_starts() {
+        // `from_options` owns the initial open state, so dropping that call would
+        // silently leave `--verbose`/`--build-logs` rendering nothing until the
+        // reader toggled it.
+        let verbose = FleetProgress::from_options(&Options {
+            verbose: true,
+            ..Options::default()
+        });
+        assert!(
+            verbose.reporter.verbose_showing(),
+            "--verbose opens the section"
+        );
+
+        let build_logs = FleetProgress::from_options(&Options {
+            build_logs: true,
+            ..Options::default()
+        });
+        assert!(
+            build_logs.reporter.verbose_showing(),
+            "--build-logs opens the section"
+        );
+
+        // A plain run starts closed, and leaves the shared reporter closed for
+        // the tests that follow.
+        let quiet = FleetProgress::from_options(&Options::default());
+        assert!(
+            !quiet.reporter.verbose_showing(),
+            "a plain run starts closed"
         );
     }
 

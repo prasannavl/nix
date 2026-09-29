@@ -1,25 +1,25 @@
-//! Interactive keyboard controls for native fleet runs.
+//! Interactive keyboard controls for fleet runs.
 //!
 //! Fleet operations are long and dashboard-driven, so the `v` key toggles a
 //! full verbose stream of sanitized subprocess output while a run is in
-//! flight. The verbose state is shared process-wide so nested build workers
-//! observe one toggle, and the terminal mode is restored when the owning guard
-//! drops.
+//! flight. One reader serves every producer — a native fleet run and an
+//! agent-driven deploy alike — and the verbose state lives in the shared
+//! progress state, so they all observe one toggle. The reader owns the terminal
+//! only while some producer holds it, so a later command phase can re-acquire
+//! it.
 
 use std::io::{self, IsTerminal};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::{Duration, Instant};
 
-use crate::progress::command_reporter;
+use crate::progress::{VerboseView, command_reporter};
 use crate::terminal_mode;
 
-/// Shared verbose state. Published only when an interactive reader owns the
-/// terminal, so non-interactive and test runs keep private per-view state.
-static VERBOSE: OnceLock<Arc<AtomicBool>> = OnceLock::new();
-/// One reader owns stdin for the process lifetime; later installs observe the
-/// published state without touching the terminal.
-static READER_INSTALLED: AtomicBool = AtomicBool::new(false);
+/// The live reader, or a dead handle once the last owner dropped it. Exactly one
+/// reader owns stdin at a time; further acquisitions share it, and the last drop
+/// restores the terminal so ownership can be re-acquired later in the process.
+static READER: OnceLock<Mutex<Weak<InteractiveVerbose>>> = OnceLock::new();
 /// Whether an interactive reader currently owns stdin for the `v` toggle, so
 /// the dashboard only advertises keys it can actually read.
 static KEYS_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -27,18 +27,35 @@ static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 /// Keyboard poll granularity: responsive without busy-spinning the terminal.
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// The escape byte a terminal sends before the key of an `alt+` shortcut.
+const ESCAPE: u8 = 0x1b;
+/// How long an `alt+` prefix stays open. Long enough to span one reader poll, so
+/// a pair the terminal splits across two reads still pairs up, and short enough
+/// that a lone Escape does not swallow a deliberate key press.
+const ALT_PREFIX_WINDOW: Duration = Duration::from_millis(50);
 
 /// Owns the terminal mode and reader thread. Dropping it asks the reader to
-/// stop and restores the terminal attributes captured at install time.
+/// stop, waits for it to leave stdin, and restores the terminal attributes
+/// captured at install time.
 pub struct InteractiveVerbose {
     original: libc::termios,
     stop: Arc<AtomicBool>,
+    /// `Some` until the guard drops, which is the only time it is taken: joining
+    /// consumes the handle.
+    reader: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for InteractiveVerbose {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         KEYS_ACTIVE.store(false, Ordering::Release);
+        // Wait for the reader to leave stdin before giving the terminal back, so
+        // a key pressed just as the run ends cannot be consumed by a reader that
+        // no longer owns the terminal. Reads cannot block while raw mode is
+        // installed, so the wait is bounded by one poll interval.
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
         terminal_mode::restore(&self.original);
     }
 }
@@ -48,56 +65,151 @@ pub fn keys_available() -> bool {
     KEYS_ACTIVE.load(Ordering::Acquire)
 }
 
-/// Verbose state a fleet view should observe. When no interactive reader is
-/// installed each caller receives a private handle initialized to `initial`,
-/// keeping tests and non-interactive runs independent.
-pub fn verbose_handle(initial: bool) -> Arc<AtomicBool> {
-    match VERBOSE.get() {
-        Some(state) => Arc::clone(state),
-        None => Arc::new(AtomicBool::new(initial)),
-    }
-}
-
-/// Capture the `v` key on an interactive terminal and publish the shared
-/// verbose state. Returns `None` when there is no terminal to read, when a
-/// reader already owns stdin, or when machine output is requested.
-pub fn install(initial_verbose: bool) -> Option<InteractiveVerbose> {
+/// Acquire the `v` key reader on an interactive terminal. Returns `None` when
+/// there is no terminal to read or when machine output is requested; when a
+/// reader already owns the terminal this hands back a handle to that same
+/// reader rather than installing a second one. Every owner shares one reader, so
+/// a command that runs several phases keeps a single terminal owner, and the
+/// reader can be re-acquired after the last owner drops.
+pub fn install() -> Option<Arc<InteractiveVerbose>> {
     let _guard = INSTALL_LOCK.lock().ok()?;
-    if READER_INSTALLED.swap(true, Ordering::AcqRel) {
-        return None;
+    let slot = READER.get_or_init(|| Mutex::new(Weak::new()));
+    let mut current = slot.lock().ok()?;
+    if let Some(live) = current.upgrade() {
+        return Some(live);
     }
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() || !command_reporter().enabled() {
         return None;
     }
     let original = terminal_mode::enter_raw_mode()?;
-    let verbose = Arc::clone(VERBOSE.get_or_init(|| Arc::new(AtomicBool::new(initial_verbose))));
     let stop = Arc::new(AtomicBool::new(false));
-    spawn_reader(verbose, Arc::clone(&stop));
+    let reader = match spawn_reader(Arc::clone(&stop)) {
+        Ok(reader) => reader,
+        Err(_) => {
+            // Nothing will read the keys, so hand the terminal straight back
+            // instead of advertising keys no reader can serve.
+            terminal_mode::restore(&original);
+            return None;
+        }
+    };
     KEYS_ACTIVE.store(true, Ordering::Release);
-    Some(InteractiveVerbose { original, stop })
+    let ownership = Arc::new(InteractiveVerbose {
+        original,
+        stop,
+        reader: Some(reader),
+    });
+    *current = Arc::downgrade(&ownership);
+    Some(ownership)
 }
 
-fn spawn_reader(verbose: Arc<AtomicBool>, stop: Arc<AtomicBool>) {
-    let _ = std::thread::Builder::new()
+/// One recognised verbose key from stdin.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VerboseKey {
+    /// `v`/`V`: show or hide the log section.
+    Toggle,
+    /// `ctrl-r`/`ctrl-e`: switch the section to a view, opening it if hidden.
+    View(VerboseView),
+    /// `ctrl-j`/`ctrl-k`: scroll by single lines, positive toward older output.
+    Lines(isize),
+    /// `ctrl-h`/`ctrl-l`: scroll by half-viewport pages, positive toward older.
+    Pages(isize),
+}
+
+/// Every verbose key recognised in one read of stdin, folded into one action.
+/// Repeats collapse, so holding a key reads as one steady move instead of one
+/// step per byte, and a key held across a redraw cannot flicker the section.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct VerboseInput {
+    toggle: bool,
+    view: Option<VerboseView>,
+    lines: isize,
+    pages: isize,
+}
+
+impl VerboseInput {
+    fn is_empty(&self) -> bool {
+        !self.toggle && self.view.is_none() && self.lines == 0 && self.pages == 0
+    }
+
+    /// Fold one recognised key in: scroll deltas accumulate, the last view key
+    /// in the burst wins, and `v` collapses to a single toggle.
+    fn record(&mut self, key: VerboseKey) {
+        match key {
+            VerboseKey::Toggle => self.toggle = true,
+            VerboseKey::View(view) => self.view = Some(view),
+            VerboseKey::Lines(delta) => self.lines = self.lines.saturating_add(delta),
+            VerboseKey::Pages(delta) => self.pages = self.pages.saturating_add(delta),
+        }
+    }
+}
+
+/// Tracks an `alt+` prefix. Terminals send `alt+key` as an escape byte followed
+/// by the key, so a byte is an `alt+` key only while a prefix is still open.
+#[derive(Clone, Copy, Debug, Default)]
+struct AltPrefix {
+    started_at: Option<Instant>,
+}
+
+impl AltPrefix {
+    /// Fold one stdin byte into `input`, reading it as the key of an `alt+`
+    /// shortcut while a fresh escape prefix is open.
+    fn feed(&mut self, byte: u8, at: Instant, input: &mut VerboseInput) {
+        let prefixed = self
+            .started_at
+            .take()
+            .is_some_and(|started| at.duration_since(started) <= ALT_PREFIX_WINDOW);
+        if prefixed {
+            if let Some(key) = alt_verbose_key(byte) {
+                input.record(key);
+            }
+            return;
+        }
+        if byte == ESCAPE {
+            self.started_at = Some(at);
+        } else if let Some(key) = verbose_key(byte) {
+            input.record(key);
+        }
+    }
+}
+
+/// Spawn the reader thread, reporting failure so the caller can give the
+/// terminal back when nothing will read it.
+fn spawn_reader(stop: Arc<AtomicBool>) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
         .name("fleet-verbose-toggle".to_owned())
         .spawn(move || {
+            let mut alt = AltPrefix::default();
             while !stop.load(Ordering::Acquire) {
                 if !stdin_ready() {
                     std::thread::sleep(POLL_INTERVAL);
                     continue;
                 }
-                if drain_verbose_key() {
-                    // The footer names the next press (`verbose on`/`verbose
-                    // off`), so redraw immediately for visible feedback.
-                    let was_enabled = verbose.fetch_xor(true, Ordering::AcqRel);
-                    if was_enabled {
-                        command_reporter().clear_verbose_output();
-                    } else {
-                        command_reporter().show_verbose_output();
-                    }
+                let input = drain_verbose_keys(&mut alt);
+                if input.is_empty() {
+                    // Nothing recognised: back off rather than spinning on a
+                    // descriptor that stays readable without yielding keys.
+                    std::thread::sleep(POLL_INTERVAL);
+                    continue;
+                }
+                let reporter = command_reporter();
+                if input.toggle {
+                    // Redraw immediately so the `Logs` header appears or
+                    // disappears on the key press.
+                    reporter.toggle_verbose_output();
+                }
+                if let Some(view) = input.view {
+                    // A view key also opens the section, so `ctrl-e` on a
+                    // running deploy jumps straight to the retained errors.
+                    reporter.set_verbose_view(view);
+                }
+                if input.lines != 0 {
+                    reporter.scroll_verbose_lines(input.lines);
+                }
+                if input.pages != 0 {
+                    reporter.scroll_verbose_pages(input.pages);
                 }
             }
-        });
+        })
 }
 
 fn stdin_ready() -> bool {
@@ -114,16 +226,51 @@ fn stdin_ready() -> bool {
     ready > 0 && descriptor.revents & libc::POLLIN != 0
 }
 
-/// Consume every pending stdin byte and report whether `v`/`V` appeared.
-fn drain_verbose_key() -> bool {
-    let mut verbose = false;
+/// Consume every pending stdin byte, folding the recognised keys into one
+/// action. Scroll keys on a closed section are ignored by the reporter.
+fn drain_verbose_keys(alt: &mut AltPrefix) -> VerboseInput {
+    let mut input = VerboseInput::default();
     let mut byte = 0_u8;
     // SAFETY: stdin is a valid descriptor and `byte` is a valid one-byte
     // destination. `VMIN = 0` keeps the read from blocking.
     while unsafe { libc::read(libc::STDIN_FILENO, (&mut byte as *mut u8).cast(), 1) } == 1 {
-        verbose |= matches!(byte, b'v' | b'V');
+        alt.feed(byte, Instant::now(), &mut input);
     }
-    verbose
+    input
+}
+
+/// The verbose key one stdin byte selects, if any. `ctrl-r`/`ctrl-e` pick the
+/// view, `ctrl-k`/`ctrl-j` scroll by lines toward older/newer output, and
+/// `ctrl-h`/`ctrl-l` scroll by half-viewport pages.
+fn verbose_key(byte: u8) -> Option<VerboseKey> {
+    match byte {
+        0x05 => Some(VerboseKey::View(VerboseView::Errors)), // ctrl-e
+        0x12 => Some(VerboseKey::View(VerboseView::Run)),    // ctrl-r
+        0x0b => Some(VerboseKey::Lines(1)),                  // ctrl-k
+        0x0a => Some(VerboseKey::Lines(-1)),                 // ctrl-j
+        0x08 => Some(VerboseKey::Pages(1)),                  // ctrl-h
+        0x0c => Some(VerboseKey::Pages(-1)),                 // ctrl-l
+        b'v' | b'V' => Some(VerboseKey::Toggle),
+        _ => None,
+    }
+}
+
+/// The verbose key an `alt+` (escape-prefixed) byte selects. It mirrors
+/// [`verbose_key`], so a terminal that consumes the control bytes still drives
+/// the same views and scrolling.
+fn alt_verbose_key(byte: u8) -> Option<VerboseKey> {
+    match byte {
+        b'r' | b'R' => Some(VerboseKey::View(VerboseView::Run)),
+        b'e' | b'E' => Some(VerboseKey::View(VerboseView::Errors)),
+        b'k' | b'K' => Some(VerboseKey::Lines(1)),
+        b'j' | b'J' => Some(VerboseKey::Lines(-1)),
+        b'h' | b'H' => Some(VerboseKey::Pages(1)),
+        b'l' | b'L' => Some(VerboseKey::Pages(-1)),
+        // `alt+v` toggles as well, which also keeps a quick `Escape` followed by
+        // `v` from being swallowed as an unrecognised `alt+` key.
+        b'v' | b'V' => Some(VerboseKey::Toggle),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -131,10 +278,82 @@ mod tests {
     use super::*;
 
     #[test]
-    fn private_verbose_handles_start_at_the_requested_value_and_are_independent() {
-        let handle = verbose_handle(true);
-        assert!(handle.load(Ordering::Relaxed));
-        handle.store(false, Ordering::Relaxed);
-        assert!(verbose_handle(true).load(Ordering::Relaxed));
+    fn verbose_keys_map_control_bytes_and_the_letter_v() {
+        assert_eq!(verbose_key(b'v'), Some(VerboseKey::Toggle));
+        assert_eq!(verbose_key(b'V'), Some(VerboseKey::Toggle));
+        assert_eq!(verbose_key(0x12), Some(VerboseKey::View(VerboseView::Run)));
+        assert_eq!(
+            verbose_key(0x05),
+            Some(VerboseKey::View(VerboseView::Errors))
+        );
+        assert_eq!(verbose_key(0x0b), Some(VerboseKey::Lines(1)));
+        assert_eq!(verbose_key(0x0a), Some(VerboseKey::Lines(-1)));
+        assert_eq!(verbose_key(0x08), Some(VerboseKey::Pages(1)));
+        assert_eq!(verbose_key(0x0c), Some(VerboseKey::Pages(-1)));
+        // Enter arrives as a carriage return once raw mode stops translating it
+        // into the line feed `ctrl-j` sends, so it must not scroll anything.
+        assert_eq!(verbose_key(0x0d), None);
+        assert_eq!(verbose_key(b'q'), None);
+    }
+
+    #[test]
+    fn alt_keys_mirror_the_control_shortcuts() {
+        assert_eq!(
+            alt_verbose_key(b'r'),
+            Some(VerboseKey::View(VerboseView::Run))
+        );
+        assert_eq!(
+            alt_verbose_key(b'e'),
+            Some(VerboseKey::View(VerboseView::Errors))
+        );
+        assert_eq!(alt_verbose_key(b'k'), Some(VerboseKey::Lines(1)));
+        assert_eq!(alt_verbose_key(b'j'), Some(VerboseKey::Lines(-1)));
+        assert_eq!(alt_verbose_key(b'h'), Some(VerboseKey::Pages(1)));
+        assert_eq!(alt_verbose_key(b'l'), Some(VerboseKey::Pages(-1)));
+        assert_eq!(alt_verbose_key(b'v'), Some(VerboseKey::Toggle));
+        assert_eq!(alt_verbose_key(b'x'), None);
+    }
+
+    #[test]
+    fn an_escape_prefix_pairs_the_alt_key_within_the_window() {
+        let start = Instant::now();
+        let mut input = VerboseInput::default();
+        let mut alt = AltPrefix::default();
+        alt.feed(ESCAPE, start, &mut input);
+        alt.feed(b'r', start + Duration::from_millis(5), &mut input);
+        assert_eq!(input.view, Some(VerboseView::Run));
+
+        // A lone Escape must not swallow the next deliberate key press, and the
+        // escape byte itself is never a key of its own.
+        let mut input = VerboseInput::default();
+        let mut alt = AltPrefix::default();
+        alt.feed(ESCAPE, start, &mut input);
+        assert!(input.is_empty());
+        alt.feed(
+            b'v',
+            start + ALT_PREFIX_WINDOW + Duration::from_millis(1),
+            &mut input,
+        );
+        assert!(input.toggle, "a stale prefix must not consume the key");
+    }
+
+    #[test]
+    fn repeated_keys_fold_into_one_steady_action() {
+        let mut input = VerboseInput::default();
+        for byte in [0x0b, 0x0b, 0x0b] {
+            input.record(verbose_key(byte).expect("ctrl-k is a scroll key"));
+        }
+        assert_eq!(input.lines, 3, "held scroll keys accumulate");
+
+        for byte in [b'v', b'v'] {
+            input.record(verbose_key(byte).expect("v is the toggle"));
+        }
+        assert!(input.toggle, "a held v toggles once per burst");
+        assert!(!input.is_empty());
+
+        input.record(verbose_key(0x12).expect("ctrl-r selects a view"));
+        input.record(verbose_key(0x05).expect("ctrl-e selects a view"));
+        assert_eq!(input.view, Some(VerboseView::Errors));
+        assert!(VerboseInput::default().is_empty());
     }
 }

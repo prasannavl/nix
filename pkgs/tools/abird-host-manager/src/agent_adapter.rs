@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,6 +20,9 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::fleet::host_runtime::ProcessStream;
+use crate::fleet::interactive::InteractiveVerbose;
+use crate::fleet::presentation::report_verbose_line;
 use crate::programs::{clear_git_repository_environment, nix::Nix};
 use crate::progress::{ProgressReporter, StepProgress, command_reporter};
 use crate::projection::{DesiredResourceState, PhaseProjection, ProjectionEffect};
@@ -227,6 +230,10 @@ pub struct NativeAdapter {
     progress: ProgressReporter,
     projection: Option<PhaseProjection>,
     local_nixbot: Option<LocalNixbotExecution>,
+    /// Owns the interactive verbose reader for this command's lifetime, so a
+    /// run with several `--nixbot-deploy` jobs keeps one reader and one
+    /// terminal owner instead of re-installing it per job.
+    interactive: Mutex<Option<Arc<InteractiveVerbose>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1715,6 +1722,7 @@ impl NativeAdapter {
             progress: command_reporter().clone(),
             projection: None,
             local_nixbot: None,
+            interactive: Mutex::new(None),
         })
     }
 
@@ -1724,6 +1732,22 @@ impl NativeAdapter {
             progress: ProgressReporter::new(false),
             projection: None,
             local_nixbot: None,
+            interactive: Mutex::new(None),
+        }
+    }
+
+    /// Acquire the shared interactive verbose reader once for this command.
+    /// Later calls reuse the same reader, so every job in the run keeps the
+    /// `v`/`ctrl-*` keys and the terminal stays owned between jobs.
+    fn ensure_interactive(&self, requested: bool) {
+        if !requested {
+            return;
+        }
+        let Ok(mut slot) = self.interactive.lock() else {
+            return;
+        };
+        if slot.is_none() {
+            *slot = crate::fleet::interactive::install();
         }
     }
 
@@ -2637,12 +2661,12 @@ impl NativeAdapter {
         let deploy_logs = operation_args
             .iter()
             .any(|argument| argument == "--nixbot-deploy");
-        let mut log_toggle = InteractiveLogToggle::new(deploy_logs && self.progress.enabled());
-        let mut logs_visible = false;
+        // One shared reader owns the `v`/`ctrl-*` keys and the live region for
+        // this command, so an agent job renders through the same verbose section
+        // as a native fleet run instead of a second, parallel one. The adapter
+        // holds it, so every job in the run shares the same reader.
+        self.ensure_interactive(deploy_logs);
         let mut last_log_sequence = 0_u64;
-        if log_toggle.active() {
-            self.progress.detail("Waiting · press v for verbose logs");
-        }
         let mut last_transport_error = None;
         let mut last_progress = None;
         loop {
@@ -2655,14 +2679,6 @@ impl NativeAdapter {
                     "timed out waiting for host-agent job {job_id:?}; last progress: {progress}; last transport error: {}",
                     last_transport_error.as_deref().unwrap_or("none")
                 );
-            }
-            if log_toggle.poll_toggle() {
-                logs_visible = !logs_visible;
-                self.progress.message(if logs_visible {
-                    "  Verbose on · press v to turn off"
-                } else {
-                    "  Verbose off · press v to turn on"
-                });
             }
             thread::sleep(poll_interval);
             let value = match self.config.run_agent(host, &status_args) {
@@ -2679,21 +2695,25 @@ impl NativeAdapter {
                 && progress != &Value::Null
                 && last_progress.as_ref() != Some(progress)
             {
-                if logs_visible {
-                    for (sequence, _stream, line) in
-                        command_log_lines_after(progress, last_log_sequence)
-                    {
-                        self.progress.message(format!("  │ {line}"));
-                        last_log_sequence = last_log_sequence.max(sequence);
-                    }
-                }
-                let mut detail = format_job_progress(progress, polling_started.elapsed());
-                if log_toggle.active()
-                    && progress.get("kind").and_then(Value::as_str) == Some("command_log")
+                // Always consume the tail so lines seen while the section is
+                // closed are still retained for the errors view; the reporter
+                // decides between showing and remembering each line. Agent lines
+                // keep their own attribution, so they are passed through
+                // verbatim.
+                for (sequence, stream, line) in command_log_lines_after(progress, last_log_sequence)
                 {
-                    detail.push_str(" · v verbose");
+                    report_verbose_line(
+                        &self.progress,
+                        host,
+                        process_stream(stream),
+                        line,
+                        false,
+                        true,
+                    );
+                    last_log_sequence = last_log_sequence.max(sequence);
                 }
-                self.progress.detail(detail);
+                self.progress
+                    .detail(format_job_progress(progress, polling_started.elapsed()));
                 last_progress = Some(progress.clone());
                 last_report = Instant::now();
             }
@@ -3087,6 +3107,14 @@ pub fn format_job_progress(progress: &Value, elapsed: Duration) -> String {
     )
 }
 
+fn process_stream(stream: &str) -> Option<ProcessStream> {
+    match stream {
+        "stdout" => Some(ProcessStream::Stdout),
+        "stderr" => Some(ProcessStream::Stderr),
+        _ => None,
+    }
+}
+
 fn command_log_lines_after(progress: &Value, after: u64) -> Vec<(u64, &str, &str)> {
     progress
         .get("tail")
@@ -3116,60 +3144,6 @@ fn truncate_display(value: &str, limit: usize) -> String {
         format!("{prefix}…")
     } else {
         prefix
-    }
-}
-
-struct InteractiveLogToggle {
-    original: Option<libc::termios>,
-}
-
-impl InteractiveLogToggle {
-    fn new(requested: bool) -> Self {
-        if !requested {
-            return Self { original: None };
-        }
-        Self {
-            original: crate::terminal_mode::enter_raw_mode(),
-        }
-    }
-
-    fn active(&self) -> bool {
-        self.original.is_some()
-    }
-
-    fn poll_toggle(&mut self) -> bool {
-        if !self.active() {
-            return false;
-        }
-        let mut descriptor = libc::pollfd {
-            fd: libc::STDIN_FILENO,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        if unsafe { libc::poll(&mut descriptor, 1, 0) } <= 0 {
-            return false;
-        }
-        let mut toggle = false;
-        let mut byte = 0_u8;
-        while unsafe {
-            libc::read(
-                libc::STDIN_FILENO,
-                (&mut byte as *mut u8).cast(),
-                std::mem::size_of::<u8>(),
-            )
-        } == 1
-        {
-            toggle |= matches!(byte, b'v' | b'V');
-        }
-        toggle
-    }
-}
-
-impl Drop for InteractiveLogToggle {
-    fn drop(&mut self) {
-        if let Some(original) = &self.original {
-            crate::terminal_mode::restore(original);
-        }
     }
 }
 

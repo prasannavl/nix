@@ -34,6 +34,13 @@ impl Tone {
             Self::Neutral => "\x1b[90m",
         }
     }
+
+    /// Whether a streamed verbose line of this tone is kept in the retained
+    /// digest, so hiding and revealing the verbose tail still surfaces the
+    /// errors and warnings the run produced.
+    pub fn keeps_verbose_history(self) -> bool {
+        matches!(self, Self::Failure | Self::LogWarning)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

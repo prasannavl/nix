@@ -645,18 +645,21 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
     finish_run_state(state, action)
 }
 
-/// Capture the interactive `l` verbose toggle unless terminal input belongs to
+/// Capture the interactive `v` verbose reader unless terminal input belongs to
 /// someone else: a re-executed repository script, or a run that reads a staged
 /// patch from stdin.
-fn capture_verbose_key(invocation: &Invocation) -> Option<super::interactive::InteractiveVerbose> {
+fn capture_verbose_key(
+    invocation: &Invocation,
+) -> Option<std::sync::Arc<super::interactive::InteractiveVerbose>> {
     let reexeced_from_repo = env::var("NIXBOT_REEXECED_FROM_REPO").as_deref() == Ok("1");
     if !interactive_capture_allowed(invocation, reexeced_from_repo) {
         return None;
     }
-    super::interactive::install(invocation.options.verbose || invocation.options.build_logs)
+    // `--verbose`/`--build-logs` opens the section through `FleetProgress`.
+    super::interactive::install()
 }
 
-/// Whether this process may capture the interactive `l` toggle.
+/// Whether this process may capture the interactive `v` reader.
 fn interactive_capture_allowed(invocation: &Invocation, reexeced_from_repo: bool) -> bool {
     let reexec_owner = !matches!(invocation.action, Action::DevBuild)
         && invocation.options.use_repo_script

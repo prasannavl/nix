@@ -1,10 +1,10 @@
 //! Shared raw-terminal handling for interactive controls.
 //!
-//! Both the fleet verbose toggle and the host-agent log toggle put stdin into
-//! raw mode. The attributes captured at entry are also published process-wide
-//! so the async-signal force-exit path can restore them: a signal handler
-//! cannot run destructors, so without this the terminal would be left with
-//! echo and canonical input disabled after a forced exit.
+//! The interactive key reader puts stdin into raw mode and releases it when the
+//! last producer drops. The attributes captured at entry are also published
+//! process-wide so the async-signal force-exit path can restore them: a signal
+//! handler cannot run destructors, so without this the terminal would be left
+//! with echo and canonical input disabled after a forced exit.
 
 use std::io::{self, IsTerminal};
 use std::ptr;
@@ -15,10 +15,10 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 /// point, so the allocation must outlive every invocation.
 static ORIGINAL: AtomicPtr<libc::termios> = AtomicPtr::new(ptr::null_mut());
 
-/// Put stdin into raw mode and publish the previous attributes. Line buffering
-/// and echo are disabled while signal generation (`ISIG`) is left enabled so
-/// Ctrl-C still interrupts. Returns `None` when stdin/stderr is not a terminal
-/// or the terminal calls fail.
+/// Put stdin into raw mode and publish the previous attributes. Line buffering,
+/// echo, and the CR-to-NL input translation are disabled, while signal
+/// generation (`ISIG`) stays enabled so Ctrl-C still interrupts. Returns `None`
+/// when stdin/stderr is not a terminal or the terminal calls fail.
 pub fn enter_raw_mode() -> Option<libc::termios> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return None;
@@ -28,10 +28,7 @@ pub fn enter_raw_mode() -> Option<libc::termios> {
     if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original) } != 0 {
         return None;
     }
-    let mut raw = original;
-    raw.c_lflag = raw_local_flags(raw.c_lflag);
-    raw.c_cc[libc::VMIN] = 0;
-    raw.c_cc[libc::VTIME] = 0;
+    let raw = raw_attributes(original);
     // SAFETY: `raw` is a fully initialized termios for the same descriptor.
     if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) } != 0 {
         return None;
@@ -59,10 +56,18 @@ pub fn restore_for_forced_exit() {
     let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, pointer) };
 }
 
-/// Disable line buffering and echo while leaving signal generation (`ISIG`)
-/// enabled so Ctrl-C still interrupts.
-fn raw_local_flags(current: libc::tcflag_t) -> libc::tcflag_t {
-    current & !(libc::ICANON | libc::ECHO)
+/// The attributes stdin runs with while a key reader owns it: non-canonical and
+/// un-echoed so single keys arrive as they are typed, `ISIG` left on so Ctrl-C
+/// still interrupts, and `ICRNL` cleared so the carriage return a terminal sends
+/// for Enter stays distinct from the line feed `ctrl-j` sends. Zero `VMIN` and
+/// `VTIME` make reads non-blocking, so polling stdin never parks a thread.
+fn raw_attributes(original: libc::termios) -> libc::termios {
+    let mut raw = original;
+    raw.c_iflag &= !libc::ICRNL;
+    raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+    raw.c_cc[libc::VMIN] = 0;
+    raw.c_cc[libc::VTIME] = 0;
+    raw
 }
 
 /// Publish the entry attributes once, racing safely if multiple controls are
@@ -90,11 +95,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn raw_mode_disables_echo_and_canonical_input_but_keeps_signals() {
-        let current = libc::ICANON | libc::ECHO | libc::ISIG;
-        let raw = raw_local_flags(current);
-        assert_eq!(raw & (libc::ICANON | libc::ECHO), 0);
-        assert_ne!(raw & libc::ISIG, 0);
+    fn raw_mode_disables_line_discipline_but_keeps_signals_and_flow_control() {
+        let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
+        original.c_iflag = libc::ICRNL | libc::IXON;
+        original.c_lflag = libc::ICANON | libc::ECHO | libc::ISIG;
+        original.c_cc[libc::VMIN] = 1;
+
+        let raw = raw_attributes(original);
+
+        // Enter must stay distinct from `ctrl-j`: under `ICRNL` the driver
+        // delivers the carriage return Enter sends as the same byte `ctrl-j`
+        // sends, so the reader could not tell them apart.
+        assert_eq!(raw.c_iflag & libc::ICRNL, 0);
+        assert_ne!(raw.c_iflag & libc::IXON, 0, "flow control stays the user's");
+        assert_eq!(raw.c_lflag & (libc::ICANON | libc::ECHO), 0);
+        assert_ne!(raw.c_lflag & libc::ISIG, 0, "Ctrl-C must still interrupt");
+        assert_eq!(raw.c_cc[libc::VMIN], 0);
+        assert_eq!(raw.c_cc[libc::VTIME], 0);
     }
 
     #[test]

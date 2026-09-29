@@ -3,7 +3,7 @@ use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::Action;
 use crate::terminal_style::{TerminalStyle, Tone};
@@ -85,11 +85,85 @@ struct ProgressState {
     recent_update_limit: usize,
     /// Whether verbose streaming is enabled right now.
     verbose_active: bool,
+    /// Which streamed-log view the open verbose section shows.
+    verbose_view: VerboseView,
+    /// Lines scrolled up from the newest end of the active view; 0 pins the
+    /// window to the newest content.
+    verbose_scroll: usize,
     /// Bounded live tail of verbose lines rendered above the dashboard through
     /// the same clear/redraw path as progress, newest last.
-    verbose_tail: VecDeque<(Tone, String)>,
+    verbose_tail: VecDeque<VerboseLine>,
     /// Last live-verbose redraw, throttling high-volume streams.
     verbose_redraw_at: Option<Instant>,
+    /// Monotonic sequence over every recorded verbose line, so the retained
+    /// digest can tell consecutive lines from elided ones.
+    verbose_seq: u64,
+    /// Last lines seen (any tone), held only long enough to supply `before`
+    /// context for the next problem; ordinary output is never retained.
+    verbose_recent: VecDeque<VerboseLine>,
+    /// Errors and warnings with their surrounding context, kept across hiding
+    /// the live tail so a reveal shows the run's problems, oldest first.
+    retained_verbose: VecDeque<VerboseLine>,
+    /// Trailing context lines the open digest run still wants.
+    after_context_remaining: usize,
+}
+
+/// One verbose line, shared by the live ring and the retained digest. Its stream
+/// sequence orders the digest and elides its gaps, and its recording time is what
+/// the `Logs` header reports, so each view says when the oldest line it still
+/// holds was recorded.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VerboseLine {
+    seq: u64,
+    at: SystemTime,
+    tone: Tone,
+    text: String,
+}
+
+/// Which streamed-log view the `v` section shows.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum VerboseView {
+    /// The live stream, newest last.
+    #[default]
+    Run,
+    /// Retained errors and warnings with their surrounding context, elided by
+    /// `...` between non-adjacent runs.
+    Errors,
+}
+
+impl ProgressState {
+    /// Line count of the active view's content, bounding how far it can scroll.
+    fn verbose_content_len(&self) -> usize {
+        match self.verbose_view {
+            VerboseView::Run => self.verbose_tail.len(),
+            // The digest renders `...` rows between non-consecutive runs, so its
+            // row count differs from the number of retained lines.
+            VerboseView::Errors => digest_row_count(&self.retained_verbose),
+        }
+    }
+
+    /// Open the verbose section. Each view's `since` label comes from the lines
+    /// it holds, so opening carries no state beyond the flag.
+    fn open_verbose(&mut self) {
+        self.verbose_active = true;
+    }
+
+    /// Close the verbose section, leaving the buffers to their owners: the live
+    /// ring is cleared when it is hidden, and the digest outlives the hide.
+    fn close_verbose(&mut self) {
+        self.verbose_active = false;
+    }
+
+    /// When the active view's oldest line was recorded, for the `Logs` header.
+    /// Both views read the front of the buffer they show, so the label always
+    /// describes the content on screen, however much of it has been evicted.
+    fn verbose_started(&self) -> Option<SystemTime> {
+        let oldest = match self.verbose_view {
+            VerboseView::Run => self.verbose_tail.front(),
+            VerboseView::Errors => self.retained_verbose.front(),
+        };
+        oldest.map(|line| line.at)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -242,15 +316,27 @@ struct FailedTaskTail {
 
 const LIVE_OUTPUT_LINES_PER_TASK: usize = 5;
 /// Bounded history for the live verbose tail; rendering keeps only what fits.
-const MAX_LIVE_VERBOSE_LINES: usize = 500;
+const VERBOSE_MAX_LIVE_LINES: usize = 10_000;
+/// Errors and warnings kept, with context, across hiding the verbose tail.
+const VERBOSE_MAX_RETAINED_LINES: usize = 500;
+/// Context lines kept on each side of a retained problem, so a reveal shows
+/// enough surrounding output to read it.
+const VERBOSE_CONTEXT_LINES: usize = 2;
+/// Marker inserted between digest lines that were not consecutive in the
+/// stream, and before the live tail resumes.
+const VERBOSE_ELISION: &str = "...";
+/// Rows assumed when the terminal will not report its size (`TIOCGWINSZ`
+/// returning zero, as a freshly allocated pty can). An unknown viewport budgets
+/// like a plain terminal instead of like an unbounded one, so an open section
+/// can never stream its whole content into the scrollback.
+const DEFAULT_VIEWPORT_ROWS: usize = 24;
 /// Minimum interval between live verbose redraws, capping flicker and I/O on
 /// high-volume streams; the heartbeat still renders the tail afterwards.
 const VERBOSE_REDRAW_INTERVAL: Duration = Duration::from_millis(50);
-/// Interactive key hints shown as the final row of the live region while a
-/// span is active. Uses the same `·` separator as the dashboard metadata and
-/// stays all lowercase to match the other live labels. The footer reports live
-/// state: `verbose on`/`verbose off` for the toggle and `confirm cancel` while
-/// an interrupt is armed.
+/// Shown in the `Logs` header when a timestamp cannot be resolved, so the header
+/// keeps its shape instead of dropping the segment.
+const UNKNOWN_CLOCK_TIME: &str = "--:--:--";
+/// Lines of task output kept for a failed step's tail.
 const RETAINED_OUTPUT_LINES_PER_TASK: usize = 5;
 const RETAINED_ACTIVE_TASK_TAILS: usize = 128;
 const RETAINED_FAILED_TASK_TAILS: usize = 8;
@@ -1228,10 +1314,11 @@ impl ProgressReporter {
         self.redraw_current();
     }
 
-    /// Record one streamed verbose child-process line in the live tail. On an
-    /// interactive terminal the tail is rendered through the normal dashboard
-    /// clear/redraw path, so hiding the stream wipes it cleanly instead of
-    /// leaving appended output. Redirected output still appends the line.
+    /// Record one streamed verbose child-process line in the live tail, opening
+    /// the section if it is still closed. On an interactive terminal the tail is
+    /// rendered through the normal dashboard clear/redraw path, so hiding the
+    /// stream wipes it cleanly instead of leaving appended output. Redirected
+    /// output still appends the line.
     pub fn verbose_line(&self, tone: Tone, message: impl std::fmt::Display) {
         if !self.enabled() {
             return;
@@ -1249,10 +1336,14 @@ impl ProgressReporter {
             return;
         }
         let due = if let Ok(mut state) = self.state.lock() {
-            state.verbose_active = true;
-            state.verbose_tail.push_back((tone, message));
-            while state.verbose_tail.len() > MAX_LIVE_VERBOSE_LINES {
+            state.open_verbose();
+            let line = record_verbose_line(&mut state, tone, message, SystemTime::now());
+            state.verbose_tail.push_back(line);
+            while state.verbose_tail.len() > VERBOSE_MAX_LIVE_LINES {
                 state.verbose_tail.pop_front();
+            }
+            if state.verbose_view == VerboseView::Run {
+                hold_scrolled_window(&mut state, 1);
             }
             let now = Instant::now();
             let due = state
@@ -1270,6 +1361,83 @@ impl ProgressReporter {
         }
     }
 
+    /// Record a line seen while the verbose tail is hidden so revealing it
+    /// later still surfaces the run's errors and warnings. No output is written
+    /// and non-interactive runs are untouched, so redirected output stays
+    /// unchanged.
+    pub fn retain_verbose_line(&self, tone: Tone, message: impl std::fmt::Display) {
+        if !self.retains_verbose_history() {
+            return;
+        }
+        if let Ok(mut state) = self.state.lock() {
+            record_verbose_line(&mut state, tone, message.to_string(), SystemTime::now());
+        }
+    }
+
+    /// Whether this reporter keeps hidden verbose lines for a later reveal;
+    /// true only on an interactive terminal where the toggle can hide them.
+    pub fn retains_verbose_history(&self) -> bool {
+        self.enabled() && self.interactive
+    }
+
+    /// Whether the verbose section is currently open, so a producer can decide
+    /// between showing a line live and retaining it for the errors view.
+    pub fn verbose_showing(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.verbose_active)
+    }
+
+    /// Switch the open verbose section to `view`, enabling it if needed and
+    /// returning the window to the newest content.
+    pub fn set_verbose_view(&self, view: VerboseView) {
+        let _output = self.output.lock().ok();
+        let changed = self.state.lock().ok().is_some_and(|mut state| {
+            let changed =
+                !state.verbose_active || state.verbose_view != view || state.verbose_scroll != 0;
+            state.open_verbose();
+            state.verbose_view = view;
+            state.verbose_scroll = 0;
+            state.verbose_redraw_at = None;
+            changed
+        });
+        if changed {
+            self.redraw_current();
+        }
+    }
+
+    /// Scroll the open verbose view by `delta` lines, positive toward older
+    /// content.
+    pub fn scroll_verbose_lines(&self, delta: isize) {
+        self.scroll_verbose(delta, 1);
+    }
+
+    /// Scroll the open verbose view by `delta` half-viewport pages.
+    pub fn scroll_verbose_pages(&self, delta: isize) {
+        // An unreported size assumes the same terminal `live_region_lines`
+        // budgets for, so a page scrolls the window by half of it.
+        let page = self
+            .destination
+            .viewport()
+            .map_or(DEFAULT_VIEWPORT_ROWS / 2, |(rows, _)| (rows / 2).max(1));
+        self.scroll_verbose(delta, page);
+    }
+
+    fn scroll_verbose(&self, delta: isize, step: usize) {
+        let _output = self.output.lock().ok();
+        let changed = self.state.lock().ok().is_some_and(|mut state| {
+            if !state.verbose_active {
+                return false;
+            }
+            let max = state.verbose_content_len().saturating_sub(1) as isize;
+            let next = (state.verbose_scroll as isize + delta * step as isize).clamp(0, max);
+            let changed = next != state.verbose_scroll as isize;
+            state.verbose_scroll = next as usize;
+            changed
+        });
+        if changed {
+            self.redraw_current();
+        }
+    }
+
     /// Disable verbose streaming and drop the live tail so the next redraw
     /// shrinks the region back to just the dashboard, as if the stream had
     /// never been shown.
@@ -1277,7 +1445,7 @@ impl ProgressReporter {
         let _output = self.output.lock().ok();
         let changed = self.state.lock().ok().is_some_and(|mut state| {
             let changed = state.verbose_active || !state.verbose_tail.is_empty();
-            state.verbose_active = false;
+            state.close_verbose();
             state.verbose_tail.clear();
             state.verbose_redraw_at = None;
             changed
@@ -1287,16 +1455,65 @@ impl ProgressReporter {
         }
     }
 
-    /// Mark verbose streaming shown and redraw at once, so the toggle footer
-    /// flips to `verbose off` on the key press instead of waiting for the first
-    /// tail line to arrive.
+    /// Set whether the verbose section is open without redrawing. Callers that
+    /// know the initial intent (`--verbose`, `--build-logs`) use this before any
+    /// region exists; the key reader uses the redrawing show/clear pair.
+    /// Set whether the verbose section is open without redrawing. Callers that
+    /// know the initial intent (`--verbose`, `--build-logs`) use this before any
+    /// region exists; the key reader uses the redrawing toggle pair. Forgetting
+    /// an earlier run's lines is `reset_verbose_history`'s separate job.
+    pub fn set_verbose_open(&self, open: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            if open {
+                state.open_verbose();
+            } else {
+                state.close_verbose();
+            }
+            state.verbose_scroll = 0;
+            state.verbose_redraw_at = None;
+        }
+    }
+
+    /// Forget every verbose line seen so far, returning the section to its
+    /// default view. A command calls this before it opens the section, so a
+    /// process running more than one command never inherits the previous run's
+    /// live ring or errors view.
+    pub fn reset_verbose_history(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.verbose_tail.clear();
+            state.retained_verbose.clear();
+            state.verbose_recent.clear();
+            state.verbose_seq = 0;
+            state.after_context_remaining = 0;
+            state.verbose_scroll = 0;
+            state.verbose_redraw_at = None;
+            state.verbose_view = VerboseView::default();
+        }
+    }
+
+    /// Flip the verbose section, redrawing at once so the `Logs` header appears
+    /// or disappears on the key press.
+    pub fn toggle_verbose_output(&self) {
+        if self.verbose_showing() {
+            self.clear_verbose_output();
+        } else {
+            self.show_verbose_output();
+        }
+    }
+
+    /// Reveal verbose streaming at once, redrawing so the `Logs` header appears
+    /// on the key press instead of waiting for the first line to stream. The
+    /// active view and retained digest persist across a hide.
     pub fn show_verbose_output(&self) {
         let _output = self.output.lock().ok();
         let changed = self.state.lock().ok().is_some_and(|mut state| {
-            let changed = !state.verbose_active;
-            state.verbose_active = true;
+            if state.verbose_active {
+                return false;
+            }
+            state.open_verbose();
             state.verbose_redraw_at = None;
-            changed
+            state.verbose_scroll = 0;
+            true
         });
         if changed {
             self.redraw_current();
@@ -1381,11 +1598,21 @@ impl ProgressReporter {
             return;
         }
         self.clear_line();
-        let footer = self.key_footer();
+        let notice = self.cancel_notice();
         let viewport = self.destination.viewport();
         let dashboard = self.shows_recent_updates();
+        // Read the state once so the footer and the region always describe the
+        // same frame.
         let lines = self.state.lock().ok().and_then(|state| {
-            live_region_lines(self.style, footer.as_deref(), &state, viewport, dashboard)
+            let footer = self.key_footer(&state);
+            live_region_lines(
+                self.style,
+                footer.as_deref(),
+                notice.as_deref(),
+                &state,
+                viewport,
+                dashboard,
+            )
         });
         let Some(lines) = lines else {
             return;
@@ -1408,26 +1635,58 @@ impl ProgressReporter {
     }
 
     /// Interactive key hints rendered as the final live-region row. `None` when
-    /// the reporter is not on a terminal or no key reader owns stdin. The `v`
-    /// action reflects the live toggle state, read from the shared key handle,
-    /// so the footer flips the moment the key is pressed.
-    fn key_footer(&self) -> Option<String> {
+    /// the reporter is not on a terminal or no key reader owns stdin. The
+    /// `ctrl-c` action escalates with the signal coordinator, so the footer
+    /// always advertises the next press: `cancel`, `confirm cancel`, then
+    /// `force exit`.
+    fn key_footer(&self, state: &ProgressState) -> Option<String> {
         if !self.interactive || !crate::fleet::interactive::keys_available() {
             return None;
         }
-        let verbose_on = crate::fleet::interactive::verbose_handle(false).load(Ordering::Relaxed);
-        let verbose = if verbose_on { "on" } else { "off" };
-        let cancel = if crate::fleet::signal::runtime().is_some_and(|runtime| runtime.pending()) {
-            "confirm cancel"
-        } else {
-            "cancel"
+        let cancel = self.cancel_action();
+        // The `Logs` header names the active view, so the footer adds the view
+        // keys only while the section is open. Each key also has an `alt` form,
+        // because a terminal that consumes the control bytes would otherwise
+        // take the shortcut with them.
+        let mut groups = vec![vec!["v: verbose".to_owned()]];
+        if state.verbose_active {
+            groups.push(vec![
+                "ctrl/alt-r: run".to_owned(),
+                "ctrl/alt-e: errors".to_owned(),
+            ]);
+        }
+        groups.push(vec![format!("ctrl-c: {cancel}")]);
+        let width = self
+            .destination
+            .viewport()
+            .map(|(_, columns)| columns.saturating_sub(1));
+        Some(
+            self.style
+                .paint(Tone::Muted, join_key_hints(&groups, width)),
+        )
+    }
+
+    /// The next Ctrl-C action, read from the signal coordinator's escalation.
+    fn cancel_action(&self) -> &'static str {
+        let Some(runtime) = crate::fleet::signal::runtime() else {
+            return next_cancel_action(false, false);
         };
-        let text = format!("keys: v: verbose {verbose} · ctrl-c: {cancel} · ctrl-c x3: force exit");
-        let text = match self.destination.viewport() {
-            Some((_, columns)) => truncate_text(&text, columns),
-            None => text,
-        };
-        Some(self.style.paint(Tone::Muted, text))
+        next_cancel_action(runtime.interruption().is_some(), runtime.pending())
+    }
+
+    /// The cancelling notice shown just above the footer once a confirmed
+    /// interrupt is unwinding the run, so the wait reads as deliberate rather
+    /// than a stall.
+    fn cancel_notice(&self) -> Option<String> {
+        if !self.interactive || !crate::fleet::interactive::keys_available() {
+            return None;
+        }
+        let runtime = crate::fleet::signal::runtime()?;
+        runtime.interruption()?;
+        Some(
+            self.style
+                .paint(Tone::Warning, "Cancel interrupt received · cancelling"),
+        )
     }
 
     fn start_heartbeat(&self, active_id: u64) {
@@ -1514,43 +1773,292 @@ fn dashboard_update_line_count(updates: &VecDeque<RecentUpdate>) -> usize {
         .sum()
 }
 
-/// Build the live, overwriteable region for the current span: the verbose tail
-/// (when active), a blank separator, the dashboard, and the key footer. The
-/// result always fits inside the viewport so the region is cleared in place
-/// instead of scrolling, which is what lets hiding the verbose stream wipe it
-/// cleanly. Returns `None` when no span is active.
+/// Join the footer's key hints, dropping whole groups of related hints until the
+/// line fits the terminal. The interrupt group is last and never dropped: it
+/// escalates as the cancel is armed, so a narrow terminal must not cut it
+/// mid-word, and a group such as the view pair stays together rather than one of
+/// the two vanishing.
+fn join_key_hints(groups: &[Vec<String>], width: Option<usize>) -> String {
+    let mut kept = groups.to_vec();
+    loop {
+        let hints = kept.iter().flatten().cloned().collect::<Vec<_>>();
+        let text = format!("keys: {}", hints.join(" · "));
+        if width.is_none_or(|width| text.chars().count() <= width) || kept.len() <= 1 {
+            return text;
+        }
+        kept.remove(kept.len() - 2);
+    }
+}
+
+/// The next Ctrl-C action advertised in the footer, mirroring the coordinator's
+/// escalation: idle offers `cancel`, an armed first press offers
+/// `confirm cancel`, and a confirmed interrupt offers the forced `force exit`.
+fn next_cancel_action(interrupted: bool, pending: bool) -> &'static str {
+    if interrupted {
+        "force exit"
+    } else if pending {
+        "confirm cancel"
+    } else {
+        "cancel"
+    }
+}
+
+/// Record one verbose line into the retained digest. Problems (errors and
+/// warnings) are always kept, along with up to `VERBOSE_CONTEXT_LINES` lines on
+/// each side, so revealing the tail after a hide shows what went wrong instead
+/// of a blank stream. Ordinary lines only pass through `verbose_recent` as
+/// context and are never retained on their own.
+fn record_verbose_line(
+    state: &mut ProgressState,
+    tone: Tone,
+    text: String,
+    at: SystemTime,
+) -> VerboseLine {
+    let line = VerboseLine {
+        seq: state.verbose_seq,
+        at,
+        tone,
+        text,
+    };
+    state.verbose_seq = state.verbose_seq.saturating_add(1);
+    if tone.keeps_verbose_history() {
+        // `before` context, skipping anything already inside the open run so a
+        // line shared by two overlapping windows is never duplicated. The
+        // digest's own last line is the boundary, so the list stays the one
+        // source of truth for what it already holds.
+        let tail = state.retained_verbose.back().map(|line| line.seq);
+        let before_context = state
+            .verbose_recent
+            .iter()
+            .filter(|before| tail.is_none_or(|tail| before.seq > tail))
+            .cloned()
+            .collect::<Vec<_>>();
+        for before in before_context {
+            push_digest_line(state, before);
+        }
+        push_digest_line(state, line.clone());
+        state.after_context_remaining = VERBOSE_CONTEXT_LINES;
+    } else if state.after_context_remaining > 0 {
+        state.after_context_remaining -= 1;
+        push_digest_line(state, line.clone());
+    }
+    state.verbose_recent.push_back(line.clone());
+    while state.verbose_recent.len() > VERBOSE_CONTEXT_LINES {
+        state.verbose_recent.pop_front();
+    }
+    line
+}
+
+/// Append one line to the retained digest, bounding its size from the front.
+fn push_digest_line(state: &mut ProgressState, line: VerboseLine) {
+    // The digest's own last line decides the elision, exactly as rendering does.
+    let previous = state.retained_verbose.back().map(|tail| tail.seq);
+    let rows = 1 + usize::from(elides_from(previous, line.seq));
+    state.retained_verbose.push_back(line);
+    while state.retained_verbose.len() > VERBOSE_MAX_RETAINED_LINES {
+        state.retained_verbose.pop_front();
+    }
+    if state.verbose_view == VerboseView::Errors {
+        hold_scrolled_window(state, rows);
+    }
+}
+
+/// Keep a scrolled window pinned to the rows the reader is looking at: a new
+/// line is appended below the window, so without this the window would slide
+/// under the reader on every line. Clamping in `verbose_window_bounds` stops the
+/// hold once the window reaches the oldest content, and a ring that drops its
+/// oldest line keeps the window in place on its own.
+fn hold_scrolled_window(state: &mut ProgressState, appended_rows: usize) {
+    if state.verbose_active && state.verbose_scroll > 0 {
+        state.verbose_scroll = state.verbose_scroll.saturating_add(appended_rows);
+    }
+}
+
+/// Whether an elision row separates a digest line from the one before it, because
+/// the stream produced lines in between. The single owner of the elision rule,
+/// so rendering, row counting, and the append hold all agree.
+fn elides_from(previous: Option<u64>, seq: u64) -> bool {
+    previous.is_some_and(|previous| seq != previous + 1)
+}
+
+/// The digest as rendered rows, lazily: an elision row is yielded before any
+/// line that did not follow its predecessor in the stream. The single rendering
+/// source, so counting, windowing, and the append hold can never disagree about
+/// how many rows the digest occupies or where an elision falls.
+fn digest_rendered(retained: &VecDeque<VerboseLine>) -> impl Iterator<Item = (Tone, &str)> {
+    let mut previous: Option<u64> = None;
+    retained.iter().flat_map(move |line| {
+        let elision = elides_from(previous, line.seq).then_some((Tone::Muted, VERBOSE_ELISION));
+        previous = Some(line.seq);
+        elision
+            .into_iter()
+            .chain(std::iter::once((line.tone, line.text.as_str())))
+    })
+}
+
+/// Rows the digest renders, counting the `...` elision rows without building
+/// them.
+fn digest_row_count(retained: &VecDeque<VerboseLine>) -> usize {
+    digest_rendered(retained).count()
+}
+
+/// The digest rows in `[start, end)`, cloning only the rows the window shows.
+fn digest_rows(retained: &VecDeque<VerboseLine>, start: usize, end: usize) -> Vec<(Tone, String)> {
+    digest_rendered(retained)
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .map(|(tone, text)| (tone, text.to_owned()))
+        .collect()
+}
+
+/// Wall-clock time `when` happened, as `HH:MM:SS` in the local zone, so a
+/// `since` label reads like a timestamp the reader can line up with other logs
+/// instead of an age they have to subtract.
+fn format_clock_time(when: SystemTime) -> String {
+    let Ok(since_epoch) = when.duration_since(SystemTime::UNIX_EPOCH) else {
+        return UNKNOWN_CLOCK_TIME.to_owned();
+    };
+    let seconds = since_epoch.as_secs() as libc::time_t;
+    // SAFETY: `local` is a valid writable `tm` that outlives the call, and
+    // `localtime_r` is the reentrant form, so the reader thread cannot race a
+    // redraw. It fills `local` from the process time zone or reports failure.
+    let mut local = unsafe { std::mem::zeroed::<libc::tm>() };
+    if unsafe { libc::localtime_r(&seconds, &mut local) }.is_null() {
+        return UNKNOWN_CLOCK_TIME.to_owned();
+    }
+    format!(
+        "{:02}:{:02}:{:02}",
+        local.tm_hour, local.tm_min, local.tm_sec
+    )
+}
+
+/// The `Logs` section title: the active view so the filter is obvious, and when
+/// its content began, because hiding and revealing restarts the live ring while
+/// the retained digest keeps counting.
+fn verbose_header(style: TerminalStyle, view: VerboseView, since: Option<SystemTime>) -> String {
+    let view = match view {
+        VerboseView::Run => "run",
+        VerboseView::Errors => "errors",
+    };
+    let mut header = format!(
+        "{} {}",
+        style.paint(Tone::Emphasis, "● Logs"),
+        style.paint(Tone::Muted, format!("· {view}"))
+    );
+    if let Some(since) = since {
+        header.push_str(&format!(
+            " {}",
+            style.paint(Tone::Muted, format!("· since {}", format_clock_time(since)))
+        ));
+    }
+    header
+}
+
+/// The visible slice of the active verbose view plus how many lines are hidden
+/// above and below it, so the region can scroll and point at the rest.
+fn verbose_window(state: &ProgressState, budget: usize) -> (Vec<(Tone, String)>, usize, usize) {
+    match state.verbose_view {
+        VerboseView::Run => {
+            let len = state.verbose_tail.len();
+            let (start, end) = verbose_window_bounds(len, budget, state.verbose_scroll);
+            (
+                state
+                    .verbose_tail
+                    .range(start..end)
+                    .map(|line| (line.tone, line.text.clone()))
+                    .collect(),
+                start,
+                len - end,
+            )
+        }
+        VerboseView::Errors => {
+            let len = digest_row_count(&state.retained_verbose);
+            let (start, end) = verbose_window_bounds(len, budget, state.verbose_scroll);
+            (
+                digest_rows(&state.retained_verbose, start, end),
+                start,
+                len - end,
+            )
+        }
+    }
+}
+
+/// The `[start, end)` slice of a `len`-line view scrolled `scroll` lines up from
+/// the newest content, showing at most `budget` lines.
+fn verbose_window_bounds(len: usize, budget: usize, scroll: usize) -> (usize, usize) {
+    let offset = scroll.min(len.saturating_sub(budget));
+    let end = len - offset;
+    (end.saturating_sub(budget), end)
+}
+
+/// Muted elision row placed between the logs and the dashboard when the active
+/// view has more content than the window shows, naming the scroll keys instead
+/// of crowding the footer.
+fn verbose_overflow_line(style: TerminalStyle, above: usize, below: usize) -> Option<String> {
+    let mut parts = Vec::new();
+    if above > 0 {
+        parts.push(format!("▲ {above} above"));
+    }
+    if below > 0 {
+        parts.push(format!("▼ {below} below"));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    parts.push("ctrl/alt-h/j/k/l: scroll".to_owned());
+    Some(style.paint(Tone::Muted, parts.join(" · ")))
+}
+
+/// Build the live, overwriteable region for the current span: the verbose
+/// section (when open), a blank separator or overflow marker, the dashboard, and
+/// the key footer. The result always fits inside the viewport so the region is
+/// cleared in place instead of scrolling, which is what lets hiding the verbose
+/// stream wipe it cleanly. Returns `None` when there is nothing to draw — no
+/// active span and no open verbose section. An open section still renders without
+/// a span, so a wait that owns no dashboard can show its logs.
 fn live_region_lines(
     style: TerminalStyle,
     footer: Option<&str>,
+    notice: Option<&str>,
     state: &ProgressState,
     viewport: Option<(usize, usize)>,
     dashboard: bool,
 ) -> Option<Vec<String>> {
-    let active = state.stack.last()?;
-    // A blank separator row plus the footer row.
-    let footer_rows = if footer.is_some() { 2 } else { 0 };
-    let verbose = state.verbose_active && !state.verbose_tail.is_empty();
+    let active = state.stack.last();
+    // A blank separator row, an optional cancelling notice, and the footer row.
+    let footer_rows = if footer.is_some() {
+        2 + usize::from(notice.is_some())
+    } else {
+        0
+    };
+    // The `Logs` header is the verbose indicator, so the block shows whenever
+    // verbose is active, even before any line is retained or streamed.
+    let verbose = state.verbose_active;
+    let header_rows = 1;
     // Terminal columns, used to keep every region line on exactly one row:
     // `rendered_lines` counts rows, so a wrapped line would leave the extra
     // rows uncleared when the tail is hidden.
     let columns = viewport.map(|(_, columns)| columns);
     // Leave the final viewport row unused so a full region never scrolls.
-    let room = viewport.map_or(usize::MAX, |(rows, _)| rows.saturating_sub(1));
+    let room = viewport
+        .map(|(rows, _)| rows.saturating_sub(1))
+        .unwrap_or(DEFAULT_VIEWPORT_ROWS.saturating_sub(1));
 
     let mut lines = if verbose {
         // Reserve roughly half the room for the dashboard and stream the rest
         // as logs, keeping space for the blank separator and the footer.
-        let stream_room = room.saturating_sub(footer_rows + 1);
+        let stream_room = room.saturating_sub(footer_rows + 1 + header_rows);
         let dashboard_budget = (stream_room / 2).max(1);
-        let dashboard_lines = if dashboard {
-            dashboard_lines_with_viewport(
+        let dashboard_lines = match active {
+            Some(active) if dashboard => dashboard_lines_with_viewport(
                 style,
                 active,
                 active.started.elapsed(),
                 viewport.map(|(_, columns)| (dashboard_budget + 1, columns)),
-            )
-        } else {
-            vec![active_line(style, &active.label, active.detail.as_deref())]
+            ),
+            Some(active) => vec![active_line(style, &active.label, active.detail.as_deref())],
+            // A long wait may own no dashboard; the logs still render.
+            None => Vec::new(),
         };
         // A dashboard taller than its budget (many hosts) is truncated from the
         // bottom so the tail still gets a row.
@@ -1561,41 +2069,54 @@ fn live_region_lines(
             dashboard_lines
         };
         let tail_budget = stream_room.saturating_sub(dashboard_lines.len());
-        let start = state.verbose_tail.len().saturating_sub(tail_budget);
-        let mut streamed: Vec<String> = state
-            .verbose_tail
-            .range(start..)
-            .map(|(tone, text)| {
-                let text = match columns {
-                    Some(columns) => truncate_text(text, columns),
-                    None => text.clone(),
-                };
-                style.paint(*tone, text)
-            })
-            .collect();
-        if streamed.is_empty() {
-            dashboard_lines
-        } else {
-            streamed.push(String::new());
-            streamed.extend(dashboard_lines);
-            streamed
-        }
-    } else if dashboard {
-        dashboard_lines_with_viewport(
+        let (window, above, below) = verbose_window(state, tail_budget);
+        let mut streamed: Vec<String> = vec![verbose_header(
             style,
-            active,
-            active.started.elapsed(),
-            viewport.map(|(rows, columns)| (rows.saturating_sub(footer_rows), columns)),
-        )
+            state.verbose_view,
+            state.verbose_started(),
+        )];
+        streamed.extend(window.into_iter().map(|(tone, text)| {
+            let text = match columns {
+                Some(columns) => truncate_text(&text, columns),
+                None => text,
+            };
+            style.paint(tone, text)
+        }));
+        let overflow = verbose_overflow_line(style, above, below);
+        if dashboard_lines.is_empty() {
+            if let Some(overflow) = overflow {
+                streamed.push(overflow);
+            }
+        } else {
+            streamed.push(overflow.unwrap_or_default());
+            streamed.extend(dashboard_lines);
+        }
+        streamed
+    } else if let Some(active) = active {
+        if dashboard {
+            dashboard_lines_with_viewport(
+                style,
+                active,
+                active.started.elapsed(),
+                viewport.map(|(rows, columns)| (rows.saturating_sub(footer_rows), columns)),
+            )
+        } else {
+            let detail = heartbeat_detail(active.detail.as_deref(), active.started.elapsed());
+            vec![active_line(style, &active.label, Some(&detail))]
+        }
     } else {
-        let detail = heartbeat_detail(active.detail.as_deref(), active.started.elapsed());
-        vec![active_line(style, &active.label, Some(&detail))]
+        // Nothing to draw: no span and no open verbose section.
+        return None;
     };
 
     if let Some(footer) = footer {
         // Keep one blank row between the dashboard and the footer so the keys
-        // read as chrome rather than another host row.
+        // read as chrome rather than another host row, then show the cancelling
+        // notice immediately above the keys.
         lines.push(String::new());
+        if let Some(notice) = notice {
+            lines.push(notice.to_owned());
+        }
         lines.push(footer.to_owned());
     }
     // Keep every line on one terminal row (a wrapped line would occupy rows
@@ -2179,6 +2700,601 @@ mod tests {
         );
     }
 
+    /// Interactive reporter over an in-memory buffer, mirroring the process
+    /// singleton the key-toggle path drives.
+    fn interactive_reporter() -> ProgressReporter {
+        set_json_output(false);
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::new(Mutex::new(Vec::new()))),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+        reporter.state.lock().unwrap().stack.push(ActiveProgress {
+            id: 1,
+            label: "Deploy systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: None,
+            started: Instant::now(),
+        });
+        reporter
+    }
+
+    /// One verbose line at a fixed time, so fixtures read like a stream.
+    fn line(seq: u64, tone: Tone, text: &str) -> VerboseLine {
+        VerboseLine {
+            seq,
+            at: SystemTime::UNIX_EPOCH,
+            tone,
+            text: text.to_owned(),
+        }
+    }
+
+    /// The retained digest flattened exactly as the errors view renders it.
+    fn digest_texts(reporter: &ProgressReporter) -> Vec<String> {
+        let state = reporter.state.lock().unwrap();
+        let retained = &state.retained_verbose;
+        digest_rows(retained, 0, digest_row_count(retained))
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect()
+    }
+
+    /// Render the live region for the reporter's current state.
+    fn region_lines(reporter: &ProgressReporter, viewport: (usize, usize)) -> Vec<String> {
+        let state = reporter.state.lock().unwrap();
+        live_region_lines(
+            TerminalStyle::from_capabilities(false, false),
+            Some("keys"),
+            None,
+            &state,
+            Some(viewport),
+            false,
+        )
+        .expect("active span renders a region")
+    }
+
+    #[test]
+    fn retained_digest_keeps_two_context_lines_around_a_problem() {
+        let reporter = interactive_reporter();
+        reporter.retain_verbose_line(Tone::Neutral, "  │ before one");
+        reporter.retain_verbose_line(Tone::Neutral, "  │ before two");
+        reporter.retain_verbose_line(Tone::Failure, "  │ error: boom");
+        reporter.retain_verbose_line(Tone::Neutral, "  │ after one");
+        reporter.retain_verbose_line(Tone::Neutral, "  │ after two");
+        reporter.retain_verbose_line(Tone::Neutral, "  │ dropped");
+
+        assert_eq!(
+            digest_texts(&reporter),
+            vec![
+                "  │ before one",
+                "  │ before two",
+                "  │ error: boom",
+                "  │ after one",
+                "  │ after two",
+            ]
+        );
+    }
+
+    #[test]
+    fn adjacent_problems_merge_without_duplicating_context() {
+        let reporter = interactive_reporter();
+        reporter.retain_verbose_line(Tone::Neutral, "before");
+        reporter.retain_verbose_line(Tone::Failure, "error one");
+        reporter.retain_verbose_line(Tone::LogWarning, "warning two");
+        reporter.retain_verbose_line(Tone::Neutral, "after");
+
+        assert_eq!(
+            digest_texts(&reporter),
+            vec!["before", "error one", "warning two", "after"]
+        );
+    }
+
+    #[test]
+    fn non_adjacent_problems_are_separated_by_an_elision() {
+        let reporter = interactive_reporter();
+        reporter.retain_verbose_line(Tone::Failure, "early error");
+        for index in 0..8 {
+            reporter.retain_verbose_line(Tone::Neutral, format!("noise {index}"));
+        }
+        reporter.retain_verbose_line(Tone::Failure, "late error");
+
+        assert_eq!(
+            digest_texts(&reporter),
+            vec![
+                "early error",
+                "noise 0",
+                "noise 1",
+                "...",
+                "noise 6",
+                "noise 7",
+                "late error",
+            ]
+        );
+    }
+
+    #[test]
+    fn digest_rereads_problems_recorded_while_hidden() {
+        let reporter = interactive_reporter();
+        reporter.verbose_line(Tone::Failure, "error while shown");
+        reporter.clear_verbose_output();
+        reporter.retain_verbose_line(Tone::Neutral, "hidden noise");
+        reporter.retain_verbose_line(Tone::LogWarning, "warning while hidden");
+
+        let digest = digest_texts(&reporter);
+        assert!(
+            digest.contains(&"error while shown".to_owned()),
+            "{digest:?}"
+        );
+        assert!(
+            digest.contains(&"warning while hidden".to_owned()),
+            "{digest:?}"
+        );
+    }
+
+    #[test]
+    fn run_view_renders_the_live_ring() {
+        let reporter = interactive_reporter();
+        reporter.set_verbose_view(VerboseView::Run);
+        reporter.verbose_line(Tone::Neutral, "live one");
+        reporter.verbose_line(Tone::Failure, "live error");
+
+        let lines = region_lines(&reporter, (24, 100));
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.starts_with("● Logs · run")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|line| line == "live error"), "{lines:?}");
+    }
+
+    #[test]
+    fn errors_view_renders_the_retained_digest() {
+        let reporter = interactive_reporter();
+        reporter.retain_verbose_line(Tone::Neutral, "  │ before");
+        reporter.retain_verbose_line(Tone::Failure, "  │ error: boom");
+        reporter.retain_verbose_line(Tone::LogWarning, "  │ warning: hmm");
+
+        reporter.set_verbose_view(VerboseView::Errors);
+
+        let lines = region_lines(&reporter, (24, 100));
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.starts_with("● Logs · errors")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "  │ error: boom"),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "  │ warning: hmm"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn overflow_row_names_hidden_lines_and_scroll_keys() {
+        let reporter = interactive_reporter();
+        reporter.set_verbose_view(VerboseView::Run);
+        for index in 0..80 {
+            reporter.verbose_line(Tone::Neutral, format!("live {index}"));
+        }
+
+        let lines = region_lines(&reporter, (20, 100));
+        let overflow = lines
+            .iter()
+            .find(|line| line.contains('▲') || line.contains('▼'))
+            .unwrap_or_else(|| panic!("no overflow row in {lines:?}"));
+        assert!(overflow.contains("above"), "{overflow:?}");
+        assert!(overflow.contains("ctrl/alt-h/j/k/l"), "{overflow:?}");
+    }
+
+    #[test]
+    fn scrolling_moves_the_visible_window() {
+        let reporter = interactive_reporter();
+        reporter.set_verbose_view(VerboseView::Run);
+        for index in 0..80 {
+            reporter.verbose_line(Tone::Neutral, format!("live {index}"));
+        }
+
+        let newest = region_lines(&reporter, (20, 100));
+        assert!(newest.iter().any(|line| line == "live 79"), "{newest:?}");
+
+        reporter.scroll_verbose_lines(10);
+
+        let scrolled = region_lines(&reporter, (20, 100));
+        assert!(
+            !scrolled.iter().any(|line| line == "live 79"),
+            "{scrolled:?}"
+        );
+        assert!(
+            scrolled.iter().any(|line| line == "live 65"),
+            "{scrolled:?}"
+        );
+        assert!(
+            scrolled.iter().any(|line| line.contains("below")),
+            "{scrolled:?}"
+        );
+    }
+
+    #[test]
+    fn a_scrolled_window_holds_its_lines_as_new_output_arrives() {
+        let reporter = interactive_reporter();
+        reporter.set_verbose_view(VerboseView::Run);
+        for index in 0..80 {
+            reporter.verbose_line(Tone::Neutral, format!("live {index}"));
+        }
+        reporter.scroll_verbose_lines(10);
+        let held = region_lines(&reporter, (20, 100));
+        assert!(held.iter().any(|line| line == "live 56"), "{held:?}");
+
+        for index in 80..85 {
+            reporter.verbose_line(Tone::Neutral, format!("live {index}"));
+        }
+
+        // The window must stay on the lines the reader is looking at instead of
+        // sliding with every arriving line.
+        let after = region_lines(&reporter, (20, 100));
+        assert!(
+            after.iter().any(|line| line == "live 56"),
+            "window slid: {after:?}"
+        );
+        assert!(!after.iter().any(|line| line == "live 55"), "{after:?}");
+    }
+
+    #[test]
+    fn errors_windows_count_elisions_as_rows() {
+        let reporter = interactive_reporter();
+        reporter.retain_verbose_line(Tone::Failure, "error 0");
+        reporter.retain_verbose_line(Tone::Neutral, "noise 0");
+        reporter.retain_verbose_line(Tone::Neutral, "noise 1");
+        for index in 2..8 {
+            reporter.retain_verbose_line(Tone::Neutral, format!("noise {index}"));
+        }
+        reporter.retain_verbose_line(Tone::Failure, "error 1");
+
+        let state = reporter.state.lock().unwrap();
+        let retained = &state.retained_verbose;
+        // Two context lines survive either side of each problem, and the skipped
+        // `noise 2..=5` collapse into one `...` row that still occupies a row of
+        // the view, so a scrolled window must account for it.
+        assert_eq!(digest_row_count(retained), 7);
+        let window = |start, end| {
+            digest_rows(retained, start, end)
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(window(2, 6), vec!["noise 1", "...", "noise 6", "noise 7"]);
+        assert_eq!(window(5, 7), vec!["noise 7", "error 1"]);
+    }
+
+    #[test]
+    fn the_logs_header_reports_when_the_view_started() {
+        let style = TerminalStyle::from_capabilities(false, false);
+        // The process time zone decides the digits, so assert the shape of the
+        // clock reading rather than a fixed time.
+        let header = verbose_header(style, VerboseView::Run, Some(SystemTime::now()));
+        let clock = header
+            .strip_prefix("● Logs · run · since ")
+            .expect("the header names the view and when it started");
+        assert_eq!(clock.len(), 8, "{clock}");
+        assert_eq!(
+            (clock.as_bytes()[2], clock.as_bytes()[5]),
+            (b':', b':'),
+            "{clock}"
+        );
+        assert!(
+            clock
+                .chars()
+                .filter(|character| *character != ':')
+                .all(|character| character.is_ascii_digit()),
+            "{clock}"
+        );
+
+        // A view with nothing to show yet has no start to report.
+        assert_eq!(
+            verbose_header(style, VerboseView::Errors, None),
+            "● Logs · errors"
+        );
+    }
+
+    #[test]
+    fn an_unrepresentable_clock_time_keeps_the_header_shape() {
+        // A stamp before the epoch cannot be rendered, so the segment degrades to
+        // a placeholder instead of vanishing mid-header.
+        let before_epoch = SystemTime::UNIX_EPOCH - Duration::from_secs(1);
+        assert_eq!(format_clock_time(before_epoch), UNKNOWN_CLOCK_TIME);
+    }
+
+    #[test]
+    fn the_footer_drops_hints_before_cutting_the_interrupt_label() {
+        let groups = vec![
+            vec!["v: verbose".to_owned()],
+            vec![
+                "ctrl/alt-r: run".to_owned(),
+                "ctrl/alt-e: errors".to_owned(),
+            ],
+            vec!["ctrl-c: confirm cancel".to_owned()],
+        ];
+        let wide = join_key_hints(&groups, Some(120));
+        assert!(wide.contains("ctrl/alt-e: errors"), "{wide}");
+        assert!(wide.ends_with("ctrl-c: confirm cancel"), "{wide}");
+
+        // The view pair drops as a unit, and the interrupt label, which escalates
+        // as the cancel is armed, survives intact instead of being cut mid-word.
+        assert_eq!(
+            join_key_hints(&groups, Some(60)),
+            "keys: v: verbose · ctrl-c: confirm cancel"
+        );
+        assert_eq!(
+            join_key_hints(&groups, Some(20)),
+            "keys: ctrl-c: confirm cancel"
+        );
+    }
+
+    #[test]
+    fn the_logs_label_comes_from_the_oldest_line_each_view_holds() {
+        let earlier = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let later = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000);
+        let at = |seq, at, text: &str| VerboseLine {
+            seq,
+            at,
+            tone: Tone::Neutral,
+            text: text.to_owned(),
+        };
+        let reporter = interactive_reporter();
+        reporter.set_verbose_view(VerboseView::Run);
+
+        // A view holding nothing has nothing to date.
+        assert_eq!(reporter.state.lock().unwrap().verbose_started(), None);
+
+        {
+            let mut state = reporter.state.lock().unwrap();
+            state.verbose_tail.push_back(at(0, earlier, "first"));
+            state.verbose_tail.push_back(at(1, later, "second"));
+        }
+        assert_eq!(
+            reporter.state.lock().unwrap().verbose_started(),
+            Some(earlier)
+        );
+
+        // Evicting the oldest line moves the label with the content it describes,
+        // instead of reporting when the buffer was created.
+        reporter.state.lock().unwrap().verbose_tail.pop_front();
+        assert_eq!(
+            reporter.state.lock().unwrap().verbose_started(),
+            Some(later)
+        );
+
+        // The errors view dates its own buffer, which outlives a hide.
+        reporter
+            .state
+            .lock()
+            .unwrap()
+            .retained_verbose
+            .push_back(at(9, earlier, "error"));
+        reporter.set_verbose_view(VerboseView::Errors);
+        assert_eq!(
+            reporter.state.lock().unwrap().verbose_started(),
+            Some(earlier)
+        );
+        reporter.clear_verbose_output();
+        reporter.set_verbose_view(VerboseView::Errors);
+        assert_eq!(
+            reporter.state.lock().unwrap().verbose_started(),
+            Some(earlier),
+            "a hide retains the digest and its label"
+        );
+    }
+
+    #[test]
+    fn reset_verbose_history_forgets_a_previous_command() {
+        let reporter = interactive_reporter();
+        reporter.set_verbose_view(VerboseView::Errors);
+        reporter.verbose_line(Tone::Failure, "old error");
+
+        reporter.reset_verbose_history();
+
+        let state = reporter.state.lock().unwrap();
+        assert!(state.verbose_tail.is_empty());
+        assert!(state.retained_verbose.is_empty());
+        assert!(state.verbose_recent.is_empty());
+        assert_eq!(state.verbose_seq, 0);
+        assert_eq!(state.verbose_scroll, 0);
+    }
+
+    #[test]
+    fn an_unreported_viewport_still_bounds_the_region() {
+        let reporter = interactive_reporter();
+        reporter.set_verbose_view(VerboseView::Run);
+        for index in 0..(DEFAULT_VIEWPORT_ROWS * 4) {
+            reporter.verbose_line(Tone::Neutral, format!("live {index}"));
+        }
+
+        // A terminal that will not report its size must still bound the region,
+        // instead of streaming the whole ring into the scrollback.
+        let state = reporter.state.lock().unwrap();
+        let lines = live_region_lines(
+            TerminalStyle::from_capabilities(false, false),
+            Some("keys"),
+            None,
+            &state,
+            None,
+            true,
+        )
+        .expect("active span renders a region");
+        assert!(
+            lines.len() < DEFAULT_VIEWPORT_ROWS,
+            "region rows {} must stay bounded",
+            lines.len()
+        );
+    }
+
+    #[test]
+    fn errors_view_scroll_bound_counts_elision_rows() {
+        let state = ProgressState {
+            verbose_view: VerboseView::Errors,
+            retained_verbose: VecDeque::from([
+                line(0, Tone::Failure, "early"),
+                line(5, Tone::Failure, "late"),
+            ]),
+            ..ProgressState::default()
+        };
+        // Rendered as `early`, `...`, `late`, so the scroll bound must count
+        // the elision row rather than just the retained entries.
+        assert_eq!(state.verbose_content_len(), 3);
+    }
+
+    #[test]
+    fn retained_digest_is_bounded() {
+        let reporter = interactive_reporter();
+        for index in 0..(VERBOSE_MAX_RETAINED_LINES + 50) {
+            reporter.retain_verbose_line(Tone::Failure, format!("error {index}"));
+        }
+        assert_eq!(
+            reporter.state.lock().unwrap().retained_verbose.len(),
+            VERBOSE_MAX_RETAINED_LINES
+        );
+    }
+
+    #[test]
+    fn non_interactive_runs_never_retain_hidden_lines() {
+        set_json_output(false);
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: false,
+            recent_update_limit: 0,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::clone(&buffer)),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+
+        reporter.retain_verbose_line(Tone::Failure, "hidden error");
+
+        assert!(reporter.state.lock().unwrap().retained_verbose.is_empty());
+        assert!(buffer.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn live_region_shows_the_logs_header_while_verbose_is_active() {
+        let mut state = ProgressState::default();
+        state.stack.push(ActiveProgress {
+            id: 1,
+            label: "Deploy systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: None,
+            started: Instant::now(),
+        });
+        let style = TerminalStyle::from_capabilities(false, false);
+
+        let hidden = live_region_lines(style, Some("keys"), None, &state, Some((24, 80)), true)
+            .expect("active span renders a region");
+        assert!(
+            !hidden.iter().any(|line| line == "● Logs · run"),
+            "{hidden:?}"
+        );
+
+        state.verbose_active = true;
+        let revealed = live_region_lines(style, Some("keys"), None, &state, Some((24, 80)), true)
+            .expect("active span renders a region");
+        assert_eq!(revealed.first().map(String::as_str), Some("● Logs · run"));
+    }
+
+    #[test]
+    fn verbose_section_renders_without_an_active_span() {
+        // A host-agent job can own no dashboard, so the logs must still render.
+        let state = ProgressState {
+            verbose_active: true,
+            verbose_tail: VecDeque::from([line(0, Tone::Failure, "  │ error: boom")]),
+            ..ProgressState::default()
+        };
+
+        let lines = live_region_lines(
+            TerminalStyle::from_capabilities(false, false),
+            Some("keys"),
+            None,
+            &state,
+            Some((24, 80)),
+            true,
+        )
+        .expect("an open verbose section renders without a span");
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.starts_with("● Logs · run")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "  │ error: boom"),
+            "{lines:?}"
+        );
+        assert_eq!(lines.last().map(String::as_str), Some("keys"));
+    }
+
+    #[test]
+    fn idle_reporter_without_a_span_renders_nothing() {
+        let state = ProgressState::default();
+        assert!(
+            live_region_lines(
+                TerminalStyle::from_capabilities(false, false),
+                Some("keys"),
+                None,
+                &state,
+                Some((24, 80)),
+                true,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn footer_escalates_the_ctrl_c_action() {
+        assert_eq!(next_cancel_action(false, false), "cancel");
+        assert_eq!(next_cancel_action(false, true), "confirm cancel");
+        assert_eq!(next_cancel_action(true, false), "force exit");
+    }
+
+    #[test]
+    fn cancel_notice_renders_just_above_the_footer() {
+        let mut state = ProgressState::default();
+        state.stack.push(ActiveProgress {
+            id: 1,
+            label: "Deploy systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: None,
+            started: Instant::now(),
+        });
+        let lines = live_region_lines(
+            TerminalStyle::from_capabilities(false, false),
+            Some("keys: v: verbose · ctrl-c: force exit"),
+            Some("Cancel interrupt received · cancelling"),
+            &state,
+            Some((24, 80)),
+            true,
+        )
+        .expect("active span renders a region");
+        let chrome = &lines[lines.len() - 3..];
+        assert_eq!(chrome[0], "");
+        assert_eq!(chrome[1], "Cancel interrupt received · cancelling");
+        assert_eq!(chrome[2], "keys: v: verbose · ctrl-c: force exit");
+        assert!(lines.len() < 24, "region rows {} must fit", lines.len());
+    }
+
     #[test]
     fn hiding_verbose_logs_drops_the_live_tail() {
         set_json_output(false);
@@ -2346,11 +3462,11 @@ mod tests {
         for index in 0..200 {
             state
                 .verbose_tail
-                .push_back((Tone::Neutral, format!("log line {index}")));
+                .push_back(line(index, Tone::Neutral, &format!("log line {index}")));
         }
 
         let style = TerminalStyle::from_capabilities(false, false);
-        let lines = live_region_lines(style, Some("keys"), &state, Some((24, 80)), true)
+        let lines = live_region_lines(style, Some("keys"), None, &state, Some((24, 80)), true)
             .expect("active span renders a region");
         // The whole region must fit so it is cleared in place, never scrolled.
         assert!(lines.len() < 24, "region overflowed: {}", lines.len());
@@ -2450,14 +3566,16 @@ mod tests {
             started: Instant::now(),
         });
         state.verbose_active = true;
-        state.verbose_tail.push_back((
+        state.verbose_tail.push_back(line(
+            0,
             Tone::Neutral,
-            format!("  │ [build via pvl-x2 pvl-l5 err] {}", "x".repeat(200)),
+            &format!("  │ [build via pvl-x2 pvl-l5 err] {}", "x".repeat(200)),
         ));
 
         let lines = live_region_lines(
             TerminalStyle::from_capabilities(false, false),
-            Some("keys: v: verbose off"),
+            Some("keys: v: verbose · ctrl-c: cancel"),
+            None,
             &state,
             Some((24, 40)),
             true,
@@ -2500,17 +3618,19 @@ mod tests {
         {
             let mut state = reporter.state.lock().unwrap();
             state.verbose_active = true;
-            for _index in 0..40 {
-                state.verbose_tail.push_back((
+            for index in 0..40 {
+                state.verbose_tail.push_back(line(
+                    index,
                     Tone::Neutral,
-                    format!("  │ [build via host-0 host-7 err] {}", "y".repeat(200)),
+                    &format!("  │ [build via host-0 host-7 err] {}", "y".repeat(200)),
                 ));
             }
         }
         let state = reporter.state.lock().unwrap();
         let lines = live_region_lines(
             TerminalStyle::from_capabilities(false, false),
-            Some("keys: v: verbose on"),
+            Some("keys: v: verbose · ctrl-c: cancel"),
+            None,
             &state,
             Some((24, 80)),
             true,
@@ -2539,7 +3659,7 @@ mod tests {
             host_dashboard: None,
             started: Instant::now(),
         });
-        let small = live_region_lines(style, Some("keys"), &state, Some((24, 80)), true)
+        let small = live_region_lines(style, Some("keys"), None, &state, Some((24, 80)), true)
             .expect("active span renders a region");
         // No reserved rows: the region is content-sized and starts at the
         // cursor rather than being padded to the bottom of the screen.
@@ -2552,9 +3672,9 @@ mod tests {
         for index in 0..100 {
             state
                 .verbose_tail
-                .push_back((Tone::Neutral, format!("line {index}")));
+                .push_back(line(index, Tone::Neutral, &format!("line {index}")));
         }
-        let large = live_region_lines(style, Some("keys"), &state, Some((24, 80)), true)
+        let large = live_region_lines(style, Some("keys"), None, &state, Some((24, 80)), true)
             .expect("active span renders a region");
         assert!(large.len() > small.len(), "region grows with the tail");
         assert!(large.len() < 24, "region still fits the viewport");

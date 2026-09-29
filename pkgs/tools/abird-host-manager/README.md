@@ -343,16 +343,34 @@ between the tail and the dashboard, a blank row before the key footer, and the
 whole region sized to the viewport, so the stream is cleared and redrawn like
 progress rather than appended. Redirected output still appends plain lines.
 Native fleet runs on an interactive terminal capture the `v` key and advertise
-it in a footer while running:
-`keys: v: verbose on · ctrl-c: cancel · ctrl-c x3: force exit`. The `v` hint
-shows whether verbose is on and flips the moment the key is pressed
-(`verbose on` while on, `verbose off` while off); hiding drops the tail so the
-screen looks as if it had never been shown, and no hint is printed after the run
-summary. Ctrl-C is a two-step confirm: the first press only arms the cancel and
-the footer flips to `ctrl-c: confirm cancel`; a lone first press expires after
-the confirmation window without cancelling. The confirmed second press cancels
-gracefully (waiting for an in-flight activation), and the third press forces an
-immediate exit.
+it in a footer while running: `keys: v: verbose · ctrl-c: cancel`. A `● Logs`
+header opens the block whenever verbose is on, naming the active view and when
+the oldest line it holds was recorded (`● Logs · run · since 14:32:05`); the
+footer then adds the view keys (`ctrl/alt-r: run · ctrl/alt-e: errors`), and
+hiding drops the live ring so the screen looks as if it had never been shown.
+Every shortcut also
+has an `alt` form, because a terminal that consumes the control bytes would
+take the key with it, and on a terminal too narrow for the whole footer the
+hints drop in whole groups — the view pair leaves together — so the escalating
+`ctrl-c` label is never cut. No hint is
+printed after the run summary. `ctrl-r` shows the live stream; `ctrl-e` shows
+every error and warning retained for the run with two lines of context on each
+side, non-adjacent runs joined by a `...` line, remembered even while hidden.
+The `since` label always dates the oldest line the shown view still holds, so it
+restarts with the ring after a hide and moves forward as older lines are
+evicted, while the errors view dates its own retained digest.
+Agent jobs share that one section, so `--nixbot-deploy` behaves like a native
+run, and the section renders even while a wait owns no dashboard. When a view is
+taller than the window, `ctrl-k`/`ctrl-j` (or `alt-k`/`alt-j`) scroll by lines
+and `ctrl-h`/`ctrl-l` (or `alt-h`/`alt-l`) by pages, and the separator row below
+the logs becomes a muted
+`▲ N above · ▼ M below · ctrl/alt-h/j/k/l: scroll` marker. Ctrl-C is a two-step
+confirm whose footer label tracks the escalation (`cancel`, `confirm cancel`,
+`force exit`): the first press only arms the cancel, a lone first press expires
+after the confirmation window without cancelling, the confirmed second press
+cancels gracefully (waiting for an in-flight activation), and the third press
+forces an immediate exit. Once the cancel is confirmed, a
+`Cancel interrupt received · cancelling` line appears just above the footer.
 
 The Rust compatibility binary remains covered by the Cargo suite so the later
 cutover is packaging and caller wiring rather than another implementation port.
