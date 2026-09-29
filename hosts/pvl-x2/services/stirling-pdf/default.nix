@@ -29,7 +29,7 @@ in {
       source = ''
         services:
           stirling-pdf:
-            image: docker.stirlingpdf.com/stirlingtools/stirling-pdf:2.14.3
+            image: docker.stirlingpdf.com/stirlingtools/stirling-pdf:3.0.0
             container_name: stirling-pdf
             user: 0:0
             environment:
