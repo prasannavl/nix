@@ -35,10 +35,11 @@ enum ProgressDestination {
     Stderr,
     #[cfg(test)]
     Buffer(Arc<Mutex<Vec<u8>>>),
-    /// Test destination that reports a fixed terminal size, so the viewport
-    /// budget and in-place clearing can be exercised without a real tty.
+    /// Test destination that reports a terminal size through a shared cell (or
+    /// `None` for an unknown size), so the viewport budget, in-place clearing,
+    /// and a resize can all be exercised without a real tty.
     #[cfg(test)]
-    BufferWithViewport(Arc<Mutex<Vec<u8>>>, (usize, usize)),
+    BufferWithViewport(Arc<Mutex<Vec<u8>>>, Arc<Mutex<Option<(usize, usize)>>>),
 }
 
 impl ProgressDestination {
@@ -64,7 +65,9 @@ impl ProgressDestination {
             #[cfg(test)]
             Self::Buffer(_) => None,
             #[cfg(test)]
-            Self::BufferWithViewport(_, viewport) => Some(*viewport),
+            Self::BufferWithViewport(_, viewport) => {
+                viewport.lock().ok().and_then(|viewport| *viewport)
+            }
         }
     }
 }
@@ -75,6 +78,16 @@ struct ProgressState {
     next_id: u64,
     next_update_id: u64,
     rendered_lines: usize,
+    /// Whether the live region is currently painted on screen. A counted clear
+    /// removes it; an append-only snapshot leaves its rows behind, so it stays
+    /// painted until a wipe removes it.
+    region_painted: bool,
+    /// Last known terminal `(rows, columns)` the region was laid out for. Kept
+    /// across an unknown size read, so a resize is still detected once the size
+    /// is readable again. A change means the terminal reflowed, so
+    /// `rendered_lines` no longer locates the region and the next frame wipes
+    /// the screen instead of clearing the wrong rows.
+    region_viewport: Option<(usize, usize)>,
     task_tails: VecDeque<TaskTail>,
     failed_task_tails: VecDeque<FailedTaskTail>,
     scrolling_snapshot_at: Option<Instant>,
@@ -1581,30 +1594,77 @@ impl ProgressReporter {
         }
     }
 
-    fn clear_line(&self) {
+    /// The terminal size to lay the next frame out for: the live size when it
+    /// can be read, otherwise the last known size. Falling back to the last
+    /// known size keeps a transient unknown read (a pty reporting zero while it
+    /// resizes) from re-laying the region out with the stale default budget.
+    fn layout_viewport(&self) -> Option<(usize, usize)> {
+        self.destination.viewport().or_else(|| {
+            self.state
+                .lock()
+                .ok()
+                .and_then(|state| state.region_viewport)
+        })
+    }
+
+    /// Erase the live region before repainting. `viewport` is the size the next
+    /// frame is laid out for, so layout and the reset decision agree on one
+    /// size. When the region was painted for a different size the terminal has
+    /// reflowed, so `rendered_lines` no longer locates it: wipe the visible
+    /// screen and home the cursor (scrollback survives). An unknown size is not
+    /// a resize, so it neither wipes nor forgets the last known size; a known
+    /// size that follows an unknown first paint is a resize.
+    ///
+    /// `replacing` is true when the next frame replaces the region (a counted
+    /// frame or nothing at all). An append-only snapshot is taller than the
+    /// screen and draws no counted rows, so a replacing clear must wipe it, not
+    /// clear zero rows and leave it stranded.
+    fn clear_region(&self, viewport: Option<(usize, usize)>, replacing: bool) {
         if !self.interactive {
             return;
         }
-        let rendered_lines = self
-            .state
-            .lock()
-            .ok()
-            .map_or(0, |mut state| std::mem::take(&mut state.rendered_lines));
-        clear_rendered_lines(&self.destination, rendered_lines);
+        let (rendered_lines, wipe) = self.state.lock().map_or((0, false), |mut state| {
+            let resized =
+                state.region_painted && viewport.is_some() && state.region_viewport != viewport;
+            if viewport.is_some() {
+                state.region_viewport = viewport;
+            }
+            let snapshot_present = state.region_painted && state.rendered_lines == 0;
+            let rendered_lines = std::mem::take(&mut state.rendered_lines);
+            let wipe = resized || (replacing && snapshot_present);
+            if wipe || rendered_lines > 0 {
+                state.region_painted = false;
+                // Clearing a painted region lets the next snapshot paint at
+                // once instead of waiting out the append-only throttle.
+                state.scrolling_snapshot_at = None;
+            }
+            (rendered_lines, wipe)
+        });
+        if wipe {
+            clear_screen(&self.destination);
+        } else {
+            clear_rendered_lines(&self.destination, rendered_lines);
+        }
+    }
+
+    /// Clear the region for callers that write a permanent line before the next
+    /// redraw. Uses the same layout size as a redraw so a resize is seen once.
+    fn clear_line(&self) {
+        self.clear_region(self.layout_viewport(), true);
     }
 
     fn redraw_current(&self) {
         if !self.interactive {
             return;
         }
-        self.clear_line();
         let notice = self.cancel_notice();
-        let viewport = self.destination.viewport();
+        // Resolve one size for layout, the footer width, and the resize reset so
+        // they all describe the same frame, even if the size becomes unreadable
+        // partway through.
+        let viewport = self.layout_viewport();
         let dashboard = self.shows_recent_updates();
-        // Read the state once so the footer and the region always describe the
-        // same frame.
         let lines = self.state.lock().ok().and_then(|state| {
-            let footer = self.key_footer(&state);
+            let footer = self.key_footer(&state, viewport);
             live_region_lines(
                 self.style,
                 footer.as_deref(),
@@ -1615,21 +1675,32 @@ impl ProgressReporter {
             )
         });
         let Some(lines) = lines else {
+            // Nothing left to draw: erase the previous region so an empty frame
+            // never strands stale output.
+            self.clear_region(viewport, true);
             return;
         };
-        if viewport.is_some_and(|(rows, _)| lines.len() >= rows) {
+        let appending = viewport.is_some_and(|(rows, _)| lines.len() >= rows);
+        self.clear_region(viewport, !appending);
+        if appending {
+            // A resize dropped the throttle in `clear_region`, so a wiped screen
+            // repaints here rather than waiting out the snapshot interval.
             let should_render = self
                 .state
                 .lock()
                 .is_ok_and(|mut state| claim_scrolling_snapshot(&mut state, Instant::now()));
             if should_render {
                 self.destination.write(&format!("{}\n", lines.join("\n")));
+                if let Ok(mut state) = self.state.lock() {
+                    state.region_painted = true;
+                }
             }
         } else {
             redraw_lines(&self.destination, &lines);
             if let Ok(mut state) = self.state.lock() {
                 state.rendered_lines = lines.len();
                 state.scrolling_snapshot_at = None;
+                state.region_painted = true;
             }
         }
     }
@@ -1639,7 +1710,11 @@ impl ProgressReporter {
     /// `ctrl-c` action escalates with the signal coordinator, so the footer
     /// always advertises the next press: `cancel`, `confirm cancel`, then
     /// `force exit`.
-    fn key_footer(&self, state: &ProgressState) -> Option<String> {
+    fn key_footer(
+        &self,
+        state: &ProgressState,
+        viewport: Option<(usize, usize)>,
+    ) -> Option<String> {
         if !self.interactive || !crate::fleet::interactive::keys_available() {
             return None;
         }
@@ -1656,10 +1731,7 @@ impl ProgressReporter {
             ]);
         }
         groups.push(vec![format!("ctrl-c: {cancel}")]);
-        let width = self
-            .destination
-            .viewport()
-            .map(|(_, columns)| columns.saturating_sub(1));
+        let width = viewport.map(|(_, columns)| columns.saturating_sub(1));
         Some(
             self.style
                 .paint(Tone::Muted, join_key_hints(&groups, width)),
@@ -2484,6 +2556,14 @@ fn clear_rendered_lines(destination: &ProgressDestination, lines: usize) {
         sequence.push_str("\x1b[1A\r\x1b[2K");
     }
     destination.write(&sequence);
+}
+
+/// Wipe the visible screen and home the cursor, leaving scrollback intact. Used
+/// when the terminal was resized: the reflow means the previous row count no
+/// longer locates the live region, so the only reliable reset is to clear the
+/// screen and redraw the region from the top-left.
+fn clear_screen(destination: &ProgressDestination) {
+    destination.write("\x1b[2J\x1b[H");
 }
 
 /// Terminal rows one streamed line occupies, so a later hide can erase it.
@@ -3570,7 +3650,10 @@ mod tests {
             interactive: true,
             recent_update_limit: 10,
             style: TerminalStyle::from_capabilities(false, false),
-            destination: ProgressDestination::BufferWithViewport(Arc::clone(&buffer), (24, 100)),
+            destination: ProgressDestination::BufferWithViewport(
+                Arc::clone(&buffer),
+                Arc::new(Mutex::new(Some((24, 100)))),
+            ),
             state: Arc::new(Mutex::new(ProgressState::default())),
             output: Arc::new(Mutex::new(())),
         };
@@ -3603,6 +3686,335 @@ mod tests {
         let ups = rendered.matches("\x1b[1A").count();
         assert_eq!(ups, region - 1, "clear must cover the whole old region");
         assert!(!reporter.state.lock().unwrap().verbose_active);
+    }
+
+    /// A reporter on a test terminal whose reported size can change between
+    /// frames, so resize behavior can be exercised without a real tty.
+    fn reporter_with_viewport(
+        buffer: &Arc<Mutex<Vec<u8>>>,
+        viewport: &Arc<Mutex<Option<(usize, usize)>>>,
+    ) -> ProgressReporter {
+        set_json_output(false);
+        ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::BufferWithViewport(
+                Arc::clone(buffer),
+                Arc::clone(viewport),
+            ),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        }
+    }
+
+    fn push_active_span(reporter: &ProgressReporter) {
+        reporter.state.lock().unwrap().stack.push(ActiveProgress {
+            id: 1,
+            label: "Build systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: None,
+            started: Instant::now(),
+        });
+    }
+
+    fn push_host_dashboard_span(reporter: &ProgressReporter, hosts: &[String]) {
+        reporter.state.lock().unwrap().stack.push(ActiveProgress {
+            id: 1,
+            label: "Build systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: Some(HostDashboard {
+                order: hosts.to_vec(),
+                rows: hosts
+                    .iter()
+                    .map(|host| (host.clone(), HostRow::default()))
+                    .collect(),
+                ..HostDashboard::default()
+            }),
+            started: Instant::now(),
+        });
+    }
+
+    #[test]
+    fn a_resize_wipes_the_screen_and_redraws_the_region_from_home() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((24usize, 100usize))));
+        let reporter = reporter_with_viewport(&buffer, &viewport);
+        push_active_span(&reporter);
+        reporter.refresh();
+        assert_eq!(
+            reporter.state.lock().unwrap().region_viewport,
+            Some((24, 100))
+        );
+        buffer.lock().unwrap().clear();
+
+        // Shrinking the terminal reflows the screen, so the stored row count no
+        // longer locates the region; the frame must wipe and redraw from home.
+        *viewport.lock().unwrap() = Some((12, 100));
+        reporter.refresh();
+
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            rendered.contains("\x1b[2J\x1b[H"),
+            "resize must wipe the screen: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("\x1b[1A"),
+            "resize must not clear by the stale row count: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("Build systems"),
+            "the region must redraw after the wipe: {rendered:?}"
+        );
+        let state = reporter.state.lock().unwrap();
+        assert_eq!(state.region_viewport, Some((12, 100)));
+        assert!(state.rendered_lines > 0 && state.rendered_lines < 12);
+    }
+
+    #[test]
+    fn an_unchanged_viewport_still_clears_only_the_drawn_rows() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((24usize, 100usize))));
+        let reporter = reporter_with_viewport(&buffer, &viewport);
+        push_active_span(&reporter);
+        {
+            let mut state = reporter.state.lock().unwrap();
+            state.verbose_active = true;
+            for index in 0..6 {
+                state.verbose_tail.push_back(line(
+                    index,
+                    Tone::Neutral,
+                    &format!("  │ log {index}"),
+                ));
+            }
+        }
+        reporter.refresh();
+        let rendered_lines = reporter.state.lock().unwrap().rendered_lines;
+        assert!(
+            rendered_lines > 1,
+            "region should hold the tail: {rendered_lines}"
+        );
+        buffer.lock().unwrap().clear();
+
+        reporter.refresh();
+
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            !rendered.contains("\x1b[2J"),
+            "an unchanged viewport must not wipe the screen: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("\x1b[1A"),
+            "an unchanged viewport clears the drawn rows: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_columns_only_resize_also_wipes_the_screen() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((24usize, 100usize))));
+        let reporter = reporter_with_viewport(&buffer, &viewport);
+        push_active_span(&reporter);
+        reporter.refresh();
+        buffer.lock().unwrap().clear();
+
+        // A width change reflows committed lines too, so it must wipe as well.
+        *viewport.lock().unwrap() = Some((24, 80));
+        reporter.refresh();
+
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            rendered.contains("\x1b[2J\x1b[H"),
+            "a width change must wipe the screen: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_size_does_not_mask_the_next_resize() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((24usize, 100usize))));
+        let reporter = reporter_with_viewport(&buffer, &viewport);
+        push_active_span(&reporter);
+        reporter.refresh();
+        assert!(reporter.state.lock().unwrap().region_painted);
+
+        // A resize can make the size momentarily unreadable. The frame must lay
+        // out against the last known size and keep it, not forget it.
+        *viewport.lock().unwrap() = None;
+        reporter.refresh();
+        assert_eq!(
+            reporter.state.lock().unwrap().region_viewport,
+            Some((24, 100))
+        );
+        buffer.lock().unwrap().clear();
+
+        // Once the size is readable again, the change must still wipe.
+        *viewport.lock().unwrap() = Some((12, 100));
+        reporter.refresh();
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            rendered.contains("\x1b[2J\x1b[H"),
+            "a resize after an unknown read must still wipe: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_first_frame_at_an_unknown_size_is_wiped_once_the_size_is_known() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(None::<(usize, usize)>));
+        let reporter = reporter_with_viewport(&buffer, &viewport);
+        push_active_span(&reporter);
+        reporter.refresh();
+        {
+            let state = reporter.state.lock().unwrap();
+            assert!(state.region_painted);
+            assert_eq!(state.region_viewport, None);
+        }
+        buffer.lock().unwrap().clear();
+
+        // The first readable size must be treated as a resize, not as the
+        // first paint, because the region was already laid out at an unknown
+        // size (a fresh pty reporting zero).
+        *viewport.lock().unwrap() = Some((12, 100));
+        reporter.refresh();
+
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            rendered.contains("\x1b[2J\x1b[H"),
+            "the first readable size must wipe the region: {rendered:?}"
+        );
+        assert_eq!(
+            reporter.state.lock().unwrap().region_viewport,
+            Some((12, 100))
+        );
+    }
+
+    #[test]
+    fn a_replacing_clear_wipes_a_stranded_snapshot() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((6usize, 100usize))));
+        let reporter = reporter_with_viewport(&buffer, &viewport);
+        let hosts = (0..20)
+            .map(|index| format!("host-{index}"))
+            .collect::<Vec<_>>();
+        push_host_dashboard_span(&reporter, &hosts);
+        reporter.refresh();
+        {
+            let state = reporter.state.lock().unwrap();
+            assert_eq!(state.rendered_lines, 0, "a snapshot draws no counted rows");
+            assert!(state.region_painted);
+        }
+        buffer.lock().unwrap().clear();
+
+        reporter.clear_line();
+
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            rendered.contains("\x1b[2J\x1b[H"),
+            "a replacing clear must wipe the stranded snapshot: {rendered:?}"
+        );
+        assert!(!reporter.state.lock().unwrap().region_painted);
+    }
+
+    #[test]
+    fn hiding_verbose_without_a_span_still_clears_the_region() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((24usize, 100usize))));
+        let reporter = reporter_with_viewport(&buffer, &viewport);
+        // No active span: the open logs block is the whole live region.
+        {
+            let mut state = reporter.state.lock().unwrap();
+            state.verbose_active = true;
+            state
+                .verbose_tail
+                .push_back(line(0, Tone::Neutral, "  │ log 0"));
+            state
+                .verbose_tail
+                .push_back(line(1, Tone::Neutral, "  │ log 1"));
+        }
+        reporter.refresh();
+        assert!(reporter.state.lock().unwrap().rendered_lines > 0);
+        buffer.lock().unwrap().clear();
+
+        reporter.clear_verbose_output();
+
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            !rendered.contains("log 1"),
+            "an empty frame must still erase the region: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_resize_before_a_permanent_line_still_repaints_the_snapshot() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((6usize, 100usize))));
+        let reporter = reporter_with_viewport(&buffer, &viewport);
+        let hosts = (0..20)
+            .map(|index| format!("host-{index}"))
+            .collect::<Vec<_>>();
+        push_host_dashboard_span(&reporter, &hosts);
+        reporter.refresh();
+        buffer.lock().unwrap().clear();
+
+        *viewport.lock().unwrap() = Some((8, 100));
+        // `message` clears the region for its permanent line before redrawing;
+        // the resize must survive that clear so the snapshot still repaints.
+        reporter.message("hello");
+
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            rendered.contains("\x1b[2J\x1b[H"),
+            "resize must wipe the screen: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("hello"),
+            "the permanent line must be written: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("host-19"),
+            "the snapshot must repaint after the resize: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_resize_repaints_a_scrolling_snapshot_even_while_throttled() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((6usize, 100usize))));
+        let reporter = reporter_with_viewport(&buffer, &viewport);
+        let hosts = (0..20)
+            .map(|index| format!("host-{index}"))
+            .collect::<Vec<_>>();
+        push_host_dashboard_span(&reporter, &hosts);
+        // More hosts than rows forces the append-only scrolling snapshot path.
+        reporter.refresh();
+        assert!(
+            reporter
+                .state
+                .lock()
+                .unwrap()
+                .scrolling_snapshot_at
+                .is_some()
+        );
+        buffer.lock().unwrap().clear();
+
+        *viewport.lock().unwrap() = Some((8, 100));
+        reporter.refresh();
+
+        let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            rendered.contains("\x1b[2J\x1b[H"),
+            "resize must wipe the screen: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("host-19"),
+            "the snapshot must repaint after the wipe: {rendered:?}"
+        );
     }
 
     #[test]
@@ -3653,7 +4065,10 @@ mod tests {
             interactive: true,
             recent_update_limit: 10,
             style: TerminalStyle::from_capabilities(false, false),
-            destination: ProgressDestination::BufferWithViewport(Arc::clone(&buffer), (24, 80)),
+            destination: ProgressDestination::BufferWithViewport(
+                Arc::clone(&buffer),
+                Arc::new(Mutex::new(Some((24, 80)))),
+            ),
             state: Arc::new(Mutex::new(ProgressState::default())),
             output: Arc::new(Mutex::new(())),
         };
