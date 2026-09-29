@@ -18,13 +18,9 @@
 
   pi-subagents = {
     kind = "npm";
-    package = "pi-subagents";
-    owner = "nicobailon";
-    repo = "pi-subagents";
-    version = "0.71.0";
-    rev = "4af5e85a427b9f87334585ae8d0eb365d4dd2a1e";
-    srcHash = "sha256-KUnrfinRPiEPPdj0pd06MWnYncQmjiQvGySmGqdvwEg=";
-    npmDepsHash = "sha256-b/eP37RfE+Sw+cm7CevqlZG5Jd5TWJsaI8BAWDR4aMs=";
+    package = "@gotgenes/pi-subagents";
+    version = "21.8.0";
+    srcHash = "sha256-ptOoWze8zKQWV1n8FUtlpPSmN9pSxlxsvqZOYIdG1m8=";
   };
 
   pi-tps = {

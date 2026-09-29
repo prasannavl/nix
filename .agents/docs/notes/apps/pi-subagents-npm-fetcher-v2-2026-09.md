@@ -1,5 +1,10 @@
 # pi-subagents npm dependency fetch (fetcher v2)
 
+> Superseded on 2026-09-29: `pi-subagents` switched to `@gotgenes/pi-subagents`,
+> whose published tarball needs no npm dependency fetch. See
+> `.agents/docs/notes/apps/pi-subagents-gotgenes-switch-2026-09.md`. This note
+> now records the historical nicobailon/pi-subagents npm-fetcher incident only.
+
 On 2026-09-23, `./scripts/update.sh` failed while updating `pi-subagents` 0.70.0
 -> 0.71.0.
 

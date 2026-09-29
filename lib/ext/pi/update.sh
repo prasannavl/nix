@@ -285,12 +285,12 @@ update_package() {
 	fi
 
 	case "$package" in
-	pi-models-discovery | pi-subagents | pi-tps)
+	pi-models-discovery | pi-tps)
 		rev="$(jq -er '.gitHead' <<<"$metadata")"
 		read -r owner repo <<<"$(github_repo "$package")"
 		src_hash="$(prefetch_unpack_hash "https://github.com/${owner}/${repo}/archive/${rev}.tar.gz")"
 		;;
-	pi-session-manager | pi-codex-limit)
+	pi-session-manager | pi-subagents | pi-codex-limit)
 		tarball="$(jq -er '.dist.tarball' <<<"$metadata")"
 		src_hash="$(prefetch_unpack_hash "$tarball")"
 		;;
@@ -307,7 +307,7 @@ update_package() {
 	esac
 
 	set_source_record "$package" "$version" "$rev" "$src_hash" "$release_hash" "$npm_deps_hash"
-	if [[ "$package" == "pi-subagents" || "$package" == "pi-web" || "$package" == "pi-diff" ]]; then
+	if [[ "$package" == "pi-web" || "$package" == "pi-diff" ]]; then
 		compute_npm_deps_hash "$package"
 	fi
 	build_package "$package"

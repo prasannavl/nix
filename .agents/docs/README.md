@@ -111,6 +111,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   resources, mutable-state boundaries, the packaged i18n locale default, Pi Web
   CLI installation, and Pi 0.85.1 compatibility requirement, plus the
   `pi-codex-limit` usage-footer extension.
+- `.agents/docs/notes/apps/pi-subagents-gotgenes-switch-2026-09.md`: Records the
+  2026-09-29 switch from the unscoped `pi-subagents` to
+  `@gotgenes/pi-subagents`, the npm-tarball packaging with Pi-virtualized
+  imports, the pi-web built-in/subagent dedup behavior, and the removed
+  `council-mode` and prompt-template assets.
 - `.agents/docs/notes/apps/pi-model-context-windows-2026-09.md`: Records Pi's
   128k `contextWindow` default for custom-provider models, the `ollama-cloud`
   `discoverModels` + `modelOverrides` setup (Ollama's `/v1/models` carries no

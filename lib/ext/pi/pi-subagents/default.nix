@@ -1,38 +1,46 @@
 {pkgs ? import <nixpkgs> {}}: let
   pname = "pi-subagents";
   source = (import ../sources.nix).${pname};
+
+  # Pi's extension loader virtualizes the runtime imports an extension is
+  # allowed to make (`@earendil-works/*` and `@sinclair/typebox`), so the
+  # published npm tarball is self-contained and needs no npm dependency fetch.
+  src = pkgs.fetchzip {
+    url = "https://registry.npmjs.org/@gotgenes/pi-subagents/-/pi-subagents-${source.version}.tgz";
+    hash = source.srcHash;
+  };
 in
-  pkgs.buildNpmPackage {
-    inherit pname;
+  pkgs.stdenvNoCC.mkDerivation {
+    inherit pname src;
     inherit (source) version;
 
-    src = pkgs.fetchFromGitHub {
-      owner = "nicobailon";
-      repo = "pi-subagents";
-      inherit (source) rev;
-      hash = source.srcHash;
-    };
+    # `src` is already an unpacked directory; copy it instead of running
+    # unpackPhase, and skip the (nonexistent) build step.
+    dontUnpack = true;
+    dontBuild = true;
 
-    npmDepsFetcherVersion = 2;
-    inherit (source) npmDepsHash;
+    installPhase = ''
+      runHook preInstall
 
-    dontNpmBuild = true;
+      root="$out/lib/node_modules/@gotgenes/pi-subagents"
+      mkdir -p "$root"
+      cp -R ${src}/. "$root"/
 
-    postInstall = ''
-      packageRoot="$out/lib/node_modules/pi-subagents"
-      workflows="$packageRoot/docs/workflows.md"
+      # Pi discovers a directory extension through a root `index.ts`/`index.js`
+      # entry point, but @gotgenes/pi-subagents only declares `src/index.ts` in
+      # its package manifest. Add a thin re-export so the package's `#src/*`
+      # imports keep resolving from the package root.
+      cat > "$root/index.ts" <<'EOF'
+      export { default } from "./src/index.ts";
+      EOF
 
-      substituteInPlace "$packageRoot/skills/pi-subagents/SKILL.md" \
-        --replace-fail '../../docs/workflows.md' "$workflows"
-      substituteInPlace "$packageRoot/skills/pi-subagents/references/execution-controls.md" \
-        --replace-fail '../../../docs/workflows.md' "$workflows"
+      runHook postInstall
     '';
 
     meta = {
-      description = "Subagent delegation and workflow extension for Pi";
-      homepage = "https://github.com/nicobailon/pi-subagents";
+      description = "In-process sub-agent core for Pi with a typed API and lifecycle events";
+      homepage = "https://github.com/gotgenes/pi-packages/tree/main/packages/pi-subagents";
       license = pkgs.lib.licenses.mit;
-      mainProgram = "pi-subagents";
       platforms = pkgs.lib.platforms.all;
     };
   }

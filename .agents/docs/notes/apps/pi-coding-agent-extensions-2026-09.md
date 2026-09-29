@@ -60,8 +60,6 @@ under Pi's auto-discovered global resource directories:
 - `~/.pi/agent/extensions/pi-tps.ts`
 - `~/.pi/agent/extensions/pi-subagents`
 - the packaged `pi-models-discovery` skill under `~/.pi/agent/skills`
-- the two packaged `pi-subagents` skills under `~/.pi/agent/skills`
-- the packaged `pi-subagents` prompt templates under `~/.pi/agent/prompts`
 
 `pi-models-discovery` writes its cache to
 `~/.pi/agent/extensions/pi-models-discovery/cache.json`. Home Manager leaves the
@@ -96,8 +94,7 @@ user-owned `pi-models-discovery` directory, `pi-tps` writes
 `~/.pi/agent/pi-tps.json`, `pi-codex-limit` keeps no writable state (it reads
 Codex credentials through Pi's model registry and renders a footer widget),
 `pi-session-manager` mutates user-owned session files, and `pi-subagents` writes
-to user-owned paths such as `~/.pi/agent/extensions/subagent/config.json`, agent
-definitions, missions, and run state. Only `pi-extensions-i18n` needed the
+user-owned agent definitions and run state. Only `pi-extensions-i18n` needed the
 locale workaround.
 
 ## Packaging and compatibility
@@ -106,13 +103,15 @@ The local `pi-tps` derivation pins upstream version 1.0.1. That release still
 imports the old `@mariozechner` Pi package names, so its Nix build performs the
 narrow import rename to the current `@earendil-works` names.
 
-The local `pi-subagents` derivation pins upstream version 0.71.0 and builds its
-npm runtime dependency closure in Nix. It sets `npmDepsFetcherVersion = 2` to
-avoid the `ENOTCACHED` dependency-cache failure; see
-`.agents/docs/notes/apps/pi-subagents-npm-fetcher-v2-2026-09.md`. The release
-requires Pi 0.80 or newer and specifically supports Pi 0.85.1, so the Pvl Pi
-module installs `pkgs.unstable.pi-coding-agent` instead of the older stable
-package.
+The local `pi-subagents` derivation packages `@gotgenes/pi-subagents` 21.8.0
+from its published npm tarball. Pi virtualizes the extension runtime imports
+(`@earendil-works/*`, `@sinclair/typebox`), so the derivation fetches no npm
+dependencies, and it adds a root `index.ts` re-export because the published
+manifest points at `src/index.ts`. The extension ships no skill or prompt
+resources. The Pvl Pi module keeps installing `pkgs.unstable.pi-coding-agent`;
+gotgenes 21.8.0 declares `@earendil-works/pi-coding-agent >=0.81.0`. See
+`.agents/docs/notes/apps/pi-subagents-gotgenes-switch-2026-09.md` for the switch
+rationale, the pi-web coexistence behavior, and the removed assets.
 
 The local `pi-models-discovery` derivation pins version 1.2.0 at the
 npm-published monorepo commit. It installs the matching `pi-extensions-i18n`
@@ -165,9 +164,10 @@ nix eval .#nixosConfigurations.pvl-l5.config.system.build.toplevel.drvPath --raw
 nix eval .#nixosConfigurations.pvl-x2.config.system.build.toplevel.drvPath --raw
 ```
 
-For an extension-load smoke test, run Pi 0.85.1 in RPC mode with the generated
-Home Manager resource layout and issue `get_commands`. A successful result
-includes `/config:model-discovery`, `/config:language`, `/sessions`, `/sall`,
-`/pi-tps`, the `subagents-*` commands, all six prompt templates, and all three
-installed skills. Validate the standalone UI command with `pi-web --help`; this
-does not start a listener.
+For an extension-load smoke test, run Pi in RPC mode with the generated Home
+Manager resource layout and issue `get_commands`. A successful result includes
+`/config:model-discovery`, `/config:language`, `/sessions`, `/sall`, `/pi-tps`,
+and the `pi-subagents` commands (`/subagents:settings`, `/subagents:sessions`);
+after the gotgenes switch the six prompt templates and the
+`pi-subagents`/`council-mode` skills are no longer installed. Validate the
+standalone UI command with `pi-web --help`; this does not start a listener.
