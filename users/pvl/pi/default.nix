@@ -20,6 +20,7 @@
     piDiffRoot = "${piDiff}/lib/node_modules/@heyhuynhgiabuu/pi-diff";
     piCodexLimitRoot = "${piCodexLimit}/share/pi/packages/pi-codex-limit";
     revdiffPiRoot = "${revdiffPi}/share/pi/packages/revdiff-pi";
+    piDiffConfig = {disabledTools = ["apply_patch"];};
   in {
     home.packages = [pkgs.unstable.pi-coding-agent piWeb revdiff];
 
@@ -39,6 +40,10 @@
       # prompt templates, so none are linked below.
       ".pi/agent/extensions/pi-subagents".source = piSubagentsRoot;
       ".pi/agent/extensions/pi-tps.ts".source = "${piTpsRoot}/extensions/pi-tps.ts";
+
+      # pi-diff can register write/edit/apply_patch. Keep agents on Pi's
+      # write/read tools by turning off its patch tool.
+      ".pi/agent/pi-diff.json".text = builtins.toJSON piDiffConfig;
 
       ".pi/agent/skills/pi-models-discovery/SKILL.md".source = "${piModelsDiscoveryRoot}/SKILL.md";
       ".pi/agent/skills/revdiff".source = "${revdiffPiRoot}/plugins/pi/skills/revdiff";

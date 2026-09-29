@@ -80,6 +80,11 @@ the sanitized lockfile.
 The Pi module links the package root as `~/.pi/agent/extensions/pi-diff`; no
 separate skill is installed.
 
+Pi Diff registers `write`, `edit`, and `apply_patch` tools. The Pi module writes
+`~/.pi/agent/pi-diff.json` with `disabledTools: ["apply_patch"]`, so agents fall
+back to Pi's `write`/`read` flow instead of the patch tool; the Pi Diff `write`
+and `edit` renderers stay enabled.
+
 ## Validation
 
 Build every external Pi package and the revdiff unit, then evaluate the affected
