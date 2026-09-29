@@ -177,12 +177,16 @@ pulls back into view can wedge it; the next frame that draws the region
 therefore wipes the visible screen and homes the cursor before repainting. That
 discards visible lines that have not yet scrolled off, committed output
 included, while older scrollback survives. A size the terminal cannot report (a
-pty reading zero mid-resize) is not a resize: the last known size is kept and
-reused for layout, so the change is still caught once the size is readable
-again. A `● Logs` header opens the block whenever verbose is active, naming the
-active view (`run` or `errors`) and when the oldest line that view still holds
-was recorded (`● Logs · run · since 14:32:05`), so it is the verbose indicator;
-the footer adds the view keys only while the section is open
+pty reading zero mid-resize) keeps the last known size for layout, but counts as
+a possible reflow whenever a region is already painted: the reflow may have
+happened at a width we cannot see, so a wrapped line would understate the rows
+and the next frame wipes rather than trust the count. The first readable size
+after an unknown first paint wipes the same way, and a frame that replaces an
+append-only snapshot wipes so an oversized roster cannot strand stale frames
+behind a shorter one. A `● Logs` header opens the block whenever verbose is
+active, naming the active view (`run` or `errors`) and when the oldest line that
+view still holds was recorded (`● Logs · run · since 14:32:05`), so it is the
+verbose indicator; the footer adds the view keys only while the section is open
 (`keys: v: verbose · ctrl/alt-r: run · ctrl/alt-e: errors · ctrl-c: …`). Hiding
 with `v` drops the live ring so the next redraw shrinks the region back to just
 the dashboard; redirecting output still appends plain lines. The section has two
