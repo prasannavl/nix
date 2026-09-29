@@ -10,6 +10,8 @@ pkgHelper.mkRustDerivation {
   # Executable fixtures are published by an isolated writer process so the
   # ordinary parallel Cargo test schedule is safe from ETXTBSY races.
   buildAttrs.doCheck = false;
+  # The transfer tests resolve `rsync` from PATH (`executable_in_path("rsync")`).
+  nativeCheckInputs = [pkgs.rsync];
   enableDevShell = true;
   meta = {
     description = "Durable host-local service and migration enforcement agent";

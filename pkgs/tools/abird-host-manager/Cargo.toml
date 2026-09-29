@@ -9,10 +9,10 @@ description = "Operator-side control plane for Abird host and service migrations
 abird-host-agent = { path = "../abird-host-agent" }
 anyhow = { workspace = true }
 base64 = { workspace = true }
-clap = { workspace = true, features = ["derive", "env"] }
+clap = { workspace = true }
 humantime = { workspace = true }
 libc = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }

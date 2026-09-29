@@ -3,6 +3,7 @@
     abird-host-agent = ./tools/abird-host-agent/default.nix;
     abird-host-manager = {
       path = ./tools/abird-host-manager/default.nix;
+      args = packages: {abirdHostAgent = packages.abird-host-agent;};
       rootApp = true;
     };
     nixbot = {

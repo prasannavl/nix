@@ -896,6 +896,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   shared dependency base + layered member builds) chosen near-term, Design F
   (demand-set dependency DAG with generated group stubs) as the future end
   state, and the L-to-F migration seams and validation gates.
+- `.agents/docs/plans/design-l-implementation-2026-09.md`: Work-item
+  implementation plan for Design L: whole-workspace dummy source and shared
+  dependency base, artifacts-only member layers, in-repo dependency wiring,
+  multi-parent join helper, optional feature normalization, risks, and
+  validation.
 
 ## Playbooks
 

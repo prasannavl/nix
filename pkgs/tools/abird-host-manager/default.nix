@@ -1,6 +1,7 @@
 {
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
+  abirdHostAgent ? null,
 }: let
   fleetRuntimeInputs = with pkgs; [
     age
@@ -25,7 +26,11 @@ in
     pname = "abird-host-manager";
     version = "0.1.0";
     projectDir = "pkgs/tools/abird-host-manager";
+    # Always keep the dependency directory in this package's source; inherit its
+    # artifacts only when the root composition supplies the package (the
+    # standalone child-flake build has none).
     deps = ["pkgs/tools/abird-host-agent"];
+    internalDeps = pkgs.lib.optional (abirdHostAgent != null) abirdHostAgent;
     nativeCheckInputs = [pkgs.bash pkgs.coreutils pkgs.gitMinimal pkgs.jq pkgs.util-linux];
     # Executable fixtures are published by an isolated writer process so the
     # ordinary parallel Cargo test schedule is safe from ETXTBSY races.

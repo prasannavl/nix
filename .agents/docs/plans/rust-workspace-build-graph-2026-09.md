@@ -42,6 +42,9 @@ changing package definitions or the public helper API.
 
 ### Rust entry points in `lib/flake/pkg-helper.nix`
 
+Line numbers below are from the pre-fix revision (`391df360`); prefer symbols,
+since they drift after the Design L changes.
+
 | Entry point                                 | Line   | Crane                | Used by                                                  |
 | ------------------------------------------- | ------ | -------------------- | -------------------------------------------------------- |
 | `mkRustDerivation`                          | `1977` | yes                  | all five workspace crates                                |
@@ -154,60 +157,75 @@ manifests:
 
 ## Design L - near-term (chosen)
 
+> **Landed** (2026-09) — see
+> `.agents/docs/plans/design-l-implementation-2026-09.md` (W1-W8). The
+> pseudocode below is the original design sketch; the landed mechanics differ in
+> a few details (noted inline).
+
 Layered crane builds over one shared launderable source and one shared
 dependency base. No generated stubs, no lock synthesis.
 
 ### Steps
 
-1. **One laundered workspace source per repo revision.**
-   - `workspaceRoot`: a `builtins.path` filter that keeps the root `Cargo.toml`,
-     root `Cargo.lock`, every workspace member, and `.cargo` configuration.
-   - `realSrc`: a `runCommandLocal` copy of `workspaceRoot`, named
-     `cargo-workspace-source`, used by member layers.
-   - The dependency base uses a path-based laundered source, or
-     `craneLib.mkDummySrc` over `workspaceRoot`, so its derivation does not
-     depend on `*.rs` content. No IFD either way.
-   - `realSrc` and the dummy source share the `cargo-workspace-source` name so
-     crane's `sourceName` relocation keeps fingerprint paths equal.
-   - Drop the per-package source filter and the `deps`-based
-     `cargoWorkspacePrePatch`; keep the full root member list in every
-     derivation.
+1. **One laundered workspace source for the shared base; per-member sources for
+   builds.**
+   - `workspaceRoot`: a `builtins.path` filter over the whole workspace (root
+     `Cargo.toml`, root `Cargo.lock`, every member, and `.cargo` configuration).
+   - The dependency base derives its dummy source from `workspaceRoot`, so the
+     base is independent of `*.rs` content. No IFD either way.
+   - Member builds keep a per-member source (`mkCargoWorkspaceSource`,
+     `[projectDir] ++ deps` with the member list rewritten) so editing one
+     member's `*.rs` invalidates only that member and its dependents. That
+     per-member source and the dummy source share the `cargo-workspace-source`
+     name so crane's `sourceName` relocation keeps fingerprint paths equal.
+   - `deps` stays in use: it feeds the per-member source filter and remains the
+     authority for members not reachable through `internalDeps` (transitive
+     members). Direct in-repo dependencies are auto-unioned from each
+     dependency's `passthru.projectDir`.
+
+   (An earlier draft used the whole-workspace source for member builds and
+   claimed per-member locality; that was wrong and is corrected here.)
 
 2. **One shared dependency base.**
 
    ```nix
    depsBase = craneLib.buildDepsOnly {
-     src = launderedSource;                      # path or explicit dummySrc
-     pname = "abird-rust-workspace-deps";
-     cargoExtraArgs = "--offline " + memberArgs; # -p <member> ... for all members
+     dummySrc = craneLib.mkDummySrc { src = launderedSource; };  # no `src`
+     pname = "abird-rust-workspace";              # buildDepsOnly appends `-deps`
+     cargoExtraArgs = "--offline --workspace";
      inherit cargoLockContents cargoVendorDir;
    };
    ```
 
-   - An explicit `-p` list (rather than `--workspace`) keeps a platform-filtered
-     member set possible.
-   - `doCheck = true` (crane default) caches dev-dependencies; carry the union
-     of per-crate `nativeCheckInputs` in the base if used.
+   - Landed as `--workspace` (union of all members). An explicit `-p` list would
+     keep a platform-filtered member set possible; switch to it (or
+     `--workspace --exclude`) if platform-gated members are added.
+   - `doCheck = true` (crane default) caches dev-dependencies. The base carries
+     no per-package `nativeCheckInputs` (that would break hash-consing); add a
+     canonical workspace-level set if a dev-dependency needs one.
 
 3. **Member layers.**
 
    ```nix
-   memberLayer(m) = craneLib.buildPackage {
-     src = realSrc;
-     cargoArtifacts = join ([prefixNode m] ++ map memberLayer (internalDeps m));
+   memberLayer(m) = craneLib.cargoBuild {          # artifacts only, no binary install
+     src = perMemberSource m;                       # mkCargoWorkspaceSource [m] ++ deps
+     cargoArtifacts = if internalDeps m == [] then sharedDepsBase
+                      else last (map memberLayer (internalDeps m));  # .prev chains to base
      pname = m;
      cargoExtraArgs = "--offline -p ${m}";
      doInstallCargoArtifacts = true;
-     doCheck = false;
    };
+   pkg(m) = craneLib.buildPackage { ...same attrs...; cargoArtifacts = memberLayer m; };
    ```
 
-   - `prefixNode(m)` is the nearest base/chain node whose artifact set covers
-     `m`'s external units. In L this is always `depsBase`.
-   - `join` is the crane `.prev` join: a symlink-only derivation producing
-     `$out/target.tar.zst` -> parent A and `$out/target.tar.zst.prev` -> parent
-     B, recursively. `inheritCargoArtifacts` already recurses `.prev`, so no
-     target-dir copying is needed.
+   - `sharedDepsBase` is the common artifact prefix. An internal dependency's
+     layer already chains to it through crane's `.prev` symlink, so L needs no
+     explicit join for a single internal dep; `mkCargoArtifactsJoin` (a
+     full-archive union) covers fan-in and is Design F's `prefixNode` seam.
+   - Landed fan-in is `mkCargoArtifactsJoin`, a self-contained full archive
+     (`doCompressAndInstallFullArchive`), not a symlink-only join: crane stores
+     each layer as a delta archive and links its single parent with a
+     `target.tar.zst.prev` symlink, so unions must be materialized.
 
 4. **Checks.**
    - `checks.lint` is `cargoClippy` with `cargoArtifacts = memberLayer(m)` and
@@ -219,23 +237,38 @@ dependency base. No generated stubs, no lock synthesis.
 
 ### Feature handling in L
 
-A single union base built with `-p` all members resolves shared dependencies
-with the workspace-union feature set. A member layer built with `-p <m>`
-resolves a subset, and cargo recompiles subset-feature units. Two options:
+A single union base built with `--workspace` resolves shared dependencies with
+the workspace-union feature set (it also builds dev-dependencies via
+`cargo
+test --no-run`). A member layer built with `-p <m>` resolves a subset, so
+cargo recompiles units whose feature set differs.
 
-- **Normalize features** in `[workspace.dependencies]` (declare the feature set
-  once, reference bare in members). Recommended for L; keeps base == layer
-  resolution and avoids recompiles.
-- **Sub-option L'**: skip the union base and build per-project deps layers in a
-  fixed order (`depsOnly`/`mkCargoDerivation` with `-p <m>`, each inheriting the
-  previous). This avoids normalization (each layer resolves `-p <m>` exactly) at
-  the cost of a linear chain and coarser dep locality. Treat as a fallback if
-  normalization is undesirable.
+Measured (2026-09), the residual recompiles are of two kinds:
+
+- **Transitive union (not fixable by normalization).** `syn` is built in the
+  base with `extra-traits`, `fold`, `visit`, `visit-mut` (pulled by another
+  member's graph), so `syn -> clap_derive`/`serde_derive` -> `clap`/`serde`
+  recompile in a member whose own build requests fewer features.
+- **Direct divergence (fixable by normalization).** Members disagree on a shared
+  dependency's own features: `abird-host-agent`/`abird-host-manager` request
+  `clap = ["derive","env"]` while `nats-http-bridge`/`nats-wrecking-ball`
+  request `["derive"]`, so the bridge/wrecking layers recompile
+  `clap`/`clap_builder`.
+
+Consequences:
+
+- Normalizing `[workspace.dependencies]` features (W10) removes the direct
+  divergence only; the transitive union is fixed by per-demand groups (Design
+  F).
+- L accepts the residual; the base's union is correct and does not affect
+  correctness.
 
 ### L properties
 
-- Every external unit compiled once (base), every workspace crate compiled once
-  (member chain + internal joins).
+- Every external unit is compiled in the base once per feature signature;
+  transitive feature unions across members can cause a residual recompile in a
+  member layer (measured; see above).
+- Every workspace crate compiled once (member layer + `.prev` chain/join).
 - `.rs` edits never touch `depsBase` (laundered dummy source).
 - `.rs` edit to `m` invalidates `memberLayer(m)` and its dependents only.
 - A dependency manifest/lock change rebuilds `depsBase` and recompiles the full
@@ -324,19 +357,19 @@ Inputs: repo root, root `Cargo.toml`, member manifests, `Cargo.lock`. Output:
 
 ## Comparison
 
-| Dimension                | Design L (near-term)                             | Design F (end state)                                                          |
-| ------------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------- |
-| Derivations              | 1 source + 1 base + N layers                     | 1 real source + 1 deps source + G groups + N layers                           |
-| Every unit compiled once | yes (base)                                       | yes (chain inheritance)                                                       |
-| No IFD                   | yes                                              | yes                                                                           |
-| Feature normalization    | required for a union base (or use sub-option L') | not required; stub declares the union per group                               |
-| Dep-manifest change      | base rebuilds -> all externals recompile         | only the affected group and later chain nodes                                 |
-| Source change locality   | edited member layer + dependents                 | same                                                                          |
-| Complexity               | low: uses crane as intended                      | medium-high: planner, stub synthesis, lock handling, joins                    |
-| Debuggability            | high (flat, legible plan)                        | lower (generated workspace)                                                   |
-| Failure modes            | lock/vendor drift                                | + synthetic-workspace resolution, stub feature drift, default-features splits |
-| Cargo-version resilience | high                                             | medium                                                                        |
-| Cross-commit cache       | worse on dep churn, good on unrelated edits      | better on dep churn                                                           |
+| Dimension                | Design L (near-term)                                                       | Design F (end state)                                                          |
+| ------------------------ | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Derivations              | 1 source + 1 base + N layers                                               | 1 real source + 1 deps source + G groups + N layers                           |
+| Every unit compiled once | once per feature signature (base); transitive feature unions can recompile | per group, with the group's exact feature set                                 |
+| No IFD                   | yes                                                                        | yes                                                                           |
+| Feature normalization    | partial: fixes direct divergence; F fixes transitive unions                | not required; stub declares the union per group                               |
+| Dep-manifest change      | base rebuilds -> all externals recompile                                   | only the affected group and later chain nodes                                 |
+| Source change locality   | edited member layer + dependents                                           | same                                                                          |
+| Complexity               | low: uses crane as intended                                                | medium-high: planner, stub synthesis, lock handling, joins                    |
+| Debuggability            | high (flat, legible plan)                                                  | lower (generated workspace)                                                   |
+| Failure modes            | lock/vendor drift                                                          | + synthetic-workspace resolution, stub feature drift, default-features splits |
+| Cargo-version resilience | high                                                                       | medium                                                                        |
+| Cross-commit cache       | worse on dep churn, good on unrelated edits                                | better on dep churn                                                           |
 
 ### Why L first
 
@@ -392,12 +425,14 @@ Seams to preserve so L -> F is mechanical:
   expected `Compiling <crate>` lines; `nix build --dry-run` shows only the
   affected layers.
 - **Sharing:** count distinct `cargo-workspace-source` and deps derivations
-  across the workspace packages. Target: 1 source and 1 base for L; 1 real
-  source, 1 deps source, and G groups for F.
+  across the workspace packages. Target for L: 1 shared base, per-member member
+  sources, and 1 whole-workspace dummy source. For F: 1 real source, 1 deps
+  source, and G groups.
+- **Closure size:** `nix path-info -S` before/after. Only the artifacts-only
+  `memberLayer` may reference the dependency archive; deployed packages must
+  not.
 - **Correctness:** `cargo test -p abird-host-manager`, `-p abird-host-agent`,
   plus `nix flake check` for the affected checks.
-- **Closure size:** `nix path-info -S` before/after; expect no regression and
-  usually a shrink as duplicates disappear.
 - **DAG shape for F:** `nix derivation show -r` shows the expected group
   inheritance edges and no cycles.
 
@@ -412,8 +447,10 @@ Seams to preserve so L -> F is mechanical:
 
 ## Open questions
 
-- Normalize `[workspace.dependencies]` features for L, or take sub-option L'
-  (per-project deps chain) and skip normalization?
+- Feature normalization was measured (2026-09): `[workspace.dependencies]`
+  alignment removes _direct_ feature divergence, but _transitive_ feature unions
+  (another member's graph pulling extra features) remain and need Design F's
+  per-group builds. Decide whether to do the direct-feature normalization now.
 - Full automatic grouping at F, or start with 2-3 hand-declared groups?
 - Lock handling for F stubs: synthesize stub entries into `cargoLockContents`,
   or let group builds re-resolve `--offline` against the vendor dir?
@@ -425,6 +462,8 @@ Seams to preserve so L -> F is mechanical:
   `dummySrc` defect) or track them separately.
 
 ## References
+
+(Line numbers are from the pre-fix revision `391df360`; prefer symbols.)
 
 - `lib/flake/pkg-helper.nix`: `mkCargoWorkspaceSource` (`61`),
   `cargoWorkspacePrePatch` (`121`), `mkTrunkProject` (`1410`),

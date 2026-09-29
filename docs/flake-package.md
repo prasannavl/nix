@@ -121,6 +121,13 @@ selects the target package through `projectDir`, reads the canonical root
 selected package and explicit local `deps`, and rewrites `workspace.members`
 during `prePatch` so Cargo only resolves the intended subset.
 
+In-repo workspace members also share one `.rs`-independent external-dependency
+base and an artifacts-only `memberLayer`; the deployed package inherits the
+layer, so build artifacts stay out of the runtime closure. A member that links
+another in-repo member passes that package through `internalDeps`, and the
+dependency's member directory is pulled into the source automatically from its
+`passthru.projectDir`.
+
 `flake.nix` should usually just re-export the derivation:
 
 ```nix

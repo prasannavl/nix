@@ -58,13 +58,20 @@ let
   in
     builtins.substring 0 prefixLen str == prefix;
 
-  mkCargoWorkspaceSource = pkgs: {
+  # Filter a repository into the smallest Cargo-usable source tree. `selectedDirs`
+  # are kept in full (plus the ancestor directories needed to reach them); the
+  # root manifest and lockfile are always kept, and `.cargo` configuration is
+  # kept too because it is fingerprint-relevant. The output name is load-bearing:
+  # crane's `mkDummySrc` derives its dummy output name from this basename, so
+  # every workspace-shaped source must unpack to `/build/cargo-workspace-source`.
+  mkWorkspaceSourcePath = pkgs: {
     src,
-    projectDir,
-    deps ? [],
+    selectedDirs,
+    # `name` is invariant-critical for crane's dummy/fingerprint matching; do not
+    # override it.
+    name ? "cargo-workspace-source",
   }: let
     root = builtins.toString src;
-    selectedDirs = [projectDir] ++ deps;
     isSelectedPath = rel:
       builtins.any (dir: rel == dir || hasPrefix "${dir}/" rel) selectedDirs;
     isParentOfSelectedPath = rel:
@@ -73,9 +80,10 @@ let
       [".git"]
       ++ pkgs.lib.optional (builtins.pathExists (src + "/.gitignore")) (src + "/.gitignore");
     gitignoreAllows = pkgs.nix-gitignore.gitignoreFilterPure (_: _: true) gitignorePatterns src;
-    filtered = builtins.path {
+  in
+    builtins.path {
       path = src;
-      name = "cargo-workspace-source";
+      inherit name;
       filter = path: type: let
         rel = stripPrefix "${root}/" (builtins.toString path);
       in
@@ -84,9 +92,21 @@ let
           rel
           == "Cargo.toml"
           || rel == "Cargo.lock"
+          || rel == ".cargo"
+          || hasPrefix ".cargo/" rel
           || type == "directory" && isParentOfSelectedPath rel
           || isSelectedPath rel
         );
+    };
+
+  mkCargoWorkspaceSource = pkgs: {
+    src,
+    projectDir,
+    deps ? [],
+  }: let
+    filtered = mkWorkspaceSourcePath pkgs {
+      inherit src;
+      selectedDirs = map normalizeMemberPath ([projectDir] ++ deps);
     };
   in
     pkgs.runCommandLocal "cargo-workspace-source" {src = filtered;} ''
@@ -101,6 +121,100 @@ let
       mkdir -p "$out"
       cp -a "$src"/. "$out"/
     '';
+
+  stripTrailingSlash = str:
+    if str != "" && builtins.substring (builtins.stringLength str - 1) 1 str == "/"
+    then builtins.substring 0 (builtins.stringLength str - 1) str
+    else str;
+
+  normalizeMemberPath = dir:
+    stripTrailingSlash (
+      if hasPrefix "./" dir
+      then stripPrefix "./" dir
+      else dir
+    );
+
+  # In-repo Cargo workspace members, read from the root manifest at evaluation
+  # time. `src` must be an evaluator-visible path (never a derivation) so this
+  # cannot trigger IFD. Cargo also accepts glob members (`crates/*`); this
+  # reader does not expand them, so such a member falls back to the legacy
+  # per-package path (correct, just not shared).
+  rustWorkspaceMembers = src: let
+    rootManifest = src + "/Cargo.toml";
+    manifest =
+      if builtins.isPath src && builtins.pathExists rootManifest
+      then builtins.fromTOML (builtins.readFile rootManifest)
+      else {};
+    rawMembers =
+      if manifest ? workspace && manifest.workspace ? members
+      then manifest.workspace.members
+      else [];
+  in
+    # Cargo allows glob members (`crates/*`); this reader does not expand them.
+    # Returning no members disables workspace sharing for the whole repo (every
+    # package falls back to the correct legacy per-package path) instead of
+    # producing a base whose dummy source is missing those members.
+    if builtins.any (member: builtins.match ".*[*?\\[].*" member != null) rawMembers
+    then []
+    else map normalizeMemberPath rawMembers;
+
+  isWorkspaceMember = src: projectDir:
+    builtins.elem (normalizeMemberPath projectDir) (rustWorkspaceMembers src);
+
+  # Whole-workspace laundered source, used to derive the shared dependency
+  # base's dummy source (never handed to a real member build). See
+  # `mkWorkspaceSourcePath` for the filter and the load-bearing output name.
+  mkRustWorkspaceSource = pkgs: src:
+    mkWorkspaceSourcePath pkgs {
+      inherit src;
+      selectedDirs = rustWorkspaceMembers src;
+    };
+
+  # Canonical external-dependency base shared by every in-repo workspace member.
+  # It takes no per-package attrs (`nativeBuildInputs`, `env`, ...) so every call
+  # builds an identical derivation and Nix hash-conses a single repo-wide base.
+  # `dummySrc` is passed without `src` (which `buildDepsOnly` would ignore and
+  # warn about anyway); the dummy depends only on cargo manifests, the lockfile
+  # and `.cargo` config, so `*.rs` edits never invalidate it.
+  mkSharedRustDepsBase = pkgs: {
+    source,
+    cargoLockContents,
+    cargoVendorDir,
+  }: let
+    craneLib = pkgs.craneLib;
+  in
+    craneLib.buildDepsOnly {
+      dummySrc = craneLib.mkDummySrc {src = source;};
+      pname = "abird-rust-workspace";
+      version = "0.1.0";
+      cargoExtraArgs = "--offline --workspace";
+      inherit cargoLockContents cargoVendorDir;
+    };
+
+  # Join several members' artifact layers into one self-contained archive. Crane
+  # chains a single `.prev` parent, so a member with two or more in-repo
+  # dependencies needs an explicit join. This materialises the union as one full
+  # archive (simple and correct); it is only needed when fan-in occurs.
+  mkCargoArtifactsJoin = pkgs: {
+    name,
+    deps,
+  }: let
+    craneLib = pkgs.craneLib;
+  in
+    craneLib.mkCargoDerivation {
+      pname = "${name}-cargo-artifacts";
+      version = "0.1.0";
+      src = null;
+      dontUnpack = true;
+      cargoArtifacts = builtins.head deps;
+      cargoVendorDir = null;
+      doCheck = false;
+      doInstallCargoArtifacts = true;
+      doCompressAndInstallFullArchive = "1";
+      buildPhaseCargoCommand = "";
+      checkPhaseCargoCommand = "";
+      preBuild = joinLines (map (dep: "inheritCargoArtifacts ${dep}") (builtins.tail deps));
+    };
 
   mkCraneCargoLockAttrs = {
     src,
@@ -122,7 +236,7 @@ let
     projectDir,
     deps ? [],
   }: let
-    selectedDirs = [projectDir] ++ deps;
+    selectedDirs = map normalizeMemberPath ([projectDir] ++ deps);
     selectedMembersText =
       builtins.concatStringsSep "\n"
       (map (dir: "  ${builtins.toJSON dir},") selectedDirs);
@@ -1578,9 +1692,22 @@ in rec {
         value
         // resolvedCraneCargoLockAttrs
         // {cargoVendorDir = craneCargoVendorDir;};
-      craneDepsAttrs =
-        builtins.removeAttrs (craneAttrs cargoBuildAttrs) ["src"]
-        // {dummySrc = buildSrc;};
+      craneDepsAttrs = let
+        baseAttrs = builtins.removeAttrs (craneAttrs cargoBuildAttrs) ["src"];
+        perProjectSourcePath =
+          if projectDir == null || !(builtins.isPath src)
+          then null
+          else
+            mkWorkspaceSourcePath pkgs {
+              inherit src;
+              selectedDirs = map normalizeMemberPath ([projectDir] ++ deps);
+            };
+      in
+        if perProjectSourcePath != null
+        then baseAttrs // {dummySrc = craneLib.mkDummySrc {src = perProjectSourcePath;};}
+        else if !(isDerivation buildSrc)
+        then baseAttrs // {dummySrc = craneLib.mkDummySrc {src = buildSrc;};}
+        else baseAttrs // {dummySrc = buildSrc;};
     in
       if craneLib != null && !(builtins.hasAttr "cargoDeps" buildAttrs)
       then
@@ -1680,6 +1807,10 @@ in rec {
       else {};
     attrsNoCargoLock = builtins.removeAttrs attrs ["cargoLock"];
     depsOnlyBaseAttrs =
+      # A fetched (`derivation`) `attrs.src` cannot be dummied without IFD, so it
+      # is used as `dummySrc` verbatim (the no-IFD contract is kept; cache
+      # correctness is traded for it). Path sources fall through and are dummied
+      # by crane.
       if sourceIsDerivation
       then
         builtins.removeAttrs attrsNoCargoLock ["src"]
@@ -1992,6 +2123,14 @@ in rec {
       then deriveProjectPath src
       else projectDir,
     deps ? [],
+    # `useWorkspaceDeps` opts a package into the shared dependency base; it
+    # defaults on for in-repo workspace members. `internalDeps` lists the package
+    # derivations of in-repo dependencies whose compiled artifacts this package
+    # inherits. Each entry must be a workspace member exposing
+    # `passthru.memberLayer` and `passthru.projectDir`; its member directory is
+    # auto-unioned into the source (transitive members still belong in `deps`).
+    useWorkspaceDeps ? projectDir != null,
+    internalDeps ? [],
     cargoLock ? null,
     meta ? {},
     nativeCheckInputs ? [],
@@ -2048,6 +2187,8 @@ in rec {
       "projectDir"
       "projectPath"
       "deps"
+      "useWorkspaceDeps"
+      "internalDeps"
       "cargoLock"
       "meta"
       "nativeCheckInputs"
@@ -2085,12 +2226,45 @@ in rec {
       if build != null
       then null
       else let
+        craneLib = pkgs.craneLib or null;
+        # In-repo workspace members share one dummy-sourced dependency base (see
+        # `sharedDepsBase` below). Member layers keep their own per-member source
+        # so that editing one member's `*.rs` only invalidates that member and
+        # its dependents. Every other shape (no `projectDir`, no crane,
+        # non-member) keeps the legacy per-package behavior.
+        workspaceMode =
+          useWorkspaceDeps
+          && craneLib != null
+          && projectDir != null
+          && builtins.isPath src
+          && isWorkspaceMember src projectDir;
+        # Whole-workspace laundered source, used only to derive the shared
+        # dependency base's dummy source (never handed to a real member build).
+        workspaceSource =
+          if workspaceMode
+          then mkRustWorkspaceSource pkgs src
+          else null;
+        # In-repo dependency member directories must be part of this package's
+        # source tree. Derive them from each `internalDeps` package's
+        # pass-through so `deps` never has to be hand-synced with `internalDeps`.
+        internalDepDirs = map (dep:
+          if dep == null || !(isDerivation dep)
+          then throw "pkg-helper.mkRustDerivation: internalDeps entries must be package derivations"
+          else let
+            dir = (dep.passthru or {}).projectDir or null;
+          in
+            if dir == null
+            then throw "pkg-helper.mkRustDerivation: each `internalDeps` entry must be a workspace member exposing `passthru.projectDir`"
+            else dir)
+        internalDeps;
+        resolvedDeps = pkgs.lib.unique (deps ++ internalDepDirs);
         buildSrc =
           if projectDir == null
           then src
           else
             mkCargoWorkspaceSource pkgs {
-              inherit src projectDir deps;
+              inherit src projectDir;
+              deps = resolvedDeps;
             };
         resolvedCargoLock =
           if cargoLock != null
@@ -2102,8 +2276,11 @@ in rec {
           else if builtins.isAttrs cargoLock && builtins.hasAttr "lockFileContents" cargoLock
           then {cargoLockContents = cargoLock.lockFileContents;}
           else {cargoLock = cargoLock;};
+        # Rewrite the root member list down to this package's own source set so
+        # the per-member tree is self-contained and `-p <member>` resolves it.
         buildPrePatch = composeCargoWorkspacePrePatch {
-          inherit projectDir deps;
+          inherit projectDir;
+          deps = resolvedDeps;
           prePatch = joinLines [
             prePatch
             (buildAttrs.prePatch or "")
@@ -2122,7 +2299,6 @@ in rec {
           }
           // buildArgs
           // buildAttrsNoPrePatch;
-        craneLib = pkgs.craneLib or null;
         craneCargoVendorDir =
           if craneLib == null
           then null
@@ -2131,13 +2307,31 @@ in rec {
           commonAttrs
           // resolvedCraneCargoLockAttrs
           // {cargoVendorDir = craneCargoVendorDir;};
+        # Legacy (non-workspace) dependency base. `mkCargoWorkspaceSource`
+        # returns a derivation, so dummy it from an evaluator-visible path source
+        # (`.rs`-invariant, no IFD) rather than using the real source as
+        # `dummySrc`. The real-derivation fallback keeps IFD-freedom where no
+        # path is available.
+        perProjectSourcePath =
+          if projectDir == null || !(builtins.isPath src)
+          then null
+          else
+            mkWorkspaceSourcePath pkgs {
+              inherit src;
+              selectedDirs = map normalizeMemberPath ([projectDir] ++ resolvedDeps);
+            };
         craneDepsAttrs =
-          if isDerivation buildSrc
-          then
+          if !(isDerivation buildSrc)
+          then craneCommonAttrs
+          else
             builtins.removeAttrs craneCommonAttrs ["src"]
-            // {dummySrc = buildSrc;}
-          else craneCommonAttrs;
-        cargoArtifacts =
+            // (
+              if perProjectSourcePath != null
+              then {dummySrc = craneLib.mkDummySrc {src = perProjectSourcePath;};}
+              else {dummySrc = buildSrc;}
+            );
+        # Legacy per-package dependency base; unused once `workspaceMode` is on.
+        packageCargoArtifacts =
           if craneLib == null
           then null
           else
@@ -2147,6 +2341,78 @@ in rec {
                 cargoExtraArgs = shellWords resolvedCraneBuildCargoArgs;
               }
             );
+        # One dummy-sourced whole-workspace build, so every external and dev
+        # dependency compiles once repo-wide regardless of `*.rs` edits. (Until
+        # the union base and `-p` member builds request identical feature sets,
+        # a few shared crates may still recompile per member; see W10.)
+        sharedDepsBase =
+          if !workspaceMode
+          then null
+          else
+            mkSharedRustDepsBase pkgs {
+              source = workspaceSource;
+              cargoLockContents =
+                resolvedCraneCargoLockAttrs.cargoLockContents
+                or (
+                  if builtins.isPath cargoLock
+                  then builtins.readFile cargoLock
+                  else throw "pkg-helper.mkRustDerivation: workspace mode needs evaluator-visible lock contents; pass `cargoLock = { lockFileContents = ...; }` or a path"
+                );
+              cargoVendorDir = craneCargoVendorDir;
+            };
+        # Artifacts this member's build inherits: the shared base prefix, or the
+        # artifacts-only layer(s) of in-repo dependencies. A dependency may itself
+        # be outside workspace mode (its own `useWorkspaceDeps = false` rollback)
+        # and then has no `memberLayer`; drop it from the artifact chain and let
+        # this layer compile it from source instead of failing.
+        internalDepsGuard =
+          if internalDeps == []
+          then null
+          else if craneLib == null
+          then throw "pkg-helper.mkRustDerivation: internalDeps requires craneLib"
+          else if projectDir == null || !(builtins.isPath src)
+          then throw "pkg-helper.mkRustDerivation: internalDeps requires a member `projectDir` and a path `src`"
+          else null;
+        memberLayerOf = dep: (dep.passthru or {}).memberLayer or null;
+        dependencyMemberLayers =
+          builtins.filter (layer: layer != null) (map memberLayerOf internalDeps);
+        # Common artifact prefix for this member. In L an internal dependency's
+        # layer already chains to it through `.prev`, so no explicit join is
+        # needed; F replaces this ladder with
+        # `mkCargoArtifactsJoin ([prefixNode] ++ dependencyMemberLayers)`.
+        prefixNode =
+          if !workspaceMode
+          then packageCargoArtifacts
+          else sharedDepsBase;
+        dependencyArtifacts =
+          if dependencyMemberLayers == []
+          then prefixNode
+          else if builtins.length dependencyMemberLayers == 1
+          then builtins.head dependencyMemberLayers
+          else
+            mkCargoArtifactsJoin pkgs {
+              name = pname;
+              deps = dependencyMemberLayers;
+            };
+        # Artifacts-only layer for this member: it compiles the member exactly
+        # once and publishes `$out/target.tar.zst`, while the deployed package
+        # inherits it so build artifacts never enter the package runtime closure.
+        memberLayer =
+          if !workspaceMode
+          then null
+          else
+            craneLib.cargoBuild (
+              craneCommonAttrs
+              // {
+                cargoArtifacts = dependencyArtifacts;
+                cargoExtraArgs = shellWords resolvedCraneBuildCargoArgs;
+                doInstallCargoArtifacts = true;
+              }
+            );
+        cargoArtifacts =
+          if workspaceMode
+          then memberLayer
+          else builtins.seq internalDepsGuard packageCargoArtifacts;
         mkCraneCheckAttrs = extra:
           craneCommonAttrs
           // {
@@ -2156,6 +2422,7 @@ in rec {
           }
           // extra;
       in {
+        inherit memberLayer sharedDepsBase;
         build =
           if craneLib != null
           then
@@ -2281,6 +2548,9 @@ in rec {
     };
     basePassthru =
       (attrIf (sourcePath != null) "sourcePath" sourcePath)
+      // (attrIf (rustBuildPlan != null && rustBuildPlan.memberLayer != null) "memberLayer" rustBuildPlan.memberLayer)
+      // (attrIf (rustBuildPlan != null && rustBuildPlan.sharedDepsBase != null) "sharedDepsBase" rustBuildPlan.sharedDepsBase)
+      // (attrIf (projectDir != null) "projectDir" projectDir)
       // {
         inherit (bundle) fmt;
         "lint-fix" = bundle."lint-fix";

@@ -121,13 +121,14 @@ the caller.
 
 ## Correction (2026-09)
 
-The dependency-reuse boundary described above does not hold in the current
-helper: `mkRustDerivation` passes the real filtered source as crane's explicit
-`dummySrc` (`lib/flake/pkg-helper.nix:2136-2138`), so the `*-deps` derivation
-depends on the whole source tree and compiles the crate's real code. A source
-edit therefore invalidates the dependency artifact (verified by comparing
-`abird-host-manager-deps` derivation paths before and after a `.rs` edit), and
-each package still builds its own dependency artifact. The redesign that fixes
-this, and the staged path to a shared demand-set DAG, is recorded in
-`.agents/docs/plans/rust-workspace-build-graph-2026-09.md`, which supersedes
-this note's caching claims.
+The dependency-reuse boundary described above did not hold in the helper at the
+time of writing: the legacy path passed the real filtered source as crane's
+explicit `dummySrc`, so the `*-deps` derivation depended on the whole source
+tree and each package built its own dependency artifact.
+
+This is now fixed by Design L (landed 2026-09): workspace members share one
+`.rs`-independent dependency base and an artifacts-only `memberLayer`, and the
+legacy/rollback paths dummy from an evaluator-visible path source. See
+`.agents/docs/plans/rust-workspace-build-graph-2026-09.md` and
+`.agents/docs/plans/design-l-implementation-2026-09.md`, which supersede this
+note's caching claims.
