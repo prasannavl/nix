@@ -62,6 +62,9 @@ in {
     gtk4
 
     # Development
+    # Prefer GNU's cc, c++, and ld when gcc and clang provide the same binaries.
+    (lib.hiPrio gcc)
+    clang
     gnumake
     go
     gopls
