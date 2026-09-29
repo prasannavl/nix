@@ -528,7 +528,7 @@ class PodmanImageUpdaterTest(unittest.TestCase):
             mock.patch.object(
                 podman_image_updater,
                 "registry_tags",
-                return_value=["v1.91.1"],
+                return_value=["v3.0.2", "v1.91.1"],
             ),
         ):
             latest = podman_image_updater.latest_known_tag(
@@ -544,10 +544,17 @@ class PodmanImageUpdaterTest(unittest.TestCase):
         )
 
     def test_stirling_release_strips_non_registry_v_prefix(self):
-        with mock.patch.object(
-            podman_image_updater,
-            "request_json",
-            return_value={"tag_name": "v2.14.3"},
+        with (
+            mock.patch.object(
+                podman_image_updater,
+                "request_json",
+                return_value={"tag_name": "v2.14.3"},
+            ),
+            mock.patch.object(
+                podman_image_updater,
+                "registry_tags",
+                return_value=["2.14.2", "2.14.3"],
+            ),
         ):
             latest = podman_image_updater.latest_known_tag(
                 "docker.stirlingpdf.com",
@@ -556,6 +563,27 @@ class PodmanImageUpdaterTest(unittest.TestCase):
             )
 
         self.assertEqual(latest, "2.14.3")
+
+    def test_stirling_ignores_release_without_published_image(self):
+        with (
+            mock.patch.object(
+                podman_image_updater,
+                "request_json",
+                return_value={"tag_name": "v3.0.1"},
+            ),
+            mock.patch.object(
+                podman_image_updater,
+                "registry_tags",
+                return_value=["2.14.3", "3.0.0"],
+            ),
+        ):
+            latest = podman_image_updater.latest_known_tag(
+                "docker.stirlingpdf.com",
+                "stirlingtools/stirling-pdf",
+                "2.14.3",
+            )
+
+        self.assertEqual(latest, "3.0.0")
 
     def test_nginx_updates_within_even_minor_stable_releases(self):
         with mock.patch.object(

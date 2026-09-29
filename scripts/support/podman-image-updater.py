@@ -24,6 +24,10 @@ TIMESCALE_PG_TAG_RE = re.compile(
 )
 STABLE_BUILD_TAG_RE = re.compile(r"^stable-([0-9]+)(?:-([0-9]+))?$")
 HTTP_TIMEOUT_SECONDS = 20
+# Some registry front-ends (for example Cloudflare in front of
+# docker.stirlingpdf.com) reject urllib's default "Python-urllib" User-Agent
+# with HTTP 403 before the registry can return its Bearer challenge.
+HTTP_USER_AGENT = "podman-image-updater/1.0"
 REGISTRY_TAG_PAGE_SIZE = 1000
 RELEASE_TAG_REPOSITORIES = {
     ("ghcr.io", "immich-app/immich-machine-learning"): ("immich-app/immich", ""),
@@ -401,7 +405,10 @@ class HttpRequestFailure(RuntimeError):
 
 
 def request_json(url, token=None):
-    headers = {"Accept": "application/json"}
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": HTTP_USER_AGENT,
+    }
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, headers=headers)
@@ -831,7 +838,24 @@ def is_attention_update(current, latest):
 def latest_known_tag(registry, repository, tag, tags=None):
     release_tag = latest_release_tag(registry, repository)
     if release_tag is not None:
-        return latest_comparable_tag(tag, [release_tag])
+        if tags is None:
+            tags = registry_tags(
+                registry,
+                repository,
+                all_pages=trailing_version_tag_parts(tag) is not None,
+            )
+        tags = repository_tags_for_policy(
+            registry,
+            repository,
+            tag,
+            tags,
+        )
+        # A GitHub release can precede its published container image. Only
+        # trust the release tag when the registry actually carries it, and
+        # otherwise fall back to the registry's published tags.
+        if release_tag in tags:
+            return latest_comparable_tag(tag, [release_tag])
+        return latest_comparable_tag(tag, tags)
     if tags is None:
         tags = registry_tags(
             registry,
