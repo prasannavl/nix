@@ -592,6 +592,12 @@ Use this index as the canonical map for `.agents/docs/**`.
   the L-now/F-later decision, the no-IFD prerequisite, per-state optimization,
   and the observed derivation evidence. Points to
   `.agents/docs/plans/rust-workspace-build-graph-2026-09.md`.
+- `.agents/docs/notes/tooling/rust-build-graph-review-2026-09.md`: Fresh
+  four-lane review of the landed Design L series (`03fc5023..a43b811d`):
+  verified no-IFD, one `.rs`-independent base, artifacts-only member layers, and
+  no leakage, plus the consolidated P1/P2 findings (unfiltered shared base,
+  silent mode degradation, doc/feature-normalization drift) and their
+  disposition options.
 - `.agents/docs/notes/tooling/abird-host-manager-fleet-dependency-audit-2026-09.md`:
   Read-only audit of the `abird-host-manager fleet` external dependency surface
   across controller PATH, target SSH scripts, and embedded Bash, with
