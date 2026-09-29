@@ -111,6 +111,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   resources, mutable-state boundaries, the packaged i18n locale default, Pi Web
   CLI installation, and Pi 0.85.1 compatibility requirement, plus the
   `pi-codex-limit` usage-footer extension.
+- `.agents/docs/notes/apps/pi-mcp-adapter-playwright-2026-09.md`: Records the
+  `pi-mcp-adapter` 3.2.0 package unit, the Pi-runtime peer/dev dependency
+  stripping, the shared `~/.config/mcp/mcp.json` Playwright server declaration,
+  the ~2 GiB container gating, and the Pi RPC / MCP stdio validation.
 - `.agents/docs/notes/apps/pi-subagents-gotgenes-switch-2026-09.md`: Records the
   2026-09-29 switch from the unscoped `pi-subagents` to
   `@gotgenes/pi-subagents`, the npm-tarball packaging with Pi-virtualized

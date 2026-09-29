@@ -1,7 +1,11 @@
 {
   nixos = {...}: {};
 
-  home = {pkgs, ...}: let
+  home = {
+    pkgs,
+    osConfig,
+    ...
+  }: let
     piModelsDiscovery = pkgs.callPackage ../../../lib/ext/pi/pi-models-discovery {
       i18nDefaultLocale = "en-US";
     };
@@ -11,6 +15,7 @@
     piWeb = pkgs.callPackage ../../../lib/ext/pi/pi-web {};
     piDiff = pkgs.callPackage ../../../lib/ext/pi/pi-diff {};
     piCodexLimit = pkgs.callPackage ../../../lib/ext/pi/pi-codex-limit {};
+    piMcpAdapter = pkgs.callPackage ../../../lib/ext/pi/pi-mcp-adapter {};
     revdiff = pkgs.callPackage ../../../lib/ext/revdiff {};
     revdiffPi = pkgs.callPackage ../../../lib/ext/revdiff/pi.nix {};
     piModelsDiscoveryRoot = "${piModelsDiscovery}/share/pi/packages/pi-models-discovery";
@@ -19,10 +24,26 @@
     piTpsRoot = "${piTps}/share/pi/packages/pi-tps";
     piDiffRoot = "${piDiff}/lib/node_modules/@heyhuynhgiabuu/pi-diff";
     piCodexLimitRoot = "${piCodexLimit}/share/pi/packages/pi-codex-limit";
+    piMcpAdapterRoot = "${piMcpAdapter}/lib/node_modules/pi-mcp-adapter";
     revdiffPiRoot = "${revdiffPi}/share/pi/packages/revdiff-pi";
     piDiffConfig = {disabledTools = ["apply_patch"];};
+    # Playwright's browser closure is ~2 GiB, so keep the MCP server on the
+    # graphical hosts and off the headless container profiles. The adapter
+    # reads the standard shared MCP file as its user-global server source and
+    # keeps its own writable overrides in mcp-adapter.json.
+    playwrightEnabled = !osConfig.boot.isContainer;
+    mcpConfig = {
+      mcpServers = pkgs.lib.optionalAttrs playwrightEnabled {
+        playwright = {
+          command = "${pkgs.playwright-mcp}/bin/playwright-mcp";
+          args = ["--headless" "--isolated"];
+        };
+      };
+    };
   in {
-    home.packages = [pkgs.unstable.pi-coding-agent piWeb revdiff];
+    home.packages =
+      [pkgs.unstable.pi-coding-agent piWeb revdiff]
+      ++ pkgs.lib.optional playwrightEnabled pkgs.playwright-mcp;
 
     home.file = {
       ".pi/agent/extensions/pi-codex-limit".source = piCodexLimitRoot;
@@ -33,6 +54,7 @@
       ".pi/agent/extensions/pi-models-discovery/node_modules".source = "${piModelsDiscoveryRoot}/node_modules";
       ".pi/agent/extensions/pi-models-discovery/package.json".source = "${piModelsDiscoveryRoot}/package.json";
       ".pi/agent/extensions/pi-models-discovery/src".source = "${piModelsDiscoveryRoot}/src";
+      ".pi/agent/extensions/pi-mcp-adapter".source = piMcpAdapterRoot;
       ".pi/agent/extensions/pi-revdiff".source = revdiffPiRoot;
       ".pi/agent/extensions/pi-session-manager.ts".source = "${piSessionManagerRoot}/extensions/session-manager.ts";
       # @gotgenes/pi-subagents ships only the runtime extension. Unlike the
@@ -45,7 +67,13 @@
       # write/read tools by turning off its patch tool.
       ".pi/agent/pi-diff.json".text = builtins.toJSON piDiffConfig;
 
+      # Shared MCP server declarations for Pi's MCP adapter (and other hosts).
+      ".config/mcp/mcp.json" = pkgs.lib.mkIf playwrightEnabled {
+        text = builtins.toJSON mcpConfig;
+      };
+
       ".pi/agent/skills/pi-models-discovery/SKILL.md".source = "${piModelsDiscoveryRoot}/SKILL.md";
+      ".pi/agent/skills/mcp-scripting".source = "${piMcpAdapterRoot}/skills/mcp-scripting";
       ".pi/agent/skills/revdiff".source = "${revdiffPiRoot}/plugins/pi/skills/revdiff";
     };
   };
