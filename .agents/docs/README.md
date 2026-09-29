@@ -286,6 +286,11 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-x2-docmost-postgres-major-2026-09.md`: Records
   the Docmost outage caused by an automated PostgreSQL 16-to-18 image change,
   the preserved database-major boundary, and the declarative recovery path.
+- `.agents/docs/notes/hosts/pvl-x2-stirling-pdf-unpublished-image-2026-09.md`:
+  Records the 2026-09-29 fleet acquire failure from a Stirling-PDF pin to an
+  unpublished `3.0.1` container image, the updater's unverified GitHub-release
+  trust and Cloudflare-blocked registry lookups, and the published-tag fallback
+  fix.
 - `.agents/docs/notes/hosts/pvl-x2-inline-compose-2026-04.md`: Records the
   migration of `pvl-x2` service-local `docker.compose.yaml` files into inline
   Nix compose sources, with Immich helper YAML retained and Zulip kept as a
