@@ -4,8 +4,10 @@ On 2026-09-14, the Pvl Home Manager profiles gained declarative
 `pi-models-discovery`, `pi-session-manager`, `pi-subagents`, and `pi-tps`
 resources, plus the `pi-web` command. On 2026-09-26 they gained `pi-diff` and
 `pi-codex-limit`; see `.agents/docs/notes/apps/revdiff-pi-2026-09.md` for the
-`pi-diff` packaging decision. The installation does not take ownership of Pi's
-writable `~/.pi/agent/settings.json`.
+`pi-diff` packaging decision. On 2026-09-29 they gained `pi-mcp-adapter` and a
+Playwright MCP server; see
+`.agents/docs/notes/apps/pi-mcp-adapter-playwright-2026-09.md`. The installation
+does not take ownership of Pi's writable `~/.pi/agent/settings.json`.
 
 ## Package layout
 
@@ -28,7 +30,7 @@ promote the Pi derivations into `pkgs/` and register them in
 
 `lib/ext/pi/sources.nix` is the single machine-maintained source of versions,
 upstream revisions, source hashes, release hashes, and npm dependency hashes for
-all seven packages. The executable `lib/ext/pi/update.sh` participates in the
+all eight packages. The executable `lib/ext/pi/update.sh` participates in the
 standard maintenance interface as the `pi` extension updater:
 
 ```console
@@ -56,10 +58,12 @@ under Pi's auto-discovered global resource directories:
 - `~/.pi/agent/extensions/pi-extensions-i18n`
 - `~/.pi/agent/extensions/pi-codex-limit`
 - `~/.pi/agent/extensions/pi-diff`
+- `~/.pi/agent/extensions/pi-mcp-adapter`
 - `~/.pi/agent/extensions/pi-session-manager.ts`
 - `~/.pi/agent/extensions/pi-tps.ts`
 - `~/.pi/agent/extensions/pi-subagents`
-- the packaged `pi-models-discovery` skill under `~/.pi/agent/skills`
+- the packaged `pi-models-discovery` and `mcp-scripting` skills under
+  `~/.pi/agent/skills`
 
 `pi-models-discovery` writes its cache to
 `~/.pi/agent/extensions/pi-models-discovery/cache.json`. Home Manager leaves the
@@ -143,6 +147,13 @@ the published tarball directly and relies on Pi to provide
 `@earendil-works/pi-tui` at runtime. The extension reads Codex usage and renders
 a subscription-limit footer widget; it declares no skill, prompt, or command.
 
+The local `pi-mcp-adapter` derivation packages `pi-mcp-adapter` 3.2.0 from its
+npm tarball plus the tagged upstream lockfile. The build drops the
+Pi-virtualized peer/dev packages and the `prepack`/`prepare` scripts, then
+caches only the runtime closure. See
+`.agents/docs/notes/apps/pi-mcp-adapter-playwright-2026-09.md` for the MCP
+server declaration and the container gating.
+
 All sources are content-addressed and version-pinned. Pi does not download or
 update these packages at startup; normal Nix source and dependency hashes
 control upgrades.
@@ -159,6 +170,7 @@ nix-build lib/ext/pi/pi-tps --no-out-link
 nix-build lib/ext/pi/pi-web --no-out-link
 nix-build lib/ext/pi/pi-diff --no-out-link
 nix-build lib/ext/pi/pi-codex-limit --no-out-link
+nix-build lib/ext/pi/pi-mcp-adapter --no-out-link
 nix eval .#nixosConfigurations.pvl-a1.config.system.build.toplevel.drvPath --raw
 nix eval .#nixosConfigurations.pvl-l5.config.system.build.toplevel.drvPath --raw
 nix eval .#nixosConfigurations.pvl-x2.config.system.build.toplevel.drvPath --raw
@@ -167,7 +179,8 @@ nix eval .#nixosConfigurations.pvl-x2.config.system.build.toplevel.drvPath --raw
 For an extension-load smoke test, run Pi in RPC mode with the generated Home
 Manager resource layout and issue `get_commands`. A successful result includes
 `/config:model-discovery`, `/config:language`, `/sessions`, `/sall`, `/pi-tps`,
-and the `pi-subagents` commands (`/subagents:settings`, `/subagents:sessions`);
-after the gotgenes switch the six prompt templates and the
+and the `pi-subagents` commands (`/subagents:settings`, `/subagents:sessions`),
+plus the `pi-mcp-adapter` commands (`/mcp-adapter`, `/mcp-auth`, `/mcp`); after
+the gotgenes switch the six prompt templates and the
 `pi-subagents`/`council-mode` skills are no longer installed. Validate the
 standalone UI command with `pi-web --help`; this does not start a listener.

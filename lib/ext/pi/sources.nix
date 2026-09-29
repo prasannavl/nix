@@ -60,4 +60,15 @@
     version = "1.8.2";
     srcHash = "sha256-OMu2mwhRU4IGTIPsBTZGzdS8Ro32u7LI7b+PIsYJ+E0=";
   };
+
+  pi-mcp-adapter = {
+    kind = "npm";
+    package = "pi-mcp-adapter";
+    owner = "nicobailon";
+    repo = "pi-mcp-adapter";
+    version = "3.2.0";
+    srcHash = "sha256-VPGuT6WevWfEKffcXKaQb0u3Hdo6GeEMSZTGvzMFrEs=";
+    releaseHash = "sha256-gzWJdYMz9gvSPE8ftTJpsqqmnlE6y0mcaIuELaaVWkM=";
+    npmDepsHash = "sha256-udsWIiwi6VCY8lKerdI3ueAZm43g29Ocg1c13392Bhs=";
+  };
 }

@@ -43,6 +43,7 @@ init_vars() {
 		pi-web
 		pi-diff
 		pi-codex-limit
+		pi-mcp-adapter
 	)
 	REQUESTED_PACKAGES=()
 }
@@ -294,7 +295,7 @@ update_package() {
 		tarball="$(jq -er '.dist.tarball' <<<"$metadata")"
 		src_hash="$(prefetch_unpack_hash "$tarball")"
 		;;
-	pi-web)
+	pi-web | pi-mcp-adapter)
 		tarball="$(jq -er '.dist.tarball' <<<"$metadata")"
 		src_hash="$(prefetch_unpack_hash "$tarball")"
 		read -r owner repo <<<"$(github_repo "$package")"
@@ -307,7 +308,7 @@ update_package() {
 	esac
 
 	set_source_record "$package" "$version" "$rev" "$src_hash" "$release_hash" "$npm_deps_hash"
-	if [[ "$package" == "pi-web" || "$package" == "pi-diff" ]]; then
+	if [[ "$package" == "pi-web" || "$package" == "pi-diff" || "$package" == "pi-mcp-adapter" ]]; then
 		compute_npm_deps_hash "$package"
 	fi
 	build_package "$package"
