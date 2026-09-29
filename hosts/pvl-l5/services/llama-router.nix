@@ -23,7 +23,7 @@ in {
       source = ''
         services:
           llama-cpu:
-            image: ghcr.io/ggml-org/llama.cpp:server-v0.4.1
+            image: ghcr.io/ggml-org/llama.cpp:server-v0.5.0
             container_name: llama-cpu
             # Two resident workers cover the embedding model plus one chat
             # model without holding three CPU model sets in system RAM.
@@ -51,7 +51,7 @@ in {
       source = ''
         services:
           llama-rocm:
-            image: ghcr.io/ggml-org/llama.cpp:server-rocm-v0.4.1
+            image: ghcr.io/ggml-org/llama.cpp:server-rocm-v0.5.0
             container_name: llama-rocm
             # Three resident workers let the embedding model co-reside with
             # up to two chat models (an /embeddings request no longer
@@ -84,7 +84,7 @@ in {
       source = ''
         services:
           llama-nvidia:
-            image: ghcr.io/ggml-org/llama.cpp:server-cuda-v0.4.1
+            image: ghcr.io/ggml-org/llama.cpp:server-cuda-v0.5.0
             container_name: llama-nvidia
             # Three resident workers for the same co-residency reason as the
             # ROCm variant; the poll = 0 presets plus sleep-idle-seconds keep
@@ -123,7 +123,7 @@ in {
       source = ''
         services:
           llama-prism-rocm:
-            image: ghcr.io/ggml-org/llama.cpp:server-rocm-v0.4.1
+            image: ghcr.io/ggml-org/llama.cpp:server-rocm-v0.5.0
             container_name: llama-prism-rocm
             command:
               - --models-preset
@@ -156,7 +156,7 @@ in {
       source = ''
         services:
           llama-prism-nvidia:
-            image: ghcr.io/ggml-org/llama.cpp:server-cuda-v0.4.1
+            image: ghcr.io/ggml-org/llama.cpp:server-cuda-v0.5.0
             container_name: llama-prism-nvidia
             command:
               - --models-preset
