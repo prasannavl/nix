@@ -159,6 +159,16 @@ exist remain buildable, and explicit `build` plus strict or optional deployment
 still fail on missing plans. This preserves the narrower deploy-skip contract
 without pretending an external configuration failed.
 
+Pvl later resolved the mixed-inventory case at the source instead of relying on
+the skip: `gap3-gondor` is an Abird-owned host whose NixOS configuration lives
+in the Abird tree (`hosts/default.nix`, `stack = stacks.gap3`), so its Pvl
+`nixbot` inventory row was removed, along with the Pvl-side
+`machine/gap3-gondor` identity and `tailscale/gap3-gondor` secret declarations
+(the identical keypair remains in the Abird tree). Pvl keeps only the
+incus-layer container (`hosts/pvl-x2/incus.nix`); the `hosts/nixbot.nix` host
+set now equals `.#nixosConfigurations` exactly, so every selected host has a
+native plan and the mixed-inventory contradiction cannot arise in Pvl.
+
 The same incident showed Ctrl-C as ordinary red process and host failures.
 Process completion now distinguishes success, failure, and interruption;
 diagnostics record `interrupted`, active tasks and phases use the warning tone,

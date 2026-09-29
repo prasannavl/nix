@@ -21,7 +21,6 @@ let
       pvl-vlab-1 = {};
       pvl-vk = {};
       pvl-vk-1 = {};
-      gap3-gondor = {};
     };
     defaultAccess = adminsWithNixbot;
   };
@@ -99,7 +98,6 @@ in
 
     # Tailscale
     ${globals.key "tailscale/pvl-vlab"}.publicKeys = admins ++ pvl-vlab;
-    ${globals.key "tailscale/gap3-gondor"}.publicKeys = admins ++ gap3-gondor;
   })
   // machineIdentities.secrets
   // import ./pvl stackArgs

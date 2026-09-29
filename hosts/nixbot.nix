@@ -47,13 +47,6 @@ in {
       proxyJump = "pvl-x2";
       parent = "pvl-vlab-1";
     };
-    gap3-gondor = {
-      target = "10.10.20.11";
-      ageIdentityKey = secretPaths.machine "gap3-gondor";
-      proxyJump = "pvl-x2";
-      parent = "pvl-x2";
-      deploy = "skip";
-    };
   };
 
   config = {
