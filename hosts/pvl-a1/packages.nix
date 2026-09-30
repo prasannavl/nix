@@ -78,6 +78,7 @@ in {
     rustc
     rustPlatform.rustLibSrc
     rustfmt
+    clippy
     rust-analyzer
     nodejs
     yarn
