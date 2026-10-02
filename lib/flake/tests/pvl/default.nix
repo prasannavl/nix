@@ -30,7 +30,14 @@ Pvl acceptance notes moved out of shared files by that split:
   authority/browser fixtures remain available here; they are separate from
   the packaged helper and normalization checks.
 */
-{pkgs}:
+{
+  pkgs,
+  crane ? null,
+}:
 import ./flake-isolated.nix {inherit pkgs;}
 // import ./postgres-extensions.nix {inherit pkgs;}
 // import ./secrets.nix {inherit pkgs;}
+// pkgs.lib.optionalAttrs (crane != null) {
+  pvl-child-flake-parity = import ./child-flake-parity.nix {inherit pkgs crane;};
+  pvl-rust-toolchain-integration = import ./rust-toolchain-integration.nix {pkgs = pkgs;};
+}

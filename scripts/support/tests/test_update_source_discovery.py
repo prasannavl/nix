@@ -9,12 +9,12 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).parents[3]
 UPDATE_SCRIPT = REPO_ROOT / "scripts/update.sh"
-TMP_ROOT = REPO_ROOT / "tmp"
+TMP_ROOT = REPO_ROOT / "tmp/helper-consolidation"
 
 
 class UpdateSourceDiscoveryTests(unittest.TestCase):
     def setUp(self):
-        TMP_ROOT.mkdir(exist_ok=True)
+        TMP_ROOT.mkdir(parents=True, exist_ok=True)
         self.temp_dir = tempfile.TemporaryDirectory(
             prefix="test-update-discovery.", dir=TMP_ROOT
         )
@@ -95,14 +95,16 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
     def test_sources_without_updater_are_report_only(self):
         unit = self.add_unit("pkgs/ext", "example", sources=True)
         trace = Path(self.temp_dir.name) / "trace"
-        reporter = self.repo / "scripts/support/report-ext-sources.py"
+        reporter = self.repo / "scripts/support/update-helper.py"
         reporter.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" >"$TRACE"\n')
         reporter.chmod(0o755)
 
         result = self.run_update("--report", "--only-pkgs-ext", trace=trace)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(str(unit / "sources.nix"), trace.read_text().splitlines())
+        arguments = trace.read_text().splitlines()
+        self.assertEqual(arguments[0], "report-sources")
+        self.assertIn(str(unit / "sources.nix"), arguments)
 
         trace.unlink()
         result = self.run_update("--only-pkgs-ext", trace=trace)
@@ -168,13 +170,13 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
 
     def test_report_footer_names_failed_source_reporter(self):
         self.add_unit("pkgs/ext", "example", sources=True)
-        reporter = self.repo / "scripts/support/report-ext-sources.py"
+        reporter = self.repo / "scripts/support/update-helper.py"
         reporter.write_text("#!/usr/bin/env bash\nexit 5\n")
         reporter.chmod(0o755)
         result = self.run_update("--only-pkgs-ext", "--report")
         self.assertEqual(result.returncode, 5, result.stderr)
         self.assertIn("pkgs/ext source report", result.stderr)
-        self.assertIn("scripts/support/report-ext-sources.py", result.stderr)
+        self.assertIn("scripts/support/update-helper.py", result.stderr)
         self.assertIn("exit 5", result.stderr)
 
     def test_report_footer_names_failed_image_reporter(self):

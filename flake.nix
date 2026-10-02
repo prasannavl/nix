@@ -78,7 +78,7 @@
       url = "github:thiagokokada/nix-alien";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    crane.url = "github:ipetkov/crane";
+    crane.url = "github:ipetkov/crane/v0.24.0";
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -93,7 +93,8 @@
       # (see .agents/docs/design-patterns/shared-test-areas.md).
       repositoryConfig = import ./config;
       repositoryInventory = import ./hosts/nixbot.nix;
-      repoChecksFn = import ./lib/flake/repo-checks.nix;
+      repoChecksFn = args:
+        (import ./lib/flake/repo-checks.nix) (args // {crane = inputs.crane;});
       # The full table is required: this assignment replaces the shared
       # default wholesale, so omitting an entry drops it from the input set.
       inputSetInputNames.default = {

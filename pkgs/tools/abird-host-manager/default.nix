@@ -1,7 +1,7 @@
 {
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
-  abirdHostAgent ? null,
+  abirdHostAgent ? pkgs.callPackage ../abird-host-agent/default.nix {pkgHelper = pkgHelper;},
 }: let
   fleetRuntimeInputs = with pkgs; [
     cloudflared
@@ -16,9 +16,8 @@ in
     pname = "abird-host-manager";
     version = "0.1.0";
     projectDir = "pkgs/tools/abird-host-manager";
-    # Always keep the dependency directory in this package's source; inherit its
-    # artifacts only when the root composition supplies the package (the
-    # standalone child-flake build has none).
+    # Root and standalone builds share the same dependency constructor by
+    # default. An explicit null disables artifact inheritance, not source deps.
     deps = ["pkgs/tools/abird-host-agent"];
     internalDeps = pkgs.lib.optional (abirdHostAgent != null) abirdHostAgent;
     # `jq` stays in the check environment only: the service-move fake-nix

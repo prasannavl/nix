@@ -62,6 +62,7 @@ init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
 	LIB_EXT_DIR="${REPO_ROOT}/lib/ext"
 	PKGS_EXT_DIR="${REPO_ROOT}/pkgs/ext"
+	UPDATE_HELPER="${REPO_ROOT}/scripts/support/update-helper.py"
 	SKIP_FLAKE=0
 	ONLY_FLAKE=0
 	SKIP_EXT=0
@@ -243,6 +244,9 @@ update_flakes() {
 	echo "==> Updating root flake: $REPO_ROOT"
 	nix flake update --flake "$REPO_ROOT"
 
+	echo "==> Synchronizing retained child input refs"
+	python3 "$UPDATE_HELPER" child-refs --root "$REPO_ROOT" --write
+
 	while IFS= read -r dir; do
 		[[ "$dir" == "$REPO_ROOT" ]] && continue
 		echo "==> Updating child flake: ${dir#"$REPO_ROOT"/}"
@@ -251,7 +255,7 @@ update_flakes() {
 }
 
 report_flakes() {
-	nix --no-warn-dirty flake metadata --json "$REPO_ROOT" |
+	nix --no-warn-dirty flake metadata --no-write-lock-file --json "$REPO_ROOT" |
 		python3 -c '
 import json
 import sys
@@ -437,10 +441,10 @@ run_source_report() {
 		done
 	done
 	if ((${#report_sources[@]} > 0)); then
-		"${REPO_ROOT}/scripts/support/report-ext-sources.py" \
+		"$UPDATE_HELPER" report-sources \
 			--jobs "$max_jobs" "--color=${COLOR_MODE}" "${report_sources[@]}" &
 		pids+=("$!")
-		labels+=("${root#"$REPO_ROOT"/} source report (scripts/support/report-ext-sources.py)")
+		labels+=("${root#"$REPO_ROOT"/} source report (${UPDATE_HELPER#"$REPO_ROOT"/} report-sources)")
 	fi
 
 	for index in "${!pids[@]}"; do

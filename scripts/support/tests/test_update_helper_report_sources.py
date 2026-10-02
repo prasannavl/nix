@@ -4,13 +4,13 @@ from pathlib import Path
 from unittest import mock
 
 
-SCRIPT = Path(__file__).parents[1] / "report-ext-sources.py"
-SPEC = importlib.util.spec_from_file_location("report_ext_sources", SCRIPT)
+SCRIPT = Path(__file__).resolve().parents[1] / "update-helper.py"
+SPEC = importlib.util.spec_from_file_location("update_helper_report_sources", SCRIPT)
 REPORT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(REPORT)
 
 
-class ReportExtSourcesTests(unittest.TestCase):
+class UpdateHelperReportSourcesTests(unittest.TestCase):
     def test_load_packages_uses_sources_nix_entries(self):
         path = Path("pkgs/ext/example/sources.nix")
         sources = {

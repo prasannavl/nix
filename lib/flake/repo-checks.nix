@@ -6,4 +6,9 @@
 # lib/flake/tests/pvl/flake-isolated.nix); shared files stay
 # repository-blind and receive this function as an injected argument with an
 # empty default. See .agents/docs/design-patterns/shared-test-areas.md.
-{pkgs, ...}: import ./tests/pvl {inherit pkgs;}
+{
+  pkgs,
+  crane ? null,
+  ...
+}:
+import ./tests/pvl {inherit pkgs crane;}

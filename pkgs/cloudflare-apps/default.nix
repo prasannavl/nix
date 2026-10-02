@@ -1,8 +1,9 @@
 {
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../lib/flake/pkg-helper.nix,
-  nixbot ? pkgs.callPackage ../tools/nixbot/default.nix {inherit pkgHelper;},
-  llmugHello ? pkgs.callPackage ./llmug-hello/default.nix {inherit pkgHelper;},
+  # Intrinsic dependencies live here, so root and child calls share defaults.
+  nixbot ? pkgs.callPackage ../tools/nixbot/default.nix {pkgHelper = pkgHelper;},
+  llmugHello ? pkgs.callPackage ./llmug-hello/default.nix {pkgHelper = pkgHelper;},
 }: let
   deploy = pkgs.writeShellApplication {
     name = "cloudflare-apps-deploy";

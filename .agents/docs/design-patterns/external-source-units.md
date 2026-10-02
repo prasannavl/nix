@@ -65,8 +65,10 @@ runtime behavior. Version updates must not regenerate `default.nix`.
 external roots.
 
 - Units with an executable updater delegate reports and updates to that script.
-- Units without an updater use the generic kind-based reporter and never mutate
-  source state.
+- Units without an updater use
+  `scripts/support/update-helper.py report-sources`, the generic kind-based
+  read-only reporter. That subcommand never invokes child ref synchronization or
+  mutates source state.
 - A non-executable `update.sh` is rejected rather than silently treated as
   report-only.
 
@@ -156,4 +158,4 @@ and diagnostics.
 - `pkgs/ext/*/sources.nix`
 - `pkgs/ext/*/update.sh`
 - `scripts/update.sh`
-- `scripts/support/report-ext-sources.py`
+- `scripts/support/update-helper.py` (`report-sources`)

@@ -24,11 +24,9 @@
   pkgHelper = import ./pkg-helper.nix;
   serviceModuleFactory = import ./service-module.nix;
 
-  fallbackOverlays =
-    lib.optional (inputs ? crane)
-    (_final: prev: {
-      craneLib = inputs.crane.mkLib prev;
-    });
+  fallbackOverlays = [
+    (import ./rust-toolchain.nix {inherit inputs;}).overlay
+  ];
 
   isAvailablePackage = pkgs: pkg: let
     resolved = builtins.tryEval pkg;

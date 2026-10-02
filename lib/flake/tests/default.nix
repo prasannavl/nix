@@ -317,6 +317,10 @@
     ${system} = outputs;
   };
 in {
+  lib-flake-rust-toolchain = assert builtins.deepSeq (import ./rust-toolchain.nix) true;
+    pkgs.runCommand "lib-flake-rust-toolchain-test" {} ''
+      touch "$out"
+    '';
   lib-flake-fabric-contract = import ./fabric-contract.nix {inherit pkgs;};
   lib-flake-fabric-projection = import ./fabric-projection.nix {inherit pkgs;};
   lib-flake-phase-projection = import ./phase-projection.nix {inherit pkgs;};

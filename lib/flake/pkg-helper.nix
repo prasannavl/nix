@@ -1,4 +1,9 @@
 let
+  selectToolchain = pkgs: toolchain:
+    if pkgs ? rustToolchainFor
+    then pkgs.rustToolchainFor toolchain
+    else (import ./rust-toolchain.nix {inherit pkgs;}).toolchainFor toolchain;
+
   joinWords = parts:
     builtins.concatStringsSep " " (builtins.filter (part: part != "") parts);
 
@@ -176,13 +181,12 @@ let
   # `dummySrc` is passed without `src` (which `buildDepsOnly` would ignore and
   # warn about anyway); the dummy depends only on cargo manifests, the lockfile
   # and `.cargo` config, so `*.rs` edits never invalidate it.
-  mkSharedRustDepsBase = pkgs: {
+  mkSharedRustDepsBase = {
+    craneLib,
     source,
     cargoLockContents,
     cargoVendorDir,
-  }: let
-    craneLib = pkgs.craneLib;
-  in
+  }:
     craneLib.buildDepsOnly {
       dummySrc = craneLib.mkDummySrc {src = source;};
       pname = "abird-rust-workspace";
@@ -195,12 +199,11 @@ let
   # chains a single `.prev` parent, so a member with two or more in-repo
   # dependencies needs an explicit join. This materialises the union as one full
   # archive (simple and correct); it is only needed when fan-in occurs.
-  mkCargoArtifactsJoin = pkgs: {
+  mkCargoArtifactsJoin = {
+    craneLib,
     name,
     deps,
-  }: let
-    craneLib = pkgs.craneLib;
-  in
+  }:
     craneLib.mkCargoDerivation {
       pname = "${name}-cargo-artifacts";
       version = "0.1.0";
@@ -1523,6 +1526,7 @@ in rec {
 
   mkTrunkProject = {
     pkgs,
+    toolchain ? null,
     src ?
       if projectDir == null
       then throw "pkg-helper.mkTrunkProject: pass `src` when `projectDir` is null"
@@ -1559,6 +1563,9 @@ in rec {
     testCargoArgs ? ["--locked"],
     cargoBuildArgs ? null,
   }: let
+    selectedToolchain = selectToolchain pkgs toolchain;
+    toolPkgs = selectedToolchain.toolPkgs;
+    craneLib = selectedToolchain.craneLib;
     buildAttrsNoPrePatch = builtins.removeAttrs buildAttrs ["prePatch"];
     buildPrePatch = composeCargoWorkspacePrePatch {
       inherit projectDir deps;
@@ -1582,9 +1589,9 @@ in rec {
     devRuntimeInputs =
       buildToolchain
       ++ [
-        pkgs.cargo
+        toolPkgs.cargo
         pkgs.git
-        pkgs.rustc
+        toolPkgs.rustc
       ]
       ++ extraDevRuntimeInputs;
     devShell = pkgs.mkShell {
@@ -1683,7 +1690,6 @@ in rec {
           '';
         };
 
-      craneLib = pkgs.craneLib or null;
       craneCargoVendorDir =
         if craneLib == null
         then null
@@ -1709,31 +1715,41 @@ in rec {
         then baseAttrs // {dummySrc = craneLib.mkDummySrc {src = buildSrc;};}
         else baseAttrs // {dummySrc = buildSrc;};
     in
-      if craneLib != null && !(builtins.hasAttr "cargoDeps" buildAttrs)
-      then
-        craneLib.buildPackage (
-          craneAttrs trunkBuildAttrs
-          // {
-            cargoExtraArgs = cargoExtraArgs;
-            cargoArtifacts = craneLib.buildDepsOnly (
-              craneDepsAttrs
-              // {
-                cargoExtraArgs = cargoExtraArgs;
-              }
-            );
-          }
-        )
-      else
-        pkgs.rustPlatform.buildRustPackage (
-          trunkBuildAttrs
-          // {
-            cargoLock = resolvedCargoLock;
-          }
-          // (attrIf (projectDir != null) "buildAndTestSubdir" projectDir)
-        );
+      builtins.seq (selectedToolchain.validateBuildAttrs trunkBuildAttrs) (
+        if craneLib != null && !(builtins.hasAttr "cargoDeps" buildAttrs)
+        then
+          craneLib.buildPackage (
+            craneAttrs trunkBuildAttrs
+            // {
+              cargoExtraArgs = cargoExtraArgs;
+              cargoArtifacts = craneLib.buildDepsOnly (
+                craneDepsAttrs
+                // {
+                  cargoExtraArgs = cargoExtraArgs;
+                }
+              );
+            }
+          )
+        else if selectedToolchain.custom
+        then throw "pkg-helper.mkTrunkProject: custom toolchain cannot use the rustPlatform/cargoDeps fallback"
+        else
+          pkgs.rustPlatform.buildRustPackage (
+            trunkBuildAttrs
+            // {
+              cargoLock = resolvedCargoLock;
+            }
+            // (attrIf (projectDir != null) "buildAndTestSubdir" projectDir)
+          )
+      );
     drv = mkRustDerivation {
       projectDir = projectPath;
-      inherit pkgs build src pname fmtCargoArgs lintFixCargoArgs checkCargoArgs testCargoArgs cargoBuildArgs;
+      inherit pkgs toolchain src pname fmtCargoArgs lintFixCargoArgs checkCargoArgs testCargoArgs cargoBuildArgs;
+      # This helper actually produced the custom Crane build; certify its
+      # identity before passing it through the supplied-build adapter.
+      build =
+        if selectedToolchain.custom
+        then wirePassthru build {rustToolchainId = selectedToolchain.id;}
+        else build;
       inherit nativeCheckInputs fmtNativeBuildInputs lintNativeBuildInputs checkEnv;
     };
     baseDrv = wirePassthru drv {
@@ -1857,6 +1873,7 @@ in rec {
 
   mkCargoWorkspacePackage = {
     pkgs,
+    toolchain ? null,
     build ? null,
     src,
     pname ? deriveProjectName src,
@@ -1931,6 +1948,7 @@ in rec {
       "projectDir"
       "cargoPackage"
       "cargoBuildPackages"
+      "toolchain"
       "cargoLock"
       "meta"
       "nativeCheckInputs"
@@ -1972,6 +1990,11 @@ in rec {
     resolvedBuild =
       if build != null
       then build
+      else if (selectToolchain pkgs toolchain).custom
+      # rustPlatform's build/test flag semantics are not interchangeable with
+      # Crane's cargoExtraArgs. Until this adapter translates both faithfully,
+      # never silently ignore distinct test args or cargoBuild/TestFlags.
+      then throw "pkg-helper.mkCargoWorkspacePackage: custom toolchain builds are not supported yet; use mkRustDerivation without a supplied build, or supply a build with a matching producer rustToolchainId"
       else
         pkgs.rustPlatform.buildRustPackage (
           commonBuildAttrs
@@ -2107,6 +2130,7 @@ in rec {
 
   mkRustDerivation = {
     pkgs,
+    toolchain ? null,
     build ? null,
     src ?
       if build == null
@@ -2156,6 +2180,13 @@ in rec {
     extraPassthru ? {},
     ...
   } @ args: let
+    selectedToolchain = selectToolchain pkgs toolchain;
+    toolPkgs = selectedToolchain.toolPkgs;
+    craneLib = selectedToolchain.craneLib;
+    buildContractGuard =
+      builtins.seq
+      (selectedToolchain.validateBuildAttrs (buildArgs // buildAttrs))
+      (selectedToolchain.validateBuildAttrs {env = checkEnv;});
     resolvedFmtCargoArgs =
       if builtins.hasAttr "fmtCargoArgs" args
       then fmtCargoArgs
@@ -2187,6 +2218,7 @@ in rec {
       "projectDir"
       "projectPath"
       "deps"
+      "toolchain"
       "useWorkspaceDeps"
       "internalDeps"
       "cargoLock"
@@ -2226,7 +2258,6 @@ in rec {
       if build != null
       then null
       else let
-        craneLib = pkgs.craneLib or null;
         # In-repo workspace members share one dummy-sourced dependency base (see
         # `sharedDepsBase` below). Member layers keep their own per-member source
         # so that editing one member's `*.rs` only invalidates that member and
@@ -2349,7 +2380,8 @@ in rec {
           if !workspaceMode
           then null
           else
-            mkSharedRustDepsBase pkgs {
+            mkSharedRustDepsBase {
+              craneLib = craneLib;
               source = workspaceSource;
               cargoLockContents =
                 resolvedCraneCargoLockAttrs.cargoLockContents
@@ -2373,7 +2405,15 @@ in rec {
           else if projectDir == null || !(builtins.isPath src)
           then throw "pkg-helper.mkRustDerivation: internalDeps requires a member `projectDir` and a path `src`"
           else null;
-        memberLayerOf = dep: (dep.passthru or {}).memberLayer or null;
+        memberLayerOf = dep: let
+          passthru = dep.passthru or {};
+          layer = passthru.memberLayer or null;
+        in
+          if layer == null
+          then null
+          else if (passthru.rustToolchainId or null) != selectedToolchain.id
+          then throw "pkg-helper.mkRustDerivation: internalDeps artifact toolchain mismatch (or missing rustToolchainId); compile from source via deps instead"
+          else layer;
         dependencyMemberLayers =
           builtins.filter (layer: layer != null) (map memberLayerOf internalDeps);
         # Common artifact prefix for this member. In L an internal dependency's
@@ -2390,7 +2430,8 @@ in rec {
           else if builtins.length dependencyMemberLayers == 1
           then builtins.head dependencyMemberLayers
           else
-            mkCargoArtifactsJoin pkgs {
+            mkCargoArtifactsJoin {
+              craneLib = craneLib;
               name = pname;
               deps = dependencyMemberLayers;
             };
@@ -2411,7 +2452,7 @@ in rec {
             );
         cargoArtifacts =
           if workspaceMode
-          then memberLayer
+          then builtins.seq internalDepsGuard memberLayer
           else builtins.seq internalDepsGuard packageCargoArtifacts;
         mkCraneCheckAttrs = extra:
           craneCommonAttrs
@@ -2468,16 +2509,29 @@ in rec {
             });
           };
       };
+    producerPassthru =
+      if build == null
+      then {}
+      else build.passthru or {};
+    producerId = producerPassthru.rustToolchainId or null;
+    suppliedBuildGuard =
+      if build == null
+      then true
+      else if (producerPassthru.memberLayer or null) != null && producerId != selectedToolchain.id
+      then throw "pkg-helper.mkRustDerivation: supplied build memberLayer requires a matching producer rustToolchainId; artifacts cannot be relabeled"
+      else if selectedToolchain.custom && producerId != selectedToolchain.id
+      then throw "pkg-helper.mkRustDerivation: custom toolchain on a supplied build requires a matching producer rustToolchainId"
+      else true;
     resolvedBuild =
       if build != null
-      then build
+      then builtins.seq suppliedBuildGuard build
       else rustBuildPlan.build;
     bundle = mkPackageOpsBundle {
       inherit pkgs src pname projectPath;
       apps = {
         fmt = {
           parts = [
-            (projectFmtRust pkgs {cargoArgs = resolvedFmtCargoArgs;})
+            (projectFmtRust toolPkgs {cargoArgs = resolvedFmtCargoArgs;})
             {
               inputs = resolvedFmtNativeBuildInputs;
             }
@@ -2486,7 +2540,7 @@ in rec {
         };
         "lint-fix" = {
           parts = [
-            (projectLintFixRust pkgs {
+            (projectLintFixRust toolPkgs {
               cargoArgs = lintFixCargoArgs;
               lintArgs = lintFixLintArgs;
             })
@@ -2505,8 +2559,8 @@ in rec {
             {
               inputs =
                 [
-                  pkgs.cargo
-                  pkgs.rustfmt
+                  toolPkgs.cargo
+                  toolPkgs.rustfmt
                 ]
                 ++ resolvedFmtNativeBuildInputs;
             }
@@ -2519,9 +2573,9 @@ in rec {
             {
               inputs =
                 [
-                  pkgs.cargo
-                  pkgs.clippy
-                  pkgs.rustc
+                  toolPkgs.cargo
+                  toolPkgs.clippy
+                  toolPkgs.rustc
                 ]
                 ++ resolvedLintNativeBuildInputs;
             }
@@ -2534,8 +2588,8 @@ in rec {
             {
               inputs =
                 [
-                  pkgs.cargo
-                  pkgs.rustc
+                  toolPkgs.cargo
+                  toolPkgs.rustc
                 ]
                 ++ resolvedNativeCheckInputs;
             }
@@ -2551,6 +2605,10 @@ in rec {
       // (attrIf (rustBuildPlan != null && rustBuildPlan.memberLayer != null) "memberLayer" rustBuildPlan.memberLayer)
       // (attrIf (rustBuildPlan != null && rustBuildPlan.sharedDepsBase != null) "sharedDepsBase" rustBuildPlan.sharedDepsBase)
       // (attrIf (projectDir != null) "projectDir" projectDir)
+      # Only helper-produced builds receive an identity. Opaque supplied builds
+      # retain their producer's ID (or its absence); their checks use toolPkgs,
+      # but those checks do not prove which compiler produced the original build.
+      // (attrIf (build == null) "rustToolchainId" selectedToolchain.id)
       // {
         inherit (bundle) fmt;
         "lint-fix" = bundle."lint-fix";
@@ -2559,7 +2617,7 @@ in rec {
           then {build = resolvedBuild;} // (builtins.removeAttrs rustBuildPlan.checks ["build"])
           else
             mkChecks resolvedBuild (mkRustCheckSpecs {
-              inherit pkgs;
+              pkgs = toolPkgs;
               clippyCargoArgs = resolvedCheckCargoArgs;
               clippyLintArgs = checkLintArgs;
               fmtCargoArgs = resolvedFmtCargoArgs;
@@ -2573,10 +2631,14 @@ in rec {
       };
     devShellPassthru = attrIf enableDevShell "devShell" (pkgs.mkShell {
       packages = pkgs.lib.unique (
-        devShellPackages
+        (
+          if args ? devShellPackages
+          then devShellPackages
+          else [toolPkgs.cargo pkgs.rust-analyzer toolPkgs.rustc]
+        )
         ++ [
-          pkgs.clippy
-          pkgs.rustfmt
+          toolPkgs.clippy
+          toolPkgs.rustfmt
         ]
         ++ resolvedFmtNativeBuildInputs
         ++ resolvedLintNativeBuildInputs
@@ -2594,7 +2656,7 @@ in rec {
       then baseDrv
       else wirePassthru baseDrv resolvedExtraPassthru;
   in
-    drv;
+    builtins.seq buildContractGuard drv;
 
   mkPackageApp = pkgs: pkg: {
     type = "app";

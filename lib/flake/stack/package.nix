@@ -13,23 +13,55 @@ let
     in
       packagePkgs;
 
+    # Standalone definitions own their dependency defaults; no manifest lookup.
+    # Callers may explicitly inject another builder at the composition boundary.
+    packageFor = {
+      pkgs,
+      packageFile,
+    }:
+      (packageStack.mkPkgs pkgs).callPackage packageFile {};
+
     mkFlakeOutputs = packageFile: {
       nixpkgs,
       flake-utils,
       defaultSystem ? builtins.head flake-utils.lib.defaultSystems,
       systems ? flake-utils.lib.defaultSystems,
       overlays ? [],
+      crane ? null,
+      rustToolchainInputs ? {},
+      rustToolchainProviders ? {},
+      # Exact parity/adoption can inject the parent's fully composed package set.
+      pkgsForSystem ? null,
+      packageFor ? packageStack.packageFor,
       stdFlakeOutputArgs ? _: {},
       ...
     }: let
       pkgHelper = packageStack.pkg;
+      toolchainOverlay =
+        (import ../rust-toolchain.nix {
+          inputs =
+            rustToolchainInputs
+            // nixpkgs.lib.optionalAttrs (crane != null) {
+              crane = crane;
+            };
+          providers = rustToolchainProviders;
+        }).overlay;
       pkgsFor = system:
-        if overlays == []
+        if pkgsForSystem != null
+        then pkgsForSystem system
+        else if overlays == [] && crane == null && rustToolchainInputs == {} && rustToolchainProviders == {}
         then nixpkgs.legacyPackages.${system}
-        else import nixpkgs {inherit system overlays;};
+        else
+          import nixpkgs {
+            system = system;
+            overlays = [toolchainOverlay] ++ overlays;
+          };
       mkOutputs = pkgsInput: let
         pkgs = packageStack.mkPkgs pkgsInput;
-        drv = pkgs.callPackage packageFile {};
+        drv = packageFor {
+          pkgs = pkgsInput;
+          packageFile = packageFile;
+        };
         flakeOutputs = pkgHelper.mkStdFlakeOutputs ({
             pkgs = pkgs;
             build = drv;
@@ -46,17 +78,26 @@ let
         flakeOutputs = flakeOutputs;
         nixosModules = nixosModules;
       };
-      defaultOutputs = mkOutputs (pkgsFor defaultSystem);
+      # Share one lazy output record per system, including the module-export
+      # system when it is not in systems. Duplicate keys keep the first thunk.
+      outputsBySystem = builtins.listToAttrs (map (system: {
+        name = system;
+        value = mkOutputs (pkgsFor system);
+      }) (systems ++ [defaultSystem]));
+      defaultOutputs = outputsBySystem.${defaultSystem};
     in
-      flake-utils.lib.eachSystem systems (system:
-        (mkOutputs (pkgsFor system)).flakeOutputs)
-      // (
-        if defaultOutputs.nixosModules == {}
-        then {}
-        else {
-          nixosModules = defaultOutputs.nixosModules;
-        }
-      );
+      if pkgsForSystem != null && (overlays != [] || rustToolchainInputs != {} || rustToolchainProviders != {})
+      then throw "mkFlakeOutputs: pkgsForSystem supplies the complete package set; overlays, rustToolchainInputs and rustToolchainProviders must be configured there instead"
+      else
+        flake-utils.lib.eachSystem systems (system:
+          outputsBySystem.${system}.flakeOutputs)
+        // (
+          if defaultOutputs.nixosModules == {}
+          then {}
+          else {
+            nixosModules = defaultOutputs.nixosModules;
+          }
+        );
 
     stackName = "package";
     org = "package";

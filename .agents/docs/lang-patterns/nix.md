@@ -136,6 +136,13 @@
 
 - Every package `default.nix` is the canonical build definition. It must work
   with both `callPackage` (root flake) and `nix-build` (standalone).
+- Package constructors own intrinsic dependency defaults. Use sibling
+  `pkgs.callPackage` defaults and forward shared constructor context such as
+  `pkgHelper`; keep explicit dependency overrides available. Do not repeat those
+  defaults in `pkgs/manifest.nix` or a separate child registry. Manifest `args`
+  remains available for intentional composition overrides, which independent
+  child flakes do not implicitly inherit. Matching build identities require
+  equal effective arguments as well as source and package-set inputs.
 - Set `meta.description` and `meta.mainProgram` on every package that produces a
   binary. `meta.mainProgram` is the standard Nix way to declare which binary a
   package provides — `lib.getExe` uses it.
@@ -182,6 +189,12 @@
   hatch. Use `.`, an absolute repo path, or an intentional `git+file:///...`
   ref; if untracked files seem required, stop and make the state explicit first.
   See `.agents/docs/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`.
+- Child flakes declare only inputs their build closure needs. `crane` is
+  optional in the generic helper: Rust-building children supply it, while
+  unrelated Go/Node/Python/static/shell children omit it. Ref maintenance
+  synchronizes declared optional inputs, never inserts them or guesses build
+  languages. Tests must supply each wrapper's actual declared input set, not
+  silently rescue missing declarations with extra inputs.
 - The root `flake.lock` is committed. Child-flake `flake.lock` files are
   generated local state and ignored; run `scripts/update.sh --only-flake` to
   refresh existing locks without creating new tracked child locks.

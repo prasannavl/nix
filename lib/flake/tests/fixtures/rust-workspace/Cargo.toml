@@ -1,0 +1,8 @@
+# Synthetic evaluator fixture: no registry or Git dependencies, no builds.
+[workspace]
+resolver = "2"
+members = [
+  "members/application",
+  "members/library-a",
+  "members/library-b",
+]

@@ -3,7 +3,6 @@
     abird-host-agent = ./tools/abird-host-agent/default.nix;
     abird-host-manager = {
       path = ./tools/abird-host-manager/default.nix;
-      args = packages: {abirdHostAgent = packages.abird-host-agent;};
       rootApp = true;
     };
     nixbot = {
@@ -22,9 +21,6 @@
     zep-cloud-compat = ./support/zep-cloud-compat/default.nix;
     cloudflare-apps = {
       path = ./cloudflare-apps/default.nix;
-      args = packages: {
-        nixbot = packages.nixbot;
-      };
       toolingPackages."cloudflare-apps/llmug-hello" = ["llmug-hello"];
       apps.cloudflare-apps-deploy = ["deploy"];
     };

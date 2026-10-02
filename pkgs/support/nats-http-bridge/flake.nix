@@ -2,7 +2,8 @@
   description = "nats-http-bridge tooling";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
+    crane.url = "github:ipetkov/crane/v0.24.0";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
   };
 

@@ -58,7 +58,12 @@ scripts.
   committing or pushing, then confirm with
   `git cat-file commit HEAD | grep -m1 gpgsig`. See
   `.agents/docs/notes/hosts/pvl-a1-sway-ssh-agent-2026-04.md`.
-- `scripts/update.sh --only-flake` is the repo-wide flake-lock updater.
+- `scripts/update.sh --only-flake` is the repo-wide flake-lock updater. It
+  updates the root lock, delegates declared child URL synchronization to
+  `scripts/support/update-helper.py child-refs --write`, then refreshes existing
+  child locks. The same support helper owns read-only external-source reporting
+  through `report-sources`; subcommands keep lookup and mutation behavior
+  separate. Focused offline ref validation uses `child-refs --check`.
 - VS Code packaging and update automation should stay explicit about upstream
   source, pinned hashes, and toolchain dependencies needed by the configured
   extensions.
@@ -83,7 +88,7 @@ scripts.
 - `scripts/fmt.sh`
 - `scripts/git-install-hooks.sh`
 - `scripts/update.sh`
-- `scripts/support/report-ext-sources.py`
+- `scripts/support/update-helper.py`
 - `scripts/support/podman-image-updater.py`
 - `lib/flake/lint.nix`
 - `lib/flake/pkg-helper.nix`
