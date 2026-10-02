@@ -971,8 +971,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   defaults (no routing adapter/JSON registry), optional Rust-only Crane inputs,
   unified update-helper declared-input maintenance, compiler identity/cross
   guards and isolated spike safety, release-tag/branch refs, default-composition
-  parity, local commit checkpoint, next-phase preparation, cheap validation, and
-  the pending producer-fidelity gate.
+  parity, signed local commit checkpoint, successful namespace preflight,
+  next-phase preparation, cheap validation, and the pending producer-fidelity
+  gate.
 
 - `.agents/docs/notes/tooling/rust-build-graph-handoff-2026-09.md`: **Start
   here.** Handoff for the Rust (and multi-ecosystem) build-graph work: the

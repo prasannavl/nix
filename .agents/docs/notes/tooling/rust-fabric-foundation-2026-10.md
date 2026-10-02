@@ -404,6 +404,26 @@ Next phase is producer qualification, not unit-DAG rollout:
    identity across two capsules/lock stamps, deliberate divergence, build-script
    input identity and fail-closed behavior; otherwise retain the G4+M path.
 
+Foundation baseline is SSH-signed commit `d17ffe53` on the existing agent
+branch; no merge or push was performed. Final validation passes 145 support
+tests, 49 spike tests, 90 pure assertions, 18 real-Crane assertions per Linux
+architecture, all wrapper parity/ref checks, Bash syntax and ShellCheck. The
+prepared index was committed together; only the requested variable and closeout
+docs were added.
+
+Next-phase containment preflight succeeds: installed `bwrap`, `unshare`,
+`prlimit` and `timeout` are available. A harmless immutable `true` executable
+succeeds with separate user/PID/network namespaces, a read-only `/nix/store`,
+private `/proc` and `/dev`, tmpfs `/tmp` and `--die-with-parent`. No repository
+or secret directories were mounted. This proves namespace availability, not full
+build containment or producer fidelity. The actual fixture run must additionally
+mount only its approved writable state and set resource/time limits.
+
+Proposed first capture permission: dependency-free role fixture, no network, one
+Cargo job, at most 300 seconds and a 2 GiB address-space limit; stop on missing
+local tools/state rather than fetch. Expected role/edge cases are defined before
+running it. Compilation and exact adapter design remain separately reviewed.
+
 No expensive build, provider fetch or graph-adoption decision is authorized by
 "move on" alone under the retained cost gate.
 
