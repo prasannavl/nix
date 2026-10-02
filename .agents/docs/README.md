@@ -965,6 +965,11 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ## Rust Build-Graph Design Context
 
+- `.agents/docs/notes/tooling/rust-producer-qualification-2026-10.md`: Approved
+  offline contained role-fixture capture, observed host/target feature
+  separation and build-script outputs, unchanged source hashes, remaining
+  exact-producer gaps, multicall launcher gotcha and ordered full-implementation
+  roadmap.
 - `.agents/docs/notes/tooling/rust-fabric-foundation-2026-10.md`: Authorized
   implementation worktree, swappable per-capsule toolchains with fenix preferred
   for external needs, retained child wrappers with package-owned dependency

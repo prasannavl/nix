@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+  "role-app",
+  "role-shared",
+  "role-build-helper",
+  "role-macro",
+  "role-dev-helper",
+]
+default-members = ["role-app"]

@@ -427,6 +427,14 @@ running it. Compilation and exact adapter design remain separately reviewed.
 No expensive build, provider fetch or graph-adoption decision is authorized by
 "move on" alone under the retained cost gate.
 
+The subsequent explicit human approval authorizes that one bounded offline
+fixture capture. It passes with separated host/target shared features, the
+expected build-script environment output and unchanged source hashes; exact
+producer fidelity remains `not_proven`. See
+`rust-producer-qualification-2026-10.md` for containment, evidence boundaries
+and the remaining full-implementation roadmap. No wider build or adoption gate
+is opened by this result.
+
 ## Retained wrapper ref maintenance
 
 Normal maintenance now automatically synchronizes wrapper refs after updating
