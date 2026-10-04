@@ -42,7 +42,7 @@ in _how_ they change the member's selection.
 
 The single knob is the **partition** (the "shard key"):
 
-```
+```text
 shard key = full signature   →  Plan B (no manifest synthesis, no widening)
 shard key = polarity vector  →  Plan C (this document: maximal safe sharing)
 shard key = constant         →  Plan A-like global union, but no stub crate

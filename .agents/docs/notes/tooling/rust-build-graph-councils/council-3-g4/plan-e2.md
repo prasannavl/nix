@@ -81,7 +81,7 @@ implementation rule.
 
 ## 2. Architecture overview
 
-```
+```text
                  ┌───────────────────────────────┐
                  │ core node  (common decl specs)│   full archive, no .prev
                  └───────────────┬───────────────┘
@@ -143,7 +143,7 @@ profile/target/toolchain**, exactly research §4.
 
 The node source is a synthetic workspace generated at eval:
 
-```
+```toml
 # generated/<node>/Cargo.toml
 [workspace]
 resolver = "3"
@@ -230,7 +230,7 @@ Hash-consing: `base_m == base_m'` iff resolved maps are byte-identical (same
 
 Define `A ⊑ B` (`A` is a safe parent of `B`) purely from resolved maps:
 
-```
+```text
 A ⊑ B  ⇔  for every key k in A:
              k ∈ B
              ∧ A[k].version ∈ B[k].version          # same req (fixed lock ⇒ same instance)
@@ -253,7 +253,7 @@ locality trade (and is off by default).
 
 ### 4.3 Deterministic planner (pure eval, O(M·D))
 
-```
+```text
 members := [m | isWorkspaceMember src m]                      # existing reader
 maps    := { m -> mkResolvedDeclMap m }                       # incl. folded internal deps
 core    := declCoreSpec maps                                  # identical across all non-empty
@@ -573,7 +573,7 @@ S4/S8.
 
 The correct metric is not member count but the closure-nesting structure:
 
-```
+```text
 factor = ( |core| + Σ_m |S_m \ S_parent(m)| ) / |∪_m S_m|
 ```
 

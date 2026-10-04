@@ -170,7 +170,7 @@ member list. It is exposed in passthru (`:2550`-ish). Building it fails
 Experiment (`builtins.path`, filter replicated from `mkWorkspaceSourcePath`, two
 roots with identical selected content):
 
-```
+```console
 A=/nix/store/inx28sq3a5gl0zhbcccxy23xcd65i2xb-cargo-workspace-source
 B=/nix/store/inx28sq3a5gl0zhbcccxy23xcd65i2xb-cargo-workspace-source   # identical
 # after adding pkgs/tools/x/UNTRACKED.txt under a selected dir:

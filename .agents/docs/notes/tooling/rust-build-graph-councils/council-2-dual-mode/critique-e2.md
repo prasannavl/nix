@@ -44,7 +44,7 @@ follow. But the plan gives two incompatible layouts and an incomplete file set:
 **Experiment.** `/tmp/facet-mgr2`: full `Cargo.lock` + component root
 `members=["pkgs/tools/abird-host-agent","pkgs/tools/abird-host-manager"]`:
 
-```
+```console
 cargo check --locked --offline -p abird-host-manager      → FAIL
 cargo check --locked --offline --workspace                → FAIL
 error: cannot update the lock file ... because --locked was passed

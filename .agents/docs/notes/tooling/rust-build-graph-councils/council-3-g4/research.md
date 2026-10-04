@@ -128,14 +128,14 @@ byte-identical**: same resolved external declaration map + lock/vendor + profile
   pure function of those inputs, so hash-consing yields `drvPath` equality and
   zero widening.
 
-* **Sufficient pure-eval test (no IFD):** equality of the member's _resolved
+- **Sufficient pure-eval test (no IFD):** equality of the member's _resolved
   direct declaration map_ — for `[dependencies]`, `[build-dependencies]`,
   `[dev-dependencies]`, `[target.<cfg>.*]`: name → (version req, `features`,
   `default-features`, `optional`), with `workspace = true` substituted from root
   `[workspace.dependencies]` — plus lock hash, profile, target, toolchain. Sound
   (identical decls + lock ⇒ identical units) but not complete (different decls
   can resolve to the same units).
-* **Pure eval knows:** manifests + `Cargo.lock` (names, versions, sources,
+- **Pure eval knows:** manifests + `Cargo.lock` (names, versions, sources,
   checksums, features-as-written, cfg tables). **Only cargo knows:** effective
   feature unification/optional activation, `cfg(target)` evaluation, per-unit
   features. `cargo metadata` cannot represent per-unit feature relationships;

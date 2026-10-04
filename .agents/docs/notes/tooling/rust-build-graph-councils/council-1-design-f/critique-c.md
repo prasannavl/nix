@@ -263,7 +263,7 @@ via `cleanCargoTomlFilter`/`recursiveUpdate`, preserving `package.build`.
 
 ## Reproduce
 
-```
+```text
 tmp/design-f/attack   # transitive/direct union works; feature-table activation residual
 tmp/design-f/opt      # optional dep + dep: gate => hard manifest error
 tmp/design-f/pathtest # missing internal path dep; unfiltered root members

@@ -108,7 +108,7 @@ aggregate faithfully representing the union.
 
 ## 4. Architecture
 
-```
+```text
                      pure eval (no IFD)
 root Cargo.toml + member Cargo.toml + Cargo.lock
                      │
@@ -168,7 +168,7 @@ globs; the 24-member workspace will likely need them).
 
 For member directory `d`, collect its dependency tables:
 
-```
+```text
 [dependencies], [build-dependencies], [dev-dependencies],
 [target.<cfg>.dependencies], [target.<cfg>.build-dependencies],
 [target.<cfg>.dev-dependencies]
@@ -219,7 +219,7 @@ _decision_.
 
 ### 5.3 Clusters
 
-```
+```text
 clusters = groups of members by signature(m), sorted deterministically
 label(C) = sanitised join of member names (or short signature hash)
 ```
@@ -244,7 +244,7 @@ default because they are the only choice with a _provable_ zero residual.
 From the member manifests, collect `path` dependencies (relative to the member
 directory), recurse to a fixpoint, and keep the in-repo ones:
 
-```
+```text
 sourceDirs(C) = ⋃ { d(m) : m ∈ C }  ∪  transitive path deps (inside the repo)
 memberDirs(C) = the member directories (for the root-manifest rewrite)
 selection(C)  = "-p m₁ -p m₂ …"
@@ -302,7 +302,7 @@ base(C) = craneLib.buildDepsOnly (baseCommon // {
 
 `buildDepsOnly`'s phases (crane source, verified) are exactly:
 
-```
+```text
 buildPhase:  cargoWithProfile check --offline <sel> --all-targets
              cargoWithProfile build --offline <sel>
 checkPhase:  cargoWithProfile test  --offline <sel> --no-run
@@ -538,7 +538,7 @@ Let `K` = number of clusters, `C_k` = external closure of cluster `k`, `U` =
 
 ### 11.3 Decision rule (deterministic, evaluated from the plan)
 
-```
+```text
 if no member is clusterable:                       use L's shared base (fallback)
 else if Σ_k |C_k| ≤ threshold · |U| (e.g. 1.5×):   use B0 (independent)
 else if churn locality outweighs dedup:            use B1-spine over B0

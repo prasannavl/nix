@@ -97,14 +97,17 @@ our workspace and graph.
   - vendor (plain copy) — simplest, no history, churn risk.
 - **Then:** add the wanted crates to the root `Cargo.toml` `members` (or use
   path deps) and let our lock cover them:
+
   ```toml
   # root Cargo.toml
   members = [ …, "third_party/dotlink", "third_party/aw/crates/aw-inference", … ]
   ```
+
   ```nix
   # our package policy
   pkgs/ext/dotlink/default.nix  -> fabric.rust.package { projectDir = "third_party/dotlink"; … }
   ```
+
 - **Good:** full unit-level sharing/dedup; one eval; G4 closures and mirrors
   apply; "take a single crate" is a path dep.
 - **Bad:** coupling and churn (bump the subtree on every change); the external
@@ -120,6 +123,7 @@ graph can build its units exactly, without reading a derivation at evaluation.
 
 - **Provider descriptor** (produced by the external repo, or by a CI job here
   from the pinned rev):
+
   ```nix
   # provider: what the crate/workspace is and where its source comes from
   {
@@ -135,7 +139,9 @@ graph can build its units exactly, without reading a derivation at evaluation.
     ledgerSubset = ./ledger/…;   # committed unit descriptors + shards for this repo
   }
   ```
+
 - **Consumed by our repo:**
+
   ```nix
   # repo flake.nix
   inputs.aw = { url = "github:abird-ai/aw/<rev>"; flake = false; }; # source only
@@ -147,6 +153,7 @@ graph can build its units exactly, without reading a derivation at evaluation.
     providerDeps = [ { provider = "aw"; crate = "aw-inference"; } ];
   }
   ```
+
 - **Mechanics:** the **producer** (outside eval) fetches the pinned source,
   reads its manifests, runs cargo, and writes the ledger/shards; eval reads the
   **committed** ledger (no IFD) and builds each unit as an ordinary derivation;

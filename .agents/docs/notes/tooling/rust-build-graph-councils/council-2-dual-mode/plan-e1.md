@@ -593,9 +593,11 @@ caught by `mirror-fresh`. No parameterisation is required for dual mode.
    packages that do use `srv` keep `stack/package.nix` (and thus
    `nixosModules`).
 4. Mirror flake:
+
    ```nix
    inputs.lib = { url = "github:OWNER/lib-flake"; inputs.nixpkgs.follows = "nixpkgs"; inputs.crane.follows = "crane"; };
    ```
+
    and passes `defaultSrc = ./.` when instantiating the helper.
 5. Version skew: a pinned input can drift from the monorepo. Mitigation:
    `follows` for nixpkgs/crane, `mirror-fresh` asserts the helper bytes match

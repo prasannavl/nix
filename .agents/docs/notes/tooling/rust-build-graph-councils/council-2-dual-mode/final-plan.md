@@ -817,7 +817,7 @@ Maintenance rules:
 
 ### 17.2 Accepted/rejected blockers (all three critiques)
 
-**E1 critique**
+#### E1 critique
 
 | id                                                      | verdict     | resolution                                                                                                  |
 | ------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------- |
@@ -836,7 +836,7 @@ Maintenance rules:
 | NOTE-13: `sharedDepsBase` computed needlessly           | **accept**  | `null` when `base != null`                                                                                  |
 | NOTE-14: `componentBase` source name                    | **accept**  | kept `cargo-workspace-source`; load-bearing                                                                 |
 
-**E2 critique**
+#### E2 critique
 
 | id                                                                      | verdict                       | resolution                                                                                       |
 | ----------------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -852,7 +852,7 @@ Maintenance rules:
 | P2-4: filter env can diverge (`.gitignore`/`.cargo`)                    | **accept**                    | both copied byte-identically; drift gate                                                         |
 | P2-5: native/platform keying unaddressed                                | **accept**                    | component profile + host subset + `(component, host)` key                                        |
 
-**E3 critique**
+#### E3 critique
 
 | id                                               | verdict    | resolution                                                                     |
 | ------------------------------------------------ | ---------- | ------------------------------------------------------------------------------ |

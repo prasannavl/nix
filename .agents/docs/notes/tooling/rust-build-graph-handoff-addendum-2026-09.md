@@ -192,11 +192,11 @@ remotes; decide cross-repo **cache parity** vs separate caches; consider
 
 Base handoff items 1–14, **plus** (in this order):
 
-15. `build-system-comparison-bazel-buck2-2026-09.md`
-16. `first-party-external-repo-integration-2026-09.md`
-17. `rust-toolchain-contract-2026-09.md`
-18. `rust-build-graph-abird-applicability-2026-09.md`
-19. `rust-build-graph-councils/` (raw council artifacts)
+1. `build-system-comparison-bazel-buck2-2026-09.md`
+2. `first-party-external-repo-integration-2026-09.md`
+3. `rust-toolchain-contract-2026-09.md`
+4. `rust-build-graph-abird-applicability-2026-09.md`
+5. `rust-build-graph-councils/` (raw council artifacts)
 
 ## 9. Starting prompt (addendum)
 

@@ -83,7 +83,7 @@ price. Do not present `component` as the G4 answer.
 
 ## P1 — architecture and analysis
 
-### P1-1 — The vendor-pruning wall is self-inflicted; the clean "both" design already exists.
+### P1-1 — The vendor-pruning wall is self-inflicted; the clean "both" design already exists
 
 E1 §6.1 and E3 §1.2 both discover that per-closure/per-class **pruned** vendors
 make the vendor store path differ, so crane's `.prev` chaining cannot reuse
@@ -116,7 +116,7 @@ Smallest fix. Make the shared full-lock vendor the default in all three; keep
 pruning as a store-only opt-in; drop `fused`/meets until a per-crate stable
 source exists.
 
-### P1-2 — E2's delta cost table is unsound on this repo; its headline ~15% win is unsupported.
+### P1-2 — E2's delta cost table is unsound on this repo; its headline ~15% win is unsupported
 
 E2 §11.1/§11.2 claims "agent ⊆ manager (65 ∩; the only true subset)" and
 computes "inclusion chain only = 693", "core + inclusion forest = 643". But the
@@ -159,7 +159,7 @@ Smallest fix. Redefine Fact B over `Eff` (folded); allow dependency-edge
 chaining in `local`/`pathComponents` with the shared vendor (P1-1); keep
 equals-classes only; drop the meet lattice to a P2 experiment.
 
-### P1-4 — Mirror-safety is not uniformly reasoned: E1's `shareVendor` chaining is un-flagged.
+### P1-4 — Mirror-safety is not uniformly reasoned: E1's `shareVendor` chaining is un-flagged
 
 E3 honestly marks `fused` `mirrorCompatible = scope == "local"` (§10) and Design
 M marks `union` non-standalone; E2 marks `warm_*` monorepo-only (§8). E1 does
@@ -176,7 +176,7 @@ Smallest fix. Constrain `shareVendor` to the global full-lock vendor (or
 per-crate stable sources), and emit `mirrorCompatible=false` for any narrower
 scope. Fold this into P1-1.
 
-### P1-5 — The lock story decides plan quality, and only E3 gets it right.
+### P1-5 — The lock story decides plan quality, and only E3 gets it right
 
 The most common member semantic edit — adding a dependency — rewrites the shared
 `Cargo.lock`. E1 keeps `keepLock = true` for the member source (§4.4), so
@@ -199,7 +199,7 @@ per-class pruned lock
 - shared vendor; or state plainly that lock churn stays global and stop
   advertising lock locality. Fix E1's §7 matrix regardless.
 
-### P1-6 — API/mode explosion, including a dead knob.
+### P1-6 — API/mode explosion, including a dead knob
 
 Counts of user-visible modes/knobs: E1
 `basePolicy ∈ {perMember, perSignature, chain,
@@ -223,7 +223,7 @@ composition layer (as M/E2 already do).
 
 ## P2 — scaling, fidelity, migration, maintenance
 
-### P2-1 — 24-member scaling is unsolved; every plan's floor is "distinct classes".
+### P2-1 — 24-member scaling is unsolved; every plan's floor is "distinct classes"
 
 E1 perMember, E2 canonical, E3 local are the same floor:
 `Σ over distinct class closures / union`. At 5 that is 2.05×; E3's honest model
@@ -297,7 +297,7 @@ Smallest fix. Land the minimal canonical/equality-class + shared-vendor +
 parse depth only when a real manifest requires it. Treat
 `perSignature`/meets/`fused`/K2 as post-v1.
 
-### P2-5 — Interaction with the union/REWEAVE rejection is honest but under-sold.
+### P2-5 — Interaction with the union/REWEAVE rejection is honest but under-sold
 
 Rejecting union base (and REWEAVE) means dropping repo-wide compile-once: 367 →
 753 externals at 5 (2.05×), and the plans correctly state this (E1 §8, E2
