@@ -2,8 +2,8 @@
   p7-borders = {
     kind = "gnome-extension";
     uuid = "p7-borders@prasannavl.com";
-    version = "57";
-    hash = "sha256-CJoCJ+u55Bxx8OsSrPUQ1K+9Y2i0j+Q9W48hL9btM9U=";
+    version = "58";
+    hash = "sha256-/Nuni2jsiyzQOI/oh9h015RNnCtHgQwOiEmxt7ghft8=";
   };
 
   p7-cmds = {

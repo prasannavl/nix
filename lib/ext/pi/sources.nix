@@ -19,8 +19,8 @@
   pi-subagents = {
     kind = "npm";
     package = "@gotgenes/pi-subagents";
-    version = "21.8.0";
-    srcHash = "sha256-ptOoWze8zKQWV1n8FUtlpPSmN9pSxlxsvqZOYIdG1m8=";
+    version = "23.0.0";
+    srcHash = "sha256-qZdssprhGQrzP22xRboLSAp+aPtW+xyx9WIBOYCq8zM=";
   };
 
   pi-tps = {
@@ -38,10 +38,10 @@
     package = "@agegr/pi-web";
     owner = "agegr";
     repo = "pi-web";
-    version = "0.9.3";
-    srcHash = "sha256-JHCsrwZ13dbnsIoYiDiy9BCBaPM0BOvDE7hW5WJxa8g=";
-    releaseHash = "sha256-EhoxOwmEIsN3G6MQImZbCSJM4QBnnzKzNV+gmuIUkN0=";
-    npmDepsHash = "sha256-8HJ2S5soReHvwXEKg31sd7iTKYQKbzMb/UpDRe/sR2E=";
+    version = "0.10.0";
+    srcHash = "sha256-NtvcDG3JPqja21uq28NI+SPPw76Avq0ICz1ieraDTaM=";
+    releaseHash = "sha256-dDE+m6ZpiC4N2xWNMvhRshCjqFU5gr2+t7RpvC9dNUk=";
+    npmDepsHash = "sha256-kYGwyMW2R5Fy8IOastmzYWte7H629byKbzpOh095tq4=";
   };
 
   pi-diff = {
@@ -49,9 +49,9 @@
     package = "@heyhuynhgiabuu/pi-diff";
     owner = "buddingnewinsights";
     repo = "pi-diff";
-    version = "0.9.1";
-    releaseHash = "sha256-9dCBzSgtp9UL09VkQFxJ3zD6Vt/DW4xoQlccDImN7vc=";
-    npmDepsHash = "sha256-Q8peGfXjXH59Pu41suQxyNAtm/M2RyyT16OnIARW544=";
+    version = "0.9.2";
+    releaseHash = "sha256-hSHS+ajDC62MCZQX0VhNDtsrUEiA1X+22Yk8KDcgTdY=";
+    npmDepsHash = "sha256-TFTQJQKQweLnM3HoWc2vJtO23ULNS3KUy1VAmGcUsOE=";
   };
 
   pi-codex-limit = {
@@ -66,9 +66,9 @@
     package = "pi-mcp-adapter";
     owner = "nicobailon";
     repo = "pi-mcp-adapter";
-    version = "3.2.0";
-    srcHash = "sha256-VPGuT6WevWfEKffcXKaQb0u3Hdo6GeEMSZTGvzMFrEs=";
-    releaseHash = "sha256-gzWJdYMz9gvSPE8ftTJpsqqmnlE6y0mcaIuELaaVWkM=";
-    npmDepsHash = "sha256-udsWIiwi6VCY8lKerdI3ueAZm43g29Ocg1c13392Bhs=";
+    version = "5.0.0";
+    srcHash = "sha256-+n8hDjfATFUHi5ucSr9TN8xrWlrL0EUyMYDl3vS0N94=";
+    releaseHash = "sha256-F8t9/nbU9yyv4aeA9PPkL2u8ilJGG2ax6+0SIzUORL4=";
+    npmDepsHash = "sha256-0Qee/PmHW1jmI6pUQ9ws+jm0bYQBrsbarA0hWgg0U6M=";
   };
 }
