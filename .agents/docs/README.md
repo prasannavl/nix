@@ -139,6 +139,12 @@ Use this index as the canonical map for `.agents/docs/**`.
   binary plus Pi-package unit and the `lib/ext/pi/pi-diff` suite addition,
   including the TS-source loading rationale and the sanitized npm dependency
   closure.
+- `.agents/docs/notes/apps/opendesign-nodejs-output-checks-2026-10.md`: Records
+  the Nix 2.34 `outputChecks` partial-output-store failure that wedged the fleet
+  build on `pvl-x2`, the minimal reproduction, the OpenDesign-pinned
+  `nodejs-slim` `outputChecks = {}` workaround, and why the Node 24.18.0 pin is
+  still required (upstream `node::ObjectWrap` regression unfixed through
+  24.21.0).
 
 ### Hosts
 
