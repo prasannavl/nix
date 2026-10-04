@@ -117,6 +117,12 @@ Use this index as the canonical map for `.agents/docs/**`.
   `pi-mcp-adapter` 3.2.0 package unit, the Pi-runtime peer/dev dependency
   stripping, the shared `~/.config/mcp/mcp.json` Playwright server declaration,
   the ~2 GiB container gating, and the Pi RPC / MCP stdio validation.
+- `.agents/docs/notes/apps/pi-browser-tooling-comparison-2026-09.md`: Records
+  the 2026-09-30 Chrome-environment ladder (L0 throwaway browser through L4 live
+  signed-in Chrome), the per-candidate matrix over
+  Playwright/`chrome-devtools-mcp` and six Pi browser packages, the
+  unauthenticated loopback/socket trust gaps, the Nix reproducibility blockers,
+  and the decision inputs. Nothing is installed by that note.
 - `.agents/docs/notes/apps/pi-subagents-gotgenes-switch-2026-09.md`: Records the
   2026-09-29 switch from the unscoped `pi-subagents` to
   `@gotgenes/pi-subagents`, the npm-tarball packaging with Pi-virtualized
@@ -184,6 +190,12 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-a1-cloudflare-secure-dns-2026-09.md`: Records
   the shared, overridable Cloudflare DNS-over-TLS and DNSSEC policy for Pvl core
   hosts, including systemd-resolved routing and Tailscale MagicDNS.
+- `.agents/docs/notes/hosts/pvl-wifi-4am-reconnect-2026-10.md`: Records the
+  recurring 04:00 router/AP restart, the 2026-09-22 AP-side rename of the 2.4
+  GHz SSID (`PVL-Riverside` to `PVL-Riverside-2G`) that removed the fast 2.4 GHz
+  path, how iwd's disconnected periodic-scan backoff (10 s doubling to a 300 s
+  cap) quantizes WiFi reconnects to about 1.3/2.7/5.4/10.5/20.6-minute slots,
+  and the wired-path advantage.
 - `.agents/docs/notes/hosts/pvl-a1-copilot-keyd-regression-2026-09.md`: Records
   the lost host-local keyd enablement that left the FA401WV
   Copilot-to-Right-Ctrl mapping evaluated but inactive on `pvl-a1`.
@@ -891,6 +903,15 @@ Use this index as the canonical map for `.agents/docs/**`.
   for Compose variable tags such as Immich's `IMMICH_VERSION=release` and
   Timescale `pg<version>-ts<version>` exact tags, plus Podman instance-boundary
   image line prefixes.
+- `.agents/docs/notes/tooling/update-script-flake-discovery-2026-10.md`: Records
+  the `scripts/update.sh --only-flake` failure on a vendored `tmp/` flake,
+  moving child-lock discovery into `update-helper.py flake-dirs` with
+  Git-ignored directory pruning, and the preserved root/refs/child update order.
+- `.agents/docs/notes/tooling/pi-web-npm-lock-fix-2026-10.md`: Records the
+  `pi-web` 0.10.0 `prefetch-npm-deps` panic on bundled deps without
+  `resolved`/`integrity`, the fixed-output npm-deps lock repair that avoids the
+  sandbox-network problem, the `dontNpmPrune` workaround, and the adjacent
+  `pi-diff`/`srcHash` updater fixes.
 - `.agents/docs/notes/tooling/pvl-tmux-extended-keys-2026-06.md`: Records the
   `pvl` Home Manager tmux extended-key settings needed for Codex `Shift+Enter`
   newline handling inside tmux.
