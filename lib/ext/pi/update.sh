@@ -195,7 +195,7 @@ set_source_record() {
 		--arg npmDepsHash "$npm_deps_hash" \
 		'
       .[$package].version = $version
-      | .[$package].srcHash = $srcHash
+      | if $srcHash != "" then .[$package].srcHash = $srcHash else . end
       | if $rev != "" then .[$package].rev = $rev else . end
       | if $releaseHash != "" then .[$package].releaseHash = $releaseHash else . end
       | if $npmDepsHash != "" then .[$package].npmDepsHash = $npmDepsHash else . end
@@ -274,7 +274,7 @@ compute_npm_deps_hash() {
 
 update_package() {
 	local package="$1"
-	local metadata current version rev="" src_hash release_hash="" npm_deps_hash=""
+	local metadata current version rev="" src_hash="" release_hash="" npm_deps_hash=""
 	local owner repo tarball
 
 	metadata="$(resolve_metadata "$package")"

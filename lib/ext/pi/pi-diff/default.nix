@@ -14,9 +14,9 @@
   #
   # - Pi provides the @earendil-works core packages to TypeScript extensions at
   #   runtime, so they must not be bundled into node_modules. Upstream lists
-  #   them as regular dependencies, which also pulls in bundled lockfile entries
-  #   that carry a registry URL but no integrity hash; prefetch-npm-deps rejects
-  #   those.
+  #   them as regular or peer dependencies, which also pulls in bundled lockfile
+  #   entries that carry a registry URL but no integrity hash; prefetch-npm-deps
+  #   rejects those.
   # - The manifest must point at src/index.ts and ship src/ in the tarball.
   # - Dev-only dependencies are irrelevant for a runtime extension.
   src =
@@ -31,6 +31,9 @@
           .dependencies["@earendil-works/pi-coding-agent"],
           .dependencies["@earendil-works/pi-tui"],
           .dependencies["@earendil-works/pi-server"],
+          .peerDependencies["@earendil-works/pi-coding-agent"],
+          .peerDependencies["@earendil-works/pi-tui"],
+          .peerDependencies["@earendil-works/pi-server"],
           .devDependencies
         )
         | .pi.extensions = ["./src/index.ts"]
@@ -39,13 +42,15 @@
       mv $out/package.json.fixed $out/package.json
 
       jq '
-        .packages[""].dependencies |=
-          del(
-            .["@earendil-works/pi-coding-agent"],
-            .["@earendil-works/pi-tui"],
-            .["@earendil-works/pi-server"]
-          )
-        | del(.packages[""].devDependencies)
+        del(
+          .packages[""].dependencies["@earendil-works/pi-coding-agent"],
+          .packages[""].dependencies["@earendil-works/pi-tui"],
+          .packages[""].dependencies["@earendil-works/pi-server"],
+          .packages[""].peerDependencies["@earendil-works/pi-coding-agent"],
+          .packages[""].peerDependencies["@earendil-works/pi-tui"],
+          .packages[""].peerDependencies["@earendil-works/pi-server"],
+          .packages[""].devDependencies
+        )
         | .packages |= with_entries(select(.key | test("(^|/)@earendil-works/") | not))
       ' $out/package-lock.json >$out/package-lock.json.fixed
       mv $out/package-lock.json.fixed $out/package-lock.json
