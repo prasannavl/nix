@@ -695,6 +695,14 @@ python3() {
         printf 'python3-report\n' >> "$EVENTS"
         return 0
     fi
+    if [[ "${2:-}" == "flake-dirs" ]]; then
+        printf 'python3' >> "$EVENTS"
+        printf '\t%s' "$@" >> "$EVENTS"
+        printf '\n' >> "$EVENTS"
+        # Emulate update-helper discovery: root first, then the child lock.
+        printf '%s\0%s\0' "$REPO_ROOT" "$REPO_ROOT/pkgs/pilot"
+        return 0
+    fi
     printf 'python3' >> "$EVENTS"
     printf '\t%s' "$@" >> "$EVENTS"
     printf '\n' >> "$EVENTS"
@@ -723,6 +731,8 @@ source "$1" "${@:2}"
             ["nix", "flake", "update", "--flake", str(self.root)],
             ["python3", str(self.root / "scripts/support/update-helper.py"),
              "child-refs", "--root", str(self.root), "--write"],
+            ["python3", str(self.root / "scripts/support/update-helper.py"),
+             "flake-dirs", "--null", "--root", str(self.root)],
             ["nix", "flake", "update", "--flake", str(self.child)],
         ])
 

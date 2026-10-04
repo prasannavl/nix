@@ -223,23 +223,15 @@ normalize_options() {
 	fi
 }
 
-find_flakes() {
-	local -a dirs=()
-	local f
-
-	while IFS= read -r -d '' f; do
-		dirs+=("$(dirname "$f")")
-	done < <(
-		find "$REPO_ROOT" \
-			-path '*/worktrees' -prune -o \
-			-path '*/target' -prune -o \
-			-name flake.lock -print0
-	)
-	printf '%s\n' "${dirs[@]}"
+find_flake_dirs() {
+	# update-helper owns discovery so Git-ignored scratch trees (tmp/, worktrees/)
+	# never reach `nix flake update`. NUL separation keeps repository paths safe.
+	python3 "$UPDATE_HELPER" flake-dirs --null --root "$REPO_ROOT"
 }
 
 update_flakes() {
 	local dir
+	local -a flake_dirs=()
 
 	echo "==> Updating root flake: $REPO_ROOT"
 	nix flake update --flake "$REPO_ROOT"
@@ -247,11 +239,16 @@ update_flakes() {
 	echo "==> Synchronizing retained child input refs"
 	python3 "$UPDATE_HELPER" child-refs --root "$REPO_ROOT" --write
 
-	while IFS= read -r dir; do
+	mapfile -t -d '' flake_dirs < <(find_flake_dirs)
+	if ((${#flake_dirs[@]} == 0)); then
+		die "no repository flake.lock files discovered under $REPO_ROOT"
+	fi
+
+	for dir in "${flake_dirs[@]}"; do
 		[[ "$dir" == "$REPO_ROOT" ]] && continue
 		echo "==> Updating child flake: ${dir#"$REPO_ROOT"/}"
 		nix flake update --flake "$dir"
-	done < <(find_flakes)
+	done
 }
 
 report_flakes() {

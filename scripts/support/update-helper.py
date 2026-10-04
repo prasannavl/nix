@@ -3,8 +3,10 @@
 
 report-sources performs read-only external version lookups. child-refs checks or
 writes wrapper URLs against root original refs; locks keep exact revisions.
-Common child inputs are required; optional Crane is synchronized only when
-already declared. These modes never invoke one another.
+flake-dirs lists repository flake directories while pruning Git-ignored trees so
+scratch flakes cannot reach `nix flake update`. Common child inputs are required;
+optional Crane is synchronized only when already declared. These modes never
+invoke one another.
 """
 
 import argparse
@@ -435,6 +437,80 @@ def discover_wrappers(root):
     return sorted(discovered)
 
 
+# Generated or Git-ignored trees are not repository-owned flakes. Git ignores
+# scratch output such as tmp/, worktrees/, node_modules/, target/ and dist/; the
+# fixed names also cover a plain directory tree without Git metadata.
+GENERATED_DIRS = frozenset(
+    (".git", ".direnv", "node_modules", "target", "dist", "tmp", "worktrees")
+)
+
+
+def git_ignored_paths(root):
+    """Return absolute Git-ignored paths under root, or an empty set without Git.
+
+    Discovery must match what Nix can see: paths hidden from Git are invisible to
+    `nix flake update`. Only directories are pruned from the walk, so an ignored
+    child flake.lock (Git ignores nested locks) stays updateable while its parent
+    directory is not itself ignored. The command is read-only and offline.
+    """
+    result = subprocess.run(
+        [
+            "git", "-C", str(root), "ls-files", "--others", "--ignored",
+            "--exclude-standard", "--directory", "-z",
+        ],
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode:
+        return frozenset()
+    return frozenset(
+        root / os.fsdecode(entry)
+        for entry in result.stdout.split(b"\0")
+        if entry
+    )
+
+
+def discover_flake_dirs(root):
+    """Return repository flake directories (holding flake.lock), root first.
+
+    Mirror discover_wrappers: never descend into .git or generated trees, and
+    additionally prune every Git-ignored path so scratch flakes under tmp/ or
+    worktrees/ cannot reach `nix flake update`. Root is always walked; sorted
+    output keeps the root flake ahead of its children.
+    """
+    root = root.resolve()
+    if not root.is_dir():
+        raise ValueError(f"missing repository root: {root}")
+    ignored = git_ignored_paths(root)
+    discovered = []
+
+    def walk_error(error):
+        raise error
+
+    for directory, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
+        parent = Path(directory)
+        dirs[:] = sorted(
+            name
+            for name in dirs
+            if name not in GENERATED_DIRS and (parent / name) not in ignored
+        )
+        if "flake.lock" in files:
+            discovered.append(parent)
+    return sorted(discovered)
+
+
+def list_flake_dirs(args):
+    try:
+        directories = discover_flake_dirs(args.root)
+    except (ValueError, OSError) as error:
+        print(f"update-helper flake-dirs: {error}", file=sys.stderr)
+        return 2
+    separator = "\0" if args.null else "\n"
+    if directories:
+        sys.stdout.write(separator.join(map(str, directories)) + separator)
+    return 0
+
+
 def input_statements(tokens):
     """Split the one conventional inputs block at non-nested semicolons.
 
@@ -557,6 +633,14 @@ def parse_args(argv=None):
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--write", action="store_true")
 
+    flakes = commands.add_parser(
+        "flake-dirs", help="List repository flake directories, excluding ignored trees"
+    )
+    flakes.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
+    flakes.add_argument(
+        "--null", action="store_true", help="Separate paths with NUL for safe parsing"
+    )
+
     args = parser.parse_args(argv)
     if args.command == "report-sources":
         if args.jobs < 1:
@@ -574,6 +658,8 @@ def main(argv=None):
         if hasattr(signal, "SIGPIPE"):
             signal.signal(signal.SIGPIPE, signal.SIG_DFL)
         return report_sources(args)
+    if args.command == "flake-dirs":
+        return list_flake_dirs(args)
     return sync_child_refs(args)
 
 

@@ -102,9 +102,14 @@ class UpdateHelperCliTests(unittest.TestCase):
         for argv in (
             ["report-sources", "--write", "sources.nix"],
             ["report-sources", "--root", "unused", "sources.nix"],
+            ["report-sources", "--null", "sources.nix"],
             ["child-refs", "--check", "--jobs", "2"],
             ["child-refs", "--check", "--ansi"],
             ["child-refs", "--check", "--color=never"],
+            ["child-refs", "--check", "--null"],
+            ["flake-dirs", "--check"],
+            ["flake-dirs", "--write"],
+            ["flake-dirs", "--jobs", "2"],
             ["report-sources", "--color=invalid", "sources.nix"],
         ):
             with self.subTest(argv=argv):

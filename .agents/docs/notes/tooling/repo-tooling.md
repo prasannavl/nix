@@ -63,7 +63,9 @@ scripts.
   `scripts/support/update-helper.py child-refs --write`, then refreshes existing
   child locks. The same support helper owns read-only external-source reporting
   through `report-sources`; subcommands keep lookup and mutation behavior
-  separate. Focused offline ref validation uses `child-refs --check`.
+  separate. Child-lock discovery is `flake-dirs`, which prunes Git-ignored trees
+  such as `tmp/` and `worktrees/` so scratch or vendored flakes never reach
+  `nix flake update`. Focused offline ref validation uses `child-refs --check`.
 - VS Code packaging and update automation should stay explicit about upstream
   source, pinned hashes, and toolchain dependencies needed by the configured
   extensions.
