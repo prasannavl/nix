@@ -190,6 +190,11 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-a1-cloudflare-secure-dns-2026-09.md`: Records
   the shared, overridable Cloudflare DNS-over-TLS and DNSSEC policy for Pvl core
   hosts, including systemd-resolved routing and Tailscale MagicDNS.
+- `.agents/docs/notes/hosts/pvl-a1-obsidian-dock-icon-2026-10.md`: Records the
+  GNOME dash-to-panel generic-icon bug caused by the nixpkgs obsidian
+  `startupWMClass` mismatch (`md.Obsidian` versus the app-id
+  `md.obsidian.Obsidian`), why `nixos-26.05` still ships it, and the
+  `unstable`/overlay resolution options.
 - `.agents/docs/notes/hosts/pvl-wifi-4am-reconnect-2026-10.md`: Records the
   recurring 04:00 router/AP restart, the 2026-09-22 AP-side rename of the 2.4
   GHz SSID (`PVL-Riverside` to `PVL-Riverside-2G`) that removed the fast 2.4 GHz

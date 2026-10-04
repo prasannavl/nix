@@ -9,8 +9,7 @@
     "code.desktop"
     "dev.zed.Zed.desktop"
     "org.gnome.Calculator.desktop"
-    # "md.obsidian.Obsidian.desktop"
-    "obsidian.desktop"
+    "md.obsidian.Obsidian.desktop"
     "chatgpt.desktop"
     "chrome-jklgmpcgloflmcdifnofaohlcmeghadj-Default.desktop" # Google AI
     "chrome-caidcmannjgahlnbpmidmiecjcoiiigg-Default.desktop" # Google Gemini

@@ -26,4 +26,8 @@ in {
   # apps
   inherit (unstable) vscode;
   inherit (unstable) keyd;
+  # nixos-26.05 still ships obsidian.desktop with
+  # StartupWMClass=md.Obsidian, which does not match the Electron app-id
+  # md.obsidian.Obsidian; unstable renamed the entry and fixed the class.
+  inherit (unstable) obsidian;
 }
