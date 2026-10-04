@@ -1805,6 +1805,9 @@ impl std::fmt::Display for RenderedCommandFailure {
 impl std::error::Error for RenderedCommandFailure {}
 
 fn main() -> ExitCode {
+    // Restore the terminal and release the live region on every exit path:
+    // the guard covers a normal return, and its panic hook covers unwinding.
+    let _terminal = abird_host_manager::progress::guard_terminal_exit();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

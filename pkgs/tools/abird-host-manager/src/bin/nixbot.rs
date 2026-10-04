@@ -7,6 +7,9 @@ use abird_host_manager::fleet::runtime::{RuntimeConfig, run};
 use abird_host_manager::progress::command_reporter;
 
 fn main() -> ExitCode {
+    // Restore the terminal and release the live region on every exit path:
+    // the guard covers a normal return, and its panic hook covers unwinding.
+    let _terminal = abird_host_manager::progress::guard_terminal_exit();
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let original_command = std::env::var("SSH_ORIGINAL_COMMAND").ok();
     match configure_github_nix_access()

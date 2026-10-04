@@ -829,6 +829,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   the ported fix enabling age `armor` plus `ArmoredReader` in the in-binary
   decryptor; `Header is invalid` can mean armored ciphertext rather than a bad
   identity.
+- `.agents/docs/notes/tooling/abird-host-manager-terminal-exit-2026-10.md`:
+  Records the interactive live-region exit teardown that fixes the shell prompt
+  glued to an unterminated `keys:` footer, plus the process-wide guard and panic
+  hook that restore the terminal on success, error, and panic exits alike.
 - `.agents/docs/notes/tooling/native-host-control-plane-2026-08.md`: Records the
   native Rust manager/agent ownership split, retired compatibility surfaces,
   durable hold boundary, lifecycle/retry/admission follow-ups, and narrow Pvl

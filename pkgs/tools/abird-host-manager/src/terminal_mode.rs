@@ -44,16 +44,22 @@ pub fn restore(original: &libc::termios) {
     let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) };
 }
 
-/// Restore the published attributes from an async-signal context, using only
-/// async-signal-safe operations: an atomic load plus `tcsetattr(2)`.
-pub fn restore_for_forced_exit() {
+/// Restore the attributes published at raw-mode entry, if any. A no-op when raw
+/// mode was never entered, so every exit path can call it unconditionally.
+pub fn restore_published() {
     let pointer = ORIGINAL.load(Ordering::Acquire);
     if pointer.is_null() {
         return;
     }
     // SAFETY: `pointer` targets a leaked, immutable `termios` published before
-    // this handler could run, and `tcsetattr` is async-signal-safe.
+    // this call, and `tcsetattr` reads only the provided struct.
     let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, pointer) };
+}
+
+/// Restore the published attributes from an async-signal context, using only
+/// async-signal-safe operations: an atomic load plus `tcsetattr(2)`.
+pub fn restore_for_forced_exit() {
+    restore_published();
 }
 
 /// The attributes stdin runs with while a key reader owns it: non-canonical and

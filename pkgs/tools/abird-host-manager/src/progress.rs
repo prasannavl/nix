@@ -160,6 +160,15 @@ impl ProgressState {
                 None => self.region_viewport.is_some(),
             }
     }
+
+    /// Take the painted state, clearing it so a region that has been released
+    /// for exit is not cleared or re-terminated a second time.
+    fn take_painted(&mut self) -> Painted {
+        let painted = self.painted;
+        self.painted = Painted::None;
+        self.scrolling_snapshot_at = None;
+        painted
+    }
 }
 
 /// One verbose line, shared by the live ring and the retained digest. Its stream
@@ -1595,6 +1604,43 @@ impl ProgressReporter {
         self.redraw_current();
     }
 
+    /// Release the interactive live region so the cursor ends on a fresh line.
+    ///
+    /// An in-place frame ends at the last painted row with no trailing newline,
+    /// so a carriage return plus newline moves below it; an append-only snapshot
+    /// frame already ends with a newline and needs nothing. The painted state is
+    /// cleared either way, so a second call is a no-op. `blocking` is false on
+    /// the panic path so a reporter lock the panicking thread still holds cannot
+    /// deadlock the hook; an unavailable lock there is treated as a possibly
+    /// stranded region, and the extra newline is harmless when none was drawn.
+    fn release_live_region(&self, blocking: bool) -> bool {
+        if !self.interactive {
+            return false;
+        }
+        let _output = if blocking {
+            self.output.lock().ok()
+        } else {
+            self.output.try_lock().ok()
+        };
+        let painted = if blocking {
+            self.state.lock().ok().map(|mut state| state.take_painted())
+        } else {
+            self.state
+                .try_lock()
+                .ok()
+                .map(|mut state| state.take_painted())
+        };
+        let terminate = match painted {
+            Some(Painted::InPlace(_)) => true,
+            Some(Painted::None | Painted::Snapshot) => false,
+            None => true,
+        };
+        if terminate {
+            self.destination.write("\r\n");
+        }
+        terminate
+    }
+
     pub fn message_primary_with_metadata(
         &self,
         prefix: impl std::fmt::Display,
@@ -2697,6 +2743,52 @@ fn heartbeat_detail(detail: Option<&str>, elapsed: Duration) -> String {
 
 pub fn command_reporter() -> &'static ProgressReporter {
     COMMAND_REPORTER.get_or_init(|| ProgressReporter::new(true))
+}
+
+/// Tear down the interactive terminal on process exit: release the live region
+/// and restore the terminal mode captured by [`crate::terminal_mode`]. Safe and
+/// idempotent on every exit path, and a no-op when nothing ever entered raw
+/// mode or painted a region.
+pub fn finish_terminal() {
+    finish_terminal_impl(true);
+}
+
+/// Best-effort teardown for a panic hook. Behaves like [`finish_terminal`] but
+/// never blocks on a reporter lock the panicking thread may still hold.
+pub fn finish_terminal_after_panic() {
+    finish_terminal_impl(false);
+}
+
+fn finish_terminal_impl(blocking: bool) {
+    if let Some(reporter) = COMMAND_REPORTER.get() {
+        reporter.release_live_region(blocking);
+    }
+    crate::terminal_mode::restore_published();
+}
+
+/// Restores the terminal and releases the live region when dropped. Install one
+/// in `main` so a normal return from `run` hands the terminal back.
+#[must_use = "the terminal is restored only while the guard is alive"]
+pub struct TerminalExitGuard;
+
+impl Drop for TerminalExitGuard {
+    fn drop(&mut self) {
+        finish_terminal();
+    }
+}
+
+/// Install a panic hook that tears the terminal down before the default hook
+/// prints, so a panic is not glued into the dashboard and the terminal is not
+/// left in raw mode, then return a guard for the normal-return path. Call once
+/// at the top of `main`.
+#[must_use = "the terminal is restored only while the guard is alive"]
+pub fn guard_terminal_exit() -> TerminalExitGuard {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        finish_terminal_after_panic();
+        previous(info);
+    }));
+    TerminalExitGuard
 }
 
 pub fn command_step_started(description: &str) {
@@ -5529,6 +5621,97 @@ mod tests {
                 "  build plan gap3-gondor · running\n",
                 "✓ Build systems · 11 hosts  1m 51s\n",
             )
+        );
+    }
+
+    /// A reporter with one active span and an in-memory destination, so a test
+    /// can inspect exactly what a frame painted without a heartbeat thread.
+    fn reporter_over(destination: ProgressDestination, interactive: bool) -> ProgressReporter {
+        set_json_output(false);
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive,
+            recent_update_limit: 0,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination,
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+        reporter.state.lock().unwrap().stack.push(ActiveProgress {
+            id: 1,
+            label: "Deploy systems".to_owned(),
+            detail: None,
+            detail_emitted_at: None,
+            recent_updates: VecDeque::new(),
+            host_dashboard: None,
+            started: Instant::now(),
+        });
+        reporter
+    }
+
+    #[test]
+    fn releasing_an_in_place_live_region_ends_the_line_once() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let reporter = reporter_over(ProgressDestination::Buffer(Arc::clone(&buffer)), true);
+        reporter.refresh();
+
+        let painted = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            !painted.ends_with('\n'),
+            "an in-place frame leaves the cursor on its last row: {painted:?}"
+        );
+
+        assert!(reporter.release_live_region(true));
+        let released = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            released.ends_with("\r\n"),
+            "release must move the cursor to a fresh line: {released:?}"
+        );
+
+        assert!(!reporter.release_live_region(true));
+        assert_eq!(
+            String::from_utf8(buffer.lock().unwrap().clone()).unwrap(),
+            released,
+            "a second release writes nothing"
+        );
+    }
+
+    #[test]
+    fn releasing_a_snapshot_live_region_adds_no_extra_newline() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        // One row forces the append-only snapshot path, whose frame already
+        // ends with a newline.
+        let viewport = Arc::new(Mutex::new(Some((1_usize, 40_usize))));
+        let reporter = reporter_over(
+            ProgressDestination::BufferWithViewport(Arc::clone(&buffer), viewport),
+            true,
+        );
+        reporter.refresh();
+
+        let painted = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            painted.ends_with('\n') && !painted.ends_with("\r\n"),
+            "a snapshot frame already ends the line: {painted:?}"
+        );
+
+        assert!(!reporter.release_live_region(true));
+        assert_eq!(
+            String::from_utf8(buffer.lock().unwrap().clone()).unwrap(),
+            painted,
+            "a snapshot release writes nothing"
+        );
+    }
+
+    #[test]
+    fn releasing_a_non_interactive_region_is_a_no_op() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let reporter = reporter_over(ProgressDestination::Buffer(Arc::clone(&buffer)), false);
+        reporter.refresh();
+
+        assert!(!reporter.release_live_region(true));
+        assert!(
+            buffer.lock().unwrap().is_empty(),
+            "non-interactive output is append-only and never released"
         );
     }
 }
