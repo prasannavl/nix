@@ -38,7 +38,7 @@
     lib.concatStringsSep "\n" ([
         ''workspace "${toString n}" {''
       ]
-      ++ map (o: "  open-on-output \"${o.name}\"") outputs.fixedWorkspaceOutputs
+      ++ map (o: "  open-on-output \"${o.name}\"") outputs.priorityOutputs
       ++ [
         "}"
       ]))

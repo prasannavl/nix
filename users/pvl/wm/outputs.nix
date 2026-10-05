@@ -37,8 +37,8 @@ in {
 
   inherit a1 l5 lg-uw3840;
 
-  # Fixed workspaces follow the first connected output in this list.
-  fixedWorkspaceOutputs = [
+  # Hosts for the fixed workspaces; first connected entry wins.
+  priorityOutputs = [
     lg-uw3840
   ];
 }

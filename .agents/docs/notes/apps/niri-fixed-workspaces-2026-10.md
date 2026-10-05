@@ -110,7 +110,7 @@ fixedWorkspaces = lib.concatMapStringsSep "\n" (n:
   lib.concatStringsSep "\n" ([
       ''workspace "${toString n}" {''
     ]
-    ++ map (o: "  open-on-output \"${o.name}\"") outputs.fixedWorkspaceOutputs
+    ++ map (o: "  open-on-output \"${o.name}\"") outputs.priorityOutputs
     ++ ["}"]))
 fixedWorkspaceNumbers;
 ```
@@ -146,7 +146,7 @@ names:
 
 ```nix
 # first connected entry wins, else niri primary
-fixedWorkspaceOutputs = [ lg-uw3840 ];
+priorityOutputs = [ lg-uw3840 ];
 ```
 
 `users/pvl/niri/config.nix` renders one `open-on-output` line per entry.
@@ -155,12 +155,11 @@ Semantics:
 
 - Entry connected: workspaces park there; later hotplug follows via niri's
   `add_output` / `remove_output`.
-- No entry connected: fall back to niri's primary output.
+- No entry connected: fall back to niri's internal primary (`primary_idx`).
 - Empty list: workspaces are declared unpinned.
 - Ordered list resolves first-connected-else-primary (see below).
-- Per-host divergence: promote to `fixedWorkspaceOutputsByHost` keyed by
-  `hostName`, matching the kanshi pattern. Options B/C/D were considered and
-  dropped.
+- Per-host divergence: promote to `priorityOutputsByHost` keyed by `hostName`,
+  matching the kanshi pattern. Options B/C/D were considered and dropped.
 
 Revert safety: a single entry generates the same KDL as the pre-pin form, so
 reverting `feat(niri): pin master for ordered output fallbacks` keeps the
