@@ -32,6 +32,17 @@
   '';
   outputDefaults = lib.concatMapStringsSep "\n\n" renderOutputDefaults outputs.all;
 
+  # Fixed workspaces "1".."10", pinned to the primary external monitor.
+  #
+  fixedWorkspaceNumbers = lib.range 1 10;
+  fixedWorkspaces =
+    lib.concatMapStringsSep "\n" (n: ''
+      workspace "${toString n}" {
+          open-on-output "${outputs.lg-uw3840.name}"
+      }
+    '')
+    fixedWorkspaceNumbers;
+
   baseConfig =
     builtins.replaceStrings [
       ''spawn-at-startup "waybar"''
@@ -177,6 +188,10 @@
 
     spawn-at-startup "${pkgs.systemd}/bin/systemctl" "--user" "--no-block" "start" "${wmServices.readyTargetUnits.niri}"
 
+    // Fixed workspaces 1-10. They follow the external monitor
+    // when connected or fallback to primary
+    ${fixedWorkspaces}
+
     ${binds}
 
     // Shared output defaults generated from users/pvl/wm/outputs.nix.
@@ -226,6 +241,9 @@
         Mod+Ctrl+U         { move-workspace-down; }
         Mod+Ctrl+I         { move-workspace-up; }
 
+        // W0-10 is default, add W10
+        Mod+0 { focus-workspace 10; }
+
         Mod+Shift+1 { move-column-to-workspace 1; }
         Mod+Shift+2 { move-column-to-workspace 2; }
         Mod+Shift+3 { move-column-to-workspace 3; }
@@ -235,6 +253,7 @@
         Mod+Shift+7 { move-column-to-workspace 7; }
         Mod+Shift+8 { move-column-to-workspace 8; }
         Mod+Shift+9 { move-column-to-workspace 9; }
+        Mod+Shift+0 { move-column-to-workspace 10; }
 
         Mod+Shift+WheelScrollDown { move-column-to-workspace-down; }
         Mod+Shift+WheelScrollUp   { move-column-to-workspace-up; }
