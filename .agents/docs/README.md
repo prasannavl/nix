@@ -621,6 +621,12 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/tmux-plugins-inlined-2026-10.md`: Records the
+  reduction of the tmux plugin set to `tmux-fingers` + `resurrect` (continuum
+  dropped, autosave now manual), the per-plugin inline replacements from the
+  tmux 3.6 built-ins, and the 3.6 gotchas the inlines depend on (unquoted `#{}`
+  starting a comment, asynchronous `#()`, OSC 52 copy behaviour,
+  `client_prefix`/`pane_pipe`).
 - `.agents/docs/notes/tooling/tmux-plugin-upstream-pins-2026-10.md`: Records why
   nixpkgs (26.05 and master) cannot update the tmux plugins, the
   `overlays/tmux-plugins.nix` local source pins with their upstream revisions
