@@ -102,6 +102,15 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/apps/sway-overlay-source-pins-2026-06.md`: Records that
   the Sway git overlay owns its local upstream source pins instead of root flake
   inputs, including the portal by-name package path.
+- `.agents/docs/notes/apps/sway-fractional-scaling-blur-2026-10.md`: Records the
+  root cause of sway blur at fractional output scale (integer-logical layout vs
+  the physical pixel grid), how niri avoids it, and why sway PR #8715 is still
+  unmerged.
+- `.agents/docs/notes/apps/niri-fixed-workspaces-2026-10.md`: Records the niri
+  fixed `1`..`10` workspace config, how `open-on-output` plus `original_output`
+  makes them follow the external monitor, the index-based keybind and
+  config-validation gotchas, and the priority-list placement (upstream PR #4618)
+  delivered by pinning niri master in `overlays/niri.nix`.
 - `.agents/docs/notes/apps/vscode-libsecret-password-store-2026-04.md`: Records
   the user VS Code wrapper choice that forces Code to use libsecret for password
   storage.
@@ -990,6 +999,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   surface (Tier 0 metadata cleanup, Tier 1 libc in-binary helpers, Tier 2 `age`
   crate/native `ssh-keygen`/`ssh-keyscan` removal via `accept-new`/target `jq`
   removal) with Tier 3 kept wrapped and the bootstrap safety boundary preserved.
+- `.agents/docs/plans/niri-sway-like-layout-2026-10.md`: Design plan for two
+  sway-like niri features: always-present numbered workspaces (config-only via
+  named workspaces) and a patched `fit-columns` non-scrolling constrained
+  layout, including the niri layout internals, code touch points, tests, and the
+  patch-overlay delivery path.
 
 ## Playbooks
 
