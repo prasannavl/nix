@@ -38,34 +38,37 @@ input therefore cannot update these plugins.
 
 ## Landed pins
 
-| plugin           | was (nixpkgs) | now (upstream HEAD)   | change                                                                                                 |
-| ---------------- | ------------- | --------------------- | ------------------------------------------------------------------------------------------------------ |
-| pain-control     | 2020-02-18    | 2021-08-09 `32b760f6` | README only                                                                                            |
-| copycat          | 2020-01-09    | 2020-07-24 `d7f7e6c1` | git searches work from any subdirectory (`git -C`), README note on tmux 3.1 regex search               |
-| open             | 2019-12-02    | 2022-08-22 `763d0a85` | `@open-editor` binding fix, phrase search support, issue #53 fix                                       |
-| prefix-highlight | 2021-03-30    | 2025-03-01 `06cbb4ec` | `status-format[0]`/`[1]` support, interpolation fixes                                                  |
-| resurrect        | 2022-05-01    | 2023-03-06 `cff343cf` | `XDG_DATA_HOME` resurrect dir, busybox `ps`, procfs `cmdline` subshell, program-restore argument fixes |
-| continuum        | 2022-01-25    | 2024-01-20 `0698e8f4` | systemd unit install/disable fixes, macOS plist idempotence                                            |
-| logging          | 2019-04-19    | 2021-06-10 `b5c5f7b9` | docs only                                                                                              |
+After the plugin-set reduction
+(`.agents/docs/notes/tooling/tmux-plugins-inlined-2026-10.md`) only resurrect
+remains pinned:
 
-Already at upstream HEAD, so not pinned: `sensible` (`25cb91f4`, 2022-08-14),
-`better-mouse-mode` (`aa59077c`, 2017-10-16), `yank` (`acfd36e4`, 2023-07-19).
+| plugin    | was (nixpkgs) | now (upstream HEAD)   | change                                                                                                 |
+| --------- | ------------- | --------------------- | ------------------------------------------------------------------------------------------------------ |
+| resurrect | 2022-05-01    | 2023-03-06 `cff343cf` | `XDG_DATA_HOME` resurrect dir, busybox `ps`, procfs `cmdline` subshell, program-restore argument fixes |
+| continuum | 2022-01-25    | 2024-01-20 `0698e8f4` | systemd unit install/disable fixes, macOS plist idempotence                                            |
 
-Deliberately left alone: `tmux-thumbs` stays at the `0.8.0` release
-(2023-03-11), which is upstream's latest release; `master` adds only a README
-line, and the nixpkgs package is a Rust `callPackage` whose `cargoHash` churn is
-not worth a README fix.
+Pins that existed in the first pass and were then dropped with their plugins:
+`pain-control` (README only), `copycat` (git searches from any subdirectory),
+`open` (`@open-editor` fix, phrase search, issue #53), `prefix-highlight`
+(`status-format[0]`/`[1]` support, interpolation fixes), `logging` (docs only)
+and `continuum` (systemd unit fixes; plugin dropped). `sensible` (`25cb91f4`,
+2022-08-14), `better-mouse-mode` (`aa59077c`, 2017-10-16) and `yank`
+(`acfd36e4`, 2023-07-19) were already at upstream HEAD, so they were never
+pinned; all eight were inlined or replaced by `tmux-fingers`.
+
+`tmux-fingers` also stays unpinned: nixpkgs ships 2.6.2 from the release tag
+while upstream is at 2.7.1 (2026-06-09), and bumping it means rebuilding the
+Crystal package (`shardsFile`), not a `src` swap.
 
 ## Validation
 
-- `nix build .#nixosConfigurations.pvl-a1.pkgs.tmuxPlugins.<plugin>` for all
-  seven pins.
-- Content spot checks: copycat `scripts/copycat_git_special.sh` uses
-  `git -C "$PANE_CURRENT_PATH"`; prefix-highlight handles `status-format[0]` and
-  `status-format[1]`; resurrect `scripts/helpers.sh` defaults to `XDG_DATA_HOME`
+- `nix build .#nixosConfigurations.pvl-a1.pkgs.tmuxPlugins.<plugin>` for the
+  pin, plus `tmuxPlugins.fingers`.
+- Content spot check: resurrect `scripts/helpers.sh` defaults to `XDG_DATA_HOME`
   and ships the `lib/tmux-test` submodule.
-- Generated `pvl-a1` `tmux.conf` `run-shell` lines now point at the new store
-  paths for those seven plugins.
+- Generated `pvl-a1` `tmux.conf` `run-shell` lines point at the pinned store
+  paths and load without errors (`source-file` clean, `list-keys` shows the
+  resurrect `C-s`/`C-r` hooks).
 
 ## Maintenance
 

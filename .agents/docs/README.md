@@ -629,8 +629,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   `client_prefix`/`pane_pipe`).
 - `.agents/docs/notes/tooling/tmux-plugin-upstream-pins-2026-10.md`: Records why
   nixpkgs (26.05 and master) cannot update the tmux plugins, the
-  `overlays/tmux-plugins.nix` local source pins with their upstream revisions
-  and per-plugin deltas, and the verification that all seven pins build.
+  `overlays/tmux-plugins.nix` local source pin that remains (resurrect), and the
+  verification that it builds.
 - `.agents/docs/notes/tooling/tmux-wayland-clipboard-2026-10.md`: Records the
   tmux mouse-yank failure on niri/Wayland root cause (tmux-yank
   `@override_copy_command 'xsel -i'` plus real `pkgs.xsel` shadowing the
