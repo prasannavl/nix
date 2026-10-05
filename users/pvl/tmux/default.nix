@@ -57,9 +57,10 @@
         {
           plugin = yank;
           extraConfig = ''
-            set -g @override_copy_command 'xsel -i' # workaround tmux-yank bug on wl-copy
-            set -g @yank_selection 'primary'
-            set -g @yank_selection_mouse 'primary'
+
+            # tmux-yank ignores @yank_selection* when the copy command is wl-copy.
+            # set -g @yank_selection 'primary'
+            # set -g @yank_selection_mouse 'primary'
             set -g @yank_action 'copy-pipe'
           '';
         }
@@ -76,10 +77,5 @@
         {plugin = tmux-thumbs;}
       ];
     };
-
-    # deps
-    home.packages = with pkgs; [
-      xsel
-    ];
   };
 }

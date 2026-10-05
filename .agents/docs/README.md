@@ -621,6 +621,12 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/tmux-wayland-clipboard-2026-10.md`: Records the
+  tmux mouse-yank failure on niri/Wayland root cause (tmux-yank
+  `@override_copy_command 'xsel -i'` plus real `pkgs.xsel` shadowing the
+  `wl-clipboard-x11` shim and copy-pipe using the tmux server environment), the
+  Wayland-only clipboard tool rule, and the landed `users/pvl/tmux/default.nix`
+  cleanup.
 - `.agents/docs/notes/tooling/rust-build-graph-decision-2026-09.md`: Decision
   log for the repo-wide Rust build/caching redesign: the `dummySrc` root cause,
   the L-now/F-later decision, the no-IFD prerequisite, per-state optimization,
