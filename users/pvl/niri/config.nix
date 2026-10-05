@@ -32,16 +32,17 @@
   '';
   outputDefaults = lib.concatMapStringsSep "\n\n" renderOutputDefaults outputs.all;
 
-  # Fixed workspaces "1".."10", pinned to the primary external monitor.
-  #
+  # Fixed workspaces "1".."10", pinned to the priority output list.
   fixedWorkspaceNumbers = lib.range 1 10;
-  fixedWorkspaces =
-    lib.concatMapStringsSep "\n" (n: ''
-      workspace "${toString n}" {
-          open-on-output "${outputs.lg-uw3840.name}"
-      }
-    '')
-    fixedWorkspaceNumbers;
+  fixedWorkspaces = lib.concatMapStringsSep "\n" (n:
+    lib.concatStringsSep "\n" ([
+        ''workspace "${toString n}" {''
+      ]
+      ++ map (o: "  open-on-output \"${o.name}\"") outputs.fixedWorkspaceOutputs
+      ++ [
+        "}"
+      ]))
+  fixedWorkspaceNumbers;
 
   baseConfig =
     builtins.replaceStrings [
@@ -188,8 +189,8 @@
 
     spawn-at-startup "${pkgs.systemd}/bin/systemctl" "--user" "--no-block" "start" "${wmServices.readyTargetUnits.niri}"
 
-    // Fixed workspaces 1-10. They follow the external monitor
-    // when connected or fallback to primary
+    // Fixed workspaces 1-10. Follow the priority output list,
+    // fallback to primary.
     ${fixedWorkspaces}
 
     ${binds}

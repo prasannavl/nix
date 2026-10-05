@@ -106,11 +106,13 @@ workspace. Addressing by workspace name/id instead needs raw JSON IPC
 
 ```nix
 fixedWorkspaceNumbers = lib.range 1 10;
-fixedWorkspaces = lib.concatMapStringsSep "\n" (n: ''
-  workspace "${toString n}" {
-      open-on-output "${outputs.lg-uw3840.name}"
-  }
-'') fixedWorkspaceNumbers;
+fixedWorkspaces = lib.concatMapStringsSep "\n" (n:
+  lib.concatStringsSep "\n" ([
+      ''workspace "${toString n}" {''
+    ]
+    ++ map (o: "  open-on-output \"${o.name}\"") outputs.fixedWorkspaceOutputs
+    ++ ["}"]))
+fixedWorkspaceNumbers;
 ```
 
 and binds: `Mod+0` for workspace 10 (the packaged default already binds
@@ -137,59 +139,33 @@ and binds: `Mod+0` for workspace 10 (the packaged default already binds
 - `focus-at-startup` order in `outputRules` already puts `lg-uw3840` before
   `a1`, so when both are connected the external gets startup focus.
 
-## Monitor-specific pinning (design proposal)
+## Monitor-specific pinning (implemented)
 
-Problem: `users/pvl/niri/config.nix` names `outputs.lg-uw3840` directly, so the
-shared compositor config owns a monitor-specific decision. That role belongs to
-the output inventory, not the WM config.
-
-Options considered:
-
-- **A (recommended)**: add a role to `users/pvl/wm/outputs.nix`, e.g.
-  `fixedWorkspaceOutput = lg-uw3840;` (or `null`). Niri renders
-  `open-on-output "${outputs.fixedWorkspaceOutput.name}"` when set, so the niri
-  config contains no monitor names and the inventory stays the single source of
-  truth.
-- **B**: per-host data file in the niri module keyed by
-  `config.networking.hostName` (mirrors `users/pvl/kanshi/profiles.nix`). Use if
-  hosts ever need different role outputs; today both hosts use the LG, so it
-  adds a keyed layer for nothing.
-- **C**: move the role to a new `users/pvl/wm/topology.nix`. Cleanest inventory
-  vs roles separation, one more file.
-- **D**: drop `open-on-output` and rely on niri's active-monitor placement. No
-  monitor specifics anywhere, but workspaces then do not migrate when the
-  external is hotplugged after niri starts, so it misses the requirement.
-
-Recommended shape (A):
+`users/pvl/wm/outputs.nix` owns the role; the niri config carries no monitor
+names:
 
 ```nix
-# users/pvl/wm/outputs.nix
-in {
-  all = [ a1 l5 lg-uw3840 ];
-  inherit a1 l5 lg-uw3840;
-  fixedWorkspaceOutput = lg-uw3840; # null -> no pinning
-}
+# first connected entry wins, else niri primary
+fixedWorkspaceOutputs = [ lg-uw3840 ];
 ```
 
-```nix
-# users/pvl/niri/config.nix
-fixedWorkspaces = lib.concatMapStringsSep "\n" (n: ''
-  workspace "${toString n}" {
-      ${lib.optionalString (outputs.fixedWorkspaceOutput != null)
-        ''open-on-output "${outputs.fixedWorkspaceOutput.name}"''}
-  }
-'') (lib.range 1 10);
-```
+`users/pvl/niri/config.nix` renders one `open-on-output` line per entry.
 
 Semantics:
 
-- Role set: current behavior (park on primary, follow the external on hotplug).
-- Role `null`: workspaces are still declared but unpinned, so they stay on the
-  output where they were created.
-- Role is global. Promote to `fixedWorkspaceOutputByHost` keyed by `hostName` if
-  hosts diverge, matching the kanshi pattern.
-- With the pinned-upstream multi-`open-on-output` support this can be an ordered
-  list, resolved first-connected-else-primary.
+- Entry connected: workspaces park there; later hotplug follows via niri's
+  `add_output` / `remove_output`.
+- No entry connected: fall back to niri's primary output.
+- Empty list: workspaces are declared unpinned.
+- Ordered list resolves first-connected-else-primary (see below).
+- Per-host divergence: promote to `fixedWorkspaceOutputsByHost` keyed by
+  `hostName`, matching the kanshi pattern. Options B/C/D were considered and
+  dropped.
+
+Revert safety: a single entry generates the same KDL as the pre-pin form, so
+reverting `feat(niri): pin master for ordered output fallbacks` keeps the
+`nixpkgs` 26.04 niri valid (verified with both binaries). A second entry needs
+the pin.
 
 ### Priority-list output placement
 
