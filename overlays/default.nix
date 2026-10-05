@@ -3,6 +3,7 @@
   (import ./unstable.nix {inherit inputs;})
   # (import ./sway.nix {inherit inputs;})
   (import ./gdm.nix {inherit inputs;})
+  (import ./tmux-plugins.nix)
   (import ./supergfxctl.nix {inherit inputs;})
   inputs.vscode-ext.overlays.default
   (import ../lib/flake/rust-toolchain.nix {inherit inputs;}).overlay
