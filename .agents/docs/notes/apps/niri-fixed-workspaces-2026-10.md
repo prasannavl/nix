@@ -1,12 +1,13 @@
-# Niri Fixed Workspaces 1-10
+# Niri Fixed Workspaces 1-9
 
 Records the sway-like fixed-workspace setup added to
 `users/pvl/niri/config.nix`.
 
 ## Requirement
 
-- Laptop only: workspaces `1`..`10` are always present, `Mod+0` selects `10`.
-- Laptop plus the `lg-uw3840` external: the same `1`..`10` live on the external,
+- Laptop only: named workspaces `1`..`9` are always present, and niri's unnamed
+  empty tail makes 10 total; `Mod+0` selects that 10th.
+- Laptop plus the `lg-uw3840` external: the same `1`..`9` live on the external,
   and the laptop (and any other secondary output) keeps niri's dynamic
   workspaces.
 
@@ -105,7 +106,7 @@ workspace. Addressing by workspace name/id instead needs raw JSON IPC
 ## Config shape
 
 ```nix
-fixedWorkspaceNumbers = lib.range 1 10;
+fixedWorkspaceNumbers = lib.range 1 9;
 fixedWorkspaces = lib.concatMapStringsSep "\n" (n:
   lib.concatStringsSep "\n" ([
       ''workspace "${toString n}" {''
@@ -115,7 +116,7 @@ fixedWorkspaces = lib.concatMapStringsSep "\n" (n:
 fixedWorkspaceNumbers;
 ```
 
-and binds: `Mod+0` for workspace 10 (the packaged default already binds
+and binds: `Mod+0` for the unnamed 10th (the packaged default already binds
 `Mod+1..9`) plus `Mod+Shift+1`..`0` to move the focused column by index.
 
 ## Gotchas
@@ -124,18 +125,22 @@ and binds: `Mod+0` for workspace 10 (the packaged default already binds
   `WorkspaceReferenceArg::Index` and `focus-workspace "1"` to `Name`. Index is
   resolved per active monitor (`Layout::find_workspace_by_ref`), so indices are
   only meaningful on the monitor that holds the fixed workspaces. Because the
-  named workspaces are declared in order `1`..`10`, the fixed monitor's indices
-  line up with the names, which keeps the binds clean. On a secondary dynamic
-  monitor, index `N` may not exist and the shortcut is a no-op.
-- Keep the workspace declaration order `1`..`10`; reordering or inserting named
-  workspaces shifts indices.
+  named workspaces are declared in order `1`..`9` (index `10` is niri's unnamed
+  tail), the fixed monitor's indices line up with the names, which keeps the
+  binds clean. On a secondary dynamic monitor, index `N` may not exist and the
+  shortcut is a no-op.
+- Keep the workspace declaration order `1`..`9`; reordering or inserting named
+  workspaces shifts indices, and niri always appends an unnamed empty workspace
+  (`docs/wiki/Workspaces.md`: "There's always one empty workspace at the end of
+  every monitor").
 - The packaged default config (`pkg-default.kdl`) already binds `Mod+1..9` to
   `focus-workspace 1..9`, so the overlay only adds `Mod+0`. Niri replaces
   conflicting binds from later config files (`niri-config/src/lib.rs`, `binds`
   handling), which is also how the overlay overrides other base binds.
-- `outputs.lg-uw3840.name` is the `"<make> <model> <serial>"` form, which is
-  what `open-on-output` matches (`OutputName::matches`). Using make/model/serial
-  survives connector renames; `Unknown` is the wildcard for missing fields.
+- The `priorityOutputs` entries are the `"<make> <model> <serial>"` form, which
+  is what `open-on-output` matches (`OutputName::matches`). Using
+  make/model/serial survives connector renames; `Unknown` is the wildcard for
+  missing fields.
 - `focus-at-startup` order in `outputRules` already puts `lg-uw3840` before
   `a1`, so when both are connected the external gets startup focus.
 

@@ -32,8 +32,8 @@
   '';
   outputDefaults = lib.concatMapStringsSep "\n\n" renderOutputDefaults outputs.all;
 
-  # Fixed workspaces "1".."10", pinned to the priority output list.
-  fixedWorkspaceNumbers = lib.range 1 10;
+  # Fixed workspaces "1".."9"; niri keeps the unnamed 10th at the end.
+  fixedWorkspaceNumbers = lib.range 1 9;
   fixedWorkspaces = lib.concatMapStringsSep "\n" (n:
     lib.concatStringsSep "\n" ([
         ''workspace "${toString n}" {''
@@ -189,8 +189,8 @@
 
     spawn-at-startup "${pkgs.systemd}/bin/systemctl" "--user" "--no-block" "start" "${wmServices.readyTargetUnits.niri}"
 
-    // Fixed workspaces 1-10. Follow the priority output list,
-    // fallback to primary.
+    // Fixed workspaces 1-9. Follow the priority output list,
+    // fallback to primary; niri adds the unnamed 10th.
     ${fixedWorkspaces}
 
     ${binds}
@@ -242,7 +242,7 @@
         Mod+Ctrl+U         { move-workspace-down; }
         Mod+Ctrl+I         { move-workspace-up; }
 
-        // W0-10 is default, add W10
+        // Mod+0 targets niri's unnamed 10th workspace.
         Mod+0 { focus-workspace 10; }
 
         Mod+Shift+1 { move-column-to-workspace 1; }

@@ -107,10 +107,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   the physical pixel grid), how niri avoids it, and why sway PR #8715 is still
   unmerged.
 - `.agents/docs/notes/apps/niri-fixed-workspaces-2026-10.md`: Records the niri
-  fixed `1`..`10` workspace config, how `open-on-output` plus `original_output`
-  makes them follow the external monitor, the index-based keybind and
-  config-validation gotchas, and the priority-list placement (upstream PR #4618)
-  delivered by pinning niri master in `overlays/niri.nix`.
+  fixed `1`..`9` workspace config (niri adds the unnamed 10th), how
+  `open-on-output` plus `original_output` makes them follow the external
+  monitor, the index-based keybind and config-validation gotchas, and the
+  priority-list placement (upstream PR #4618) delivered by pinning niri master
+  in `overlays/niri.nix`.
 - `.agents/docs/notes/apps/vscode-libsecret-password-store-2026-04.md`: Records
   the user VS Code wrapper choice that forces Code to use libsecret for password
   storage.
