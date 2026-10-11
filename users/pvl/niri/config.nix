@@ -32,8 +32,9 @@
   '';
   outputDefaults = lib.concatMapStringsSep "\n\n" renderOutputDefaults outputs.all;
 
-  # Fixed workspaces "1".."9"; niri keeps the unnamed 10th at the end.
-  fixedWorkspaceNumbers = lib.range 1 9;
+  # Fixed workspaces "1".."5"; everything past them stays dynamic, with
+  # niri's unnamed workspace at index 6 as the overflow tail.
+  fixedWorkspaceNumbers = lib.range 1 5;
   fixedWorkspaces = lib.concatMapStringsSep "\n" (n:
     lib.concatStringsSep "\n" ([
         ''workspace "${toString n}" {''
@@ -189,8 +190,9 @@
 
     spawn-at-startup "${pkgs.systemd}/bin/systemctl" "--user" "--no-block" "start" "${wmServices.readyTargetUnits.niri}"
 
-    // Fixed workspaces 1-9. Follow the priority output list,
-    // fallback to primary; niri adds the unnamed 10th.
+    // Fixed workspaces 1-5. Follow the priority output list,
+    // fallback to primary; niri keeps the unnamed workspace at index 6
+    // and creates further dynamic ones on demand.
     ${fixedWorkspaces}
 
     ${binds}
@@ -242,7 +244,9 @@
         Mod+Ctrl+U         { move-workspace-down; }
         Mod+Ctrl+I         { move-workspace-up; }
 
-        // Mod+0 targets niri's unnamed 10th workspace.
+        // Mod+0 targets index 10. Indices past the workspace count clamp to
+        // the bottommost (empty) workspace, so with only 5 fixed workspaces
+        // this always lands on the last / deepest workspace.
         Mod+0 { focus-workspace 10; }
 
         Mod+Shift+1 { move-column-to-workspace 1; }

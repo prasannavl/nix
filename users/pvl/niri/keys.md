@@ -99,8 +99,18 @@ Assumes local `config.kdl` includes `base-config.kdl` then `nix-config.kdl`;
 
 ### Numbered Workspaces
 
-- `Mod+1` ... `Mod+9`: focus workspace 1 ... 9
-- `Mod+Shift+1` ... `Mod+Shift+9`: move column to workspace 1 ... 9
+Workspaces `1`..`5` are fixed (always present) and `6`..`9` are the dynamic
+overflow: with 5 fixed workspaces, niri's unnamed workspace is index `6`, and
+indices past the workspace count clamp to the bottommost (empty) workspace, so
+`Mod+6`..`Mod+9` behave the same.
+
+- `Mod+1` ... `Mod+5`: focus fixed workspace 1 ... 5
+- `Mod+6` ... `Mod+9`: focus the dynamic (overflow) workspace
+- `Mod+0`: focus index 10, which niri clamps to the last / deepest workspace
+- `Mod+Shift+1` ... `Mod+Shift+5`: move column to fixed workspace 1 ... 5
+- `Mod+Shift+6` ... `Mod+Shift+9`: move column to the dynamic (overflow)
+  workspace
+- `Mod+Shift+0`: move column to index 10 (clamped to the last workspace)
 
 ## Mouse Wheel With `Mod`
 
@@ -191,7 +201,7 @@ Legend:
   m                     shot       shot       clip       clip       shot       clip                 quit       lock       orca
 
 | `        | 1        | 2        | 3        | 4        | 5        | 6        | 7        | 8        | 9        | 0        | -        | =        | Backspace 
-  -          m,s        m,s        m,s        m,s        m,s        m,s        m,s        m,s        m,s        -          m,s        m,s        -
+  -          m,s        m,s        m,s        m,s        m,s        m,s        m,s        m,s        m,s        m,s        m,s        m,s        -
 
 | Tab  | Q        | W        | E        | R        | T        | Y        | U        | I        | O        | P        | [        | ]        | \        
   -      m          m,s        s          m,c,s      m          m,c        m,c,s      m,c,s      m          s          m          m          -

@@ -18,11 +18,13 @@ against niri `v26.04` (the version `pkgs.niri` resolves to in this repo).
   `LayoutPart` at line 98) has no non-scrolling / fit option. It has to be
   patched.
 
-## Feature 1: fixed workspaces 1..9 + niri's unnamed tail (config only)
+## Feature 1: fixed workspaces 1..5 + niri's unnamed tail (config only)
 
-Implemented as `1`..`9` with index-based binds (`Mod+0` targets niri's unnamed
-10th); see `.agents/docs/notes/apps/niri-fixed-workspaces-2026-10.md`. The
-original sketch below is kept for context.
+Implemented as `1`..`5`: niri's unnamed workspace (index `6`) is the dynamic
+tail reached by the base `Mod+6..9` binds, and `Mod+0` still targets index `10`
+(clamped to the last workspace). The original `1`..`9` + `Mod+0` sketch below is
+kept for context; see
+`.agents/docs/notes/apps/niri-fixed-workspaces-2026-10.md`.
 
 Add named workspace declarations and focus bindings to
 `users/pvl/niri/config.nix`:
