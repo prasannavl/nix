@@ -11,7 +11,7 @@
   lib,
   nodejs-slim_24,
   pkg-config,
-  pnpm_10,
+  pnpm_10_latest,
   pnpmConfigHook,
   poppler-utils,
   python3,
@@ -127,7 +127,7 @@
       nodejsSlim.corepack
     ];
   };
-  pnpmCli = "${pnpm_10}/libexec/pnpm/bin/pnpm.cjs";
+  pnpmCli = "${pnpm_10_latest}/libexec/pnpm/bin/pnpm.cjs";
 
   imageName = "localhost/abird/opendesign";
   imageTag = "${version}-src-${shortRev}${lib.optionalString (managedByokProviderRevision != null) "-cfg-${managedByokProviderRevision}"}";
@@ -143,7 +143,7 @@
     inherit pname src;
     hash = source.pnpmDepsHash;
     fetcherVersion = 4;
-    pnpm = pnpm_10;
+    pnpm = pnpm_10_latest;
   };
 
   app = stdenv.mkDerivation {
@@ -154,7 +154,7 @@
       gnumake
       nodejs
       pkg-config
-      pnpm_10
+      pnpm_10_latest
       pnpmConfigHook
       python3
     ];
