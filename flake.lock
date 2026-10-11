@@ -113,6 +113,30 @@
         "type": "github"
       }
     },
+    "dotlink": {
+      "inputs": {
+        "crane": [
+          "crane"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-overlay": "rust-overlay"
+      },
+      "locked": {
+        "lastModified": 1791702962,
+        "narHash": "sha256-RyFBdFjZrXlImrKomtm/N5SKOStY+Vo7xNr5NuiR3Ss=",
+        "owner": "abird-ai",
+        "repo": "dotlink",
+        "rev": "3335af57043c48ac5787fe200d3629dc1143c460",
+        "type": "github"
+      },
+      "original": {
+        "owner": "abird-ai",
+        "repo": "dotlink",
+        "type": "github"
+      }
+    },
     "flake-compat": {
       "locked": {
         "lastModified": 1767039857,
@@ -610,6 +634,7 @@
         "antigravity": "antigravity",
         "crane": "crane",
         "disko": "disko",
+        "dotlink": "dotlink",
         "flake-utils": "flake-utils",
         "home-manager": "home-manager",
         "llm-agents": "llm-agents",
@@ -623,6 +648,27 @@
         "treefmt-nix": "treefmt-nix",
         "unstable": "unstable",
         "vscode-ext": "vscode-ext"
+      }
+    },
+    "rust-overlay": {
+      "inputs": {
+        "nixpkgs": [
+          "dotlink",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1790669703,
+        "narHash": "sha256-PA75DaxgfJSDNr1eDF/l9TDfNxSUAjPRt08fICQWOqc=",
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "rev": "49b6548d31019e8bfe9d4415193ac1df3c48f53a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "type": "github"
       }
     },
     "systems": {

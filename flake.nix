@@ -83,6 +83,13 @@
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    dotlink = {
+      url = "github:abird-ai/dotlink";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        crane.follows = "crane";
+      };
+    };
   };
 
   outputs = inputs:
