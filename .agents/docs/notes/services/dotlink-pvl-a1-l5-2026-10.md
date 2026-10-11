@@ -37,6 +37,7 @@ services.dotlink = {
   enable = true;
   user = "pvl";
   workingDirectory = "/home/pvl/spaces/abird/";
+  logging.verbosity = "tools";
 };
 ```
 
@@ -45,10 +46,12 @@ The main `services.dotlink` instance becomes the `dotlink` systemd unit:
 - `User = pvl`, `SetLoginEnvironment = true`, and
   `WorkingDirectory = /home/pvl/spaces/abird/` — the launch directory is the
   access root for relative grants and the default read permission.
-- `ExecStart = <dotlink> --no-stdio --color=never`. The `profile` option is left
-  unset: the module maps both an unset selector and the literal `"default"` to
-  the user's default dotlink profile, so the omitted value reuses that profile's
-  runtime key and OAuth state. No secrets are placed in the Nix store.
+- `ExecStart = <dotlink> --no-stdio --color=never -v`. The `profile` option is
+  left unset: the module maps both an unset selector and the literal `"default"`
+  to the user's default dotlink profile, so the omitted value reuses that
+  profile's runtime key and OAuth state. `logging.verbosity = "tools"` adds `-v`
+  for tool activity (`"requests"` would add `-vv`). No secrets are placed in the
+  Nix store.
 
 `inputs` reaches host modules through `lib/flake/root.nix`'s `specialArgs`
 (`selectedInputs = inputSet.inputs` already contains every top-level flake

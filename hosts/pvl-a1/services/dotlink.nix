@@ -5,5 +5,6 @@
     enable = true;
     user = "pvl";
     workingDirectory = "/home/pvl/spaces/abird/";
+    logging.verbosity = "tools";
   };
 }
