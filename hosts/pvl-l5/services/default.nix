@@ -1,6 +1,7 @@
 {...}: {
   imports = [
     ./ai.nix
+    ./dotlink.nix
     ./llama-router.nix
     ./ollama.nix
     ./openwebui.nix
