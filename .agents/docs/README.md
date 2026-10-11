@@ -118,6 +118,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/apps/vscode-copilot-patchelf-2026-06.md`: Records the
   Linux auto-patchelf library inputs needed by VS Code 1.125.1's bundled Copilot
   native `computer.node` module.
+- `.agents/docs/notes/apps/vscode-extension-version-coupling-2026-10.md`:
+  Records why a `nix-vscode-extensions` lock refresh can drop a listed extension
+  (latest-only engine filter), the decision to bump the VS Code pin, and the
+  maintenance rule that keeps the extension list and `sources.nix` aligned.
 - `.agents/docs/notes/apps/pi-coding-agent-extensions-2026-09.md`: Records the
   Pi installation and `lib/ext/pi` update ownership, declarative extension
   resources, mutable-state boundaries, the packaged i18n locale default, Pi Web
