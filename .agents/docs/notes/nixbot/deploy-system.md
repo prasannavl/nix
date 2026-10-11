@@ -142,6 +142,19 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   while realization happens on the build host; otherwise Nix can spend minutes
   materializing evaluation inputs through the remote store before the build host
   has CPU-heavy derivation work.
+- Build-host resolution order is `--build-host` (or `NIXBOT_BUILD_HOST`), else
+  the first `config.builders` entry from `hosts/nixbot.nix`, else the literal
+  `local`. `local` does **not** name the deploy target: it realizes with
+  `nix build` on the machine running the manager process, then pushes the
+  closure directly with `nix copy --no-check-sigs --to ssh-ng://<target>`,
+  bypassing every cache and relay path. Building on the target itself means
+  naming it (`--build-host=<target-host>`), which resolves through the inventory
+  like any other host resource and takes the same-resource no-transfer path.
+  Legacy `nixbot.sh` defaulted to `local`
+  (`BUILD_HOST="${NIXBOT_BUILD_HOST:-local}"`), so omitting the flag on the Rust
+  manager now selects the configured builder instead. The `build via <builder>`
+  step label is emitted only from the remote realization path, so it is direct
+  evidence that `local` was not in effect for that run.
 - Remote deploy builds default to `--build-host-deploy-mode auto`, resolved per
   target. Every distinct-store target first uses `cache`; a non-interrupt
   target-side failure falls back once to the signed local relay through the
