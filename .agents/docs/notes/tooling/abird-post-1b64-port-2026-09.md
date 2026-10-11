@@ -53,12 +53,15 @@ Graphiti consumer is excluded because Pvl has none.
 
 ### Remote-build resilience
 
-Source `558d1e64` is byte/mode exact for the builder module/test, Rust
-`fleet/build.rs` and its two tests, and Bash `nixbot.sh`. The builder defaults
-`http-connections = 8`; Rust and Bash remote realization use `--fallback`; and
-Bash captures stdout outside command substitution so interrupts reach the
-supervised build. The Python test keeps the runtime regression but omits the
-Abird plan-ledger assertion. Pvl durable notes are adapted.
+Source `558d1e64` is byte/mode exact for Rust `fleet/build.rs` and its two
+tests, and Bash `nixbot.sh`. It set the builder defaults `http-connections = 8`;
+Rust and Bash remote realization use `--fallback`; and Bash captures stdout
+outside command substitution so interrupts reach the supervised build. The
+Python test keeps the runtime regression but omits the Abird plan-ledger
+assertion. Pvl durable notes are adapted. The builder module and its test were
+byte/mode exact at port time and have since been advanced deliberately by Pvl
+admission policy (`max-jobs = 16`, `http-connections = 16`); see
+`.agents/docs/notes/hosts/pvl-x2-cold-build-throughput-2026-10.md`.
 
 ## Every source commit after the prior port
 
@@ -66,41 +69,41 @@ Status: **ported** is an exact shared unit; **adapted** combines exact shared
 files with Pvl integration/exclusions; **adopted** predates this session;
 **skipped** contributes no Pvl change.
 
-|  # | Commit     | Subject                                                                | Status  | Disposition                                                                                                           |
-| -: | ---------- | ---------------------------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
-|  1 | `39dd2d5e` | refactor(test): split shared test areas into repository identity homes | adopted | Pvl `cca6266f` already carries exact generic files and the Pvl identity home; Abird identity files stay source-owned. |
-|  2 | `0585a314` | feat(ai): add llama.cpp router backend on abird-srv                    | adopted | Shared llama-router arrived via Pvl `61cb0f2b`; Abird host/registry wiring excluded.                                  |
-|  3 | `363eb0b6` | feat(ai): adopt shared services.ai catalog and backend module          | adopted | Pvl `8159ed0d`; later Pvl backend/storage work advances it.                                                           |
-|  4 | `dc7e5026` | llama-router: load-lazy reconcile, poll presets (byte-sync)            | adopted | Pvl `4d22e08e`; source host note excluded.                                                                            |
-|  5 | `91d4b104` | docs(llama-router): laptop models-max raised to 2                      | adopted | Pvl host/record landed as `93539ffc`; Abird note excluded.                                                            |
-|  6 | `6da34b1b` | feat(agent): add managed encrypted backups                             | skipped | Abird Agent, protocol, web, and product-plan ownership.                                                               |
-|  7 | `95e7de21` | docs(plan): accept 3.7c memory store                                   | skipped | Abird product planning only.                                                                                          |
-|  8 | `ac468b45` | feat(ai): reconcile model ownership                                    | adopted | Pvl `af016242`; shared ownership implementation present.                                                              |
-|  9 | `0579269d` | refactor(ai): derive backend deployment                                | adopted | Pvl host projection `fa82d647`; Abird host file excluded.                                                             |
-| 10 | `b1ed967c` | docs(ai): close model ownership plan                                   | skipped | Abird lifecycle history.                                                                                              |
-| 11 | `971b794a` | fix(ai): harden model reconciliation                                   | adopted | Pvl `e0ac3e37`; core reconciler exact.                                                                                |
-| 12 | `8a6a708e` | feat(memory): add governed store                                       | skipped | Abird Agent/protocol/web memory product.                                                                              |
-| 13 | `b1b8599e` | docs(memory): accept phase 3.7d                                        | skipped | Abird product planning.                                                                                               |
-| 14 | `b9162883` | docs(platform): define application architecture                        | skipped | Abird architecture/plan history; no shared implementation.                                                            |
-| 15 | `84776c11` | docs(plan): define state storage architecture                          | skipped | Abird design plan.                                                                                                    |
-| 16 | `b859c121` | fix(nixbot): restore Rust deployment parity                            | adapted | Twelve Rust files exact; workflow already equivalent; Abird ledger test/history excluded.                             |
-| 17 | `058ff50e` | fix(update): match exact image references                              | adopted | Exact Pvl `086ad4ef`.                                                                                                 |
-| 18 | `e5c485d8` | feat(images): compare terminal version tags                            | adopted | Exact Pvl `ace73f74`.                                                                                                 |
-| 19 | `44eb5bea` | build: refresh dependencies                                            | adopted | Pi/VS Code sources exact; later Pvl lock refresh supersedes matching nodes while retaining its graph.                 |
-| 20 | `4d59bc35` | docs(agent): record forward state reset                                | skipped | Abird plan/event history.                                                                                             |
-| 21 | `46c4690a` | revert(memory): withhold 3.7c runtime                                  | skipped | Absent Abird product runtime.                                                                                         |
-| 22 | `83304642` | build(opendesign): update to 0.23.0                                    | skipped | Established absent Pvl package/consumer.                                                                              |
-| 23 | `799a778d` | refactor(postgres): simplify extension policies                        | adapted | Three shared files exact; fixture adapted to Pvl identity.                                                            |
-| 24 | `2a1fa45d` | refactor(postgres): localize extension releases                        | skipped | Abird/Gap3 consumers only; no reviewed Pvl migration policy.                                                          |
-| 25 | `0f551391` | perf(ci): raise Gondor CPU limit                                       | skipped | Gap3 Gondor capacity policy.                                                                                          |
-| 26 | `8897efc2` | docs(memory): transition 3.7d to 3.7e                                  | skipped | Abird product planning.                                                                                               |
-| 27 | `a932eb53` | build(abird): refresh service images                                   | skipped | Abird host pins/identity.                                                                                             |
-| 28 | `7f06049c` | build(gap3): refresh service images                                    | skipped | Gap3 host pins.                                                                                                       |
-| 29 | `4a6ccfb9` | feat(images): add inline update holds                                  | ported  | Five generic module/updater/test/design files exact.                                                                  |
-| 30 | `25e9b03a` | fix(graphiti): hold coupled image updates                              | skipped | Abird Graphiti consumer only.                                                                                         |
-| 31 | `2b31d018` | feat(opendesign): add managed AI default                               | skipped | Established absent OpenDesign package/consumer.                                                                       |
-| 32 | `558d1e64` | fix(nixbot): harden remote builds                                      | adapted | Six shared files exact; Python test and Pvl notes adapted.                                                            |
-| 33 | `b8a766ed` | style(docs): apply deno formatting                                     | skipped | Source-local documents only; Pvl docs formatted independently.                                                        |
+|  # | Commit     | Subject                                                                | Status  | Disposition                                                                                                             |
+| -: | ---------- | ---------------------------------------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------- |
+|  1 | `39dd2d5e` | refactor(test): split shared test areas into repository identity homes | adopted | Pvl `cca6266f` already carries exact generic files and the Pvl identity home; Abird identity files stay source-owned.   |
+|  2 | `0585a314` | feat(ai): add llama.cpp router backend on abird-srv                    | adopted | Shared llama-router arrived via Pvl `61cb0f2b`; Abird host/registry wiring excluded.                                    |
+|  3 | `363eb0b6` | feat(ai): adopt shared services.ai catalog and backend module          | adopted | Pvl `8159ed0d`; later Pvl backend/storage work advances it.                                                             |
+|  4 | `dc7e5026` | llama-router: load-lazy reconcile, poll presets (byte-sync)            | adopted | Pvl `4d22e08e`; source host note excluded.                                                                              |
+|  5 | `91d4b104` | docs(llama-router): laptop models-max raised to 2                      | adopted | Pvl host/record landed as `93539ffc`; Abird note excluded.                                                              |
+|  6 | `6da34b1b` | feat(agent): add managed encrypted backups                             | skipped | Abird Agent, protocol, web, and product-plan ownership.                                                                 |
+|  7 | `95e7de21` | docs(plan): accept 3.7c memory store                                   | skipped | Abird product planning only.                                                                                            |
+|  8 | `ac468b45` | feat(ai): reconcile model ownership                                    | adopted | Pvl `af016242`; shared ownership implementation present.                                                                |
+|  9 | `0579269d` | refactor(ai): derive backend deployment                                | adopted | Pvl host projection `fa82d647`; Abird host file excluded.                                                               |
+| 10 | `b1ed967c` | docs(ai): close model ownership plan                                   | skipped | Abird lifecycle history.                                                                                                |
+| 11 | `971b794a` | fix(ai): harden model reconciliation                                   | adopted | Pvl `e0ac3e37`; core reconciler exact.                                                                                  |
+| 12 | `8a6a708e` | feat(memory): add governed store                                       | skipped | Abird Agent/protocol/web memory product.                                                                                |
+| 13 | `b1b8599e` | docs(memory): accept phase 3.7d                                        | skipped | Abird product planning.                                                                                                 |
+| 14 | `b9162883` | docs(platform): define application architecture                        | skipped | Abird architecture/plan history; no shared implementation.                                                              |
+| 15 | `84776c11` | docs(plan): define state storage architecture                          | skipped | Abird design plan.                                                                                                      |
+| 16 | `b859c121` | fix(nixbot): restore Rust deployment parity                            | adapted | Twelve Rust files exact; workflow already equivalent; Abird ledger test/history excluded.                               |
+| 17 | `058ff50e` | fix(update): match exact image references                              | adopted | Exact Pvl `086ad4ef`.                                                                                                   |
+| 18 | `e5c485d8` | feat(images): compare terminal version tags                            | adopted | Exact Pvl `ace73f74`.                                                                                                   |
+| 19 | `44eb5bea` | build: refresh dependencies                                            | adopted | Pi/VS Code sources exact; later Pvl lock refresh supersedes matching nodes while retaining its graph.                   |
+| 20 | `4d59bc35` | docs(agent): record forward state reset                                | skipped | Abird plan/event history.                                                                                               |
+| 21 | `46c4690a` | revert(memory): withhold 3.7c runtime                                  | skipped | Absent Abird product runtime.                                                                                           |
+| 22 | `83304642` | build(opendesign): update to 0.23.0                                    | skipped | Established absent Pvl package/consumer.                                                                                |
+| 23 | `799a778d` | refactor(postgres): simplify extension policies                        | adapted | Three shared files exact; fixture adapted to Pvl identity.                                                              |
+| 24 | `2a1fa45d` | refactor(postgres): localize extension releases                        | skipped | Abird/Gap3 consumers only; no reviewed Pvl migration policy.                                                            |
+| 25 | `0f551391` | perf(ci): raise Gondor CPU limit                                       | skipped | Gap3 Gondor capacity policy.                                                                                            |
+| 26 | `8897efc2` | docs(memory): transition 3.7d to 3.7e                                  | skipped | Abird product planning.                                                                                                 |
+| 27 | `a932eb53` | build(abird): refresh service images                                   | skipped | Abird host pins/identity.                                                                                               |
+| 28 | `7f06049c` | build(gap3): refresh service images                                    | skipped | Gap3 host pins.                                                                                                         |
+| 29 | `4a6ccfb9` | feat(images): add inline update holds                                  | ported  | Five generic module/updater/test/design files exact.                                                                    |
+| 30 | `25e9b03a` | fix(graphiti): hold coupled image updates                              | skipped | Abird Graphiti consumer only.                                                                                           |
+| 31 | `2b31d018` | feat(opendesign): add managed AI default                               | skipped | Established absent OpenDesign package/consumer.                                                                         |
+| 32 | `558d1e64` | fix(nixbot): harden remote builds                                      | adapted | Four shared files exact; builder module/test advanced by later Pvl admission policy; Python test and Pvl notes adapted. |
+| 33 | `b8a766ed` | style(docs): apply deno formatting                                     | skipped | Source-local documents only; Pvl docs formatted independently.                                                          |
 
 Totals: 11 adopted, four newly ported/adapted, and 18 skipped with explicit
 ownership reasons. No unexplained source commit remains.
@@ -112,15 +115,18 @@ new files.
 
 | Scope        | Common | Exact bytes/mode | Explained differences | Mode differences | Source-only | Pvl-only |
 | ------------ | -----: | ---------------: | --------------------: | ---------------: | ----------: | -------: |
-| `lib/**`     |    237 |              215 |                    22 |                0 |          21 |       41 |
+| `lib/**`     |    237 |              213 |                    24 |                0 |          21 |       41 |
 | `pkgs/**`    |    278 |              271 |                     7 |                0 |         282 |        3 |
 | `scripts/**` |     20 |               20 |                     0 |                0 |           2 |        0 |
-| Total        |    535 |              506 |                    29 |                0 |         305 |       44 |
+| Total        |    535 |              504 |                    31 |                0 |         305 |       44 |
 
 Exact-set SHA-256 over sorted `path<TAB>mode<TAB>blob` rows without a trailing
 newline: `4eeb6c52a8581777ae0fde7926c79b7ca449f151efda8e61feb0b6edcaaf5932`.
+This hash is the audit-time value and was not recomputed after the later Pvl
+admission-policy change to the builder module/test; recomputing it requires the
+frozen Abird tree.
 
-All 29 common differences are explained:
+All 31 common differences are explained:
 
 | Group                           | Count | Paths and ownership                                                                                                                                                                                                                                              |
 | ------------------------------- | ----: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -130,6 +136,7 @@ All 29 common differences are explained:
 | Pvl-ahead nginx                 |     1 | `lib/services/nginx/compose/compose.yaml`: Pvl 1.30.5 versus Abird 1.30.4.                                                                                                                                                                                       |
 | Package surface                 |     6 | `pkgs/README.md`, two Cloudflare app READMEs, `pkgs/manifest.nix`, `pkgs/support/nats-streams/default.nix`, and host-manager README.                                                                                                                             |
 | Adapted shared test             |     1 | `pkgs/tools/nixbot/tests/test_nixbot.py`: runtime regressions retained; Abird plan-ledger assertion excluded. Pvl topology remains in `test_nixbot_pvl.py`.                                                                                                      |
+| Pvl admission policy            |     2 | `lib/services/nix-builder-gc-coordination/default.nix` and `lib/tests/nix-builder-gc-coordination.nix`: builder admission raised to `max-jobs = 16` and `http-connections = 16`.                                                                                 |
 
 The 21 source-only library paths are Abird identity/topology after adding the
 shared PostgreSQL helper. The 282 source-only package paths remain Abird

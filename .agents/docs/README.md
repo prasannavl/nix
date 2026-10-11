@@ -363,10 +363,18 @@ Use this index as the canonical map for `.agents/docs/**`.
   remaining storage enforcement boundary.
 - `.agents/docs/notes/hosts/nix-builder-gc-coordination-2026-09.md`:
   Builder-role shared-lock protocol for crash-released invocation leases,
-  build-command protection, guarded scheduled and host-agent GC, and one-lane
-  derivation admission through a controller-owned, generation-independent
-  protocol with no target helper or bootstrap prerequisite, plus exact-output
-  cold fixed-output recovery guidance.
+  build-command protection, guarded scheduled and host-agent GC, and
+  bounded-lane derivation admission through a controller-owned,
+  generation-independent protocol with no target helper or bootstrap
+  prerequisite, plus exact-output cold fixed-output recovery guidance.
+- `.agents/docs/notes/hosts/pvl-x2-cold-build-throughput-2026-10.md`: Records
+  why a `flake.lock` nixpkgs bump made a fleet deploy rebuild ~27k derivations,
+  that the `pvl-x2` harmonia cache was healthy and reachable throughout, that
+  the then-applied `max-jobs = 1` builder admission serialized ~1k mostly
+  network-bound derivations on a 32-core host, that `--build-jobs` never maps
+  onto the remote `--max-jobs` (on purpose: builder capacity is host policy),
+  and that the shared cache sees nothing built off `pvl-x2`. Admission was
+  raised to `max-jobs = 16`/`http-connections = 16` as a result.
 - `.agents/docs/notes/hosts/pvl-x2-host-network-qos-2026-07.md`: Records the
   host-owned CAKE/IFB policy that keeps host traffic above forwarded Incus
   traffic while allowing idle bandwidth borrowing.

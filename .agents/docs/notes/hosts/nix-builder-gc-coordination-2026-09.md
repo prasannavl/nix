@@ -50,12 +50,20 @@ contract and must not be used during fleet builds.
 
 ## Admission and recovery
 
-The role defaults `max-jobs = 1` and leaves `cores = 0`, admitting one
-derivation with the builder's effective CPU set. It also defaults
-`http-connections = 8`, retaining useful substitute concurrency without letting
-Nix's higher default overwhelm a constrained shared builder or network path.
-Future builder hosts inherit admission, transfer, and GC coordination by
+The role defaults `max-jobs = 16` and leaves `cores = 0`, admitting a bounded
+lane count with each derivation given the builder's effective CPU set. It also
+defaults `http-connections = 16`, retaining useful substitute concurrency
+without letting Nix's higher default overwhelm a constrained shared builder or
+network path. Admission is deliberately not mapped to a per-invocation operator
+flag: the fleet manager has no `--max-jobs` passthrough, so one deployment
+cannot unilaterally claim more of the shared builder than the host policy
+allows. Future builder hosts inherit admission, transfer, and GC coordination by
 importing the role.
+
+The original role default was one lane (`max-jobs = 1`). A cold `flake.lock`
+nixpkgs bump made that a throughput failure: ~1000 mostly network-bound
+derivations realized strictly serially on a 32-core builder at load ~4. See
+`.agents/docs/notes/hosts/pvl-x2-cold-build-throughput-2026-10.md`.
 
 The controller records only a process-local lease epoch. If the invocation lease
 is lost before a closure crosses the builder-dependency boundary, it reacquires
@@ -94,5 +102,7 @@ import only that evaluated path, and protect the builder-side import with the
 shared `/nix/var/nix` lease. Never substitute a tag or an inferred equivalent
 output.
 
-Until the generation that enforces `max-jobs = 1` is active, pass `--max-jobs 1`
-explicitly to manual recovery builds.
+Manual recovery builds should repeat the builder's admitted lane count
+(`--max-jobs 16`) explicitly when the live builder generation is not yet the one
+the fleet manager drives, so a recovery transfer cannot take more of the shared
+builder than host policy allows.
