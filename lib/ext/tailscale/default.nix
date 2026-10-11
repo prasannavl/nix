@@ -5,7 +5,10 @@
 }: let
   source = (import ./sources.nix).tailscale;
 in
-  tailscale.overrideAttrs (finalAttrs: old: {
+  # tailscale 1.104+ needs Go >= 1.27.1; pinned nixpkgs Go is older.
+  (tailscale.override {
+    buildGoModule = pkgs.unstable.buildGo127Module;
+  }).overrideAttrs (finalAttrs: old: {
     version = source.version;
 
     src = pkgs.fetchFromGitHub {

@@ -203,7 +203,10 @@ let
   };
   version = "${RESOLVED_VERSION}";
 in
-  pkgs.unstable.tailscale.overrideAttrs (finalAttrs: old: {
+  # tailscale 1.104+ needs Go >= 1.27.1; pinned nixpkgs Go is older.
+  (pkgs.unstable.tailscale.override {
+    buildGoModule = pkgs.unstable.buildGo127Module;
+  }).overrideAttrs (finalAttrs: old: {
     version = version;
     src = pkgs.fetchFromGitHub {
       owner = "tailscale";
@@ -246,7 +249,12 @@ compute_vendor_hash() {
 	fi
 
 	VENDOR_HASH="$(awk '/got:[[:space:]]+sha256-/ {print $2}' <<<"$build_output" | tail -n1)"
-	[[ -n "$VENDOR_HASH" ]] || die "Could not parse vendorHash from nix build output"
+	if [[ -z "$VENDOR_HASH" ]]; then
+		echo "--- nix build output ---" >&2
+		echo "$build_output" >&2
+		echo "------------------------" >&2
+		die "Could not parse vendorHash from nix build output"
+	fi
 }
 
 render_file() {
