@@ -16,6 +16,7 @@
     piDiff = pkgs.callPackage ../../../lib/ext/pi/pi-diff {};
     piCodexLimit = pkgs.callPackage ../../../lib/ext/pi/pi-codex-limit {};
     piMcpAdapter = pkgs.callPackage ../../../lib/ext/pi/pi-mcp-adapter {};
+    bladebro = pkgs.callPackage ../../../pkgs/ext/bladebro {};
     piModelsDiscoveryRoot = "${piModelsDiscovery}/share/pi/packages/pi-models-discovery";
     piSessionManagerRoot = "${piSessionManager}/share/pi/packages/pi-session-manager";
     piSubagentsRoot = "${piSubagents}/lib/node_modules/@gotgenes/pi-subagents";
@@ -23,6 +24,7 @@
     piDiffRoot = "${piDiff}/lib/node_modules/@heyhuynhgiabuu/pi-diff";
     piCodexLimitRoot = "${piCodexLimit}/share/pi/packages/pi-codex-limit";
     piMcpAdapterRoot = "${piMcpAdapter}/lib/node_modules/pi-mcp-adapter";
+    bladebroRoot = "${bladebro}/share/pi/packages/bladebro";
     piDiffConfig = {disabledTools = ["apply_patch"];};
     # Playwright's browser closure is ~2 GiB, so keep the MCP server on the
     # graphical hosts and off the headless container profiles. The adapter
@@ -39,10 +41,11 @@
     };
   in {
     home.packages =
-      [pkgs.unstable.pi-coding-agent piWeb]
+      [pkgs.unstable.pi-coding-agent piWeb bladebro]
       ++ pkgs.lib.optional playwrightEnabled pkgs.playwright-mcp;
 
     home.file = {
+      ".pi/agent/extensions/bladebro".source = bladebroRoot;
       ".pi/agent/extensions/pi-codex-limit".source = piCodexLimitRoot;
       ".pi/agent/extensions/pi-diff".source = piDiffRoot;
       ".pi/agent/extensions/pi-extensions-i18n".source = "${piModelsDiscoveryRoot}/node_modules/pi-extensions-i18n";
