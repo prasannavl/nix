@@ -3,7 +3,7 @@
 On 2026-09-14, the Pvl Home Manager profiles gained declarative
 `pi-models-discovery`, `pi-session-manager`, `pi-subagents`, and `pi-tps`
 resources, plus the `pi-web` command. On 2026-09-26 they gained `pi-diff` and
-`pi-codex-limit`; see `.agents/docs/notes/apps/revdiff-pi-2026-09.md` for the
+`pi-codex-limit`; see `.agents/docs/notes/apps/pi-diff-2026-09.md` for the
 `pi-diff` packaging decision. On 2026-09-29 they gained `pi-mcp-adapter` and a
 Playwright MCP server; see
 `.agents/docs/notes/apps/pi-mcp-adapter-playwright-2026-09.md`. The installation
@@ -137,8 +137,8 @@ The local `pi-diff` derivation packages `@heyhuynhgiabuu/pi-diff` 0.9.1 from its
 tagged source tree. It loads `src/index.ts` through Pi rather than the published
 `dist/` bundle, drops the `@earendil-works` core packages and dev dependencies
 from the upstream manifest, and caches only the `@shikijs/cli`, `diff`, and
-`xxhash-wasm` runtime closure. See
-`.agents/docs/notes/apps/revdiff-pi-2026-09.md` for the full rationale.
+`xxhash-wasm` runtime closure. See `.agents/docs/notes/apps/pi-diff-2026-09.md`
+for the full rationale.
 
 The local `pi-codex-limit` derivation packages the `pi-codex-limit` 1.8.2 npm
 tarball from `santychuy/pi-setup` (`extensions/codex-limit`). It is a pure

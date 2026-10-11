@@ -137,6 +137,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   Playwright/`chrome-devtools-mcp` and six Pi browser packages, the
   unauthenticated loopback/socket trust gaps, the Nix reproducibility blockers,
   and the decision inputs. Nothing is installed by that note.
+- `.agents/docs/notes/apps/bladebro-herdr-piweb-2026-10.md`: Records the
+  `pkgs/ext/bladebro` npm-payload/optional-binary unit and Pi extension wiring,
+  the pvl-a1/pvl-l5 `unstable.herdr` install, and the pvl-a1 tailnet-only
+  `pi-web` service mirroring pvl-l5.
 - `.agents/docs/notes/apps/pi-subagents-gotgenes-switch-2026-09.md`: Records the
   2026-09-29 switch from the unscoped `pi-subagents` to
   `@gotgenes/pi-subagents`, the npm-tarball packaging with Pi-virtualized
@@ -149,10 +153,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/apps/pi-subagents-npm-fetcher-v2-2026-09.md`: Records why
   `lib/ext/pi/pi-subagents` needs `npmDepsFetcherVersion = 2` to avoid the
   `ENOTCACHED` npm dependency-cache failure during pinned updates.
-- `.agents/docs/notes/apps/revdiff-pi-2026-09.md`: Records the `lib/ext/revdiff`
-  binary plus Pi-package unit and the `lib/ext/pi/pi-diff` suite addition,
-  including the TS-source loading rationale and the sanitized npm dependency
-  closure.
+- `.agents/docs/notes/apps/pi-diff-2026-09.md`: Records the `lib/ext/pi/pi-diff`
+  suite addition, the TS-source loading rationale and sanitized npm dependency
+  closure, and the 2026-10-11 removal of the `lib/ext/revdiff` binary plus its
+  Pi package.
 - `.agents/docs/notes/apps/opendesign-nodejs-output-checks-2026-10.md`: Records
   the Nix 2.34 `outputChecks` partial-output-store failure that wedged the fleet
   build on `pvl-x2`, the minimal reproduction, the OpenDesign-pinned
@@ -554,6 +558,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   exposure, the `PI_WEB_ALLOWED_HOSTS` requirement, the `path` packages added to
   the unit so agent tool calls find profile tools, and the manual-process
   handoff.
+- `.agents/docs/notes/services/dotlink-pvl-a1-l5-2026-10.md`: Records the
+  `abird-ai/dotlink` root flake input (nixpkgs following `unstable`, crane
+  following the root `crane`), the `services.dotlink` module from the flake, and
+  the pvl-a1/pvl-l5 services running as user `pvl` with the default profile at
+  `/home/pvl/spaces/abird/`.
 - `.agents/docs/notes/services/librechat-opendesign-pvl-x2-2026-09.md`: Records
   the LibreChat and OpenDesign services on `pvl-x2` ported from abird, including
   local auth, LAN/tailnet-only exposure, the Ollama + llama.cpp consumer
