@@ -149,6 +149,7 @@ in {
     crewai
     agent-workspace-linux
     tuicr
+    unstable.herdr
     llm-agents-pkgs.chatgpt
     llm-agents-pkgs.claude-desktop
 

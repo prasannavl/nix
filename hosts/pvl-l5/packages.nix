@@ -145,6 +145,7 @@ in {
     claude-code
     agent-workspace-linux
     tuicr
+    unstable.herdr
 
     # Custom packages
     (python3.withPackages (ps: with ps; [pip setuptools virtualenv numpy]))
