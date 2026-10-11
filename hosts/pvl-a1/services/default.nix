@@ -4,6 +4,7 @@
     ./llama-router.nix
     ./ollama.nix
     ./openwebui.nix
+    ./pi-web.nix
   ];
 
   services.podman-compose.pvl = {
