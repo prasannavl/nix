@@ -16,8 +16,6 @@
     piDiff = pkgs.callPackage ../../../lib/ext/pi/pi-diff {};
     piCodexLimit = pkgs.callPackage ../../../lib/ext/pi/pi-codex-limit {};
     piMcpAdapter = pkgs.callPackage ../../../lib/ext/pi/pi-mcp-adapter {};
-    revdiff = pkgs.callPackage ../../../lib/ext/revdiff {};
-    revdiffPi = pkgs.callPackage ../../../lib/ext/revdiff/pi.nix {};
     piModelsDiscoveryRoot = "${piModelsDiscovery}/share/pi/packages/pi-models-discovery";
     piSessionManagerRoot = "${piSessionManager}/share/pi/packages/pi-session-manager";
     piSubagentsRoot = "${piSubagents}/lib/node_modules/@gotgenes/pi-subagents";
@@ -25,7 +23,6 @@
     piDiffRoot = "${piDiff}/lib/node_modules/@heyhuynhgiabuu/pi-diff";
     piCodexLimitRoot = "${piCodexLimit}/share/pi/packages/pi-codex-limit";
     piMcpAdapterRoot = "${piMcpAdapter}/lib/node_modules/pi-mcp-adapter";
-    revdiffPiRoot = "${revdiffPi}/share/pi/packages/revdiff-pi";
     piDiffConfig = {disabledTools = ["apply_patch"];};
     # Playwright's browser closure is ~2 GiB, so keep the MCP server on the
     # graphical hosts and off the headless container profiles. The adapter
@@ -42,7 +39,7 @@
     };
   in {
     home.packages =
-      [pkgs.unstable.pi-coding-agent piWeb revdiff]
+      [pkgs.unstable.pi-coding-agent piWeb]
       ++ pkgs.lib.optional playwrightEnabled pkgs.playwright-mcp;
 
     home.file = {
@@ -55,7 +52,6 @@
       ".pi/agent/extensions/pi-models-discovery/package.json".source = "${piModelsDiscoveryRoot}/package.json";
       ".pi/agent/extensions/pi-models-discovery/src".source = "${piModelsDiscoveryRoot}/src";
       ".pi/agent/extensions/pi-mcp-adapter".source = piMcpAdapterRoot;
-      ".pi/agent/extensions/pi-revdiff".source = revdiffPiRoot;
       ".pi/agent/extensions/pi-session-manager.ts".source = "${piSessionManagerRoot}/extensions/session-manager.ts";
       # @gotgenes/pi-subagents ships only the runtime extension. Unlike the
       # previous nicobailon/pi-subagents package it provides no skills or
@@ -74,7 +70,6 @@
 
       ".pi/agent/skills/pi-models-discovery/SKILL.md".source = "${piModelsDiscoveryRoot}/SKILL.md";
       ".pi/agent/skills/mcp-scripting".source = "${piMcpAdapterRoot}/skills/mcp-scripting";
-      ".pi/agent/skills/revdiff".source = "${revdiffPiRoot}/plugins/pi/skills/revdiff";
     };
   };
 }
