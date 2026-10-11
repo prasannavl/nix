@@ -2,7 +2,7 @@
   repoRoot,
   specFile,
 }: let
-  flake = builtins.getFlake repoRoot;
+  flake = import ../flake/repo-flake.nix {inherit repoRoot;};
   lib = flake.inputs.nixpkgs.lib;
   system = "x86_64-linux";
   spec = builtins.fromJSON (builtins.readFile specFile);

@@ -186,9 +186,11 @@
   commands cannot use IFD. Keep both boundaries: an option applied only to the
   outer `nix run` is not inherited automatically by nested `nix` processes.
 - For AI-driven validation, do not use `path:` as the live-untracked escape
-  hatch. Use `.`, an absolute repo path, or an intentional `git+file:///...`
-  ref; if untracked files seem required, stop and make the state explicit first.
-  See `.agents/docs/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`.
+  hatch. A bare absolute path is Git-aware as a command-line flake ref, but it
+  resolves to `path:` inside `builtins.getFlake`, so impure self-references must
+  go through `lib/flake/repo-flake.nix` (or an explicit `git+file:///...` ref).
+  If untracked files seem required, stop and make the state explicit first. See
+  `.agents/docs/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`.
 - Child flakes declare only inputs their build closure needs. `crane` is
   optional in the generic helper: Rust-building children supply it, while
   unrelated Go/Node/Python/static/shell children omit it. Ref maintenance

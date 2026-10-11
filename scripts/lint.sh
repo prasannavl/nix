@@ -693,6 +693,31 @@ run_root_flake_check() {
 	fi
 }
 
+# Repository self-reference must use lib/flake/repo-flake.nix (Git fetcher); a
+# bare builtins.getFlake uses the path fetcher and walks Git-ignored worktrees.
+# Only the helper, offline-install.sh, and this guard may use it.
+check_self_reference_fetcher() {
+	local file=""
+	local -a offenders=()
+
+	while IFS= read -r -d $'\0' file; do
+		case "${file}" in
+		lib/flake/repo-flake.nix | lib/installer/offline-install.sh | scripts/lint.sh) continue ;;
+		esac
+		if grep -q 'builtins\.getFlake' "${file}"; then
+			offenders+=("${file}")
+		fi
+	done < <(collect_files '*.nix' '*.sh')
+
+	if [ "${#offenders[@]}" -eq 0 ]; then
+		return 0
+	fi
+
+	printf 'Use lib/flake/repo-flake.nix instead of builtins.getFlake for repository self-reference:\n' >&2
+	printf '  - %s\n' "${offenders[@]}" >&2
+	return 1
+}
+
 run_lint_action() {
 	local nix_file=""
 	local -a deno_files=()
@@ -813,6 +838,8 @@ run_lint_action() {
 		if [ "${#shell_files[@]}" -gt 0 ]; then
 			run_step shellcheck "Linting ${scope} shell files" shellcheck --external-sources --shell=bash "${shell_files[@]}"
 		fi
+
+		run_step self-reference-fetcher 'Checking repository self-reference flake fetcher' check_self_reference_fetcher
 
 		run_step actionlint 'Linting GitHub Actions workflows' actionlint
 

@@ -195,7 +195,7 @@ prefetch_source_hash() {
 render_fake_vendor_expr() {
 	cat <<EOF
 let
-  flake = builtins.getFlake "${REPO_ROOT}";
+  flake = import ${REPO_ROOT}/lib/flake/repo-flake.nix { repoRoot = ${REPO_ROOT}; };
   pkgs = import flake.inputs.nixpkgs {
     system = builtins.currentSystem;
     config.allowUnfree = true;

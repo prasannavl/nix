@@ -55,3 +55,28 @@ explicit before evaluating. Prefer one of:
   ignored content.
 
 Do not use `path:` as a convenience shortcut during AI evaluation.
+
+## Self-referencing flakes from Nix expressions
+
+- `builtins.getFlake "/abs/repo"` inside a `nix build --impure --expr` resolves
+  to a `path:` input, even when the path is a Git repository. The path fetcher
+  descends into git-ignored linked worktrees under `worktrees/` and fails on
+  unreadable leftovers (for example mode-`000` test fixtures under `tmp/`).
+- Force the Git fetcher through the shared helper `lib/flake/repo-flake.nix`,
+  which keeps the fetcher choice in one place and falls back to a plain path for
+  non-Git exports:
+
+  ```nix
+  flake = import ${REPO_ROOT}/lib/flake/repo-flake.nix {repoRoot = ${REPO_ROOT};};
+  ```
+
+  From another Nix file, use
+  `import ./relative/path/repo-flake.nix {inherit repoRoot;}`.
+- The helper's `git+file://` branch needs an impure evaluation context. Pass
+  `--impure` for `--expr`; in practice `--file` evaluations rooted in the
+  checkout accept the ref without `--impure`.
+- Do not re-derive `builtins.getFlake "git+file://..."` at call sites. This is
+  the shared behavior for `lib/ext/*/update.sh`, `pkgs/ext/*/update.sh`, and
+  `lib/installer/build-image.nix`; the `self-reference-fetcher` lint step
+  enforces it. See
+  `.agents/docs/notes/apps/tailscale-upstream-package-2026-05.md`.

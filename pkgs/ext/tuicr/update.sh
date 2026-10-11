@@ -220,7 +220,7 @@ compute_cargo_hash() {
 	build_output="$(
 		nix build --impure --no-link --print-out-paths --expr "
       let
-        flake = builtins.getFlake (toString ${REPO_ROOT});
+        flake = import ${REPO_ROOT}/lib/flake/repo-flake.nix { repoRoot = ${REPO_ROOT}; };
         pkgs = flake.inputs.nixpkgs.legacyPackages.${system};
       in
         pkgs.callPackage ${staging} {}

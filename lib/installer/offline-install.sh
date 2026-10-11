@@ -190,6 +190,7 @@ rebuild_target() {
 	cleanup_paths+=("$expr_file")
 	{
 		printf '%s\n' 'let'
+		printf '%s\n' '  # /etc/nixos may not be a Git checkout; keep the path ref.'
 		printf '%s\n' '  flake = builtins.getFlake "path:/etc/nixos";'
 		printf '%s\n' '  inherit (flake.inputs.nixpkgs) lib;'
 		printf '  host = (builtins.getAttr %s flake.nixosConfigurations).extendModules {\n' "$(nix_string "$target_host")"

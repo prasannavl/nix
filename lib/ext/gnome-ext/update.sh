@@ -195,7 +195,7 @@ validate_staged_packages() {
 		[[ -n "$REQUESTED_PACKAGE" && "$package" != "$REQUESTED_PACKAGE" ]] && continue
 		nix build --impure --no-link --expr "
       let
-        flake = builtins.getFlake \"${REPO_ROOT}\";
+        flake = import ${REPO_ROOT}/lib/flake/repo-flake.nix { repoRoot = ${REPO_ROOT}; };
         pkgs = import flake.inputs.nixpkgs { system = builtins.currentSystem; };
       in
         pkgs.callPackage ${STAGING_DIR}/${package}.nix {}

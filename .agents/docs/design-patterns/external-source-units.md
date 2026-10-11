@@ -78,6 +78,13 @@ Updaters read and replace only their sibling `sources.nix`, skip expensive
 prefetch work for current versions, format generated Nix, and use a
 repository-local temporary path before atomic replacement.
 
+Updaters that evaluate the repository's own flake from an embedded Nix
+expression must import `lib/flake/repo-flake.nix` instead of calling
+`builtins.getFlake` on a bare path. The helper forces the Git fetcher so ignored
+linked worktrees are never walked; the `self-reference-fetcher` step in
+`scripts/lint.sh` enforces this across `*.nix` and `*.sh`. See
+`.agents/docs/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`.
+
 ## Registry lookups and report failures
 
 Standard Registry V2 image tag discovery uses an anonymous, challenge-driven
