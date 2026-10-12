@@ -30,6 +30,12 @@ let
       crane ? null,
       rustToolchainInputs ? {},
       rustToolchainProviders ? {},
+      # Optional repository policy; null preserves the caller's package set.
+      # REVIEW (abird post-278a2cba port): the rustWorkspaceDeps seam and the
+      # policyPkgs composition contract below are the Abird c50d5c57
+      # adaptation; revisit after the rust fabric work lands in both
+      # repositories.
+      rustWorkspaceDeps ? null,
       # Exact parity/adoption can inject the parent's fully composed package set.
       pkgsForSystem ? null,
       packageFor ? packageStack.packageFor,
@@ -57,9 +63,18 @@ let
             overlays = [toolchainOverlay] ++ overlays;
           };
       mkOutputs = pkgsInput: let
-        pkgs = packageStack.mkPkgs pkgsInput;
+        # Complete injected package sets are immutable composition contracts.
+        # Only independent construction may extend the fixed point: a shallow
+        # // leaves callPackage bound to old `pkgs` and loses the policy.
+        policyPkgs =
+          if rustWorkspaceDeps == null || (pkgsInput.rustWorkspaceDeps or null) == rustWorkspaceDeps
+          then pkgsInput
+          else if pkgsForSystem != null
+          then throw "mkFlakeOutputs: rustWorkspaceDeps disagrees with pkgsForSystem's complete package set; configure rustWorkspaceDeps in pkgsForSystem instead"
+          else pkgsInput.extend (_final: _prev: {inherit rustWorkspaceDeps;});
+        pkgs = packageStack.mkPkgs policyPkgs;
         drv = packageFor {
-          pkgs = pkgsInput;
+          pkgs = policyPkgs;
           packageFile = packageFile;
         };
         flakeOutputs = pkgHelper.mkStdFlakeOutputs ({
@@ -74,10 +89,12 @@ let
         nixosModules = pkgHelper.mkNixosModuleAttrs {
           build = drv;
         };
-      in {
-        flakeOutputs = flakeOutputs;
-        nixosModules = nixosModules;
-      };
+      in
+        # Validate even when an injected packageFor ignores its pkgs argument.
+        builtins.seq policyPkgs {
+          flakeOutputs = flakeOutputs;
+          nixosModules = nixosModules;
+        };
       # Share one lazy output record per system, including the module-export
       # system when it is not in systems. Duplicate keys keep the first thunk.
       outputsBySystem = builtins.listToAttrs (map (system: {

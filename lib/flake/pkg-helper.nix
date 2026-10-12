@@ -2153,7 +2153,10 @@ in rec {
     # inherits. Each entry must be a workspace member exposing
     # `passthru.memberLayer` and `passthru.projectDir`; its member directory is
     # auto-unioned into the source (transitive members still belong in `deps`).
-    useWorkspaceDeps ? projectDir != null,
+    # REVIEW (abird post-278a2cba port): the `pkgs.rustWorkspaceDeps`
+    # repository-policy default is the Abird c50d5c57 seam; revisit after the
+    # rust fabric work lands in both repositories.
+    useWorkspaceDeps ? pkgs.rustWorkspaceDeps or (projectDir != null),
     internalDeps ? [],
     cargoLock ? null,
     meta ? {},
