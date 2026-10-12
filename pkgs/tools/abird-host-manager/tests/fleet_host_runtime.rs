@@ -190,6 +190,13 @@ fn target() -> HostExecutionTarget {
     .unwrap()
 }
 
+fn nix_target() -> HostExecutionTarget {
+    let mut target = target();
+    target.route.endpoint.identity = Some(PathBuf::from("/keys/deploy-key"));
+    target.known_hosts_file = Some(PathBuf::from("/tmp/known-hosts"));
+    target
+}
+
 fn target_as(user: &str) -> HostExecutionTarget {
     let mut host = resolved_host();
     host.user = user.to_owned();
@@ -949,12 +956,12 @@ fn target_cache_distribution_copies_then_verifies_the_exact_closure() {
 }
 
 #[test]
-fn relay_transfer_uses_the_configured_proxy_chain() {
-    let runner = FakeRunner::with_outputs([success("relayed")]);
+fn relay_transfer_rejects_an_unmaterialized_proxy_chain() {
+    let runner = FakeRunner::default();
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let closure = NixStorePath::closure_output("/nix/store/def-nixos-system-new").unwrap();
     let cache = CacheSource::new("https://cache.example", ["cache.example-1:key"]).unwrap();
-    let mut proxied = target()
+    let mut proxied = nix_target()
         .with_control_master(PathBuf::from("/tmp/fleet/cm-target"), 120)
         .unwrap();
     proxied.route.proxy.hops.push(ProxyHop {
@@ -965,14 +972,14 @@ fn relay_transfer_uses_the_configured_proxy_chain() {
             "operator",
             2200,
             TransportRole::Operator,
-            Some(PathBuf::from("/keys/jump key")),
+            Some(PathBuf::from("/keys/jump-key")),
         )
         .unwrap(),
         proxy_command: None,
         local: false,
     });
 
-    let result = runtime
+    let error = runtime
         .relay_transfer(
             &proxied,
             &closure,
@@ -980,49 +987,15 @@ fn relay_transfer_uses_the_configured_proxy_chain() {
             RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
             InternalTask::new("relay-cache-to-target-gap3"),
         )
-        .unwrap();
-
-    assert_eq!(result, CommandStatus::Success);
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("materialized whitespace-free proxy command"),
+        "{error:#}"
+    );
     let runner = runtime.into_runner();
-    assert_eq!(runner.requests.len(), 1);
-    let relay = &runner.requests[0];
-    assert_eq!(relay.program, "nix");
-    assert_eq!(relay.task.name(), "relay-cache-to-target-gap3");
-    assert!(
-        relay
-            .args
-            .windows(2)
-            .any(|pair| pair == ["--from", "https://cache.example"])
-    );
-    assert!(
-        relay
-            .args
-            .windows(2)
-            .any(|pair| pair == ["--to", "ssh-ng://root@192.0.2.42"])
-    );
-    assert!(
-        relay
-            .args
-            .iter()
-            .any(|argument| argument == closure.as_str())
-    );
-    assert!(
-        relay
-            .args
-            .iter()
-            .any(|argument| argument == "cache.example-1:key")
-    );
-    let options = relay
-        .environment
-        .iter()
-        .find_map(|(name, value)| (name == "NIX_SSHOPTS").then_some(value))
-        .unwrap();
-    assert!(options.contains("ProxyCommand="), "{options}");
-    assert!(options.contains("operator@jump.example"), "{options}");
-    assert!(options.contains("/keys/jump key"), "{options}");
-    assert!(options.contains("ControlMaster=no"), "{options}");
-    assert!(options.contains("ControlPath=none"), "{options}");
-    assert!(!options.contains("/tmp/fleet/cm-target"), "{options}");
+    assert!(runner.requests.is_empty());
 }
 
 #[test]
@@ -1031,9 +1004,8 @@ fn explicit_proxy_command_is_preserved_for_cache_relay() {
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let closure = NixStorePath::closure_output("/nix/store/def-nixos-system-new").unwrap();
     let cache = CacheSource::new("https://cache.example", std::iter::empty::<String>()).unwrap();
-    let mut proxied = target();
-    proxied.route.proxy_command =
-        Some(ProxyCommandTemplate::new("relay-tool --host %h --port %p").unwrap());
+    let mut proxied = nix_target();
+    proxied.route.proxy_command = Some(ProxyCommandTemplate::new("/run/fleet-nix-proxy").unwrap());
 
     let result = runtime
         .relay_transfer(
@@ -1053,7 +1025,7 @@ fn explicit_proxy_command_is_preserved_for_cache_relay() {
         .find_map(|(name, value)| (name == "NIX_SSHOPTS").then_some(value))
         .unwrap();
     assert!(
-        options.contains("ProxyCommand=relay-tool --host 192.0.2.42 --port 2222"),
+        options.contains("ProxyCommand=/run/fleet-nix-proxy"),
         "{options}"
     );
 }
@@ -1068,7 +1040,7 @@ fn cache_relay_retries_only_transport_loss() {
 
     let result = runtime
         .relay_transfer(
-            &target(),
+            &nix_target(),
             &closure,
             &cache,
             RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),

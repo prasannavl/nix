@@ -40,7 +40,8 @@ use super::engine::{FleetEffects, PhaseFailure};
 use super::environment::{Environment, LocalSelfTarget, Settings};
 use super::host_runtime::{
     ActivationExecution, DistributionExecution, DryRun, EffectKind, HostExecutionTarget,
-    HostRuntime, ProcessExecutor, ProcessOutput, builder_lease_process_spec, retire_control_master,
+    HostRuntime, ProcessExecutor, ProcessOutput, builder_lease_process_spec,
+    nix_sshopts_without_control_master, render_proxy_chain, retire_control_master,
     ssh_connection_args,
 };
 use super::host_tasks::{
@@ -1027,6 +1028,7 @@ impl<'a> NativeFleetEffects<'a> {
             },
         );
         if matches!(self.invocation.action, Action::Build) {
+            let nix_target = self.nix_copy_target(&target)?;
             let (pull, environment) = with_nix_sshopts(
                 CommandSpec::new(
                     self.nix_program.to_string_lossy(),
@@ -1037,7 +1039,7 @@ impl<'a> NativeFleetEffects<'a> {
                         closure.as_str().to_owned(),
                     ],
                 ),
-                &target,
+                &nix_target,
             )?;
             let scope: Arc<dyn TaskScope> = self.progress.host_scope(host);
             run_step(&scope, BuildStep::ClosureCopy, |task| {
@@ -1131,9 +1133,10 @@ impl<'a> NativeFleetEffects<'a> {
         build_args: &BuildArgs,
     ) -> Result<NixStorePath> {
         let commands = plan_remote_build(&remote_build_tools()?, derivation, build_args);
+        let nix_target = self.nix_copy_target(target)?;
         let (copy_derivation, environment) = with_nix_sshopts(
             copy_derivation_command(&self.nix_program.to_string_lossy(), store_uri, derivation),
-            target,
+            &nix_target,
         )?;
         let retry = RetryPolicy::new(
             self.settings.transport_retry_attempts,
@@ -1536,6 +1539,10 @@ impl<'a> NativeFleetEffects<'a> {
                 Ok(target)
             }
         })
+    }
+
+    fn nix_copy_target(&self, target: &HostExecutionTarget) -> Result<HostExecutionTarget> {
+        prepare_nix_copy_target(self.transport_store.path(), target)
     }
 
     fn ensure_bootstrap_transport(&mut self, resolved: &ResolvedHost) -> Result<()> {
@@ -2025,6 +2032,7 @@ impl<'a> NativeFleetEffects<'a> {
         let build_host = self.build_host();
         if build_host == "local" {
             let target = self.execution_target(&resolved)?;
+            let nix_target = self.nix_copy_target(&target)?;
             let (command, environment) = with_nix_sshopts(
                 CommandSpec::new(
                     self.nix_program.to_string_lossy(),
@@ -2036,7 +2044,7 @@ impl<'a> NativeFleetEffects<'a> {
                         closure.as_str().to_owned(),
                     ],
                 ),
-                &target,
+                &nix_target,
             )?;
             let scope: Arc<dyn TaskScope> = self.progress.host_scope(host);
             run_step(&scope, TransferStep::DirectPush, |task| {
@@ -2174,13 +2182,14 @@ impl<'a> NativeFleetEffects<'a> {
             }
             DistributionPlan::RelayThroughLocal { closure, cache } => {
                 let target = self.primary_execution_target(resolved)?;
+                let nix_target = self.nix_copy_target(&target)?;
                 let step = relay_step(&target);
                 let status = run_step_with(
                     &scope,
                     step,
                     |task| {
                         self.host_runtime
-                            .relay_transfer(&target, closure, cache, retry, task)
+                            .relay_transfer(&nix_target, closure, cache, retry, task)
                     },
                     command_outcome,
                 )?;
@@ -2211,13 +2220,19 @@ impl<'a> NativeFleetEffects<'a> {
                     CommandStatus::Signal(signal) => CommandStatus::Signal(signal),
                     CommandStatus::Exit(_) => {
                         let primary = self.primary_execution_target(resolved)?;
+                        let nix_primary = self.nix_copy_target(&primary)?;
                         let step = relay_step(&primary);
                         let status = run_step_with(
                             &scope,
                             step,
                             |task| {
-                                self.host_runtime
-                                    .relay_transfer(&primary, closure, cache, retry, task)
+                                self.host_runtime.relay_transfer(
+                                    &nix_primary,
+                                    closure,
+                                    cache,
+                                    retry,
+                                    task,
+                                )
                             },
                             command_outcome,
                         )?;
@@ -3714,8 +3729,41 @@ fn ssh_store_uri(host: &ResolvedHost) -> Result<String> {
     Ok(format!("ssh-ng://{}@{target}", host.user))
 }
 
-fn quote_nix_sshopts(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+fn materialize_nix_proxy_command(directory: &Path, command: &str) -> Result<PathBuf> {
+    let digest = format!("{:x}", Sha256::digest(command.as_bytes()));
+    let path = directory.join(format!("nix-proxy-{}", &digest[..20]));
+    if path.exists() {
+        return Ok(path);
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(&path)
+        .context("create Nix SSH proxy command")?;
+    writeln!(file, "#!/bin/sh\nexec {command}")?;
+    Ok(path)
+}
+
+fn prepare_nix_copy_target(
+    directory: &Path,
+    target: &HostExecutionTarget,
+) -> Result<HostExecutionTarget> {
+    let mut target = target.clone();
+    let proxy = if let Some(command) = &target.route.proxy_command {
+        Some(command.render(&target.route.endpoint.host, target.route.endpoint.port))
+    } else {
+        render_proxy_chain(&target)?
+    };
+    if let Some(proxy) = proxy {
+        let path = materialize_nix_proxy_command(directory, &proxy)?;
+        target.route.proxy = Default::default();
+        target.route.proxy_command = Some(ProxyCommandTemplate::new(
+            path.to_string_lossy().into_owned(),
+        )?);
+    }
+    target.control_master = None;
+    Ok(target)
 }
 
 fn include_successful_for_interrupted_rollback(
@@ -3732,13 +3780,13 @@ fn with_nix_sshopts(
     command: CommandSpec,
     target: &HostExecutionTarget,
 ) -> Result<(CommandSpec, Vec<(String, String)>)> {
-    let options = ssh_connection_args(target)?;
-    let rendered = options
-        .iter()
-        .map(|option| quote_nix_sshopts(option))
-        .collect::<Vec<_>>()
-        .join(" ");
-    Ok((command, vec![("NIX_SSHOPTS".to_owned(), rendered)]))
+    Ok((
+        command,
+        vec![(
+            "NIX_SSHOPTS".to_owned(),
+            nix_sshopts_without_control_master(target)?,
+        )],
+    ))
 }
 
 fn remote_build_tools() -> Result<RemoteBuildTools> {
@@ -4047,7 +4095,57 @@ yqPpbFFUX2lXWPH9I3zqYt2VnWDScGTitnk6RpLFwc3nSFWiDm1rkzj/Tf
         assert_eq!(name, "NIX_SSHOPTS");
         assert!(value.contains("-o"), "{value}");
         assert!(value.contains("BatchMode=yes"), "{value}");
+        assert!(value.contains("-S none"), "{value}");
+        assert!(value.contains("ControlMaster=no"), "{value}");
+        assert!(!value.contains("ControlMaster=auto"), "{value}");
+        assert!(!value.contains('\''), "{value}");
         assert!(!value.contains("env"), "{value}");
+        Ok(())
+    }
+
+    #[test]
+    fn nix_ssh_proxy_is_materialized_as_one_whitespace_free_option() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let endpoint = SshEndpoint::new(
+            "builder",
+            "builder.example",
+            "root",
+            22,
+            TransportRole::Primary,
+            None,
+        )?;
+        let mut target = HostExecutionTarget {
+            route: SshRoutePlan::via_command(
+                endpoint,
+                ProxyCommandTemplate::new("cloudflared access ssh --hostname builder.example")?,
+            ),
+            cwd: PathBuf::from("/repo"),
+            known_hosts_file: None,
+            local: false,
+            ssh_connect_timeout_seconds: 30,
+            ssh_server_alive_interval_seconds: 5,
+            ssh_server_alive_count_max: 3,
+            remote_read_timeout_seconds: 20,
+            control_master: None,
+        };
+        let command = CommandSpec::new("nix", ["copy".to_owned()]);
+        assert!(with_nix_sshopts(command.clone(), &target).is_err());
+
+        target = prepare_nix_copy_target(directory.path(), &target)?;
+        let proxy = PathBuf::from(target.route.proxy_command.as_ref().unwrap().as_str());
+        assert_eq!(
+            std::fs::metadata(&proxy)?.permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::read_to_string(&proxy)?,
+            "#!/bin/sh\nexec cloudflared access ssh --hostname builder.example\n"
+        );
+        let (_, environment) = with_nix_sshopts(command, &target)?;
+        let value = &environment[0].1;
+        assert!(value.contains(&format!("ProxyCommand={}", proxy.display())));
+        assert!(!value.contains("cloudflared"));
+        assert!(!value.contains('\''));
         Ok(())
     }
 

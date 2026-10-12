@@ -859,6 +859,8 @@ pub fn ssh_connection_args_without_control_master(
     isolated.control_master = None;
     let mut args = ssh_connection_args(&isolated)?;
     args.extend([
+        "-S".to_owned(),
+        "none".to_owned(),
         "-o".to_owned(),
         "ControlMaster=no".to_owned(),
         "-o".to_owned(),
@@ -2306,12 +2308,15 @@ fn cache_relay_command(
     CommandSpec::new("nix", args)
 }
 
-fn nix_sshopts_without_control_master(target: &HostExecutionTarget) -> Result<String> {
-    Ok(ssh_connection_args_without_control_master(target)?
+pub fn nix_sshopts_without_control_master(target: &HostExecutionTarget) -> Result<String> {
+    let options = ssh_connection_args_without_control_master(target)?;
+    if options
         .iter()
-        .map(|option| shell_quote(option))
-        .collect::<Vec<_>>()
-        .join(" "))
+        .any(|option| option.bytes().any(|byte| byte.is_ascii_whitespace()))
+    {
+        bail!("Nix SSH options require a materialized whitespace-free proxy command");
+    }
+    Ok(options.join(" "))
 }
 
 fn uri_authority_component(value: &str) -> Result<&str> {

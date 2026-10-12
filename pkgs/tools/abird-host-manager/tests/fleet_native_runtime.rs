@@ -840,7 +840,9 @@ esac
     assert!(nix_commands.contains("ConnectTimeout=42"));
     assert!(nix_commands.contains("ServerAliveInterval=9"));
     assert!(nix_commands.contains("ServerAliveCountMax=2"));
-    assert!(nix_commands.contains("cloudflared access ssh --hostname z.gap3.ai"));
+    assert!(nix_commands.contains("ProxyCommand="));
+    assert!(nix_commands.contains("/nix-proxy-"));
+    assert!(!nix_commands.contains("cloudflared access ssh --hostname z.gap3.ai"));
     let ssh_commands = fs::read_to_string(&ssh_log).unwrap();
     assert_eq!(ssh_commands.matches("root@10.10.30.80").count(), 2);
     // Every routed connection trusts the host key on first use instead of a
@@ -1703,10 +1705,8 @@ exit 0
         )),
         "the isolated pin file must live under the run directory: {copy}"
     );
-    assert!(
-        !copy.contains("ControlPath="),
-        "local targets must not open a control socket: {copy}"
-    );
+    assert!(!copy.contains("ControlMaster=auto"), "{copy}");
+    assert!(copy.contains("ControlPath=none"), "{copy}");
     assert!(
         !ssh_log.exists(),
         "a local self-target must not spawn ssh: {}",
