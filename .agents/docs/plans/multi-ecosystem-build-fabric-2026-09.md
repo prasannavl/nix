@@ -237,11 +237,11 @@ determinism tier, fallback mode, and mirror notes.
 - **Native:** `-sys` crates via `(crate, targetTriple)` policy; `build.rs` as a
   build unit; proc macros as host units; declared compile env (`option_env!`).
 - **Toolchain:** a **per-capsule toolchain contract** (see
-  `.agents/docs/notes/tooling/rust-toolchain-contract-2026-09.md`): provider
-  (`nixpkgs-rustc` default; `oxalica`/`fenix` for exact pins; `pinned-nixpkgs`;
-  `rustup`), an optional `rust-toolchain.toml`, extra `targets`, components. The
-  toolchain is an identity input, so `craneLib` becomes
-  **`craneLibFor
+  `.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md`):
+  provider (`nixpkgs-rustc` default; `oxalica`/`fenix` for exact pins;
+  `pinned-nixpkgs`; `rustup`), an optional `rust-toolchain.toml`, extra
+  `targets`, components. The toolchain is an identity input, so `craneLib`
+  becomes **`craneLibFor
   toolchain`** rather than one global.
 - **Cross:** `--target <triple>`, target std + linker; host units shared across
   targets.

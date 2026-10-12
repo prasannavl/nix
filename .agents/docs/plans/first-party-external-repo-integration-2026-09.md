@@ -5,8 +5,8 @@ repos** into the nix monorepo's build/cache architecture, without importing the
 source unless we choose to.
 
 Companion docs: `.agents/docs/plans/multi-ecosystem-build-fabric-2026-09.md`
-(the fabric), `.agents/docs/plans/rust-build-graph-final-2026-09.md`,
-`.agents/docs/notes/tooling/rust-build-graph-handoff-2026-09.md`.
+(the fabric), `.agents/docs/design-patterns/rust-foundation.md`,
+`.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md`.
 
 ---
 
@@ -264,7 +264,7 @@ repos we own.
   - wasm32; our monorepo = nixpkgs rustc). Hosting them needs a **per-capsule
     toolchain contract** and `craneLibFor`; cross-repo cache parity needs a
     converged toolchain. See
-    `.agents/docs/notes/tooling/rust-toolchain-contract-2026-09.md`.
+    `.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md`.
 - **No-IFD** is preserved in Models 1, 2, and 4 by construction; in Model 3 by
   the committed ledger; a bare Cargo **git dep without a ledger** is the one
   case that is not pure-eval-plannable.

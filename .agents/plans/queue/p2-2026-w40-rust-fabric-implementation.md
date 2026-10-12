@@ -1,0 +1,1 @@
+../2026-w40-rust-fabric-implementation.md

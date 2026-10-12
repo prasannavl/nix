@@ -668,17 +668,6 @@ Use this index as the canonical map for `.agents/docs/**`.
   `wl-clipboard-x11` shim and copy-pipe using the tmux server environment), the
   Wayland-only clipboard tool rule, and the landed `users/pvl/tmux/default.nix`
   cleanup.
-- `.agents/docs/notes/tooling/rust-build-graph-decision-2026-09.md`: Decision
-  log for the repo-wide Rust build/caching redesign: the `dummySrc` root cause,
-  the L-now/F-later decision, the no-IFD prerequisite, per-state optimization,
-  and the observed derivation evidence. Points to
-  `.agents/docs/plans/rust-workspace-build-graph-2026-09.md`.
-- `.agents/docs/notes/tooling/rust-build-graph-review-2026-09.md`: Fresh
-  four-lane review of the landed Design L series (`03fc5023..a43b811d`):
-  verified no-IFD, one `.rs`-independent base, artifacts-only member layers, and
-  no leakage, plus the consolidated P1/P2 findings (unfiltered shared base,
-  silent mode degradation, doc/feature-normalization drift) and their
-  disposition options.
 - `.agents/docs/notes/tooling/abird-host-manager-fleet-dependency-audit-2026-09.md`:
   Read-only audit of the `abird-host-manager fleet` external dependency surface
   across controller PATH, target SSH scripts, and embedded Bash, with
@@ -1018,17 +1007,6 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/plans/nixbot-target-local-rollback-supervisor-2026-06.md`:
   Design plan for a target-local rollback runner that preserves rollback
   semantics after SSH transport loss during activation.
-- `.agents/docs/plans/rust-workspace-build-graph-2026-09.md`: Handoff and staged
-  plan for the repo-wide Rust build graph: compile every dependency once, keep
-  the minimal change unit, no-IFD contract, Design L (shared laundered source +
-  shared dependency base + layered member builds) chosen near-term, Design F
-  (demand-set dependency DAG with generated group stubs) as the future end
-  state, and the L-to-F migration seams and validation gates.
-- `.agents/docs/plans/design-l-implementation-2026-09.md`: Work-item
-  implementation plan for Design L: whole-workspace dummy source and shared
-  dependency base, artifacts-only member layers, in-repo dependency wiring,
-  multi-parent join helper, optional feature normalization, risks, and
-  validation.
 - `.agents/docs/plans/host-manager-fleet-dependency-reduction-2026-09.md`:
   Design plan to shrink the `abird-host-manager` fleet runtime dependency
   surface (Tier 0 metadata cleanup, Tier 1 libc in-binary helpers, Tier 2 `age`
@@ -1064,107 +1042,17 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/runs/`: Temporary staging area for active multi-step or multi-agent
   work. Keep it empty when there is no active staged run.
 
-## Rust Build-Graph Design Context
+## Rust foundation
 
-- `.agents/docs/notes/tooling/rust-producer-qualification-2026-10.md`: Approved
-  offline contained role-fixture capture, observed host/target feature
-  separation and build-script outputs, unchanged source hashes, remaining
-  exact-producer gaps, multicall launcher gotcha and ordered full-implementation
-  roadmap.
-- `.agents/docs/notes/tooling/rust-fabric-foundation-2026-10.md`: Authorized
-  implementation worktree, swappable per-capsule toolchains with fenix preferred
-  for external needs, retained child wrappers with package-owned dependency
-  defaults (no routing adapter/JSON registry), optional Rust-only Crane inputs,
-  unified update-helper declared-input maintenance, compiler identity/cross
-  guards and isolated spike safety, release-tag/branch refs, default-composition
-  parity, signed local commit checkpoint, successful namespace preflight,
-  next-phase preparation, cheap validation, and the pending producer-fidelity
-  gate.
+**Human-paused qualification.** M21 manager build/version passed; M22 forced
+warm remains unissued. Full G1–G11 acceptance is open. Start with
+.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md.
+Qualification code, actual receipts and raw events remain in R; this main tree
+contains agent handoff material only.
 
-- `.agents/docs/notes/tooling/rust-build-graph-handoff-2026-09.md`: **Start
-  here.** Handoff for the Rust (and multi-ecosystem) build-graph work: the
-  original `dummySrc` problem, goals G1-G11, every design and council (L,
-  F/REWEAVE, M, G4, the multi-ecosystem fabric, and the unit-DAG Capsule/Ledger
-  design), the decisions and rejections, the verified facts, the current repo
-  state, the pending items, a reading order, and a ready-to-paste starting
-  prompt.
-- `.agents/docs/notes/tooling/rust-build-graph-handoff-addendum-2026-09.md`:
-  Incremental handoff covering everything learned after the base handoff: the
-  Abird applicability mapping, the Bazel/Buck2 comparison (and the remote-build
-  correction), the first-party external-repo integration design, and the Rust
-  toolchain contract - plus updated decisions, pending items, reading order, and
-  a starting prompt.
-- `.agents/docs/notes/tooling/rust-build-graph-abird-applicability-2026-09.md`:
-  Maps every design (L, M, G4, the fabric, the unit-DAG) onto the **Abird**
-  24-member workspace: verified Abird shape, per-member closures and chaining
-  edges, path-connected components, the Tauri/frontend overlay requirement, the
-  isolated workspaces, and a port/adoption checklist. Design L is not yet landed
-  in Abird, so the parity port is a prerequisite.
-- `.agents/docs/notes/tooling/build-system-comparison-bazel-buck2-2026-09.md`:
-  Architectural comparison of the Nix unit-DAG fabric against Bazel and Buck2:
-  axis-by-axis table, deep dives (resolution capture, eval-vs-build, cache and
-  remote execution, platforms/transitions, cross-repo/mirrors, querying,
-  hermeticity), the crate_universe/reindeer convergence, where each is
-  weaker/stronger, and a backlog of Bazel/Buck2 ideas to borrow.
-- `.agents/docs/notes/tooling/rust-toolchain-contract-2026-09.md`: Survey of the
-  four Rust toolchain mechanisms our own projects use (monorepo nixpkgs rustc,
-  child-flake `rustPlatform`, `dotlink`'s oxalica `rust-overlay` + toolchain
-  file, `aw`'s pinned nixpkgs, `abird-health`'s rustup + wasm32), the
-  child-flake parity hole, the per-capsule **toolchain contract**
-  (`craneLibFor`), the oxalica-vs-fenix decision, and the cross/target
-  requirements.
-- `.agents/docs/notes/tooling/rust-build-graph-councils/`: Archived council
-  artifacts for the three design councils: `council-1-design-f/` (F-union /
-  F-cluster / REWEAVE candidates + critiques + final), `council-2-dual-mode/`
-  (L-KEEP / FACET / ECHO + critiques + final = Design M), and `council-3-g4/`
-  (KEYSTONE / DELTA-LATTICE / CLASSNODE + critiques + final = Design G4), plus
-  the stage-1 research and explore notes.
-- `.agents/docs/plans/first-party-external-repo-integration-2026-09.md`: Design
-  for bringing projects we own that live in **other git repos** (`dotlink`,
-  `aw`, `abird-ai`) into the nix build/cache architecture: four integration
-  models (opaque flake input; in-tree subtree/submodule/vendor; provider +
-  committed ledger; fabric Node build), how each looks concretely (flake inputs,
-  providers, Cargo git/path deps), and how to take a **single crate** into a
-  package here under each model, plus cache/no-IFD/mirroring implications and a
-  recommendation.
-- `.agents/docs/plans/multi-ecosystem-build-fabric-2026-09.md`: Design expanding
-  the Rust Capsule/Ledger/Unit-DAG into one ecosystem-agnostic build fabric
-  covering Rust, Go, Node, Deno, Python and C++. Defines the generic core (unit
-  descriptor, resolver/producer protocol, ledger, shards, executors, the three
-  edge kinds, capability tiers and fail-closed modes), per-ecosystem adapters,
-  the soundness analysis (which invariants generalize and where each ecosystem
-  is conditional), cross-ecosystem composition, repo integration, and a
-  per-ecosystem validation and rollout plan.
-- `.agents/docs/plans/rust-build-graph-final-2026-09.md`: **Consolidated final
-  design** for the repo-wide Rust build graph: dual-mode mirroring (G10/G11)
-  plus member-local closure bases (G4). Merges the adjudications of the three
-  design councils into one self-contained statement: goals, architecture, the
-  `base` seam and `baseMode ∈ {member, union, legacy}`, closure-base
-  construction with one shared full-lock vendor and closure-subset chaining, the
-  invalidation matrix, mirror generation and drift gates, adoption/equality,
-  `lib/flake` extraction tiers, dev-deps/platform gating, diagnostics, cost and
-  the 24-member gate, staged migration, validation spikes, risks, and the
-  decision log (including rejected designs).
-- `.agents/docs/plans/design-f-build-graph-2026-09.md`: **Superseded** prior
-  art: the REWEAVE plan for Design F (force the union by rewriting member
-  manifests). Rejected for the dual-mode goals because union forcing makes a
-  package's semantics depend on its monorepo peers; kept for the adjudication
-  record and the review findings it folds in.
-- `.agents/docs/plans/dual-mode-rust-build-graph-2026-09.md`: Final,
-  implementation-ready dual-mode design (**Design M / MIRROR-L**), adjudicating
-  the council-2 candidates L-KEEP, FACET, and ECHO. Keeps landed L's
-  composition-independent `-p m` resolution; adds one explicit `base` artifact
-  seam; generates layout-preserving, byte-identical mirrors from the evaluated
-  git revision; adopts mirrors by name via `externalPackagesFor`; and defines
-  the package-flake output contract, the `lib/flake` extraction tiers, the
-  drift/equality gates, staged migration, and the honest non-guarantees. Its
-  base granularity is amended by the G4 design below (per-member bases replace
-  the `component` mode).
-- `.agents/docs/plans/g4-base-locality-2026-09.md`: Final design
-  (**CLOSURE-BASES**) for member-local dependency-cache invalidation (G4): one
-  dependency base per member's own source closure, built from a real filtered
-  source and one shared full-lock vendor, with `cargoArtifacts` inheritance only
-  along genuine closure-subset edges; a single `base ? null` seam plus
-  `baseMode` in `{member, union, legacy}` (`union` = zero-regression landing,
-  `legacy` = bit-for-bit L rollback); invalidation matrix, exactness argument,
-  cost, and a mandatory 24-member measurement gate.
+- .agents/docs/design-patterns/rust-foundation.md: selected Cargo/Crane
+  architecture and compatibility contract.
+- .agents/docs/plans/rust-foundation.md: concise current plan route.
+- .agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md:
+  synchronized results, next bounded unit, acceptance gates and regeneration
+  instructions.

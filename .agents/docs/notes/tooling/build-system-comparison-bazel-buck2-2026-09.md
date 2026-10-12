@@ -8,7 +8,7 @@ specifics below are hedged where they change between releases. Buck1 (legacy) is
 out of scope.
 
 Companion docs: `.agents/docs/plans/multi-ecosystem-build-fabric-2026-09.md`,
-`.agents/docs/plans/rust-build-graph-final-2026-09.md`,
+`.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md`,
 `.agents/docs/notes/tooling/rust-build-graph-handoff-2026-09.md`.
 
 ---

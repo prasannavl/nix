@@ -126,9 +126,11 @@ time of writing: the legacy path passed the real filtered source as crane's
 explicit `dummySrc`, so the `*-deps` derivation depended on the whole source
 tree and each package built its own dependency artifact.
 
-This is now fixed by Design L (landed 2026-09): workspace members share one
-`.rs`-independent dependency base and an artifacts-only `memberLayer`, and the
-legacy/rollback paths dummy from an evaluator-visible path source. See
-`.agents/docs/plans/rust-workspace-build-graph-2026-09.md` and
-`.agents/docs/plans/design-l-implementation-2026-09.md`, which supersede this
-note's caching claims.
+The September Design L implementation introduced a shared dependency base and an
+artifacts-only member layer. Subsequent source-closure and subset-inheritance
+work is consolidated under Rust foundation. For current caching boundaries,
+completed results and remaining qualification gates, read
+`.agents/docs/design-patterns/rust-foundation.md` and
+`.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md`. These
+supersede this historical note's caching claims; full qualification remains
+open.
