@@ -4,7 +4,7 @@
 
 VS Code Remote terminal start on `pvl-l5`:
 
-```
+```console
 tput: command not found
 tput: command not found
 ```
