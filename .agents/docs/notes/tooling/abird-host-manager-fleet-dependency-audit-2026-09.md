@@ -547,3 +547,13 @@ Remaining questions:
   the crate-only path; the `ABIRD_HOST_MANAGER_AGE` override was removed under
   WP3, so a plugin recipient would need a new in-binary path if required.
 - When to schedule `gix`/`russh` work; both remain out of scope.
+
+## Status: NIX_SSHOPTS posture superseded
+
+This audit deliberately preserved the shell-quoted `NIX_SSHOPTS` wrapper posture
+(`quote_nix_sshopts`). Abird's `2e69c7ea` subsequently proved that Nix
+whitespace-tokenizes `NIX_SSHOPTS` without shell parsing, so the ported fleet
+now materializes proxy commands as whitespace-free files and passes `-S none`
+instead; see [the post-`278a2cba` port](./abird-post-278a2cba-port-2026-10.md).
+The `env`-wrapper removal and `CommandSpec` environment delivery items above
+remain satisfied by `with_nix_sshopts`.

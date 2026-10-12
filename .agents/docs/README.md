@@ -693,6 +693,19 @@ Use this index as the canonical map for `.agents/docs/**`.
   1.139.0, projection-test neutrality,
   `revdiff`/`pi-diff`/`agent-workspace-linux`, and AI model prefetch), and
   byte/mode parity (584 common, 570 exact, 14 explained, no port required).
+- `.agents/docs/notes/tooling/abird-post-278a2cba-port-2026-10.md`: Complete
+  87-commit audit and port of `278a2cba..13dafcde`, with the fleet Nix SSH copy
+  isolation (materialized proxy commands, `-S none`, age-identity test
+  isolation) and the generic `rustWorkspaceDeps` composition seam ported
+  byte-exact, the git signing/push-transport note adopted, Abird identity rust
+  policy and product/host work skipped, and post-port byte/mode parity (624
+  common, 563 exact, 61 explained, no mode differences).
+- `.agents/docs/notes/tooling/agent-git-signing-and-push-transport-2026-09.md`:
+  Agent SSH commit-signing socket export, GitHub SSH keepalives for long
+  pre-push lint, the pre-push `TMPDIR` nesting trap and short-prefix test
+  anchoring, the linked-worktree `GIT_DIR` leak into lint with repair steps, and
+  publishing from a clean sibling worktree while main holds unrelated
+  uncommitted work.
 - `.agents/docs/notes/tooling/abird-post-6fe3b63a-reaudit-2026-09.md`: Complete
   36-commit re-audit of `857ac6eb..6fe3b63a`, per-commit dispositions across the
   AI endpoint/projection series, memory docs, and Nix-native projection
