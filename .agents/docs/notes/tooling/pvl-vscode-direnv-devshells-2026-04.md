@@ -55,3 +55,8 @@
 - `direnv allow` at repo root (and in each child dir as needed) loads the flake
   env.
 - VS Code reload picks up `mkhl.direnv`; `nix-env-selector` is gone.
+
+## Related
+
+- `.agents/docs/notes/tooling/pvl-bash-prompt-no-tput-2026-10.md`: prompt fix
+  for the dev-shell `PATH` injected into VS Code terminals.

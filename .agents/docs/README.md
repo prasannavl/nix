@@ -994,6 +994,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   the move from `arrterian.nix-env-selector` to `mkhl.direnv` plus the root
   flake `devShells.default`/`devShells.full` abstraction in
   `lib/flake/dev-shells.nix`.
+- `.agents/docs/notes/tooling/pvl-bash-prompt-no-tput-2026-10.md`: VS Code
+  `tput: command not found` root cause (direnv dev-shell PATH injected into
+  terminals) and the no-`tput` SGR-escape prompt rule.
 - `.agents/docs/notes/tooling/repo-tooling.md`: Canonical Bash entrypoint,
   lint/fmt, package-local verification, docs maintenance, and the unified
   update-helper source-report/child-ref subcommands.

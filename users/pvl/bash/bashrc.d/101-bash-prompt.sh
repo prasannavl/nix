@@ -11,14 +11,14 @@
 #                       37: White                       47: White
 #
 # ESC sequence: \033 or \e
-# Color sequence: \[ESC[fg;format;bgm\] or \[$(tput setaf/ab color0-7)\]
-# tput => terminfo, ncurses
+# Color sequence: \[ESC[fg;format;bgm\]
+# no tput: absent from devShell PATH (VS Code terminals)
 
 setup_ps1() {
 	# reset
 	local r b
-	r="\[$(tput sgr0)\]"
-	b="\[$(tput bold)\]"
+	r="\[\033[0m\]"
+	b="\[\033[1m\]"
 
 	local fgray="\[\033[38;5;7m\]"
 	local fgreen="\[\033[38;5;2m\]"
