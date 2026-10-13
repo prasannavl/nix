@@ -559,10 +559,12 @@ Use this index as the canonical map for `.agents/docs/**`.
   the unit so agent tool calls find profile tools, and the manual-process
   handoff.
 - `.agents/docs/notes/services/dotlink-pvl-a1-l5-2026-10.md`: Records the
-  `abird-ai/dotlink` root flake input (nixpkgs following `unstable`, crane
-  following the root `crane`), the `services.dotlink` module from the flake, and
-  the pvl-a1/pvl-l5 services running as user `pvl` with the default profile at
-  `/home/pvl/spaces/abird/`.
+  `abird-ai/dotlink` root flake input (nixpkgs following the repository
+  `nixpkgs`, crane following the root `crane`), the `services.dotlink` module
+  from the flake, the pvl-a1/pvl-l5 services running as user `pvl` with the
+  default profile at `/home/pvl/spaces/abird/`, and the dotlink v0.8.0 bump with
+  `hostAccess` (Nix daemon/config, Git config, SSH agent) and `cacheAccess`
+  grants enabled on both hosts.
 - `.agents/docs/notes/services/librechat-opendesign-pvl-x2-2026-09.md`: Records
   the LibreChat and OpenDesign services on `pvl-x2` ported from abird, including
   local auth, LAN/tailnet-only exposure, the Ollama + llama.cpp consumer
