@@ -27,7 +27,7 @@ let
   normalizeEnv = env:
     if !builtins.isAttrs env || !builtins.all (name: builtins.elem name envNames) (builtins.attrNames env)
     then fail "unsupported compilation environment name or shape"
-    else builtins.mapAttrs (_name: value: envValue value) env;
+    else builtins.mapAttrs (_name: envValue) env;
   recordGuard = record:
     if !builtins.isAttrs record
     then fail "buildAttrs must be an attribute set"

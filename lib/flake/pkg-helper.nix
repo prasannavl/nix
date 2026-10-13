@@ -2206,7 +2206,7 @@ in rec {
       then extraPassthru baseDrv
       else extraPassthru;
   in
-    builtins.seq (scopedSourceGuard __rustSourceContext (({inherit src;} // buildAttrsNoPrePatch).src))
+    builtins.seq (scopedSourceGuard __rustSourceContext ({inherit src;} // buildAttrsNoPrePatch).src)
     (wirePassthru baseDrv resolvedExtraPassthru);
 
   mkCraneRustPackage = {
@@ -2309,7 +2309,7 @@ in rec {
   in
     if craneLib == null
     then
-      builtins.seq (scopedSourceGuard __rustSourceContext ((attrs // fallbackAttrs).src))
+      builtins.seq (scopedSourceGuard __rustSourceContext (attrs // fallbackAttrs).src)
       (rustPlatform.buildRustPackage (attrs // fallbackAttrs))
     else
       builtins.seq (scopedSourceGuard __rustSourceContext finalMergedAttrs.src)

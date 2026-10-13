@@ -11,7 +11,7 @@
   makeInput = name: let
     node = nodes.${name};
     path = /. + sources.${name};
-    dependencies = builtins.mapAttrs (_: child: makeInput child) (node.inputs or {});
+    dependencies = builtins.mapAttrs (_: makeInput) (node.inputs or {});
     metadata = node.locked // {outPath = path;};
     outputs = (import (path + "/flake.nix")).outputs (dependencies // {self = result;});
     result =
@@ -27,7 +27,7 @@
         };
   in
     result;
-  roots = builtins.mapAttrs (_: name: makeInput name) nodes.${lock.root}.inputs;
+  roots = builtins.mapAttrs (_: makeInput) nodes.${lock.root}.inputs;
   # Keep the real cached flake-utils implementation, but bound its default
   # system list for this validation invocation only; generated defaults stay put.
   inputs =
@@ -44,7 +44,7 @@
   identity = drv: {
     inherit (drv) drvPath outputName outPath;
   };
-  identities = attrs: builtins.mapAttrs (_: drv: identity drv) attrs;
+  identities = attrs: builtins.mapAttrs (_: identity) attrs;
   evidence = {
     inherit system;
     packages = identities outputs.packages.${system};

@@ -2,7 +2,7 @@
   pkgsPath,
   system ? "x86_64-linux",
 }: let
-  pkgs = import (builtins.toPath pkgsPath) {system = system;};
+  pkgs = import pkgsPath {system = system;};
   makeProbe = payload:
     pkgs.runCommand "rust-foundation-sandbox-probe-${payload}" {} ''
       test "$NIX_BUILD_TOP" = /build

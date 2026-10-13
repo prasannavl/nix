@@ -198,7 +198,7 @@
       ["cargo" "rustc" "clippy" "rustfmt"];
       scopedFullSourceIdentity = same scopedMember member;
       scopedSubsetMemberIdentity = same (partialFactory.mkRustDerivation appArgs) member;
-      scopedRejectsPolicyEscapes = builtins.all (value: fails value) [
+      scopedRejectsPolicyEscapes = builtins.all fails [
         (partialFactory.mkRustDerivation (appArgs // {base = null;})).drvPath
         ((partial.mkRustComposition (context // {baseMode = "union";})).mkRustDerivation appArgs).drvPath
         (partialFactory.mkRustDerivation (appArgs // {useWorkspaceDeps = false;})).drvPath
