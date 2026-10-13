@@ -360,6 +360,8 @@ def validate_export(snapshot, lock):
 def generate(objects, scratch, member, _planner=nix_plan, _renderer=render_export,
              _validator=validate_export):
     safe_path(member)
+    require("Cargo.lock.nix" not in objects.entries and "Cargo.lock.nix" not in objects.trees,
+            "unsupported-cargo-lock-policy: Cargo.lock.nix")
     contract = source_contract(objects, scratch.parent)
     workspace = tomllib.loads(objects.read("Cargo.toml").decode("utf-8"))
     dirs = workspace["workspace"]["members"]

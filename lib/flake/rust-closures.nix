@@ -558,7 +558,17 @@ let
           when (builtins.pathExists (src + "/${p}/.cargo")) "local-cargo-config" "${p}/.cargo")
         (ancestors d)) (filter (d: pathIssue d == null) safeDirs);
   in
-    if (rootEntries."Cargo.toml" or null) != "regular"
+    # A package-owned lock replacement is not a generic artifact-source contract.
+    # Reject from directory metadata before reading policy or member payloads.
+    if rootEntries ? "Cargo.lock.nix"
+    then
+      {
+        workspace.workspace.members = [];
+        members = {};
+        additionalInputs = [(reason "unsupported-cargo-lock-policy" "Cargo.lock.nix")];
+      }
+      // scopeArgs
+    else if (rootEntries."Cargo.toml" or null) != "regular"
     then
       {
         workspace.workspace.members = [];

@@ -83,6 +83,13 @@ let
   fixture = api.plan {src = ./fixtures/rust-closures/regular;};
   assertions = {
     supported = basic.supported;
+    lockPolicyRejectedBeforePayload = hasReason "unsupported-cargo-lock-policy" (api.plan {
+      src = ./fixtures/rust-closures/lock-policy;
+    });
+    scopedLockPolicyRejected = hasReason "unsupported-cargo-lock-policy" (api.plan {
+      src = ./fixtures/rust-closures/lock-policy;
+      memberDirs = ["a"];
+    });
     memberOrder = basic.plan.members == ["a" "b" "c" "d"];
     directEdges = basic.plan.pathDeps.a == ["b"];
     transitiveClosure = basic.plan.closureDirs.a == ["a" "b" "c"];

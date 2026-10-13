@@ -385,11 +385,28 @@ let
           projectDir = "nested/a";
           deps = ["b"];
         })).drvPath;
+    constructorLockPolicyRejected =
+      fails
+      (helper.mkClosureBase (context
+        // {
+          src = ./fixtures/rust-closures/lock-policy;
+          projectDir = "a";
+        })).drvPath;
+    scopedConstructorLockPolicyRejected =
+      fails
+      ((helper.forRustSource {
+          src = ./fixtures/rust-closures/lock-policy;
+          memberDirs = ["a"];
+        }).mkClosureBase {
+          pkgs = pkgs;
+          src = ./fixtures/rust-closures/lock-policy;
+          projectDir = "a";
+        }).drvPath;
     constructorMissingCrane = fails (helper.mkClosureBase (context // {pkgs = pkgs // {craneLib = null;};})).drvPath;
   };
   failed = builtins.filter (name: !assertions.${name}) (builtins.attrNames assertions);
 in
-  assert builtins.length (builtins.attrNames assertions) == 104;
+  assert builtins.length (builtins.attrNames assertions) == 106;
   assert failed == [] || throw "rust-base failures: ${builtins.concatStringsSep ", " failed}"; {
     assertionCount = builtins.length (builtins.attrNames assertions);
     passed = true;

@@ -278,6 +278,20 @@ class MetadataRAMTests(unittest.TestCase):
                 self.assertEqual([r["path"] for r in inventory["trees"]], ["lib", "lib/services"])
                 self.assert_no_blobs(query)
 
+    def test_lock_policy_refuses_before_any_payload(self):
+        for width in (40, 64):
+            for mode, kind in (("100644", "blob"), ("120000", "blob"), ("040000", "tree")):
+                with self.subTest(width=width, mode=mode):
+                    data = self.records([(mode, kind, "a" * width, "Cargo.lock.nix")])
+                    query = self.query_tree(data, "b" * width)
+                    objects = self.construct(data, "b" * width, query)
+                    query.reset_mock()
+                    with patch.object(objects, "read", side_effect=AssertionError("payload read")) as read:
+                        with self.assertRaisesRegex(ValueError, "unsupported-cargo-lock-policy"):
+                            mirror.generate(objects, Path("/uncreated-mirror-scratch"), "pkgs/a")
+                        read.assert_not_called()
+                    query.assert_not_called()
+
     def test_selected_unsafe_modes_refuse_before_blob_read(self):
         path = "lib/services/module.nix"
         for width in (40, 64):
