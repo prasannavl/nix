@@ -643,7 +643,13 @@ Use this index as the canonical map for `.agents/docs/**`.
   from the flake, the pvl-a1/pvl-l5 services running as user `pvl` with the
   default profile at `/home/pvl/spaces/abird/`, and the dotlink v0.8.0 bump with
   `hostAccess` (Nix daemon/config, Git config, SSH agent) and `cacheAccess`
-  grants enabled on both hosts.
+  grants enabled on both hosts, and the v0.8.1 fix that skips absent developer
+  caches instead of aborting startup.
+- `.agents/docs/notes/services/dotlink-missing-go-mod-cache-activation-failure-2026-10.md`:
+  Records the pvl-a1 activation failure where the v0.8.0
+  `--allow-cache-go-mod=rw` grant aborted because `/home/pvl/go/pkg/mod` was
+  absent, why the fleet rollback re-activated the same candidate generation
+  instead of the last-known-good profile, and the v0.8.1 resolution.
 - `.agents/docs/notes/services/librechat-opendesign-pvl-x2-2026-09.md`: Records
   the LibreChat and OpenDesign services on `pvl-x2` ported from abird, including
   local auth, LAN/tailnet-only exposure, the Ollama + llama.cpp consumer

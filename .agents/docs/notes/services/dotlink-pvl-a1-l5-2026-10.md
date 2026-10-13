@@ -7,7 +7,10 @@ selected local projects without an inbound port or a third-party relay.
 
 On 2026-10-13 the service was updated to `dotlink v0.8.0` and the NixOS module's
 host-integration and developer-cache grants were enabled on both hosts (see
-[Host access and developer caches](#host-access-and-developer-caches)).
+[Host access and developer caches](#host-access-and-developer-caches)). v0.8.1
+followed the same day to fix a startup abort when a requested cache directory
+was absent (see
+[dotlink missing Go-module cache broke pvl-a1 activation](dotlink-missing-go-mod-cache-activation-failure-2026-10.md)).
 
 ## Flake input
 
@@ -32,7 +35,9 @@ its own `nixpkgs`. Adding the input was purely additive — no existing input wa
 bumped.
 
 The 2026-10-13 bump advanced only the `dotlink` node in `flake.lock` from
-`3335af57` (2026-10-11) to `5e46cbf1` (2026-10-13); no other input moved.
+`3335af57` (2026-10-11) to `5e46cbf1` (2026-10-13); no other input moved. The
+v0.8.1 fix advanced the same node to `5f46990` (2026-10-13); again no other
+input moved.
 
 ## Host services
 
@@ -105,9 +110,11 @@ the source of truth for the host grants. The options map to `--allow-*` flags:
   `/run/user/1000/gcr/ssh` is auto-discovered on both hosts (no `sshAgentSocket`
   override). The agent must already be running as `pvl` at service start.
 - `cacheAccess` → `--allow-cache-<kind>=rw` for the seven caches present on both
-  hosts (Cargo registry/git, npm, Yarn, pip, Go mod/build). Each is rediscovered
-  by dotlink and fails startup if missing; `pvl-a1` additionally has a `uv`
-  cache that is only granted through its saved profile.
+  hosts (Cargo registry/git, npm, Yarn, pip, Go mod/build). Since v0.8.1 a cache
+  whose directory is absent is skipped with a warning instead of aborting
+  startup, so a configured-but-uncreated cache (for example `go-mod` on a host
+  that never ran Go builds) no longer kills the unit. `pvl-a1` additionally has
+  a `uv` cache that is only granted through its saved profile.
 
 The module adds `--allow-shell` automatically whenever a host integration or
 cache is requested. Shell **network** access is not a module option; it stays
@@ -127,7 +134,8 @@ can connect; the packaged binary is reachable at
 The v0.8.0 bump needed only seven derivations (Rust 1.98.1 toolchain plus
 `dotlink-deps`/`dotlink`); the rest was substituted from the `pvl-x2` binary
 cache. `dotlink v0.8.0` raises the profile schema to v10, which both hosts
-already use or migrate to in memory.
+already use or migrate to in memory. The v0.8.1 bump rebuilt `dotlink-0.8.1`
+from source (about 1m25s) because the fixed binary was not yet in the cache.
 
 ## Validation
 
@@ -137,7 +145,7 @@ already use or migrate to in memory.
   `workingDirectory = "/home/pvl/spaces/abird/"`, an unset `profile`, and the
   unit's `User`/`WorkingDirectory`/`SetLoginEnvironment`/`ExecStart`.
 - `nix build .#nixosConfigurations.pvl-a1.config.services.dotlink.package`
-  succeeds and `dotlink --version` reports `dotlink v0.8.0`.
+  succeeds and `dotlink --version` reports `dotlink v0.8.1`.
 - Both hosts evaluate to the same generated `ExecStart` with `--allow-shell`,
   `--allow-nix-daemon`, `--allow-nix-config`, `--allow-ssh-agent`,
   `--allow-git-config`, and the seven `--allow-cache-<kind>=rw` grants, and no
