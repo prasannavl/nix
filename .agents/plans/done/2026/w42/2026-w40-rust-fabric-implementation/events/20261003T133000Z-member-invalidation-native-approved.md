@@ -11,6 +11,8 @@ tags:
   - retention:writer-cache-through-g4
 ---
 
+# Historical event: member invalidation native approved
+
 Human "do it" approves MAIN's explicit request: exactly two locked TOML crate
 sources, selected writer/support rebuild, four member variants offline; one
 job/core,2GiB,no swap,PID256, **300 seconds aggregate native wall time including

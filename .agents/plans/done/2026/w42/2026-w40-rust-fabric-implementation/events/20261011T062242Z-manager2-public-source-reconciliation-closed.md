@@ -6,6 +6,8 @@ coordinator: MAIN
 state: manager2-public-source-observation-closed
 ---
 
+# Historical event: manager2 public source reconciliation closed
+
 MAIN executed the independently reviewed manager2 public Source capture-v2 once.
 It closed with exit zero, both fixed Git metadata queries exiting zero with
 owned children reaped, and 53,717,164 permanently reserved read bytes under the

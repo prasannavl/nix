@@ -10,6 +10,8 @@ tags:
   - authority:read-only-preflight
 ---
 
+# Historical event: member invalidation readiness claimed
+
 Human requests next phase after selector/routes removal and code-only forward
 invalidation preparation. Select actual native edited-member qualification next,
 but prior smoke budget is closed. Before requesting a fresh native grant,

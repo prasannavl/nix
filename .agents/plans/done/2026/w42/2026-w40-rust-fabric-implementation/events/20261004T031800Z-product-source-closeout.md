@@ -11,6 +11,8 @@ routing_tags:
   - integration:not-performed
 ---
 
+# Historical event: product source closeout
+
 Durable source gaps closed by owner `01a104c8-a066-74c4-80f2-1f84597ecc6b`:
 `product_semantic.py`, explicit `product-acceptance.nix`, host-neutral
 Python/Nix negative controls, opt-in Pvl `product-eval.nix` acceptance target

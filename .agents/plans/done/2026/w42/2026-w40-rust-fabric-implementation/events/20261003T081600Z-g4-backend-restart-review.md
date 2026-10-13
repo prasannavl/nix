@@ -10,6 +10,8 @@ tags:
   - gate:native-pending
 ---
 
+# Historical event: g4 backend restart review
+
 Independent reviewer `01a100cb-3880-74c4-80f2-1d5dd5edce0a` rechecked the
 previously reported conditional restart P2. Confirms owner-first physical
 private-tree traversal handles 0700 directories, restores directory

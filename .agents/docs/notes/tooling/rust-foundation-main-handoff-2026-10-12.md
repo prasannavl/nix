@@ -111,3 +111,13 @@ manager event's original bytes are retained in its `.md.raw` counterpart (SHA256
 `.md` file is now a formatted rendering. The original R event is unchanged. All
 other historical event bytes remain unchanged. Normal pre-push hooks are
 required for publication; no validation bypass or insecure-package waiver.
+
+## Historical event rendering — publication lint follow-up
+
+The normal pre-push hook required headings, quoted-paragraph separators and
+Markdown link syntax in 23 additional historical event documents. Original bytes
+are retained verbatim next to every changed rendering as `.md.raw`; those
+originals, rather than the formatted `.md` views, preserve the historical byte
+pins. The original R custody tree was not edited. The earlier two-file
+formatting cutoff is historical; no evidence or receipt was regenerated. The
+append-only rendering validation event records each original SHA256.

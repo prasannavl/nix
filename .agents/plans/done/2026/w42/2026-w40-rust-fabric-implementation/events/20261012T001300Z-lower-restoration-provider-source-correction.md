@@ -20,8 +20,8 @@ substitution-only assertion was therefore not justified by that API. No
 unsupported-command repeat or switch to local repair with that assertion.
 
 Primary Source:
-https://raw.githubusercontent.com/NixOS/nix/2.34.8/src/libstore/include/nix/store/remote-store.hh
-https://raw.githubusercontent.com/NixOS/nix/2.34.8/src/libstore/build/entry-points.cc
+<https://raw.githubusercontent.com/NixOS/nix/2.34.8/src/libstore/include/nix/store/remote-store.hh>
+<https://raw.githubusercontent.com/NixOS/nix/2.34.8/src/libstore/build/entry-points.cc>
 
 ROOT's separately reviewed no-Nix classifier4c9def closed exit0. All9 exact
 saved descriptor nodes are complete modern v4 JSON. Of4 outputs,3 have a

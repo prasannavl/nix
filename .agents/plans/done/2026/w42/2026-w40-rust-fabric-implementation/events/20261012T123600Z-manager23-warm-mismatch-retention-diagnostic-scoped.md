@@ -24,7 +24,7 @@ Nix 2.34.8's current public Source,
 `src/libstore/unix/build/derivation-builder.cc` lines 1734-1764, establishes
 that a check-mode mismatch is moved to the expected output plus `.check` only
 when `keepFailed` or a diff hook is enabled:
-https://raw.githubusercontent.com/NixOS/nix/2.34.8/src/libstore/unix/build/derivation-builder.cc.
+<https://raw.githubusercontent.com/NixOS/nix/2.34.8/src/libstore/unix/build/derivation-builder.cc>.
 M22's complete authenticated ordinary log has only the original derivation and
 expected output in its final diagnostic, with no retained comparison output. Do
 not probe a guessed historical `.check` root.

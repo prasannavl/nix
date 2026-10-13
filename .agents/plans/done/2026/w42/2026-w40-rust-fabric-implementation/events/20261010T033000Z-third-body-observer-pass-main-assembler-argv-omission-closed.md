@@ -4,6 +4,8 @@ status: third-attempt-closed-main-assembler-argv-omission-next-source
 coordinator: agent:rust-fabric-main
 ---
 
+# Historical event: third body observer pass main assembler argv omission closed
+
 ## Third stopped at MAIN assembler argv; fourth preparing — 2026-10-10T03:30:00Z
 
 BootSource repair independentacceptance

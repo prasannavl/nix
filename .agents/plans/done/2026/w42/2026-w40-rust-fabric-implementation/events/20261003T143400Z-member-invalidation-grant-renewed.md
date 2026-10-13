@@ -11,6 +11,8 @@ tags:
   - retention:private-writer-through-g4
 ---
 
+# Historical event: member invalidation grant renewed
+
 Human "yes" approves fresh combined five-minute attempt,1job/core,2GiB, same two
 locked sources, selected writer/support and four offline member variants after
 corrected `DRV^out` syntax. Previous conservative300s reservation stays frozen

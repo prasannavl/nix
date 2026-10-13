@@ -6,6 +6,8 @@ coordinator: MAIN
 state: original-attempt-spent-source-placement-refusal
 ---
 
+# Historical event: original manager attempt body closed source placement refusal
+
 The original initial-manager seven-stage chain was attempted once by MAIN. Its
 BODY unit succeeded and closed with its full 30-second charge. The next observer
 stopped at the original SOURCE `unused MAIN scope` gate, identifier 23. The

@@ -10,6 +10,8 @@ routing_tags:
   - owner:g4-orchestrator
 ---
 
+# Historical event: main freshness allocation
+
 MAIN explicitly allocates the existing unused300s coordinated remaining-work
 ledger to actual G4 warm-cache replay after final independent source gate PASS.
 Owner `01a10277-4dd3-74c4-80f2-1e7c376c862b` may write fingerprint-bound

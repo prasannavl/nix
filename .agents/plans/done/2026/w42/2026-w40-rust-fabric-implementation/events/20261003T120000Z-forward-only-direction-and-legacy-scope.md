@@ -10,6 +10,8 @@ tags:
   - blocker:legacy-retirement-scope
 ---
 
+# Historical event: forward only direction and legacy scope
+
 Human corrects next-phase goal: "what member to legacy? we don't aim to
 returning back after this design is successful". MAIN removes
 member->legacy->member rollback sequence from next-phase scope. Member mode is

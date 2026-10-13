@@ -12,6 +12,8 @@ tags:
   - execution:resource-diagnostic
 ---
 
+# Historical event: resource diagnostic admitted
+
 MAIN explicitly read first reviewer CHANGES_REQUIRED.md/json after transport
 aborted and preserved both. Corrected P2: timeout PID1 no longer blocks on
 reaping detached descendants; bounded best-effort cached record, guarded private

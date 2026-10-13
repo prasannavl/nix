@@ -10,6 +10,8 @@ routing_tags:
   - sourcegate:hold
 ---
 
+# Historical event: freshness test source overwrite observed
+
 MAIN observed new freshness sources overwritten at17:52UTC by apparent test
 fingerprint stubs: `freshness.nix`12bytes `moduleSha256`, `freshness.py`13bytes,
 `freshness-eval.nix`15bytes. Controller/contained remain18851/8833bytes. Root

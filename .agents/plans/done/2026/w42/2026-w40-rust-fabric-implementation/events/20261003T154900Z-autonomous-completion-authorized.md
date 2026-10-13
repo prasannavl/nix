@@ -11,6 +11,8 @@ routing_tags:
   - budget:bounded-aggregate
 ---
 
+# Historical event: autonomous completion authorized
+
 Human: "let's go ahead finish it all in one go, don't need to keep asking me".
 Authorizes end-to-end remaining implementation/qualification and safe
 integration, without repetitive routine approvals. This supersedes routine

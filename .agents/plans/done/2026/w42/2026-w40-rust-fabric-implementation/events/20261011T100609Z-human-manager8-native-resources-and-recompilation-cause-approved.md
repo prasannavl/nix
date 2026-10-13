@@ -13,12 +13,12 @@ MAIN supplied these exact actual user messages, in chronological order:
 
 > also, if the compilation was proceeding and it just needed more time, let's
 > add more cpus to it?
-
+>
 > let's add (nproc-2) cpus
-
+>
 > and then also use upto 16G of memory, and then, let's hunt down what exactly
 > was the cause for these major dependencies to be recompiled
-
+>
 > what we're going after is speed.. similarly spin subagents to do things in
 > parallel if needed. we want to optimize for time to quickly get to the cause,
 > and get the impl in correct shape

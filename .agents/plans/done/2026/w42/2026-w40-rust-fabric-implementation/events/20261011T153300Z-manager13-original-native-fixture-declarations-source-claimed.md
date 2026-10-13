@@ -31,9 +31,9 @@ that historical observation supplies neither a relative path nor body proof.
 MAIN fetched only public directory-listing HTML for exact published versions,
 without requesting any listed fixture file, local protected archive or cache:
 
-- https://docs.rs/crate/tokio-rustls/0.26.4/source/tests/certs/ lists
+- <https://docs.rs/crate/tokio-rustls/0.26.4/source/tests/certs/> lists
   `chain.pem`, `end.key`, `main.rs`, `root.pem` (12874 HTML bytes).
-- https://docs.rs/crate/untrusted/0.9.0/source/mk/ lists `cargo.sh`,
+- <https://docs.rs/crate/untrusted/0.9.0/source/mk/> lists `cargo.sh`,
   `install-build-tools.sh`, `llvm-snapshot.gpg.key`, `runner` (12937 HTML
   bytes).
 - The public registry index for each exact package/version independently matches

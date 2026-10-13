@@ -11,6 +11,8 @@ tags:
   - compatibility:isolated-builds-retained
 ---
 
+# Historical event: legacy selector retired isolation kept
+
 Human clarifies: "yes, let's just remove the legacy mode and routes, but we
 should be able to have isolated build support, so keep all of those". This
 resolves `20261003T120000Z-forward-only-direction-and-legacy-scope.md`.

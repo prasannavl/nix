@@ -10,6 +10,8 @@ tags:
   - scope:fixture
 ---
 
+# Historical event: g4 invalidation preparation claimed
+
 Human requests "next phase" after completed bounded native smoke. MAIN selects
 G4 source/manifest/full-lock invalidation and member/legacy route rollback
 qualification preparation. Existing code-only authority applies; completed pilot
