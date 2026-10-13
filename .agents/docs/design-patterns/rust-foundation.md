@@ -65,8 +65,19 @@ arguments; this cleanup does not introduce or remove an API.
 
 ## Non-negotiable compatibility
 
-- Cargo/rustc/Crane remain the existing implementations. No custom compiler,
-  patched Cargo, fingerprint reimplementation, `CARGO_LOG` or `-vv` detour.
+- Regular systems retain the existing Cargo/rustc/Crane implementations. No
+  custom compiler, fingerprint reimplementation, `CARGO_LOG` or `-vv` detour.
+- Human-approved exception on 2026-10-13: optional qualification may use the
+  exact Cargo PR #16691 ordering fix, pinned to upstream commit
+  `074980c2670522e3bde8acb9a25b40510f78626c`, until the regular pinned Cargo
+  includes it upstream. This exception is restricted to qualification tooling;
+  no production Cargo overlay or automatic/root-flake qualification check.
+  Patched producer/consumer contexts carry their actual distinct Cargo identity
+  and receive freshly generated bases. Keep strict byte-equality checks when the
+  optional determinism lane is explicitly selected; regular Cargo's known binary
+  dep-info record-order nondeterminism is a cache reproducibility limitation,
+  not demonstrated loss of runtime correctness or external dependency reuse.
+  Patched qualification does not certify raw unpatched cache-archive equality.
 - Preserve manager-to-agent dependencies, agent rsync support, the manager's
   check tools, makeWrapper/fleet PATH, and product `doCheck = false`.
 - Preserve the utility's release/check/strict-dependency behavior.
@@ -91,6 +102,30 @@ Source/fixture acceptance is necessary but not sufficient. Completion requires:
 5. Generic and Abird forwarding, the 24-member cost measurement, and explicit
    platform qualification, including unsupported lanes.
 6. Independently reviewed integration and any separately authorized adoption.
+
+Human decision on 2026-10-13: independent-build byte determinism is optional.
+Required acceptance concerns reusable Nix outputs/binary caches, reusable Cargo
+dependency artifacts, correct invalidation and the original G1–G11 goals above.
+Project/dependency build reproducibility is not guaranteed by this foundation.
+Compare cache transport bytes exactly: exporting and restoring the same output
+must preserve its NAR identity. Independent compilation may produce different
+NARs without failing required reuse qualification. Record those differences as
+diagnostics; do not erase fingerprints, strip producer artifacts or claim
+determinism. Successful version checks alone do not establish safe reuse:
+require observable source-change behavior and actual compilation frontiers.
+
+Regular qualification uses regular Cargo with `checkDeterminism = false`.
+Optional `checkDeterminism = true` retains strict independent-output comparisons
+and Nix `--rebuild`; the optional patched-Cargo entrypoint defaults to that
+lane. Releases use fresh Nix builds as the human-selected release workflow;
+release builds do not replace the locality, compatibility, cache transport or
+invalidation gates. Integration and adoption remain separately authorized.
+
+Qualification resource decision on 2026-10-13: all new VM lanes, smoke and
+optional diagnostics use 16 CPUs and 16 GiB RAM. The historical 1 CPU / 2 GiB
+measurement target is superseded by this explicit human instruction. Preserve
+resource labels on earlier results and state measured workload scope; do not
+extrapolate a selected manager comparison to every workspace product.
 
 Do not enable a broad default or claim savings before these gates pass.
 
