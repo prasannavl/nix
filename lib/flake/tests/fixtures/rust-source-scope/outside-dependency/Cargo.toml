@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = [
+  "members/application",
+  "members/middle",
+  "members/leaf",
+  "members/peer",
+]

@@ -316,175 +316,214 @@
   standardOutputs = flakeLib.standardOutputsFrom [system] {
     ${system} = outputs;
   };
-in {
-  lib-flake-rust-toolchain = assert builtins.deepSeq (import ./rust-toolchain.nix) true;
-    pkgs.runCommand "lib-flake-rust-toolchain-test" {} ''
-      touch "$out"
-    '';
-  lib-flake-fabric-contract = import ./fabric-contract.nix {inherit pkgs;};
-  lib-flake-fabric-projection = import ./fabric-projection.nix {inherit pkgs;};
-  lib-flake-phase-projection = import ./phase-projection.nix {inherit pkgs;};
-  lib-flake-repo-modules = import ./repo-modules.nix {inherit pkgs;};
-  lib-flake-service-client-endpoints = import ./service-client-endpoints.nix {inherit pkgs;};
-  lib-flake-service-placements = import ./service-placements.nix {inherit pkgs;};
-  lib-flake-runtime-projection-closeouts = import ./runtime-projection-closeouts.nix {inherit pkgs;};
-  lib-flake-service-moves = import ./service-moves.nix {inherit pkgs;};
-  lib-flake-projection-domain-fold = import ./projection-domain-fold.nix {inherit pkgs;};
-  lib-flake-repository-fold = import ./repository-fold.nix {inherit pkgs;};
-  lib-flake-configuration-family = import ./configuration-family.nix {inherit pkgs;};
-  lib-flake-nested-rust-package = assert toString nestedRustPackage.sourcePath == toString ../../../pkgs/examples/hello-rust/default.nix;
-    pkgs.runCommand "lib-flake-nested-rust-package-test" {} ''
-      touch "$out"
-    '';
-  lib-flake-nats-streams-seams = assert genericNatsStreams.meta.mainProgram == "nats-streams";
-  assert genericNatsStreams.meta.description == "Ensure configured NATS JetStream streams exist";
-  assert genericNatsStreamsModule.__moduleArgs.name == "nats-streams";
-  assert genericNatsStreamsModule.__moduleArgs.envPrefix == "NATS_STREAMS";
-  assert toString genericNatsStreamsModule.__moduleSourcePath == toString ../../../pkgs/support/nats-streams/default.nix;
-  assert firstNatsStreamSet.meta.mainProgram == "test-nats-streams";
-  assert firstNatsStreamSet.meta.description == "Test NATS stream reconciliation";
-  assert builtins.isFunction firstNatsStreamsModule;
-  assert firstNatsStreamSet.passthru.streamSet.serviceName == "test-nats-streams";
-  assert firstNatsStreamSet.passthru.streamSet.clientServiceName == "test-nats-client";
-  assert firstNatsStreamSet.passthru.streamSet.envPrefix == "TEST_NATS_STREAMS";
-  assert firstNatsStreamSet.passthru.streamSet.servicePartCount == 1;
-  assert firstNatsStreamSet.passthru.streamSet.streams
-  == [
-    {
-      stream = "test-stream";
-      subject = "test.subject";
-    }
-  ];
-  assert secondNatsStreamSet.meta.mainProgram == "other-nats-streams";
-  assert secondNatsStreamSet.meta.description == "Other NATS stream reconciliation";
-  assert builtins.isFunction secondNatsStreamsModule;
-  assert secondNatsStreamSet.passthru.streamSet.serviceName == "other-nats-streams";
-  assert secondNatsStreamSet.passthru.streamSet.clientServiceName == "other-nats-client";
-  assert secondNatsStreamSet.passthru.streamSet.envPrefix == "OTHER_NATS_STREAMS";
-  assert secondNatsStreamSet.passthru.streamSet.servicePartCount == 0;
-  assert secondNatsStreamSet.passthru.streamSet.streams
-  == [
-    {
-      stream = "other-stream";
-      subject = "other.subject";
-    }
-  ];
-  assert natsStreamSetsSystem.config.user-services.svc.test-nats-streams.package.meta.mainProgram == "test-nats-streams";
-  assert natsStreamSetsSystem.config.user-services.svc.other-nats-streams.package.meta.mainProgram == "other-nats-streams";
-    pkgs.runCommand "lib-flake-nats-streams-seams-test" {} ''
-      export FAKE_NATS_TRACE="$PWD/nats.trace"
+in
+  {
+    lib-flake-rust-source-scope = assert builtins.deepSeq (import ./rust-source-scope.nix {}) true;
+      pkgs.runCommand "lib-flake-rust-source-scope-test" {} ''
+        touch "$out"
+      '';
+    lib-flake-rust-export = assert builtins.deepSeq (import ./rust-export.nix) true;
+      pkgs.runCommand "lib-flake-rust-export-test" {} ''
+        touch "$out"
+      '';
+    lib-flake-rust-compile-context = assert builtins.deepSeq (import ./rust-compile-context.nix) true;
+      pkgs.runCommand "lib-flake-rust-compile-context-test" {} ''
+        touch "$out"
+      '';
+    lib-flake-rust-native-context = assert builtins.deepSeq (import ./rust-native-context.nix {}) true;
+      pkgs.runCommand "lib-flake-rust-native-context-test" {} ''
+        touch "$out"
+      '';
+    lib-flake-rust-composition = assert builtins.deepSeq (import ./rust-composition.nix) true;
+      pkgs.runCommand "lib-flake-rust-composition-test" {} ''
+        touch "$out"
+      '';
+    lib-flake-rust-bases = assert builtins.deepSeq (import ./rust-bases.nix) true;
+      pkgs.runCommand "lib-flake-rust-bases-test" {} ''
+        touch "$out"
+      '';
+    lib-flake-rust-closures = assert builtins.deepSeq (import ./rust-closures.nix) true;
+      pkgs.runCommand "lib-flake-rust-closures-test" {} ''
+        touch "$out"
+      '';
+    lib-flake-rust-toolchain = assert builtins.deepSeq (import ./rust-toolchain.nix) true;
+      pkgs.runCommand "lib-flake-rust-toolchain-test" {} ''
+        touch "$out"
+      '';
+    lib-flake-fabric-contract = import ./fabric-contract.nix {inherit pkgs;};
+    lib-flake-fabric-projection = import ./fabric-projection.nix {inherit pkgs;};
+    lib-flake-phase-projection = import ./phase-projection.nix {inherit pkgs;};
+    lib-flake-repo-modules = import ./repo-modules.nix {inherit pkgs;};
+    lib-flake-service-client-endpoints = import ./service-client-endpoints.nix {inherit pkgs;};
+    lib-flake-service-placements = import ./service-placements.nix {inherit pkgs;};
+    lib-flake-runtime-projection-closeouts = import ./runtime-projection-closeouts.nix {inherit pkgs;};
+    lib-flake-service-moves = import ./service-moves.nix {inherit pkgs;};
+    lib-flake-projection-domain-fold = import ./projection-domain-fold.nix {inherit pkgs;};
+    lib-flake-repository-fold = import ./repository-fold.nix {inherit pkgs;};
+    lib-flake-configuration-family = import ./configuration-family.nix {inherit pkgs;};
+    lib-flake-nested-rust-package = assert toString nestedRustPackage.sourcePath == toString ../../../pkgs/examples/hello-rust/default.nix;
+      pkgs.runCommand "lib-flake-nested-rust-package-test" {} ''
+        touch "$out"
+      '';
+    lib-flake-nats-streams-seams = assert genericNatsStreams.meta.mainProgram == "nats-streams";
+    assert genericNatsStreams.meta.description == "Ensure configured NATS JetStream streams exist";
+    assert genericNatsStreamsModule.__moduleArgs.name == "nats-streams";
+    assert genericNatsStreamsModule.__moduleArgs.envPrefix == "NATS_STREAMS";
+    assert toString genericNatsStreamsModule.__moduleSourcePath == toString ../../../pkgs/support/nats-streams/default.nix;
+    assert firstNatsStreamSet.meta.mainProgram == "test-nats-streams";
+    assert firstNatsStreamSet.meta.description == "Test NATS stream reconciliation";
+    assert builtins.isFunction firstNatsStreamsModule;
+    assert firstNatsStreamSet.passthru.streamSet.serviceName == "test-nats-streams";
+    assert firstNatsStreamSet.passthru.streamSet.clientServiceName == "test-nats-client";
+    assert firstNatsStreamSet.passthru.streamSet.envPrefix == "TEST_NATS_STREAMS";
+    assert firstNatsStreamSet.passthru.streamSet.servicePartCount == 1;
+    assert firstNatsStreamSet.passthru.streamSet.streams
+    == [
+      {
+        stream = "test-stream";
+        subject = "test.subject";
+      }
+    ];
+    assert secondNatsStreamSet.meta.mainProgram == "other-nats-streams";
+    assert secondNatsStreamSet.meta.description == "Other NATS stream reconciliation";
+    assert builtins.isFunction secondNatsStreamsModule;
+    assert secondNatsStreamSet.passthru.streamSet.serviceName == "other-nats-streams";
+    assert secondNatsStreamSet.passthru.streamSet.clientServiceName == "other-nats-client";
+    assert secondNatsStreamSet.passthru.streamSet.envPrefix == "OTHER_NATS_STREAMS";
+    assert secondNatsStreamSet.passthru.streamSet.servicePartCount == 0;
+    assert secondNatsStreamSet.passthru.streamSet.streams
+    == [
+      {
+        stream = "other-stream";
+        subject = "other.subject";
+      }
+    ];
+    assert natsStreamSetsSystem.config.user-services.svc.test-nats-streams.package.meta.mainProgram == "test-nats-streams";
+    assert natsStreamSetsSystem.config.user-services.svc.other-nats-streams.package.meta.mainProgram == "other-nats-streams";
+      pkgs.runCommand "lib-flake-nats-streams-seams-test" {} ''
+        export FAKE_NATS_TRACE="$PWD/nats.trace"
 
-      : >"$FAKE_NATS_TRACE"
-      export FAKE_NATS_MODE=converged
-      ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >converged.log
-      grep -F "stream already converged: test-stream (test.subject)" converged.log
-      if grep -F "stream add" "$FAKE_NATS_TRACE"; then
-        echo "converged stream unexpectedly attempted creation" >&2
-        exit 1
-      fi
+        : >"$FAKE_NATS_TRACE"
+        export FAKE_NATS_MODE=converged
+        ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >converged.log
+        grep -F "stream already converged: test-stream (test.subject)" converged.log
+        if grep -F "stream add" "$FAKE_NATS_TRACE"; then
+          echo "converged stream unexpectedly attempted creation" >&2
+          exit 1
+        fi
 
-      : >"$FAKE_NATS_TRACE"
-      export FAKE_NATS_MODE=absent
-      ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key
-      grep -F "stream add test-stream" "$FAKE_NATS_TRACE"
+        : >"$FAKE_NATS_TRACE"
+        export FAKE_NATS_MODE=absent
+        ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key
+        grep -F "stream add test-stream" "$FAKE_NATS_TRACE"
 
-      : >"$FAKE_NATS_TRACE"
-      export FAKE_NATS_MODE=drift
-      if ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >drift.log 2>&1; then
-        echo "drifted stream unexpectedly converged" >&2
-        exit 1
-      fi
-      grep -F "stream configuration drift: test-stream" drift.log
-      grep -F '"subjects":["old.subject"]' drift.log
-      grep -F "refusing to mutate an existing stream" drift.log
-      if grep -F "stream add" "$FAKE_NATS_TRACE"; then
-        echo "drifted stream unexpectedly attempted creation" >&2
-        exit 1
-      fi
+        : >"$FAKE_NATS_TRACE"
+        export FAKE_NATS_MODE=drift
+        if ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >drift.log 2>&1; then
+          echo "drifted stream unexpectedly converged" >&2
+          exit 1
+        fi
+        grep -F "stream configuration drift: test-stream" drift.log
+        grep -F '"subjects":["old.subject"]' drift.log
+        grep -F "refusing to mutate an existing stream" drift.log
+        if grep -F "stream add" "$FAKE_NATS_TRACE"; then
+          echo "drifted stream unexpectedly attempted creation" >&2
+          exit 1
+        fi
 
-      : >"$FAKE_NATS_TRACE"
-      export FAKE_NATS_MODE=lookup-error
-      if ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >lookup-error.log 2>&1; then
-        echo "failed stream lookup unexpectedly converged" >&2
-        exit 1
-      fi
-      grep -F "stream listing failed while checking: test-stream" lookup-error.log
-      grep -F "refusing to create a stream whose absence was not established" lookup-error.log
-      if grep -F "stream add" "$FAKE_NATS_TRACE"; then
-        echo "failed lookup unexpectedly attempted creation" >&2
-        exit 1
-      fi
+        : >"$FAKE_NATS_TRACE"
+        export FAKE_NATS_MODE=lookup-error
+        if ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >lookup-error.log 2>&1; then
+          echo "failed stream lookup unexpectedly converged" >&2
+          exit 1
+        fi
+        grep -F "stream listing failed while checking: test-stream" lookup-error.log
+        grep -F "refusing to create a stream whose absence was not established" lookup-error.log
+        if grep -F "stream add" "$FAKE_NATS_TRACE"; then
+          echo "failed lookup unexpectedly attempted creation" >&2
+          exit 1
+        fi
 
-      : >"$FAKE_NATS_TRACE"
-      export FAKE_NATS_MODE=info-error
-      if ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >info-error.log 2>&1; then
-        echo "failed stream info unexpectedly converged" >&2
-        exit 1
-      fi
-      grep -F "stream info failed after listing: test-stream" info-error.log
-      grep -F "refusing to mutate or recreate a stream" info-error.log
-      if grep -F "stream add" "$FAKE_NATS_TRACE"; then
-        echo "failed stream info unexpectedly attempted creation" >&2
-        exit 1
-      fi
+        : >"$FAKE_NATS_TRACE"
+        export FAKE_NATS_MODE=info-error
+        if ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >info-error.log 2>&1; then
+          echo "failed stream info unexpectedly converged" >&2
+          exit 1
+        fi
+        grep -F "stream info failed after listing: test-stream" info-error.log
+        grep -F "refusing to mutate or recreate a stream" info-error.log
+        if grep -F "stream add" "$FAKE_NATS_TRACE"; then
+          echo "failed stream info unexpectedly attempted creation" >&2
+          exit 1
+        fi
 
-      : >"$FAKE_NATS_TRACE"
-      export FAKE_NATS_MODE=malformed-list
-      if ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >malformed-list.log 2>&1; then
-        echo "malformed stream listing unexpectedly converged" >&2
-        exit 1
-      fi
-      grep -F "stream listing returned an unexpected JSON shape" malformed-list.log
-      if grep -F "stream add" "$FAKE_NATS_TRACE"; then
-        echo "malformed stream listing unexpectedly attempted creation" >&2
-        exit 1
-      fi
-      touch "$out"
-    '';
-  lib-flake-stack-set = assert stackSet.app.fixture.owned == ["proxy" "web" "worker"];
-  assert stackSet.app.fixture.dependencies == ["db"];
-  assert builtins.attrNames stackSet.app.serviceRegistry.domains == ["apex"];
-  assert stackSet.app.serviceRegistry.dns.routeDomains == ["~app.test"];
-  assert stackSet.app.serviceRegistry.dns.trustedCidrsByFamily
-  == {
-    ipv4 = ["10.30.0.0/16"];
-    ipv6 = ["fd42:30::/48"];
-  };
-  assert stackSet.app.serviceRegistry.dns.loopbackCidrsByFamily
-  == {
-    ipv4 = ["127.0.0.0/8"];
-    ipv6 = ["::1/128"];
-  };
-  assert (builtins.head stackSet.app.serviceRegistry.roles.web.endpoints.live).project == "role-project";
-  assert (builtins.head stackSet.app.serviceRegistry.roles.web.endpoints.live).weight == 70;
-  assert (builtins.head stackSet.app.serviceRegistry.roles.db.endpoints.live).project == "platform";
-  assert stackSet.app.serviceRegistry.roles.db.endpoints ? cold;
-  assert !(stackSet.app.serviceRegistry.roles.worker.endpoints ? cold);
-  assert stackSet.app.serviceRegistry.roleForService "app" == "web";
-  assert remappedAppStack.serviceRegistry.roleForService "app" == "proxy";
-  assert remappedAppStack.serviceRegistry.upstreamForService "app" "http" == "10.10.10.10:8080";
-    pkgs.runCommand "lib-flake-stack-build-set-test" {} ''
-      touch "$out"
-    '';
-  lib-flake-isolated = assert flakeLib.stacks == {};
-  assert builtins.all (
-    entry:
-      builtins.isPath entry
-      || (builtins.isAttrs entry && builtins.isPath entry.path)
-  ) (builtins.attrValues manifest.packages);
-  assert !(outputs.packages ? migration-manager);
-  assert !(outputs.packages ? data-migrator);
-  assert !(outputs.packages ? host-manager);
-  assert outputs.packages.abird-host-agent.meta.mainProgram == "abird-host-agent";
-  assert outputs.packages.abird-host-manager.meta.mainProgram == "abird-host-manager";
-  assert outputs.apps.cloudflare-apps-deploy.program == "${outputs.packages.cloudflare-apps.deploy}/bin/cloudflare-apps-deploy";
-  assert packageOutputs.stdPackages."cloudflare-apps/llmug-hello".drvPath == packageOutputs.packages.cloudflare-apps.llmug-hello.drvPath;
-  assert nativeClientCaDefaultsStack.defaultCaCertContainerPath == "/run/secrets/test-ca.crt";
-  assert nativeClientCaDefaultsStack.srv.defaultPostgresCaCertPath == "/etc/ssl/certs/test-ca.crt";
-  assert nativeClientCaDefaultsStack.srv.defaultNatsCaCertPath == "/etc/ssl/certs/test-ca.crt";
-  assert !(standardOutputs.packages.${system} ? migration-manager);
-  assert standardOutputs.apps.${system} ? abird-host-manager;
-    pkgs.runCommand "lib-flake-isolated-test" {} ''
-      touch "$out"
-    '';
-}
+        : >"$FAKE_NATS_TRACE"
+        export FAKE_NATS_MODE=malformed-list
+        if ${pkgs.lib.getExe runtimeNatsStreams} nats ca cert key >malformed-list.log 2>&1; then
+          echo "malformed stream listing unexpectedly converged" >&2
+          exit 1
+        fi
+        grep -F "stream listing returned an unexpected JSON shape" malformed-list.log
+        if grep -F "stream add" "$FAKE_NATS_TRACE"; then
+          echo "malformed stream listing unexpectedly attempted creation" >&2
+          exit 1
+        fi
+        touch "$out"
+      '';
+    lib-flake-stack-set = assert stackSet.app.fixture.owned == ["proxy" "web" "worker"];
+    assert stackSet.app.fixture.dependencies == ["db"];
+    assert builtins.attrNames stackSet.app.serviceRegistry.domains == ["apex"];
+    assert stackSet.app.serviceRegistry.dns.routeDomains == ["~app.test"];
+    assert stackSet.app.serviceRegistry.dns.trustedCidrsByFamily
+    == {
+      ipv4 = ["10.30.0.0/16"];
+      ipv6 = ["fd42:30::/48"];
+    };
+    assert stackSet.app.serviceRegistry.dns.loopbackCidrsByFamily
+    == {
+      ipv4 = ["127.0.0.0/8"];
+      ipv6 = ["::1/128"];
+    };
+    assert (builtins.head stackSet.app.serviceRegistry.roles.web.endpoints.live).project == "role-project";
+    assert (builtins.head stackSet.app.serviceRegistry.roles.web.endpoints.live).weight == 70;
+    assert (builtins.head stackSet.app.serviceRegistry.roles.db.endpoints.live).project == "platform";
+    assert stackSet.app.serviceRegistry.roles.db.endpoints ? cold;
+    assert !(stackSet.app.serviceRegistry.roles.worker.endpoints ? cold);
+    assert stackSet.app.serviceRegistry.roleForService "app" == "web";
+    assert remappedAppStack.serviceRegistry.roleForService "app" == "proxy";
+    assert remappedAppStack.serviceRegistry.upstreamForService "app" "http" == "10.10.10.10:8080";
+      pkgs.runCommand "lib-flake-stack-build-set-test" {} ''
+        touch "$out"
+      '';
+    lib-flake-isolated = assert flakeLib.stacks == {};
+    assert builtins.all (
+      entry:
+        builtins.isPath entry
+        || (builtins.isAttrs entry && builtins.isPath entry.path)
+    ) (builtins.attrValues manifest.packages);
+    assert !(outputs.packages ? migration-manager);
+    assert !(outputs.packages ? data-migrator);
+    assert !(outputs.packages ? host-manager);
+    assert outputs.packages.abird-host-agent.meta.mainProgram == "abird-host-agent";
+    assert outputs.packages.abird-host-manager.meta.mainProgram == "abird-host-manager";
+    assert outputs.apps.cloudflare-apps-deploy.program == "${outputs.packages.cloudflare-apps.deploy}/bin/cloudflare-apps-deploy";
+    assert packageOutputs.stdPackages."cloudflare-apps/llmug-hello".drvPath == packageOutputs.packages.cloudflare-apps.llmug-hello.drvPath;
+    assert nativeClientCaDefaultsStack.defaultCaCertContainerPath == "/run/secrets/test-ca.crt";
+    assert nativeClientCaDefaultsStack.srv.defaultPostgresCaCertPath == "/etc/ssl/certs/test-ca.crt";
+    assert nativeClientCaDefaultsStack.srv.defaultNatsCaCertPath == "/etc/ssl/certs/test-ca.crt";
+    assert !(standardOutputs.packages.${system} ? migration-manager);
+    assert standardOutputs.apps.${system} ? abird-host-manager;
+      pkgs.runCommand "lib-flake-isolated-test" {} ''
+        touch "$out"
+      '';
+  }
+  // pkgs.lib.optionalAttrs (pkgs ? craneLib && pkgs.craneLib != null) {
+    lib-flake-rust-mirror = assert builtins.deepSeq (import ./rust-mirror.nix {inherit pkgs;}) true;
+      pkgs.runCommand "lib-flake-rust-mirror-test" {} ''
+        touch "$out"
+      '';
+    lib-flake-rust-source-scope-real = assert builtins.deepSeq (import ./rust-source-scope.nix {inherit pkgs;}) true;
+      pkgs.runCommand "lib-flake-rust-source-scope-real-test" {} ''
+        touch "$out"
+      '';
+  }

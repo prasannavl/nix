@@ -1,0 +1,2 @@
+[build]
+rustflags = ["--cfg=extra_local_input"]

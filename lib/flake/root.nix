@@ -18,6 +18,7 @@
   # host agent under another name.
   hostAgentServiceName ? "abird-host-agent",
   repoChecksFn ? ({...}: {}),
+  externalPackagesFor ? _system: {},
   inputSetInputNames ? {
     default = {
       nixpkgs = "nixpkgs";
@@ -159,7 +160,7 @@
     projectionRuntimeHosts) "projection runtime hosts must all exist in the deployment inventory"; projectionRuntimeHosts;
 
   rootLib = import ./. {
-    inherit flake-utils inputs nixpkgs overlays repoChecksFn repositoryConfig;
+    inherit externalPackagesFor flake-utils inputs nixpkgs overlays repoChecksFn repositoryConfig;
     stacks = effectiveStacks;
   };
 

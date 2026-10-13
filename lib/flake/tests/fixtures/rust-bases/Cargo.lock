@@ -1,0 +1,10 @@
+version = 4
+
+[[package]]
+name = "application"
+version = "0.1.0"
+dependencies = ["library-a"]
+
+[[package]]
+name = "library-a"
+version = "0.1.0"

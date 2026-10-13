@@ -40,6 +40,8 @@ let
       pkgsForSystem ? null,
       packageFor ? packageStack.packageFor,
       stdFlakeOutputArgs ? _: {},
+      # Optional constructor exports share the exact package-system context.
+      libExports ? _: {},
       ...
     }: let
       pkgHelper = packageStack.pkg;
@@ -94,6 +96,11 @@ let
         builtins.seq policyPkgs {
           flakeOutputs = flakeOutputs;
           nixosModules = nixosModules;
+          library = libExports {
+            pkgs = policyPkgs;
+            build = drv;
+            pkgHelper = pkgHelper;
+          };
         };
       # Share one lazy output record per system, including the module-export
       # system when it is not in systems. Duplicate keys keep the first thunk.
@@ -106,8 +113,12 @@ let
       if pkgsForSystem != null && (overlays != [] || rustToolchainInputs != {} || rustToolchainProviders != {})
       then throw "mkFlakeOutputs: pkgsForSystem supplies the complete package set; overlays, rustToolchainInputs and rustToolchainProviders must be configured there instead"
       else
-        flake-utils.lib.eachSystem systems (system:
-          outputsBySystem.${system}.flakeOutputs)
+        flake-utils.lib.eachSystem systems (system: let
+          output = outputsBySystem.${system};
+        in
+          if !builtins.isAttrs output.library
+          then throw "mkFlakeOutputs: libExports must return an attribute set"
+          else output.flakeOutputs // nixpkgs.lib.optionalAttrs (output.library != {}) {lib = output.library;})
         // (
           if defaultOutputs.nixosModules == {}
           then {}

@@ -1,0 +1,2 @@
+# External fixture target: the lock-symlink adapter must not read this file.
+not a lockfile

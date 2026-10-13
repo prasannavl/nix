@@ -1,4 +1,78 @@
 let
+  compileContext = import ./rust-compile-context.nix;
+  sourceClosures = import ./rust-closures.nix;
+
+  # Private data context, never a callback/certificate or a producer input.
+  # Validate the effective source BEFORE any scoped planner or constructor read.
+  rustSourcePlan = sourceContext: src:
+    if sourceContext == null
+    then sourceClosures.plan {inherit src;}
+    else if
+      !builtins.isAttrs sourceContext
+      || builtins.attrNames sourceContext != ["memberDirs" "src"]
+      || !builtins.isPath src
+      || !builtins.isPath sourceContext.src
+      || toString src != toString sourceContext.src
+    then throw "pkg-helper.forRustSource: effective src must match the bound evaluator-visible source"
+    else
+      sourceClosures.plan {
+        inherit src;
+        memberDirs = sourceContext.memberDirs;
+      };
+
+  scopedSourceGuard = sourceContext: src: let
+    topology = rustSourcePlan sourceContext src;
+  in
+    if sourceContext == null
+    then true
+    else if !topology.supported
+    then throw "pkg-helper.forRustSource: unsupported scoped declared-source workspace"
+    else true;
+
+  rustConsumerBuildArgs = args:
+    builtins.removeAttrs args [
+      "pkgs"
+      "build"
+      "src"
+      "pname"
+      "version"
+      "projectDir"
+      "projectPath"
+      "deps"
+      "toolchain"
+      "useWorkspaceDeps"
+      "internalDeps"
+      "base"
+      "baseLabel"
+      "__rustSourceContext"
+      "cargoLock"
+      "meta"
+      "nativeCheckInputs"
+      "fmtNativeBuildInputs"
+      "lintNativeBuildInputs"
+      "checkEnv"
+      "buildAttrs"
+      "prePatch"
+      "fmtCargoArgs"
+      "lintFixCargoArgs"
+      "lintFixLintArgs"
+      "cargoBuildArgs"
+      "checkCargoArgs"
+      "checkLintArgs"
+      "testCargoArgs"
+      "enableDevShell"
+      "devShellPackages"
+      "extraDevShellPackages"
+      "extraPassthru"
+    ];
+
+  consumerContext = args:
+    compileContext.projectConsumer {
+      selectedToolchain = selectToolchain args.pkgs (args.toolchain or null);
+      buildArgs = rustConsumerBuildArgs args;
+      inherit args;
+    };
+
   selectToolchain = pkgs: toolchain:
     if pkgs ? rustToolchainFor
     then pkgs.rustToolchainFor toolchain
@@ -10,8 +84,13 @@ let
   joinLines = lines:
     builtins.concatStringsSep "\n" (builtins.filter (line: line != "") lines);
 
-  exportEnv = env:
-    joinLines (builtins.attrValues (builtins.mapAttrs (name: value: "export ${name}=${builtins.toJSON value}") env));
+  exportEnvWith = serialize: env:
+    joinLines (builtins.attrValues (builtins.mapAttrs (name: value: "export ${name}=${serialize value}") env));
+
+  # Keep old shell expansion semantics on compatibility paths only. Projected
+  # discovery values are literals, including dollar signs and single quotes.
+  exportEnv = exportEnvWith builtins.toJSON;
+  exportLiteralEnv = exportEnvWith (value: "'${builtins.replaceStrings ["'"] ["'\\''"] value}'");
 
   repoRoot = builtins.toString ../..;
 
@@ -142,7 +221,7 @@ let
   # In-repo Cargo workspace members, read from the root manifest at evaluation
   # time. `src` must be an evaluator-visible path (never a derivation) so this
   # cannot trigger IFD. Cargo also accepts glob members (`crates/*`); this
-  # reader does not expand them, so such a member falls back to the legacy
+  # reader does not expand them, so such a member falls back to the isolated
   # per-package path (correct, just not shared).
   rustWorkspaceMembers = src: let
     rootManifest = src + "/Cargo.toml";
@@ -157,7 +236,7 @@ let
   in
     # Cargo allows glob members (`crates/*`); this reader does not expand them.
     # Returning no members disables workspace sharing for the whole repo (every
-    # package falls back to the correct legacy per-package path) instead of
+    # package falls back to the correct isolated per-package path) instead of
     # producing a base whose dummy source is missing those members.
     if builtins.any (member: builtins.match ".*[*?\\[].*" member != null) rawMembers
     then []
@@ -194,6 +273,271 @@ let
       cargoExtraArgs = "--offline --workspace";
       inherit cargoLockContents cargoVendorDir;
     };
+
+  # Version 1 is deliberately unchained and narrow. Recipes describe source
+  # selection only: neither caller metadata nor rustToolchainId certifies inputs.
+  # Admission reconstructs this producer using the consumer's actual Crane
+  # scope (bound tools, stdenv, scripts and hooks), lock, vendor and source.
+  # This assumes trusted Nix configuration, not hostile custom Nix functions,
+  # and is not qualification of Cargo's exact units or proof of artifact reuse.
+  closureBaseRecipe = projectDir: sourceDirs: {
+    version = 1;
+    projectDir = normalizeMemberPath projectDir;
+    inherit sourceDirs;
+  };
+
+  closureBaseSourceGuard = {
+    pkgs,
+    craneLib,
+    src,
+    projectDir,
+    sourceDirs,
+    sourceContext ? null,
+  }: let
+    fail = message: throw "pkg-helper.mkClosureBase: ${message}";
+    topology = rustSourcePlan sourceContext src;
+    member = normalizeMemberPath projectDir;
+    root = builtins.fromTOML (builtins.readFile (src + "/Cargo.toml"));
+    effectiveStdenv =
+      if craneLib ? callPackage
+      then
+        craneLib.callPackage ({
+          pkgs,
+          stdenvSelector,
+        }:
+          stdenvSelector pkgs) {}
+      else (craneLib.stdenvSelector or (p: p.stdenv)) pkgs;
+    platform = p: {
+      system = p.system;
+      config = p.config or p.system;
+    };
+    native = s: platform s.buildPlatform == platform (s.hostPlatform or s.buildPlatform);
+    # Verify that the existing awk rewrite really preserves the parsed manifest
+    # and selects these directories. Inline/indented or otherwise unsupported
+    # member-list formatting must not silently build a wider workspace.
+    rewritten =
+      builtins.foldl' (state: line:
+        if builtins.match "members = \\[.*" line != null
+        then {
+          skipping = true;
+          lines = state.lines ++ ["members = ["] ++ map (d: "  ${builtins.toJSON d},") sourceDirs;
+        }
+        else if state.skipping && builtins.match "].*" line != null
+        then {
+          skipping = false;
+          lines = state.lines ++ [line];
+        }
+        else if state.skipping
+        then state
+        else state // {lines = state.lines ++ [line];})
+      {
+        skipping = false;
+        lines = [];
+      }
+      (pkgs.lib.splitString "\n" (builtins.readFile (src + "/Cargo.toml")));
+    projectedRoot = builtins.fromTOML (builtins.concatStringsSep "\n" rewritten.lines);
+  in
+    if craneLib == null
+    then fail "requires Crane"
+    else if !builtins.isPath src || projectDir == null
+    then fail "requires an evaluator-visible path source and workspace projectDir"
+    else if !native pkgs.stdenv || !native effectiveStdenv || platform effectiveStdenv.buildPlatform != platform pkgs.stdenv.buildPlatform
+    then fail "closure bases support native contexts only"
+    else if !topology.supported || !(builtins.hasAttr member topology.plan.closureDirs)
+    then fail "unsupported declared-source workspace or member"
+    else if builtins.sort builtins.lessThan sourceDirs != topology.plan.closureDirs.${member}
+    then fail "actual selected source directories must equal the member's declared closure"
+    else if ((builtins.readDir src)."Cargo.lock" or null) != "regular"
+    then fail "requires a regular full workspace Cargo.lock"
+    else if root ? profile || builtins.any (d: (builtins.fromTOML (builtins.readFile (src + "/${d}/Cargo.toml"))) ? profile) sourceDirs
+    then fail "closure bases do not support custom Cargo profiles"
+    else if rewritten.skipping || projectedRoot != (root // {workspace = root.workspace // {members = sourceDirs;};})
+    then fail "unsupported workspace member-list rewrite"
+    else true;
+
+  constructClosureBase = {
+    craneLib,
+    source,
+    sourceDirs,
+    projectDir,
+    cargoLockContents,
+    cargoVendorDir,
+    parent ? null,
+    compilerAttrs ? {},
+  }: let
+    # mkDummySrc serializes cleaned manifests: the real-source awk formatting
+    # cannot be assumed on its output. Project the cleaned virtual root through
+    # Crane's own writer instead, after its normal dummy generation. This is a
+    # build-time copy, never an evaluator read of the generated TOML (no IFD).
+    cleanedRoot = craneLib.cleanCargoToml {
+      cargoToml = builtins.unsafeDiscardStringContext (toString source) + "/Cargo.toml";
+    };
+    projectedRoot = craneLib.writeTOML "Cargo.toml" (cleanedRoot
+      // {
+        workspace = cleanedRoot.workspace // {members = sourceDirs;};
+      });
+    # Crane copies newly generated TOML after its recursive chmod, leaving the
+    # root read-only. Make only that existing file writable before overwriting.
+    projectRootScript = ''
+      chmod u+w "$out/Cargo.toml"
+      cp ${projectedRoot} "$out/Cargo.toml"
+    '';
+    unchainedProducer = craneLib.buildDepsOnly {
+      dummySrc = craneLib.mkDummySrc {
+        src = source;
+        extraDummyScript = projectRootScript;
+      };
+      pname = "rust-closure-base";
+      version = "1";
+      inherit cargoLockContents cargoVendorDir;
+      # Preserve Crane's release profile, check/build/test --no-run priming,
+      # CRANE_BUILD_DEPS_ONLY marker and actual dummy src. No command overrides.
+      cargoExtraArgs = "--offline --workspace";
+      doCheck = true;
+    };
+    # buildDepsOnly forcibly sets cargoArtifacts = null. For a chain, reproduce
+    # its pinned default recipe via mkCargoDerivation with the *actual* dummy
+    # as src (dummySrc is not an argument understood by mkCargoDerivation).
+    chainedProducer = craneLib.mkCargoDerivation {
+      src = craneLib.mkDummySrc {
+        src = source;
+        extraDummyScript = projectRootScript;
+      };
+      pname = "rust-closure-base";
+      pnameSuffix = "-deps";
+      version = "2";
+      inherit cargoLockContents cargoVendorDir;
+      cargoArtifacts = parent;
+      doCheck = true;
+      doInstallCargoArtifacts = true;
+      env.CRANE_BUILD_DEPS_ONLY = 1;
+      # The empty build-extra-args slot retains Crane's exact default command.
+      buildPhaseCargoCommand = ''
+        cargoWithProfile check --offline --workspace --all-targets
+        cargoWithProfile build --offline --workspace ${""}
+      '';
+      checkPhaseCargoCommand = ''
+        cargoWithProfile test --offline --workspace --no-run
+      '';
+    };
+    producer =
+      if parent == null
+      then unchainedProducer
+      else chainedProducer;
+    contextualProducer =
+      if compilerAttrs == {}
+      then producer
+      else
+        producer.overrideAttrs (old:
+          compilerAttrs
+          // (attrIf (compilerAttrs ? nativeBuildInputs) "nativeBuildInputs"
+            (compilerAttrs.nativeBuildInputs ++ (old.nativeBuildInputs or [])))
+          // {env = (old.env or {}) // (compilerAttrs.env or {});});
+    recipe = closureBaseRecipe projectDir sourceDirs;
+  in
+    contextualProducer.overrideAttrs (old: {
+      passthru =
+        (old.passthru or {})
+        // {
+          rustClosureBaseRecipe =
+            if parent == null
+            then recipe
+            else
+              recipe
+              // {
+                version = 2;
+                parent = parent.passthru.rustClosureBaseRecipe;
+              };
+        }
+        // (
+          if parent == null
+          then {}
+          else {rustClosureBaseParent = parent;}
+        );
+    });
+
+  # Recipes select sources, never tools or arbitrary source trees. Reconstruct
+  # every actual handle in the original consumer context, then compare all three
+  # output identity fields. Check visited members BEFORE descending or comparing
+  # recursive recipe descriptions, so forged cyclic passthru is bounded.
+  reconstructClosureBase = {
+    pkgs,
+    craneLib,
+    src,
+    cargoLockContents,
+    cargoVendorDir,
+    base,
+    visited ? [],
+    withinDirs ? null,
+    compilerAttrs ? {},
+    sourceContext ? null,
+  }: let
+    fail = message: throw "pkg-helper.mkClosureBase: ${message}";
+    recipe = base.passthru.rustClosureBaseRecipe or null;
+    version = recipe.version or null;
+    member = recipe.projectDir;
+    dirs = recipe.sourceDirs;
+    actualParent = base.passthru.rustClosureBaseParent or null;
+    parent =
+      if version == 1
+      then null
+      else
+        reconstructClosureBase {
+          inherit pkgs craneLib src cargoLockContents cargoVendorDir compilerAttrs sourceContext;
+          base = actualParent;
+          visited = visited ++ [member];
+          withinDirs = dirs;
+        };
+    expected = constructClosureBase {
+      inherit craneLib cargoLockContents cargoVendorDir parent compilerAttrs;
+      projectDir = member;
+      sourceDirs = dirs;
+      source = mkWorkspaceSourcePath pkgs {
+        inherit src;
+        selectedDirs = dirs;
+      };
+    };
+  in
+    if !isDerivation base || !builtins.isAttrs recipe
+    then fail "opaque or malformed closure base recipe"
+    else if
+      !(builtins.elem version [1 2])
+      || builtins.attrNames recipe
+      != (
+        if version == 1
+        then ["projectDir" "sourceDirs" "version"]
+        else ["parent" "projectDir" "sourceDirs" "version"]
+      )
+      || !builtins.isString (recipe.projectDir or null)
+      || !builtins.isList (recipe.sourceDirs or null)
+      || !builtins.all builtins.isString dirs
+    then fail "unknown or malformed closure base recipe"
+    else if member != normalizeMemberPath member
+    then fail "malformed noncanonical closure base member"
+    else if builtins.elem member visited
+    then fail "cyclic closure base parent at member ${member}"
+    else if withinDirs != null && (!(builtins.length dirs < builtins.length withinDirs) || !builtins.all (d: builtins.elem d withinDirs) dirs)
+    then fail "parent closure must be a strict subset of the consumer closure"
+    else if (version == 1 && actualParent != null) || (version == 2 && !isDerivation actualParent)
+    then fail "malformed closure base parent handle"
+    else
+      builtins.seq (closureBaseSourceGuard {
+        inherit pkgs craneLib src sourceContext;
+        projectDir = member;
+        sourceDirs = dirs;
+      }) (
+        builtins.seq parent (
+          if version == 2 && recipe.parent != parent.passthru.rustClosureBaseRecipe
+          then fail "mismatched recursive parent recipe"
+          else if
+            (base.drvPath or null)
+            != expected.drvPath
+            || (base.outputName or null) != expected.outputName
+            || (base.outPath or null) != expected.outPath
+          then fail "reconstructed closure base derivation/output mismatch"
+          else expected
+        )
+      );
 
   # Join several members' artifact layers into one self-contained archive. Crane
   # chains a single `.prev` parent, so a member with two or more in-repo
@@ -409,6 +753,106 @@ let
       dontInstall = false;
     });
 in rec {
+  # Source diagnostics only; this does not select bases or resolve Cargo units.
+  rustPlan = sourceClosures.plan;
+
+  # Preserve the generic helper API without copying/forking its implementation.
+  # Only source-sensitive Rust entry points close over this private context.
+  forRustSource = {
+    src,
+    memberDirs,
+  }: let
+    sourceContext = {inherit src memberDirs;};
+    helper = import ./pkg-helper.nix;
+    topology = rustSourcePlan sourceContext src;
+    bind = args:
+      if args ? __rustSourceContext
+      then throw "pkg-helper.forRustSource: private source context cannot be overridden"
+      else args // {__rustSourceContext = sourceContext;};
+    unqualified = effectiveSrc: value:
+      builtins.seq (scopedSourceGuard sourceContext effectiveSrc) (
+        if topology.metadata.sourceScope.properSubset
+        then throw "pkg-helper.forRustSource: proper-subset sources require the guarded member-base route"
+        else value
+      );
+    bound =
+      helper
+      // {
+        rustPlan = args:
+          if builtins.attrNames args != ["src"]
+          then throw "pkg-helper.forRustSource: rustPlan accepts only the bound src"
+          else rustSourcePlan sourceContext args.src;
+        mkClosureBase = args: helper.mkClosureBase (bind args);
+        mkRustDerivation = args: helper.mkRustDerivation (bind args);
+        mkRustComposition = args:
+          builtins.seq (scopedSourceGuard sourceContext args.src)
+          ((import ./member-bases.nix) {
+              pkgHelper = {
+                consumerContext = consumerContext;
+                inherit (bound) mkClosureBase mkRustDerivation rustPlan;
+              };
+            }
+            args);
+        # These adapters do not implement explicit closure-base admission. Keep
+        # their full-source operation, but never fall back on a partial workspace.
+        mkCargoWorkspacePackage = args: unqualified args.src (helper.mkCargoWorkspacePackage (bind args));
+        mkTrunkProject = args: unqualified (args.src or ../..) (helper.mkTrunkProject (bind args));
+        mkCraneRustPackage = args: unqualified args.attrs.src (helper.mkCraneRustPackage (bind args));
+      };
+  in
+    builtins.seq (scopedSourceGuard sourceContext src) bound;
+
+  # Small constructor matching mkRustDerivation's source/toolchain context.
+  # deps must supply exactly the declared closure beyond projectDir. Full root
+  # lock and its vendor are shared. parent is an internal composition seam,
+  # restricted to genuine strict-subset closure bases, not a user cache toggle.
+  mkClosureBase = {
+    pkgs,
+    src,
+    projectDir,
+    deps ? [],
+    toolchain ? null,
+    parent ? null,
+    buildAttrs ? {},
+    __rustSourceContext ? null,
+  }: let
+    sourceContext = __rustSourceContext;
+    selectedToolchain = selectToolchain pkgs toolchain;
+    craneLib = selectedToolchain.craneLib;
+    compilerAttrs = compileContext.projectRecord {
+      inherit selectedToolchain;
+      record = buildAttrs;
+    };
+    sourceDirs = map normalizeMemberPath ([projectDir] ++ pkgs.lib.unique deps);
+    source = mkWorkspaceSourcePath pkgs {
+      inherit src;
+      selectedDirs = sourceDirs;
+    };
+    cargoLockContents = builtins.readFile (src + "/Cargo.lock");
+    cargoVendorDir = craneLib.vendorCargoDeps {inherit cargoLockContents;};
+    admittedParent =
+      if parent == null
+      then null
+      else
+        reconstructClosureBase {
+          inherit pkgs craneLib src cargoLockContents cargoVendorDir compilerAttrs sourceContext;
+          base = parent;
+          visited = [normalizeMemberPath projectDir];
+          withinDirs = sourceDirs;
+        };
+  in
+    builtins.seq (scopedSourceGuard sourceContext src) (builtins.seq compilerAttrs (builtins.seq (closureBaseSourceGuard {inherit pkgs craneLib src projectDir sourceDirs sourceContext;})
+      (builtins.seq admittedParent (constructClosureBase {
+        inherit craneLib source sourceDirs projectDir cargoLockContents cargoVendorDir compilerAttrs;
+        # Inherit the actual handle, after identity verification; do not turn a
+        # descriptive recipe into authority for a substituted parent.
+        parent = parent;
+      }))));
+
+  mkRustComposition = (import ./member-bases.nix) {
+    pkgHelper = {inherit mkClosureBase mkRustDerivation consumerContext rustPlan;};
+  };
+
   emptyParts = {
     inputs = [];
     env = {};
@@ -1562,6 +2006,7 @@ in rec {
     checkCargoArgs ? ["--locked"],
     testCargoArgs ? ["--locked"],
     cargoBuildArgs ? null,
+    __rustSourceContext ? null,
   }: let
     selectedToolchain = selectToolchain pkgs toolchain;
     toolPkgs = selectedToolchain.toolPkgs;
@@ -1761,7 +2206,8 @@ in rec {
       then extraPassthru baseDrv
       else extraPassthru;
   in
-    wirePassthru baseDrv resolvedExtraPassthru;
+    builtins.seq (scopedSourceGuard __rustSourceContext (({inherit src;} // buildAttrsNoPrePatch).src))
+    (wirePassthru baseDrv resolvedExtraPassthru);
 
   mkCraneRustPackage = {
     attrs,
@@ -1771,6 +2217,7 @@ in rec {
     finalAttrs ? {},
     rustPlatform,
     fallbackAttrs ? finalAttrs,
+    __rustSourceContext ? null,
   }: let
     sourceIsDerivation =
       builtins.hasAttr "src" attrs
@@ -1861,15 +2308,19 @@ in rec {
         );
   in
     if craneLib == null
-    then rustPlatform.buildRustPackage (attrs // fallbackAttrs)
+    then
+      builtins.seq (scopedSourceGuard __rustSourceContext ((attrs // fallbackAttrs).src))
+      (rustPlatform.buildRustPackage (attrs // fallbackAttrs))
     else
-      craneLib.buildPackage (
-        withCargoSetupHook finalMergedAttrs
-        // {
-          inherit cargoArtifacts;
-          cargoExtraArgs = cargoExtraArgs;
-        }
-      );
+      builtins.seq (scopedSourceGuard __rustSourceContext finalMergedAttrs.src)
+      (builtins.seq (scopedSourceGuard __rustSourceContext depsOnlyMergedAttrs.src)
+        (craneLib.buildPackage (
+          withCargoSetupHook finalMergedAttrs
+          // {
+            inherit cargoArtifacts;
+            cargoExtraArgs = cargoExtraArgs;
+          }
+        )));
 
   mkCargoWorkspacePackage = {
     pkgs,
@@ -1904,6 +2355,7 @@ in rec {
     ],
     extraDevShellPackages ? [],
     extraPassthru ? {},
+    __rustSourceContext ? null,
     ...
   } @ args: let
     _ =
@@ -1968,6 +2420,7 @@ in rec {
       "devShellPackages"
       "extraDevShellPackages"
       "extraPassthru"
+      "__rustSourceContext"
     ];
     resolvedNativeCheckInputs =
       nativeCheckInputs
@@ -2003,7 +2456,11 @@ in rec {
           }
         );
   in
-    mkRustDerivation (
+    builtins.seq (scopedSourceGuard __rustSourceContext (
+      if build == null
+      then commonBuildAttrs.src
+      else inferBuildSrc build
+    )) (mkRustDerivation (
       (builtins.removeAttrs args [
         "build"
         "cargoBuildArgs"
@@ -2022,7 +2479,7 @@ in rec {
         lintFixCargoArgs = resolvedLintFixCargoArgs;
         testCargoArgs = resolvedTestCargoArgs;
       }
-    );
+    ));
 
   mkShellScriptDerivation = {
     pkgs,
@@ -2158,6 +2615,10 @@ in rec {
     # rust fabric work lands in both repositories.
     useWorkspaceDeps ? pkgs.rustWorkspaceDeps or (projectDir != null),
     internalDeps ? [],
+    base ? null,
+    # Diagnostic only: never a producer parameter or derivation input.
+    baseLabel ? null,
+    __rustSourceContext ? null,
     cargoLock ? null,
     meta ? {},
     nativeCheckInputs ? [],
@@ -2183,6 +2644,22 @@ in rec {
     extraPassthru ? {},
     ...
   } @ args: let
+    sourceContext = __rustSourceContext;
+    # Validate the actual merged root source, before filtering or compiler
+    # projection. Internal source projections are not caller source overrides.
+    rootBuildAttrs =
+      if build == null
+      then {inherit src;} // buildArgs // buildAttrs
+      else {src = inferBuildSrc build;};
+    scopeGuard = builtins.seq (scopedSourceGuard sourceContext src) (
+      builtins.seq (scopedSourceGuard sourceContext rootBuildAttrs.src) (
+        if sourceContext == null
+        then true
+        else if (rustSourcePlan sourceContext src).metadata.sourceScope.properSubset && (base == null || build != null)
+        then throw "pkg-helper.mkRustDerivation: proper-subset sources require an admitted member closure base and cannot use a supplied build"
+        else true
+      )
+    );
     selectedToolchain = selectToolchain pkgs toolchain;
     toolPkgs = selectedToolchain.toolPkgs;
     craneLib = selectedToolchain.craneLib;
@@ -2212,38 +2689,7 @@ in rec {
       if projectDir == null
       then null
       else src + "/${projectPath}/default.nix";
-    buildArgs = builtins.removeAttrs args [
-      "pkgs"
-      "build"
-      "src"
-      "pname"
-      "version"
-      "projectDir"
-      "projectPath"
-      "deps"
-      "toolchain"
-      "useWorkspaceDeps"
-      "internalDeps"
-      "cargoLock"
-      "meta"
-      "nativeCheckInputs"
-      "fmtNativeBuildInputs"
-      "lintNativeBuildInputs"
-      "checkEnv"
-      "buildAttrs"
-      "prePatch"
-      "fmtCargoArgs"
-      "lintFixCargoArgs"
-      "lintFixLintArgs"
-      "cargoBuildArgs"
-      "checkCargoArgs"
-      "checkLintArgs"
-      "testCargoArgs"
-      "enableDevShell"
-      "devShellPackages"
-      "extraDevShellPackages"
-      "extraPassthru"
-    ];
+    buildArgs = rustConsumerBuildArgs args;
     resolvedNativeCheckInputs =
       nativeCheckInputs
       ++ (buildAttrs.nativeCheckInputs or []);
@@ -2265,7 +2711,7 @@ in rec {
         # `sharedDepsBase` below). Member layers keep their own per-member source
         # so that editing one member's `*.rs` only invalidates that member and
         # its dependents. Every other shape (no `projectDir`, no crane,
-        # non-member) keeps the legacy per-package behavior.
+        # non-member) keeps the isolated per-package behavior.
         workspaceMode =
           useWorkspaceDeps
           && craneLib != null
@@ -2338,7 +2784,17 @@ in rec {
           then null
           else craneLib.vendorCargoDeps resolvedCraneCargoLockAttrs;
         craneCommonAttrs =
-          commonAttrs
+          (
+            if !expanded
+            then commonAttrs
+            else
+              {
+                inherit pname version;
+                src = buildSrc;
+                prePatch = buildPrePatch;
+              }
+              // compilerAttrs
+          )
           // resolvedCraneCargoLockAttrs
           // {cargoVendorDir = craneCargoVendorDir;};
         # Legacy (non-workspace) dependency base. `mkCargoWorkspaceSource`
@@ -2354,6 +2810,74 @@ in rec {
               inherit src;
               selectedDirs = map normalizeMemberPath ([projectDir] ++ resolvedDeps);
             };
+        actualSourceDirs = map normalizeMemberPath ([projectDir] ++ resolvedDeps);
+        # Preserve the original zero-context admission predicate and route.
+        oldExplicitAdmission =
+          !(
+            buildArgs
+            != {}
+            || buildAttrs != {}
+            || prePatch != ""
+            || cargoLock != null
+            || resolvedNativeCheckInputs != []
+            || resolvedFmtNativeBuildInputs != []
+            || resolvedLintNativeBuildInputs != []
+            || checkEnv != {}
+            || resolvedBuildCargoArgs != defaultPackageCargoArgs
+            || resolvedCheckCargoArgs != defaultPackageCargoArgs
+            || resolvedTestCargoArgs != defaultPackageCargoArgs
+            || checkLintArgs != ["--" "-D" "warnings"]
+          );
+        expanded = base != null && !oldExplicitAdmission;
+        projected = consumerContext args;
+        compilerAttrs =
+          if expanded
+          then projected.compileAttrs
+          else {};
+        packagingAttrs =
+          if expanded
+          then projected.packagingAttrs
+          else {};
+        expandedGuard = builtins.seq projected.compileAttrs (builtins.seq projected.packagingAttrs (
+          if
+            prePatch
+            != ""
+            || cargoLock != null
+            || resolvedBuildCargoArgs != defaultPackageCargoArgs
+            || resolvedCheckCargoArgs != defaultPackageCargoArgs
+            || resolvedTestCargoArgs != defaultPackageCargoArgs
+            || checkLintArgs != ["--" "-D" "warnings"]
+          then throw "pkg-helper.mkRustDerivation: contextual closure base requires default build/check flags, full root lock and no source hooks"
+          else true
+        ));
+        explicitBaseGuard =
+          if base == null
+          then true
+          else if !(isDerivation base)
+          then throw "pkg-helper.mkRustDerivation: base must be a derivation or null"
+          else
+            builtins.seq (
+              if oldExplicitAdmission
+              then true
+              else expandedGuard
+            )
+            (builtins.seq internalDepsGuard (closureBaseSourceGuard {
+              inherit pkgs craneLib src projectDir sourceContext;
+              sourceDirs = actualSourceDirs;
+            }));
+        expectedBase = reconstructClosureBase {
+          inherit pkgs craneLib src base compilerAttrs sourceContext;
+          cargoLockContents = resolvedCraneCargoLockAttrs.cargoLockContents;
+          cargoVendorDir = craneCargoVendorDir;
+        };
+        admittedBase = builtins.seq explicitBaseGuard (builtins.seq expectedBase (
+          if
+            expectedBase.passthru.rustClosureBaseRecipe.projectDir
+            != normalizeMemberPath projectDir
+            || expectedBase.passthru.rustClosureBaseRecipe.sourceDirs != actualSourceDirs
+          then throw "pkg-helper.mkRustDerivation: mismatched closure base source selection"
+          else base
+        ));
         craneDepsAttrs =
           if !(isDerivation buildSrc)
           then craneCommonAttrs
@@ -2380,7 +2904,9 @@ in rec {
         # the union base and `-p` member builds request identical feature sets,
         # a few shared crates may still recompile per member; see W10.)
         sharedDepsBase =
-          if !workspaceMode
+          if base != null
+          then null
+          else if !workspaceMode
           then null
           else
             mkSharedRustDepsBase {
@@ -2397,7 +2923,7 @@ in rec {
             };
         # Artifacts this member's build inherits: the shared base prefix, or the
         # artifacts-only layer(s) of in-repo dependencies. A dependency may itself
-        # be outside workspace mode (its own `useWorkspaceDeps = false` rollback)
+        # be isolated from workspace mode (`useWorkspaceDeps = false`)
         # and then has no `memberLayer`; drop it from the artifact chain and let
         # this layer compile it from source instead of failing.
         internalDepsGuard =
@@ -2428,7 +2954,9 @@ in rec {
           then packageCargoArtifacts
           else sharedDepsBase;
         dependencyArtifacts =
-          if dependencyMemberLayers == []
+          if base != null
+          then admittedBase
+          else if dependencyMemberLayers == []
           then prefixNode
           else if builtins.length dependencyMemberLayers == 1
           then builtins.head dependencyMemberLayers
@@ -2442,7 +2970,7 @@ in rec {
         # once and publishes `$out/target.tar.zst`, while the deployed package
         # inherits it so build artifacts never enter the package runtime closure.
         memberLayer =
-          if !workspaceMode
+          if !workspaceMode && base == null
           then null
           else
             craneLib.cargoBuild (
@@ -2454,19 +2982,52 @@ in rec {
               }
             );
         cargoArtifacts =
-          if workspaceMode
+          if base != null
+          then builtins.seq admittedBase memberLayer
+          else if workspaceMode
           then builtins.seq internalDepsGuard memberLayer
           else builtins.seq internalDepsGuard packageCargoArtifacts;
+        # Packaging is downstream of every artifact producer and check.
+        finalAttrs =
+          if !expanded
+          then {}
+          else
+            packagingAttrs
+            // {
+              doInstallCargoArtifacts = false;
+              # A final phase, not the postInstall variable: runHook evaluates
+              # that variable BEFORE setup-hook postInstallHooks. Check the
+              # known output paths after installation and fixup have finished.
+              # This does not attest arbitrary shell/setup-hook effects.
+              postPhases = ["rustFinalOutputCheckPhase"];
+              rustFinalOutputCheckPhase = ''
+                for artifact in "$out/target" "$out/target.tar.zst" "$out/target.tar.zst.prev"; do
+                  if [ -e "$artifact" ] || [ -L "$artifact" ]; then
+                    echo "pkg-helper: final package must not publish Cargo artifacts: $artifact" >&2
+                    exit 1
+                  fi
+                done
+              '';
+            };
         mkCraneCheckAttrs = extra:
           craneCommonAttrs
           // {
             inherit cargoArtifacts;
             doInstallCargoArtifacts = false;
-            preBuild = rustCheckPreBuildPhase;
+            # Expanded checkEnv is redundant with the actual derivation env.
+            # Do not replay it through shell exports (which can expand `$`).
+            preBuild =
+              if expanded
+              then "cargo generate-lockfile --offline"
+              else rustCheckPreBuildPhase;
           }
           // extra;
       in {
-        inherit memberLayer sharedDepsBase;
+        inherit memberLayer sharedDepsBase expanded compilerAttrs;
+        baseAdmission =
+          if base == null
+          then true
+          else admittedBase;
         build =
           if craneLib != null
           then
@@ -2476,6 +3037,7 @@ in rec {
                 inherit cargoArtifacts;
                 cargoExtraArgs = shellWords resolvedCraneBuildCargoArgs;
               }
+              // finalAttrs
             )
           else
             pkgs.rustPlatform.buildRustPackage (
@@ -2497,18 +3059,30 @@ in rec {
               craneCommonAttrs
               // {
                 cargoExtraArgs = shellWords resolvedFmtCargoArgs;
-                nativeBuildInputs = (commonAttrs.nativeBuildInputs or []) ++ resolvedFmtNativeBuildInputs;
+                nativeBuildInputs = (craneCommonAttrs.nativeBuildInputs or []) ++ resolvedFmtNativeBuildInputs;
               }
             );
             lint = craneLib.cargoClippy (mkCraneCheckAttrs {
               cargoExtraArgs = shellWords resolvedCraneCheckCargoArgs;
               cargoClippyExtraArgs = shellWords checkLintArgs;
-              nativeBuildInputs = (commonAttrs.nativeBuildInputs or []) ++ resolvedLintNativeBuildInputs;
+              nativeBuildInputs =
+                (craneCommonAttrs.nativeBuildInputs or [])
+                ++ (
+                  if expanded
+                  then []
+                  else resolvedLintNativeBuildInputs
+                );
             });
             test = craneLib.cargoTest (mkCraneCheckAttrs {
               doCheck = true;
               cargoExtraArgs = shellWords resolvedCraneTestCargoArgs;
-              nativeBuildInputs = (commonAttrs.nativeBuildInputs or []) ++ resolvedNativeCheckInputs;
+              nativeBuildInputs =
+                (craneCommonAttrs.nativeBuildInputs or [])
+                ++ (
+                  if expanded
+                  then []
+                  else resolvedNativeCheckInputs
+                );
             });
           };
       };
@@ -2518,13 +3092,21 @@ in rec {
       else build.passthru or {};
     producerId = producerPassthru.rustToolchainId or null;
     suppliedBuildGuard =
-      if build == null
+      if base != null && build != null
+      then throw "pkg-helper.mkRustDerivation: explicit base cannot be used with a supplied build"
+      else if build == null
       then true
       else if (producerPassthru.memberLayer or null) != null && producerId != selectedToolchain.id
       then throw "pkg-helper.mkRustDerivation: supplied build memberLayer requires a matching producer rustToolchainId; artifacts cannot be relabeled"
       else if selectedToolchain.custom && producerId != selectedToolchain.id
       then throw "pkg-helper.mkRustDerivation: custom toolchain on a supplied build requires a matching producer rustToolchainId"
       else true;
+    baseInjectionGuard =
+      if base == null
+      then true
+      else if build != null
+      then suppliedBuildGuard
+      else rustBuildPlan.baseAdmission;
     resolvedBuild =
       if build != null
       then builtins.seq suppliedBuildGuard build
@@ -2608,6 +3190,8 @@ in rec {
       // (attrIf (rustBuildPlan != null && rustBuildPlan.memberLayer != null) "memberLayer" rustBuildPlan.memberLayer)
       // (attrIf (rustBuildPlan != null && rustBuildPlan.sharedDepsBase != null) "sharedDepsBase" rustBuildPlan.sharedDepsBase)
       // (attrIf (projectDir != null) "projectDir" projectDir)
+      // (attrIf (base != null) "depsBase" base)
+      // (attrIf (base != null && baseLabel != null) "baseLabel" baseLabel)
       # Only helper-produced builds receive an identity. Opaque supplied builds
       # retain their producer's ID (or its absence); their checks use toolPkgs,
       # but those checks do not prove which compiler produced the original build.
@@ -2630,7 +3214,38 @@ in rec {
               preBuildPhase = rustCheckPreBuildPhase;
               testCargoArgs = resolvedTestCargoArgs;
             });
-        inherit (bundle) pkgOps;
+        # Private observation for export/shell adapters, not an artifact
+        # certificate. Reuse the already-selected operation tools; never resolve
+        # the factory's toolchain again or expose the recursive package set.
+        __rustOperationContext = {
+          # The writer is bound to the actual selected Crane library. This
+          # observation is lazy passthru data, not a second compiler selector.
+          writeTOML = craneLib.writeTOML;
+          env =
+            if rustBuildPlan == null
+            then {}
+            else rustBuildPlan.compilerAttrs.env or {};
+        };
+        actualOperationTools =
+          builtins.intersectAttrs {
+            cargo = null;
+            rustc = null;
+            clippy = null;
+            rustfmt = null;
+          }
+          toolPkgs;
+        pkgOps =
+          if rustBuildPlan == null || !rustBuildPlan.expanded
+          then bundle.pkgOps
+          else
+            bundle.pkgOps
+            // {
+              # projectConsumer already validates checkEnv as a redundant subset
+              # of this normalized environment. No second merge/validator.
+              checks = builtins.mapAttrs (_: spec:
+                spec // {envScript = exportLiteralEnv (rustBuildPlan.compilerAttrs.env or {});})
+              bundle.pkgOps.checks;
+            };
       };
     devShellPassthru = attrIf enableDevShell "devShell" (pkgs.mkShell {
       packages = pkgs.lib.unique (
@@ -2659,7 +3274,7 @@ in rec {
       then baseDrv
       else wirePassthru baseDrv resolvedExtraPassthru;
   in
-    builtins.seq buildContractGuard drv;
+    builtins.seq scopeGuard (builtins.seq buildContractGuard (builtins.seq baseInjectionGuard drv));
 
   mkPackageApp = pkgs: pkg: {
     type = "app";

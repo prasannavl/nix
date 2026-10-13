@@ -40,4 +40,11 @@ import ./flake-isolated.nix {inherit pkgs;}
 // pkgs.lib.optionalAttrs (crane != null) {
   pvl-child-flake-parity = import ./child-flake-parity.nix {inherit pkgs crane;};
   pvl-rust-toolchain-integration = import ./rust-toolchain-integration.nix {pkgs = pkgs;};
+  pvl-rust-base-integration = import ./rust-base-integration.nix {pkgs = pkgs;};
+  pvl-rust-composition-integration = import ./rust-composition-integration.nix {pkgs = pkgs;};
+  pvl-rust-native-context-integration = import ./rust-native-context-integration.nix {pkgs = pkgs;};
+  pvl-external-packages = assert builtins.deepSeq (import ./external-packages.nix {inherit pkgs;}) true;
+    pkgs.runCommand "pvl-external-packages-test" {} ''
+      touch "$out"
+    '';
 }

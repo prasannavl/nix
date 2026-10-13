@@ -1,0 +1,3 @@
+# Traversal sentinel: an unsupported root package must not discover this file.
+[build]
+target-dir = "unselected-output"

@@ -13,6 +13,7 @@
   # stays repository-blind; see
   # .agents/docs/design-patterns/shared-test-areas.md.
   repoChecksFn ? ({...}: {}),
+  externalPackagesFor ? _system: {},
 }: let
   lib = nixpkgs.lib;
 
@@ -79,7 +80,7 @@ in rec {
     };
 
   withPkgs = pkgs: let
-    packageOutputs = packagesFn {inherit pkgs;};
+    packageOutputs = packagesFn {inherit externalPackagesFor pkgs;};
     available = availableAttrs pkgs;
 
     packageSet = available packageOutputs.packages;

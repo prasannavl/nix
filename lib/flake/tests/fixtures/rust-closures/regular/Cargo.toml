@@ -1,0 +1,6 @@
+[workspace]
+members = ["nested/a", "b"]
+resolver = "2"
+
+[workspace.dependencies]
+renamed = { path = "b", package = "actual-b" }

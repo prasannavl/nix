@@ -1,0 +1,29 @@
+version = 4
+
+[[package]]
+name = "application"
+version = "0.1.0"
+dependencies = ["library-a"]
+
+[[package]]
+name = "library-a"
+version = "0.1.0"
+dependencies = ["library-b"]
+
+[[package]]
+name = "library-b"
+version = "0.1.0"
+
+[[package]]
+name = "peer"
+version = "0.1.0"
+
+[[package]]
+name = "cycle-a"
+version = "0.1.0"
+dependencies = ["cycle-b"]
+
+[[package]]
+name = "cycle-b"
+version = "0.1.0"
+dependencies = ["cycle-a"]

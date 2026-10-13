@@ -1,6 +1,9 @@
 {
   pkgs,
   stack ? import ./stack/package.nix,
+  pkgHelper ? stack.pkg,
+  # Inert until explicitly supplied; root composition does not enable adoption.
+  externalPackagesFor ? _system: {},
 }: let
   manifest = import ../../pkgs/manifest.nix;
   entries =
@@ -38,19 +41,33 @@
     if args ? stack
     then {stack = stack;}
     else {};
-  canonicalPackages =
-    builtins.mapAttrs (
-      name: entry:
-        pkgs.callPackage entry.path (
-          (stackArgsFor entry.path)
-          // (
-            if entry ? args
-            then entry.args canonicalPackages
-            else {}
-          )
-        )
-    )
-    validatedEntries;
+  external = externalPackagesFor pkgs.stdenv.hostPlatform.system;
+  externalGuard =
+    if !builtins.isAttrs external
+    then throw "externalPackagesFor: expected an attribute set"
+    else if builtins.any (name: !(validatedEntries ? ${name})) (builtins.attrNames external)
+    then throw "externalPackagesFor: overrides must name canonical manifest packages"
+    else true;
+  canonicalPackages = builtins.seq externalGuard (
+    builtins.mapAttrs (name: entry: let
+      packageArgs =
+        if entry ? args
+        then entry.args canonicalPackages
+        else {};
+      candidate = external.${name} or null;
+      replacement =
+        if builtins.isFunction candidate
+        then candidate {inherit pkgs pkgHelper stack packageArgs;}
+        else candidate;
+    in
+      if external ? ${name}
+      then
+        if pkgs.lib.isDerivation replacement
+        then replacement
+        else throw "externalPackagesFor: `${name}` must provide a derivation or constructor"
+      else pkgs.callPackage entry.path ((stackArgsFor entry.path) // packageArgs))
+    validatedEntries
+  );
   packageAliases = builtins.foldl' (
     aliases: name:
       aliases

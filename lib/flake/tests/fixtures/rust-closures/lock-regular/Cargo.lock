@@ -1,0 +1,2 @@
+# The planner checks the file type, not Cargo lock resolution.
+version = 4
