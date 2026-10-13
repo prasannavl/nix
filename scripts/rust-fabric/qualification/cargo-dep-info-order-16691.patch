@@ -1,0 +1,30 @@
+From 074980c2670522e3bde8acb9a25b40510f78626c Mon Sep 17 00:00:00 2001
+From: kpcyrd <git@rxv.cc>
+Date: Mon, 2 Mar 2026 20:55:23 +0100
+Subject: [PATCH] Make target/.fingerprint/.../... dep-info files deterministic
+
+---
+ src/cargo/core/compiler/fingerprint/dep_info.rs | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/tools/cargo/src/cargo/core/compiler/fingerprint/dep_info.rs b/src/tools/cargo/src/cargo/core/compiler/fingerprint/dep_info.rs
+index 324f4b8c37d..fbad35c17fe 100644
+--- a/src/tools/cargo/src/cargo/core/compiler/fingerprint/dep_info.rs
++++ b/src/tools/cargo/src/cargo/core/compiler/fingerprint/dep_info.rs
+@@ -3,6 +3,7 @@
+ //!
+ //! [the documentation]: crate::core::compiler::fingerprint#dep-info-files
+ 
++use std::collections::BTreeMap;
+ use std::collections::HashMap;
+ use std::ffi::OsString;
+ use std::fmt;
+@@ -33,7 +34,7 @@ pub struct RustcDepInfo {
+     /// The list of files that the main target in the dep-info file depends on.
+     ///
+     /// The optional checksums are parsed from the special `# checksum:...` comments.
+-    pub files: HashMap<PathBuf, Option<(u64, Checksum)>>,
++    pub files: BTreeMap<PathBuf, Option<(u64, Checksum)>>,
+     /// The list of environment variables we found that the rustc compilation
+     /// depends on.
+     ///
