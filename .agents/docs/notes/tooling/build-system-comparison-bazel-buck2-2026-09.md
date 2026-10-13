@@ -9,7 +9,7 @@ out of scope.
 
 Companion docs: `.agents/docs/plans/multi-ecosystem-build-fabric-2026-09.md`,
 `.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md`,
-`.agents/docs/notes/tooling/rust-build-graph-handoff-2026-09.md`.
+`.agents/docs/design-patterns/rust-foundation.md`.
 
 ---
 

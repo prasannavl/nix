@@ -1,85 +1,17 @@
 # AI Docs Index
 
-## Current Rust foundation route — 2026-10-13
-
-Read the synchronized design, concise plan and main handoff first. Required
-regular-Cargo reuse passed for Pvl and the six Abird native cases; both actual
-candidate manager mirrors passed independent parity review. Abird's 24-member
-constructor/context checks establish 20 native contexts and four unsupported
-lanes, not 24-product or ARM execution. The isolated legacy comparison passed
-with a 15.1% observed source-edit elapsed saving in the selected manager
-workflow. Scoped final qualification is independently accepted and retained.
-Next is separately authorized integration; adoption remains separate. All new
-qualification VMs use 16 CPUs / 16 GiB by human instruction. Independent byte
-determinism is optional; compiler metadata investigation is not the next
-required unit. The historical cutoffs below do not select work.
-
-## Historical optional qualification Cargo — 2026-10-13
-
-Human approved the exact upstream Cargo PR #16691 ordering patch for optional
-qualification only. R now provides patched-cargo.nix, cargo-order-check.nix and
-manager-patched-vm.nix under scripts/rust-fabric/qualification. The regular VM
-route defaults to regular Cargo; no root-flake check or system package enables
-the patch. Regular Cargo and manager derivation identities are unchanged.
-
-The real patched Cargo built, and a small independent-compilation/source-edit
-regression passed. The full manager matrix reached four successful build,
-packaging and version cases. The original forced-warm byte-equality gate now
-passes with exactly 2 workspace / 0 external compilations. Changed warm and
-independent changed fresh nevertheless differ in cache and package NAR hashes;
-full qualification remains incomplete.
-
-A fresh retained comparison found package differences in anonymous LLVM symbol
-suffixes/non-allocated symbol-table data. All 29 allocated ELF sections match;
-fully stripped diagnostic copies match exactly. The member head also has manager
-rmeta/rlib differences, and independently produced parent cache NARs differ. No
-runtime-loaded byte difference was observed in this package pair. The exact
-generator of the remaining cache/compiler metadata variation is not yet proved.
-Diagnostic stripping changed only owned copies; producer outputs, regular
-compiler flags, Cargo fingerprints and production packaging stay intact.
-
-At that historical cutoff, the next unit was parent cache/compiler metadata
-variation. The latest human decision makes that investigation optional. Use
-retained warm/fresh artifacts; no new path investigation or replay of the
-successful warm case is needed. Keep optional patched results separate from
-regular Cargo raw cache reproducibility and original cost/platform/
-mirror/integration/adoption gates. Removing the backport requires that its fix
-be present in the regular pinned Cargo, not merely merged upstream.
-
-Implementation, reproduction and actual evidence are in the synchronized VM
-note. Current R outcome event:
-`20261013T044227Z-optional-cargo-qualification-implemented-runtime-sections-equal-next-metadata-gate.md`.
-
-## Confirmed VM determinism cause — 2026-10-13
-
-A fresh human-selected diagnostic retained the baseline and Nix .check outputs
-of the original manager member-layer recipe. Only target.tar.zst differed. Both
-tar streams have 39 entries with identical order and headers. Every archived
-payload matches except Cargo's binary dep-info for the agent and manager
-libraries. Those two files contain identical raw dependency-record multisets (27
-agent / 58 manager), identical format/version/count/environment bytes, and
-differing record order only. Executables, rlibs, rmeta, text .d files and other
-fingerprint payloads match. Warm compilation remains 2 workspace / 0 external.
-Baseline build/package/version passed.
-
-The pinned Cargo 1.95.0 (f2d3ce0bd) writer collects paths in a HashMap, iterates
-it without sorting, then serializes the resulting vector. HashMap random seeds
-vary that iteration order across Cargo processes. Crane archives the binary
-dep-info unchanged, so Nix correctly rejects different cache-output bytes. This
-establishes the cause for the current sandboxed pair, not every historical
-unsandboxed mismatch. No compiler/toolchain/fingerprint or producer changes were
-made; this diagnostic collection is not successful warm qualification.
-
-Evidence and exact upstream references are in the VM note. At that historical
-cutoff, Cargo serialization was the next work and patched Cargo was forbidden.
-The later human decision allows optional qualification-only patched Cargo; do
-not silently normalize/delete binary fingerprints, waive the gate or label
-final-binary identity as cache-archive identity. Build-path, tar timestamp and
-tar-order experiments are finished for this proved pair. Full qualification
-remains open. Current R raw root-cause event:
-`20261013T030644Z-vm-cargo-dep-info-record-order-root-cause.md`.
-
 Use this index as the canonical map for `.agents/docs/**`.
+
+## Rust foundation integrated — 2026-10-13
+
+The local main branches contain the reviewed core, mirror and optional VM
+support. Both current-input six-case runtime matrices passed; both committed
+mirrors passed four-route parity. Defaults/regular Cargo remain unchanged. Byte
+determinism remains optional FAIL. The canonical plan is archived at
+`.agents/plans/archive/2026/2026-w40-rust-fabric-implementation.md` and the done
+capsule at `.agents/plans/done/2026/w42/2026-w40-rust-fabric-implementation`.
+Read the synchronized main handoff for actual refs, resource labels and scope.
+No extra metadata investigation or qualification build is selected.
 
 ## Lang Patterns
 
@@ -1134,94 +1066,14 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 ## Rust foundation
 
-**Human-resumed qualification.** M21 manager build/version passed; M22/M23 warm
-cases closed failed. M24's sandbox case now CLOSED FAILED at the first ordinary
-prerequisite because Nix could not use the kernel namespaces required for
-sandboxing. Current Source, actual controls, genuine peer review, BODY30, fresh
-custody/admission and helper20 passed; manager compilation was not reached.
-Native300 is fully charged/closed, no retry or fallback. The owned runner
-reports its container absent; outer reaping proves only its direct-child wait.
-The earlier output mismatch cause and precise namespace refusal operation remain
-unproved.
-
-The fast baseline/warm/changed-warm/independent-changed-fresh comparison remains
-the intended route. A specifically selected, reviewed sandbox-capable execution
-environment or namespace isolation change must precede another build-path case.
-Ordinary build-dir only fixes the parent and does not provide a stable per-build
-CWD. Do not replay M24, weaken isolation silently, change compiler/Crane recipes
-or reopen archive-reader work. All original qualification and integration/
-adoption gates remain open. Human validation preapproval persists.
-
-Start with
-.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md.
-Qualification code, actual receipts and raw events remain in R; this main tree
-contains agent handoff material only.
-
-- .agents/docs/design-patterns/rust-foundation.md: selected Cargo/Crane
-  architecture and compatibility contract.
-- .agents/docs/plans/rust-foundation.md: concise current plan route.
-- .agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md:
-  synchronized results, next bounded unit, acceptance gates and regeneration
-  instructions.
-
-- `.agents/docs/notes/tooling/rust-foundation-nixos-vm-2026-10.md`: implemented
-  VM matrix, actual smoke/manager results, independent store seeding,
-  regeneration and the remaining determinism gate.
-
-## NixOS VM implementation and current result
-
-The human-authorized NixOS test framework is implemented in R under
-`scripts/rust-fabric/qualification/`. Two disposable guests have independent
-writable seeded store images, no host-store mount, no remote builders or
-substituters, no guest network fetching and no IFD. Nix uses sandbox=true,
-sandbox-build-dir=/build and sandbox-fallback=false. Original manager
-Cargo/Crane recipes, compiler flags, full lock/vendor and compatibility guards
-remain unchanged.
-
-The final smoke passed baseline, forced unchanged warm, changed warm and
-independent changed fresh, including exact guest derivation identities,
-seed-output absence, installed behavior and NAR equality. The actual manager V4
-baseline build/version passed; its forced unchanged warm rebuild failed Nix
-output equality. Ordinary warm logs contain exactly two workspace compilations
-(agent and manager) and zero external compilations, both under
-/build/cargo-workspace-source. Fixed sandbox paths alone are insufficient for
-artifact determinism in this case. The subsequent retained pair proves Cargo
-binary dep-info record ordering as the current cause (see confirmed result).
-Changed manager cases stopped at that first refusal and were not run.
-
-Next work is a bounded artifact-determinism implementation fix preserving the
-compatibility contract, followed by this existing matrix. Do not replay a spent
-case, expand the VM harness, or reopen archive-reader work. CargoFresh remains
-not_observed and full qualification, original cost, mirror, Abird/platform and
-integration/adoption acceptance remain open. The 7-core/8-GiB guest environment
-is separate from the original cost gate. M24 remains closed.
-
-Reproduction, seed selection and retained evidence are documented in
-`.agents/docs/notes/tooling/rust-foundation-nixos-vm-2026-10.md`. Current R
-validation event:
-`20261013T023437Z-nixos-vm-matrix-implemented-and-manager-warm-refused.md`.
-
-The VM note now records exact upstream Cargo PR #16691 and its proposed pinned
-ordering fix. A narrow compatibility decision is pending before any toolchain
-backport or qualification-gate change; research alone authorizes neither.
-
-Human selected the pinned upstream Cargo dep-info ordering patch for optional
-qualification only. Regular systems and the default VM route retain regular
-Cargo. The design contract now records this narrow exception; implementation and
-actual tests live in R. Read the VM note for the labeled validation result.
-
-## Current Rust foundation acceptance — 2026-10-13
-
-Independent-build byte determinism is now optional by explicit human decision.
-Required work uses regular Cargo and validates actual Nix cache transport, Cargo
-reuse and observable source invalidation. The current route is recorded in
-`.agents/docs/plans/rust-foundation.md` and the VM note; all remaining G1–G11,
-mirror/parity/platform/cost/review/adoption gates remain required.
-
-Regular-Cargo required manager reuse now passed all six VM cases. Actual Nix
-binary-cache restoration succeeded with builds disabled; warm cases compiled 2
-workspace / 0 external crates and changed behavior appeared in both changed
-builds. Independent compilation hashes differed as optional FAIL. Source/fixture
-and native edit results, registered evidence and remaining closeout gates are
-recorded in the current VM note and handoff. The next required bounded unit is
-real immutable manager-mirror consumption; full foundation remains incomplete.
+- `.agents/docs/design-patterns/rust-foundation.md`: Cargo/Crane compatibility
+  contract.
+- `.agents/docs/plans/rust-foundation.md`: completed integration route.
+- `.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md`:
+  current results, custody and regeneration.
+- `.agents/docs/notes/tooling/rust-foundation-nixos-vm-2026-10.md`: current main
+  runtime proof and labeled historical results.
+- `.agents/plans/archive/2026/2026-w40-rust-fabric-implementation.md`: closed
+  canonical plan.
+- `.agents/plans/done/2026/w42/2026-w40-rust-fabric-implementation/README.md`:
+  retained public events and integration evidence.

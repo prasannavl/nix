@@ -8,9 +8,10 @@ supporting revision-owned standalone packages without changing their semantics.
 This is the project formerly described by the historical G4/M design labels.
 Those labels are not separate current projects.
 
-The active plan is `.agents/plans/2026-w40-rust-fabric-implementation.md`. Its
-stable coordination ID is retained; its readable name is **Rust foundation**.
-Implementation results and the current blocker are in
+The completed plan is
+`.agents/plans/archive/2026/2026-w40-rust-fabric-implementation.md`. Its stable
+coordination ID is retained; its readable name is **Rust foundation**.
+Implementation and current integration results are in
 `.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md`.
 
 ## Architecture
@@ -140,10 +141,11 @@ genuine closure-subset edge with matching compile context.
 Rejected alternatives include peer-derived feature unions, per-node pruned
 vendors/locks, arbitrary parent labels, semantic stub rewrites as the current
 path, compiler/fingerprint reimplementation, and generic ownership fallbacks.
-The detailed rationale and original G1–G11 acceptance are summarized in the
-synchronized current handoff.
+The detailed rationale and original G1–G11 acceptance are retained in the closed
+canonical plan, done capsule public events and qualification cutoff.
 
-The Rust foundation archive and duplicate historical proof copies were removed
-from the main worktrees. Qualification events, implementation source and live
-evidence remain in R. Historical receipt bytes are not recreated; new runs
-produce fresh evidence.
+The core, mirrors and optional qualification tooling are integrated in both main
+worktrees. The completed plan, public events and GC-rooted current evidence are
+retained in their done capsules. Original R/A worktrees retain unmerged
+historical staging and private execution artifacts. Historical receipt bytes are
+not recreated; new runs produce fresh evidence.

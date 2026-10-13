@@ -80,3 +80,12 @@ Do not use `path:` as a convenience shortcut during AI evaluation.
   `lib/installer/build-image.nix`; the `self-reference-fetcher` lint step
   enforces it. See
   `.agents/docs/notes/apps/tailscale-upstream-package-2026-05.md`.
+
+## builtins.getFlake uses a different default
+
+For programmatic input discovery, pass an intentional `git+file:///...?rev=`
+ref with the exact committed object ID. A plain absolute string passed to
+`builtins.getFlake` uses path fetching and can walk ignored worktrees/tmp,
+unlike the Git-aware CLI repository ref. Integration input discovery hit a
+permission refusal in an ignored worktree before correction to an explicit Git
+snapshot. Do not change permissions or use a path-flake workaround.
