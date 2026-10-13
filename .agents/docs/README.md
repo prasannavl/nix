@@ -11,7 +11,10 @@ determinism remains optional FAIL. The canonical plan is archived at
 `.agents/plans/archive/2026/2026-w40-rust-fabric-implementation.md` and the done
 capsule at `.agents/plans/done/2026/w42/2026-w40-rust-fabric-implementation`.
 Read the synchronized main handoff for actual refs, resource labels and scope.
-No extra metadata investigation or qualification build is selected.
+No extra metadata investigation or qualification build is selected. The
+2026-10-14 publication follow-up records Abird's normal upstream merge, explicit
+decline of the new Cargo.lock.nix policy in optional foundation routes, and
+retained side-worktree custody. Runtime proofs keep their exact prior pins.
 
 ## Lang Patterns
 

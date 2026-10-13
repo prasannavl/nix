@@ -85,6 +85,11 @@ arguments; this cleanup does not introduce or remove an API.
 - No fixture stripping, broad source filters, generic ownership exceptions,
   dirty-mirror fallback or root-registry fallback to make tests pass.
 - Keep pure evaluation/no IFD and honest unsupported-platform boundaries.
+- A root `Cargo.lock.nix` replacement policy is outside
+  closure-base/source/mirror admission. Reject it explicitly and retain the
+  normal package constructor's policy. Do not silently omit the sidecar or
+  normalize the shared vendor to claim parity; its declared source contract
+  needs separate qualification.
 - Standalone, composed and in-repository semantics must agree; never widen
   features based on the selected peer set.
 
