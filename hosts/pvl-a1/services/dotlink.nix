@@ -7,16 +7,17 @@
     workingDirectory = "/home/pvl/spaces/abird/";
     logging.verbosity = "tools";
 
-    # Host integrations for Bubblewrap shell tools: host Nix daemon and Nix
-    # config, Git config, and the SSH agent (GCR) socket. These map to the
-    # module's --allow-nix-daemon/--allow-nix-config/--allow-git-config/
-    # --allow-ssh-agent flags; --allow-shell is added automatically. Shell
-    # network access remains enabled via the saved profile.
+    # Host integrations for Bubblewrap shell tools; maps to --allow-* flags.
+    # --allow-shell is added automatically, shell network comes from the
+    # saved profile.
     hostAccess = {
       nixDaemon = true;
       nixConfig = true;
       gitConfig = true;
       sshAgent = true;
+      # /dev/kvm (AMD-V) plus AMD and NVIDIA GPU devices/driver resources.
+      kvm = true;
+      gpu = ["amd" "nvidia"];
     };
 
     # Shell-only developer caches discovered on both hosts, read/write.

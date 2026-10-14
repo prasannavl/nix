@@ -581,7 +581,8 @@ retained side-worktree custody. Runtime proofs keep their exact prior pins.
   default profile at `/home/pvl/spaces/abird/`, and the dotlink v0.8.0 bump with
   `hostAccess` (Nix daemon/config, Git config, SSH agent) and `cacheAccess`
   grants enabled on both hosts, and the v0.8.1 fix that skips absent developer
-  caches instead of aborting startup.
+  caches instead of aborting startup, and the v0.9.0 bump adding opt-in
+  `hostAccess.kvm`/`hostAccess.gpu` (AMD and NVIDIA) grants.
 - `.agents/docs/notes/services/dotlink-missing-go-mod-cache-activation-failure-2026-10.md`:
   Records the pvl-a1 activation failure where the v0.8.0
   `--allow-cache-go-mod=rw` grant aborted because `/home/pvl/go/pkg/mod` was

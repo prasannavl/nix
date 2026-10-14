@@ -12,6 +12,10 @@ followed the same day to fix a startup abort when a requested cache directory
 was absent (see
 [dotlink missing Go-module cache broke pvl-a1 activation](dotlink-missing-go-mod-cache-activation-failure-2026-10.md)).
 
+On 2026-10-14 the service was updated to `dotlink v0.9.0`, which adds opt-in KVM
+and AMD/NVIDIA GPU device access. Both hosts now enable `hostAccess.kvm` and
+`hostAccess.gpu = [ "amd" "nvidia" ]`.
+
 ## Flake input
 
 `abird-ai/dotlink` is consumed as a root flake input because it ships both the
@@ -37,7 +41,8 @@ bumped.
 The 2026-10-13 bump advanced only the `dotlink` node in `flake.lock` from
 `3335af57` (2026-10-11) to `5e46cbf1` (2026-10-13); no other input moved. The
 v0.8.1 fix advanced the same node to `5f46990` (2026-10-13); again no other
-input moved.
+input moved. The v0.9.0 bump advanced the same node to `dcea9b1` (2026-10-14),
+again with no other input moved.
 
 ## Host services
 
@@ -58,6 +63,8 @@ services.dotlink = {
     nixConfig = true;
     gitConfig = true;
     sshAgent = true;
+    kvm = true;
+    gpu = [ "amd" "nvidia" ];
   };
   cacheAccess = {
     "cargo-registry" = "rw";
@@ -109,6 +116,11 @@ the source of truth for the host grants. The options map to `--allow-*` flags:
 - `hostAccess.sshAgent` → `--allow-ssh-agent`; the GCR socket at
   `/run/user/1000/gcr/ssh` is auto-discovered on both hosts (no `sshAgentSocket`
   override). The agent must already be running as `pvl` at service start.
+- `hostAccess.kvm` → `--allow-kvm`; `hostAccess.gpu` → one
+  `--allow-gpu=<vendor>` per vendor. Since v0.9.0 the module also sets
+  `SupplementaryGroups = [ "kvm" "render" "video" ]` on the unit when KVM or GPU
+  access is enabled; the groups are unit-scoped and do not change the user's
+  global groups.
 - `cacheAccess` → `--allow-cache-<kind>=rw` for the seven caches present on both
   hosts (Cargo registry/git, npm, Yarn, pip, Go mod/build). Since v0.8.1 a cache
   whose directory is absent is skipped with a warning instead of aborting
@@ -135,7 +147,20 @@ The v0.8.0 bump needed only seven derivations (Rust 1.98.1 toolchain plus
 `dotlink-deps`/`dotlink`); the rest was substituted from the `pvl-x2` binary
 cache. `dotlink v0.8.0` raises the profile schema to v10, which both hosts
 already use or migrate to in memory. The v0.8.1 bump rebuilt `dotlink-0.8.1`
-from source (about 1m25s) because the fixed binary was not yet in the cache.
+from source (about 1m25s) because the fixed binary was not yet in the cache. The
+v0.9.0 bump likewise rebuilt `dotlink-deps`/`dotlink` from source.
+
+## KVM and GPU access
+
+The v0.9.0 update adds opt-in `hostAccess.kvm` (boolean) and `hostAccess.gpu`
+(list of `amd`/`nvidia`) options. Both hosts enable both, since each runs AMD
+(ROCm) and NVIDIA llama.cpp/Ollama backends and boots the `kvm-amd` module. The
+flags expose `/dev/kvm` and the vendor-matched GPU character devices plus
+read-only driver resources to the Bubblewrap shell sandbox; they do not affect
+ordinary filesystem grants or shell networking. A request for absent hardware
+fails loudly, so the grant must match the host's real devices. Profile schema
+v10 stores the additive `permissions.allow_kvm` and `permissions.allow_gpu`
+fields, so the hosts' saved profiles remain compatible.
 
 ## Validation
 
@@ -145,8 +170,10 @@ from source (about 1m25s) because the fixed binary was not yet in the cache.
   `workingDirectory = "/home/pvl/spaces/abird/"`, an unset `profile`, and the
   unit's `User`/`WorkingDirectory`/`SetLoginEnvironment`/`ExecStart`.
 - `nix build .#nixosConfigurations.pvl-a1.config.services.dotlink.package`
-  succeeds and `dotlink --version` reports `dotlink v0.8.1`.
+  succeeds and `dotlink --version` reports `dotlink v0.9.0`.
 - Both hosts evaluate to the same generated `ExecStart` with `--allow-shell`,
   `--allow-nix-daemon`, `--allow-nix-config`, `--allow-ssh-agent`,
-  `--allow-git-config`, and the seven `--allow-cache-<kind>=rw` grants, and no
-  `DOTLINK_CONFIG` (profile reuse).
+  `--allow-git-config`, `--allow-kvm`, `--allow-gpu=amd`, `--allow-gpu=nvidia`,
+  and the seven `--allow-cache-<kind>=rw` grants, plus
+  `SupplementaryGroups = [ "kvm" "render" "video" ]`, and no `DOTLINK_CONFIG`
+  (profile reuse).
