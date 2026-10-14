@@ -15,8 +15,8 @@ Current real regular-Cargo required manager matrix passed all six cases,
 including actual Nix cache export/restore with compilation disabled and
 observable source invalidation. Warm cases compiled 2 workspace / 0 external.
 Independent output hashes differed as optional FAIL. Exact reports and run
-inputs are in the VM note; full mirror/Abird/platform/cost/integration
-qualification remains open.
+inputs are in the VM note; scoped qualification and integration are complete at
+the main handoff source pins.
 
 Required qualification uses regular Cargo and defaults to
 `checkDeterminism = false`. It validates an unchanged Nix cache hit, a local
@@ -53,17 +53,21 @@ passed its original four cases; the current required lane adds cache transport
 and cache-hit cases. Earlier regular manager forced-warm equality failed;
 patched Cargo fixed that first failure, then changed warm/fresh equality failed.
 Those remain genuine optional-diagnostic results. Current required reuse results
-are recorded separately in the VM note. Full foundation qualification remains
-incomplete. Historical support below retains its original scope.
+are recorded separately in the VM note. Scoped foundation qualification and
+integration are complete at their recorded source pins. Historical support below
+retains its original scope.
 
-Current design/results: `.agents/docs/notes/tooling/rust-foundation.md` in the
-foundation worktree; Abird uses `rust-foundation-abird-port-2026-10.md`. The
-scripts now live under `scripts/rust-fabric/qualification/`; diagnostic tags and
-APIs retain their historical names, not a separate project identity. Historical
-statements below do not override the current required reuse and real-mirror
-results in the synchronized VM note. Old execution packets are retired; this
-directory is support Source, not a current grant. The historical bounded
-fixture/product results below do not establish current manager Cargo reuse.
+Current design/results:
+`.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md` and
+`.agents/docs/design-patterns/rust-foundation.md`. Abird's newer Cargo.lock.nix
+policy is unsupported by optional closure/base/mirror routes; prior runtime
+qualification retains its exact source pins. The scripts now live under
+`scripts/rust-fabric/qualification/`; diagnostic tags and APIs retain their
+historical names, not a separate project identity. Historical statements below
+do not override the current required reuse and real-mirror results in the
+synchronized VM note. Old execution packets are retired; this directory is
+support Source, not a current grant. The historical bounded fixture/product
+results below do not establish current manager Cargo reuse.
 
 **Bounded Pvl baseline, four-member edits and Cargo freshness acceptance
 passed.** All native evidence referenced here belongs to the Pvl foundation
@@ -76,7 +80,7 @@ Cargo/native build, capture, provider/network fetch or publication is authorized
 by importing them. Producer remains `qualified = false`,
 `decision = not_proven`.
 
-## Ordinary prerequisite batching and current product acceptance
+## Historical prerequisite batching and product acceptance
 
 `prerequisite_batches.select_batches(pending, graph, valid)` is a pure helper:
 from authenticated schema4/pending-output metadata, select only original

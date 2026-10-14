@@ -1069,6 +1069,9 @@ retained side-worktree custody. Runtime proofs keep their exact prior pins.
 
 ## Rust foundation
 
+- `.agents/docs/notes/tooling/rust-foundation-fresh-review-2026-10-14.md`: Fresh
+  published-range review, resolved module-default and guidance findings, and
+  targeted regression validation.
 - `.agents/docs/design-patterns/rust-foundation.md`: Cargo/Crane compatibility
   contract.
 - `.agents/docs/plans/rust-foundation.md`: completed integration route.
