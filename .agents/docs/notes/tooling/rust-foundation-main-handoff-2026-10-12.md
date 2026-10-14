@@ -130,3 +130,13 @@ facade and tested package/cache identities are unchanged. See
 [layout validation](language-packaging-layout-2026-10-14.md) for the new paths
 and source boundaries. Earlier runtime pins and archived tooling retain their
 original layout; this refactor does not renew qualification or enable adoption.
+
+## Ordinary lockfile repair — 2026-10-14
+
+The corp bot source/vendor mismatch is repaired at the shared Rust-platform
+constructor boundary. See
+[repair and actual build validation](rust-lockfile-contract-repair-2026-10-14.md).
+The real corp-selected tg-parrot build and all eight tests passed; the other two
+corp bots passed setup-only lock comparisons. Service factory package-context
+changes remain separate because direct host-pkgs substitution causes module
+option-collection recursion. Earlier qualification source pins are unchanged.

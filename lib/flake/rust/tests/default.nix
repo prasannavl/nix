@@ -1,6 +1,7 @@
 # Shared language-owned checks. Repository integration stays in flake/tests/<topology>.
 {pkgs}:
 {
+  lib-flake-rust-lockfile = import ./lockfile.nix {pkgs = pkgs;};
   lib-flake-rust-source-scope = assert builtins.deepSeq (import ./source-scope.nix {}) true;
     pkgs.runCommand "lib-flake-rust-source-scope-test" {} ''
       touch "$out"

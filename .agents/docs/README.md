@@ -1071,6 +1071,10 @@ retained side-worktree custody. Runtime proofs keep their exact prior pins.
 
 ## Rust foundation
 
+- `.agents/docs/notes/tooling/rust-lockfile-contract-repair-2026-10-14.md`:
+  ordinary source/vendor lock repair, corp bot build validation and
+  source/vendor override regression coverage.
+
 - `.agents/docs/notes/tooling/language-packaging-layout-2026-10-14.md`: Language
   ownership extraction, corrected repository-scenario placement and identity
   validation.

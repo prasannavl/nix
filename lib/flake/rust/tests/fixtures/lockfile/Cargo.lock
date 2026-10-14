@@ -1,0 +1,13 @@
+version = 4
+
+[[package]]
+name = "lock-app"
+version = "0.1.0"
+dependencies = [
+ "lock-library",
+]
+
+[[package]]
+name = "lock-library"
+version = "0.1.0"
+source = "git+https://example.invalid/locked-library#1111111111111111111111111111111111111111"

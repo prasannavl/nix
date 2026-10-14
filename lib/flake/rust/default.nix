@@ -513,6 +513,55 @@
       preBuild = joinLines (map (dep: "inheritCargoArtifacts ${dep}") (builtins.tail deps));
     };
 
+  # importCargoLock vendors the supplied lock but does not install it in the
+  # source tree. Keep explicit lock overrides coherent with cargoSetupHook's
+  # comparison, after caller patches and before the setup hook. Unchanged locks
+  # preserve existing derivation identities; opaque sources are never read here.
+  buildRustPlatformPackage = rustPlatform: sourceInfo: attrs: let
+    lock = attrs.cargoLock or {};
+    lockContents =
+      if !builtins.isAttrs lock
+      then null
+      else if (lock.lockFileContents or null) != null
+      then lock.lockFileContents
+      else if builtins.isPath (lock.lockFile or null)
+      then builtins.readFile lock.lockFile
+      else null;
+    vendorUsesLock = (attrs.cargoDeps or null) == null && (attrs.cargoVendorDir or null) == null;
+    actualSource = attrs.src or null;
+    effectiveSource =
+      if builtins.isPath actualSource
+      then actualSource
+      else if actualSource != null && sourceInfo.buildSrc != null && toString actualSource == toString sourceInfo.buildSrc
+      then sourceInfo.src
+      else null;
+    sourceLock =
+      effectiveSource
+      + "/${
+        if (attrs.cargoRoot or null) == null
+        then ""
+        else "${attrs.cargoRoot}/"
+      }Cargo.lock";
+    sourceMatchesLock =
+      builtins.isPath effectiveSource
+      && builtins.pathExists sourceLock
+      && builtins.readFile sourceLock == lockContents;
+    lockAttrs =
+      if !vendorUsesLock || lockContents == null || sourceMatchesLock
+      then {}
+      else {
+        rustPlatformLockfile = lockContents;
+        passAsFile = (attrs.passAsFile or []) ++ ["rustPlatformLockfile"];
+        postPatch = joinLines [
+          (attrs.postPatch or "")
+          ''
+            cp --remove-destination -- "$rustPlatformLockfilePath" "''${cargoRoot:+$cargoRoot/}Cargo.lock"
+          ''
+        ];
+      };
+  in
+    rustPlatform.buildRustPackage (attrs // lockAttrs);
+
   mkCraneCargoLockAttrs = {
     src,
     cargoLock ? null,
@@ -1018,7 +1067,7 @@ in rec {
         else if selectedToolchain.custom
         then throw "pkg-helper.mkTrunkProject: custom toolchain cannot use the rustPlatform/cargoDeps fallback"
         else
-          pkgs.rustPlatform.buildRustPackage (
+          buildRustPlatformPackage pkgs.rustPlatform {inherit src buildSrc;} (
             trunkBuildAttrs
             // {
               cargoLock = resolvedCargoLock;
@@ -1150,7 +1199,10 @@ in rec {
     if craneLib == null
     then
       builtins.seq (scopedSourceGuard __rustSourceContext (attrs // fallbackAttrs).src)
-      (rustPlatform.buildRustPackage (attrs // fallbackAttrs))
+      (buildRustPlatformPackage rustPlatform {
+        src = attrs.src or null;
+        buildSrc = attrs.src or null;
+      } (attrs // fallbackAttrs))
     else
       builtins.seq (scopedSourceGuard __rustSourceContext finalMergedAttrs.src)
       (builtins.seq (scopedSourceGuard __rustSourceContext depsOnlyMergedAttrs.src)
@@ -1289,7 +1341,10 @@ in rec {
       # never silently ignore distinct test args or cargoBuild/TestFlags.
       then throw "pkg-helper.mkCargoWorkspacePackage: custom toolchain builds are not supported yet; use mkRustDerivation without a supplied build, or supply a build with a matching producer rustToolchainId"
       else
-        pkgs.rustPlatform.buildRustPackage (
+        buildRustPlatformPackage pkgs.rustPlatform {
+          src = src;
+          buildSrc = src;
+        } (
           commonBuildAttrs
           // {
             cargoLock = resolvedCargoLock;
@@ -1776,7 +1831,7 @@ in rec {
               // finalAttrs
             )
           else
-            pkgs.rustPlatform.buildRustPackage (
+            buildRustPlatformPackage pkgs.rustPlatform {inherit src buildSrc;} (
               commonAttrs
               // {
                 cargoLock = resolvedCargoLock;
