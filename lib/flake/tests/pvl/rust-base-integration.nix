@@ -1,7 +1,7 @@
 # Cached real-Crane evaluation only. No compilation, fetch or IFD.
 {pkgs}: let
   helper = import ../../pkg-helper.nix;
-  fixture = ../fixtures/rust-workspace;
+  fixture = ../../rust/tests/fixtures/workspace;
   context = {
     inherit pkgs;
     src = fixture;
@@ -45,14 +45,14 @@
   chainContext =
     context
     // {
-      src = ../fixtures/rust-bases;
+      src = ../../rust/tests/fixtures/bases;
       deps = ["members/library-a"];
     };
   chainBase = helper.mkClosureBase chainContext;
   subsetContext =
     context
     // {
-      src = ../fixtures/rust-base-chains;
+      src = ../../rust/tests/fixtures/base-chains;
       deps = ["members/library-a" "members/library-b"];
     };
   leafContext =

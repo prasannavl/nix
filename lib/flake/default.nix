@@ -26,7 +26,7 @@
   serviceModuleFactory = import ./service-module.nix;
 
   fallbackOverlays = [
-    (import ./rust-toolchain.nix {inherit inputs;}).overlay
+    (import ./rust/toolchain.nix {inherit inputs;}).overlay
   ];
 
   isAvailablePackage = pkgs: pkg: let

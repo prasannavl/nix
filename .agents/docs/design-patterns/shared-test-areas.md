@@ -28,6 +28,11 @@ byte-tracked across repositories.
   counterparts (`phase-projection.nix` beside the shared
   `../phase-projection.nix`), and real-topology fixtures, named-host variants,
   product wiring assertions, and their check registrations live there.
+- Language-specific synthetic checks and fixtures localize in
+  `lib/flake/<language>/tests/`, registered by the shared flake-check
+  aggregator. Repository product integration remains in
+  `lib/flake/tests/<topology>/`. See
+  [language packaging](language-packaging.md).
 - Service-level identity checks localize with their service: a repo-only
   per-stack file `<service>/tests/<stack>.nix` sits beside the service's shared
   synthetic contracts (for example `lib/services/kanidm/tests/gap3.nix` for the

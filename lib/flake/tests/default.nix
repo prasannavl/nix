@@ -318,38 +318,6 @@
   };
 in
   {
-    lib-flake-rust-source-scope = assert builtins.deepSeq (import ./rust-source-scope.nix {}) true;
-      pkgs.runCommand "lib-flake-rust-source-scope-test" {} ''
-        touch "$out"
-      '';
-    lib-flake-rust-export = assert builtins.deepSeq (import ./rust-export.nix) true;
-      pkgs.runCommand "lib-flake-rust-export-test" {} ''
-        touch "$out"
-      '';
-    lib-flake-rust-compile-context = assert builtins.deepSeq (import ./rust-compile-context.nix) true;
-      pkgs.runCommand "lib-flake-rust-compile-context-test" {} ''
-        touch "$out"
-      '';
-    lib-flake-rust-native-context = assert builtins.deepSeq (import ./rust-native-context.nix {}) true;
-      pkgs.runCommand "lib-flake-rust-native-context-test" {} ''
-        touch "$out"
-      '';
-    lib-flake-rust-composition = assert builtins.deepSeq (import ./rust-composition.nix) true;
-      pkgs.runCommand "lib-flake-rust-composition-test" {} ''
-        touch "$out"
-      '';
-    lib-flake-rust-bases = assert builtins.deepSeq (import ./rust-bases.nix) true;
-      pkgs.runCommand "lib-flake-rust-bases-test" {} ''
-        touch "$out"
-      '';
-    lib-flake-rust-closures = assert builtins.deepSeq (import ./rust-closures.nix) true;
-      pkgs.runCommand "lib-flake-rust-closures-test" {} ''
-        touch "$out"
-      '';
-    lib-flake-rust-toolchain = assert builtins.deepSeq (import ./rust-toolchain.nix) true;
-      pkgs.runCommand "lib-flake-rust-toolchain-test" {} ''
-        touch "$out"
-      '';
     lib-flake-fabric-contract = import ./fabric-contract.nix {inherit pkgs;};
     lib-flake-fabric-projection = import ./fabric-projection.nix {inherit pkgs;};
     lib-flake-phase-projection = import ./phase-projection.nix {inherit pkgs;};
@@ -517,13 +485,4 @@ in
         touch "$out"
       '';
   }
-  // pkgs.lib.optionalAttrs (pkgs ? craneLib && pkgs.craneLib != null) {
-    lib-flake-rust-mirror = assert builtins.deepSeq (import ./rust-mirror.nix {inherit pkgs;}) true;
-      pkgs.runCommand "lib-flake-rust-mirror-test" {} ''
-        touch "$out"
-      '';
-    lib-flake-rust-source-scope-real = assert builtins.deepSeq (import ./rust-source-scope.nix {inherit pkgs;}) true;
-      pkgs.runCommand "lib-flake-rust-source-scope-real-test" {} ''
-        touch "$out"
-      '';
-  }
+  // import ../rust/tests {pkgs = pkgs;}

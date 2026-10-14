@@ -60,7 +60,7 @@
   # parent overlays. Input declarations for every wrapper are checked too.
   defaultPkgs = import pkgs.path {
     inherit system;
-    overlays = [(import ../../rust-toolchain.nix {inputs = {inherit crane;};}).overlay];
+    overlays = [(import ../../rust/toolchain.nix {inputs = {inherit crane;};}).overlay];
   };
   parentPackages = (import ../../packages.nix {inherit pkgs;}).packages;
   defaultPackages = (import ../../packages.nix {pkgs = defaultPkgs;}).packages;

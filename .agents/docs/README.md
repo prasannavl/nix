@@ -54,6 +54,8 @@ retained side-worktree custody. Runtime proofs keep their exact prior pins.
 - `.agents/docs/design-patterns/nix-native-service-moves.md`: Canonical
   Nix-authored multi-service move, two-stage closeout, admission, and recovery
   boundaries.
+- `.agents/docs/design-patterns/language-packaging.md`: Language-owned package
+  implementations, tools, tests and stable helper facade.
 - `.agents/docs/design-patterns/package-project-boundaries.md`: Package,
   repository configuration, standalone evaluation, and future isolated-flake
   boundaries.
@@ -1069,6 +1071,9 @@ retained side-worktree custody. Runtime proofs keep their exact prior pins.
 
 ## Rust foundation
 
+- `.agents/docs/notes/tooling/language-packaging-layout-2026-10-14.md`: Language
+  ownership extraction, corrected repository-scenario placement and identity
+  validation.
 - `.agents/docs/notes/tooling/rust-foundation-fresh-review-2026-10-14.md`: Fresh
   published-range review, resolved module-default and guidance findings, and
   targeted regression validation.

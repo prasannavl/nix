@@ -12,7 +12,9 @@
 - Keep the package build in `default.nix`; wrapper `flake.nix` files are for
   local package UX and standard `packages`, `apps`, `checks`, and `devShells`
   exports.
-- Keep using the shared helpers in `lib/flake/pkg-helper.nix`.
+- Keep using the shared facade in `lib/flake/pkg-helper.nix`. Language-specific
+  implementations live in their owning directories; see
+  [language packaging](language-packaging.md).
 - Package `default.nix` files must accept a caller-supplied current `stack` and
   may bind local aliases from it. They may fall back to the generic package
   stack at `lib/flake/stack/package.nix` for standalone package builds.

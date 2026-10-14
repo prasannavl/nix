@@ -6,8 +6,8 @@
     inherit pkgs;
     externalPackagesFor = _: {};
   };
-  src = ../fixtures/rust-exports;
-  exporter = import ../../rust-export.nix {
+  src = ../../rust/tests/fixtures/exports;
+  exporter = import ../../rust/export.nix {
     inherit src;
     memberDirs = ["members/agent" "members/manager"];
     packageFile = src + "/members/manager/default.nix";

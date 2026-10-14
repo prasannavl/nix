@@ -46,7 +46,7 @@ let
     }: let
       pkgHelper = packageStack.pkg;
       toolchainOverlay =
-        (import ../rust-toolchain.nix {
+        (import ../rust/toolchain.nix {
           inputs =
             rustToolchainInputs
             // nixpkgs.lib.optionalAttrs (crane != null) {

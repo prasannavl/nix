@@ -48,16 +48,16 @@ Implementation and current integration results are in
 
 ## Existing implementation surfaces
 
-| Surface                                                                    | Responsibility                                                                                                         |
-| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `lib/flake/rust-closures.nix`                                              | Declared source/path-dependency closure planning.                                                                      |
-| `lib/flake/rust-compile-context.nix`                                       | Compile-context normalization and compatibility.                                                                       |
-| `lib/flake/member-bases.nix`                                               | Composition-level base construction and subset parents.                                                                |
-| `lib/flake/pkg-helper.nix`                                                 | `rustPlan`, `mkClosureBase`, `mkRustComposition`, `mkRustDerivation`, source-bound helper and explicit base injection. |
-| `lib/flake/rust-export.nix`                                                | Package export/constructor contract.                                                                                   |
-| `lib/flake/rust-mirror-sources.nix`, `rust-mirror.nix`                     | Mirror source/support declarations and mirror interface.                                                               |
-| `scripts/rust-fabric/mirror/rust-mirror.py`                                | Immutable source inventory and mirror generation.                                                                      |
-| `lib/flake/tests/`, `scripts/rust-fabric/mirror/tests/test_rust_mirror.py` | Planner, context, composition, source-scope and mirror regressions.                                                    |
+| Surface                                                               | Responsibility                                                                                                         |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `lib/flake/rust/closures.nix`                                         | Declared source/path-dependency closure planning.                                                                      |
+| `lib/flake/rust/compile-context.nix`                                  | Compile-context normalization and compatibility.                                                                       |
+| `lib/flake/rust/member-bases.nix`                                     | Composition-level base construction and subset parents.                                                                |
+| `lib/flake/pkg-helper.nix`                                            | `rustPlan`, `mkClosureBase`, `mkRustComposition`, `mkRustDerivation`, source-bound helper and explicit base injection. |
+| `lib/flake/rust/export.nix`                                           | Package export/constructor contract.                                                                                   |
+| `lib/flake/rust/mirror-sources.nix`, `rust-mirror.nix`                | Mirror source/support declarations and mirror interface.                                                               |
+| `lib/flake/rust/mirror/rust-mirror.py`                                | Immutable source inventory and mirror generation.                                                                      |
+| `lib/flake/tests/`, `lib/flake/rust/mirror/tests/test_rust_mirror.py` | Planner, context, composition, source-scope and mirror regressions.                                                    |
 
 Do not treat the old design documents' `component` or `legacy` selectors as the
 current public API. Isolated package builds and package-owned defaults remain
@@ -154,3 +154,11 @@ worktrees. The completed plan, public events and GC-rooted current evidence are
 retained in their done capsules. Original R/A worktrees retain unmerged
 historical staging and private execution artifacts. Historical receipt bytes are
 not recreated; new runs produce fresh evidence.
+
+## Language ownership
+
+Rust code, tools, resources and generic checks now live under `lib/flake/rust/`.
+The stable `pkg-helper.nix` facade preserves constructor names and semantics.
+See [language packaging](language-packaging.md) for ownership, registration and
+source-boundary rules. Historical qualification keeps its original source and
+tooling pins; relocation does not extend that proof.

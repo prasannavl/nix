@@ -2,7 +2,7 @@
 # No Rust compilation and no import-from-derivation are needed for these checks.
 {pkgs}: let
   helper = import ../../pkg-helper.nix;
-  resolver = import ../../rust-toolchain.nix;
+  resolver = import ../../rust/toolchain.nix;
   seed = pkgs.extend (resolver {}).overlay;
   tool = pkgs.symlinkJoin {
     name = "rust-toolchain-integration";

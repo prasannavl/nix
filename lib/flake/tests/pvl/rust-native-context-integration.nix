@@ -4,8 +4,8 @@
   pkgs,
   snapshot ? null,
 }: let
-  tested = import ../rust-native-context.nix {inherit pkgs snapshot;};
-  shellRegression = import ../rust-native-shell.nix {inherit pkgs;};
+  tested = import ../../rust/tests/native-context.nix {inherit pkgs snapshot;};
+  shellRegression = import ../../rust/tests/native-shell.nix {inherit pkgs;};
 in
   assert (pkgs.craneLib or null) != null;
     pkgs.runCommand "pvl-rust-native-context-integration-test" {

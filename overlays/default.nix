@@ -7,7 +7,7 @@
   (import ./tmux-plugins.nix)
   (import ./supergfxctl.nix {inherit inputs;})
   inputs.vscode-ext.overlays.default
-  (import ../lib/flake/rust-toolchain.nix {inherit inputs;}).overlay
+  (import ../lib/flake/rust/toolchain.nix {inherit inputs;}).overlay
   (import ./pvl.nix {inherit inputs;})
   (import ./pkgs.nix {inherit inputs;})
   (

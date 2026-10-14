@@ -121,3 +121,12 @@ originals, rather than the formatted `.md` views, preserve the historical byte
 pins. The original R custody tree was not edited. The earlier two-file
 formatting cutoff is historical; no evidence or receipt was regenerated. The
 append-only rendering validation event records each original SHA256.
+
+## Language ownership follow-up — 2026-10-14
+
+Current Rust code and tooling now live under `lib/flake/rust/`; Go, Node/web,
+Python and shell have their own implementation directories. The public helper
+facade and tested package/cache identities are unchanged. See
+[layout validation](language-packaging-layout-2026-10-14.md) for the new paths
+and source boundaries. Earlier runtime pins and archived tooling retain their
+original layout; this refactor does not renew qualification or enable adoption.

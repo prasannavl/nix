@@ -1,7 +1,7 @@
 # Cached real construction only: no compilation, reuse or resolved-unit claims.
 {pkgs}: let
   helper = import ../../pkg-helper.nix;
-  src = ../fixtures/rust-composition;
+  src = ../../rust/tests/fixtures/composition;
   context = {inherit pkgs src;};
   args = {
     projectDir = "members/application";
@@ -80,7 +80,7 @@
     selectorRejected = fails (compose "legacy");
     unsupportedLegacyModeRejected = fails (helper.mkRustComposition (context
       // {
-        src = ../fixtures/rust-closures/config;
+        src = ../../rust/tests/fixtures/closures/config;
         baseMode = "legacy";
       }));
     legacyExplicitBaseRejected = fails ((compose "legacy").mkRustDerivation (args // {base = base;})).drvPath;
@@ -137,7 +137,7 @@
         base = alternateLibraryFactory.baseFor args.projectDir;
         deps = ["members/branch" "members/leaf" "members/middle"];
       });
-    sourceMismatchRejected = rejects {src = ../fixtures/rust-workspace;};
+    sourceMismatchRejected = rejects {src = ../../rust/tests/fixtures/workspace;};
     opaqueExplicitRejected = rejects {base = opaque;};
     extraSourceRejected = rejects {deps = ["members/peer"];};
     extraInternalSourceRejected = rejects {internalDeps = [dependency "members/peer"];};
