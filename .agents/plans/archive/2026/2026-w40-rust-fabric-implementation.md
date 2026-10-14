@@ -106,3 +106,12 @@ manager event's original bytes are retained in its `.md.raw` counterpart (SHA256
 `.md` file is now a formatted rendering. The original R event is unchanged. All
 other historical event bytes remain unchanged. Normal pre-push hooks are
 required for publication; no validation bypass or insecure-package waiver.
+
+## Historical worktree cleanup — 2026-10-14
+
+The human explicitly authorized discarding the remaining historical local
+qualification state. Both Rust side worktrees and their Git registrations are
+removed; earlier custody-retention statements are historical. Main code, branch
+refs, unrelated worktrees and retained public final results remain. See the done
+capsule decision
+`events/20261014T154639Z-prasannavl-decision-discard-historical-side-worktrees.md`.

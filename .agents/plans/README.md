@@ -11,8 +11,10 @@ capsule at `.agents/plans/done/2026/w42/2026-w40-rust-fabric-implementation`.
 Read the synchronized main handoff for actual refs, resource labels and scope.
 No extra metadata investigation or qualification build is selected. The
 2026-10-14 publication follow-up records Abird's normal upstream merge, explicit
-decline of the new Cargo.lock.nix policy in optional foundation routes, and
-retained side-worktree custody. Runtime proofs keep their exact prior pins.
+decline of the new Cargo.lock.nix policy in optional foundation routes, and the
+initially retained side-worktree custody. On 2026-10-14 the human explicitly
+authorized discarding that local historical state; both Rust side worktrees are
+removed. Retained public results and runtime source pins remain unchanged.
 
 ## Upstream
 

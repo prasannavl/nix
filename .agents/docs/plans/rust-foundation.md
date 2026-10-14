@@ -36,11 +36,11 @@ The canonical plan is closed at
 `.agents/plans/archive/2026/2026-w40-rust-fabric-implementation.md`. The done
 capsule is `.agents/plans/done/2026/w42/2026-w40-rust-fabric-implementation`.
 Pvl's done capsule retains the public historical event stream; Abird retains its
-local coordination record and current integration events. Raw private execution
-artifacts and unmerged historical staging remain in the original R/A custody
-worktrees; no historical worker/read/archive unit was reopened. Those trees are
-retained to avoid deleting unmerged local state. Active implementation and all
-new work now belong in the two main worktrees.
+local coordination record and current integration events. On 2026-10-14,
+`prasannavl` explicitly authorized discarding the remaining historical
+qualification state and removing both Rust side worktrees. Their directories and
+Git registrations are gone; branch refs and the retained public main results
+remain. Active implementation and new work belong in the two main worktrees.
 
 Publication/push and broad adoption remain separate. No additional qualification
 build or compiler metadata investigation is selected for this integrated scope.

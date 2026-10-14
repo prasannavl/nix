@@ -47,11 +47,11 @@ The canonical plan is closed at
 `.agents/plans/archive/2026/2026-w40-rust-fabric-implementation.md`. The done
 capsule is `.agents/plans/done/2026/w42/2026-w40-rust-fabric-implementation`.
 Pvl's done capsule retains the public historical event stream; Abird retains its
-local coordination record and current integration events. Raw private execution
-artifacts and unmerged historical staging remain in the original R/A custody
-worktrees; no historical worker/read/archive unit was reopened. Those trees are
-retained to avoid deleting unmerged local state. Active implementation and all
-new work now belong in the two main worktrees.
+local coordination record and current integration events. On 2026-10-14,
+`prasannavl` explicitly authorized discarding the remaining historical
+qualification state and removing both Rust side worktrees. Their directories and
+Git registrations are gone; branch refs and the retained public main results
+remain. Active implementation and new work belong in the two main worktrees.
 
 Push to both main branches is authorized in the publication follow-up below.
 Broad adoption remains separate. No compiler metadata investigation is selected.
@@ -140,3 +140,13 @@ The real corp-selected tg-parrot build and all eight tests passed; the other two
 corp bots passed setup-only lock comparisons. Service factory package-context
 changes remain separate because direct host-pkgs substitution causes module
 option-collection recursion. Earlier qualification source pins are unchanged.
+
+## Historical side-worktree removal — 2026-10-14
+
+`prasannavl` explicitly authorized deleting both Rust-fabric worktrees and all
+remaining local historical qualification state. The directories and their Git
+registrations are removed. The previous custody-retention audit is superseded;
+branch refs, main implementation, retained public final results and unrelated
+worktrees are preserved. The dated decision in the done capsule records the
+cleanup. No historical worker, build, cache archive or private source body was
+reopened.
