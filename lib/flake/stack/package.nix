@@ -118,7 +118,16 @@ let
         in
           if !builtins.isAttrs output.library
           then throw "mkFlakeOutputs: libExports must return an attribute set"
-          else output.flakeOutputs // nixpkgs.lib.optionalAttrs (output.library != {}) {lib = output.library;})
+          else
+            # Never touch the `nixpkgs` input here: a complete injected package
+            # set (pkgsForSystem) must evaluate without it, and `optionalAttrs`
+            # would force `nixpkgs.lib` even when no library is exported.
+            output.flakeOutputs
+            // (
+              if output.library == {}
+              then {}
+              else {lib = output.library;}
+            ))
         // (
           if defaultOutputs.nixosModules == {}
           then {}
