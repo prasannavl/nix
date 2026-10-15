@@ -26,5 +26,16 @@ in
         name = source.cli.vendorName;
         hash = source.cli.cargoHash;
       };
+      # This repository pins each CLI and server image together as one reviewed
+      # compatibility unit (see sources.nix). nixpkgs marks the whole 1.10 series
+      # end-of-life, which would otherwise block evaluating the repo's own pin.
+      # Drop only that EOL notice; any other known vulnerability still blocks.
+      meta =
+        (old.meta or {})
+        // {
+          knownVulnerabilities =
+            builtins.filter (entry: !(lib.hasInfix "has reached end-of-life" entry))
+            (old.meta.knownVulnerabilities or []);
+        };
       passthru = old.passthru // {release = source;};
     })
