@@ -181,7 +181,6 @@ in
     lib-ollama-helper = ollamaTests.helper;
     lib-ollama-module = ollamaTests.module;
     lib-podman-image-updater = podmanImageUpdaterTest;
-    lib-prism-llama-cpp-package = prismLlamaCppPackageTest;
     lib-prism-llama-cpp-updater = prismLlamaCppUpdaterTest;
     lib-service-module = serviceModuleTest;
     lib-swap-auto = import ./swap-auto.nix {inherit pkgs;};
@@ -198,6 +197,11 @@ in
     lib-profiles-incus-lxc = import ./profiles-incus-lxc.nix {inherit pkgs;};
     lib-stalwart-helper = stalwartTests.helper;
     lib-stalwart-provisioning = stalwartTests.provisioning;
+  }
+  // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isx86_64 {
+    # The package only declares x86_64-linux support, so the contract check
+    # cannot be evaluated (or built) on other Linux systems.
+    lib-prism-llama-cpp-package = prismLlamaCppPackageTest;
   }
   // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
     lib-abird-host-agent-phase-projection-vm = import ./abird-host-agent-phase-projection-vm.nix {inherit pkgs;};
