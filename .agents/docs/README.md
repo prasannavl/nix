@@ -679,6 +679,13 @@ removed. Retained public results and runtime source pins remain unchanged.
 
 ### Tooling
 
+- `.agents/docs/notes/tooling/full-lint-flake-check-repairs-2026-10-15.md`:
+  Records the three `lint --full` `root-flake-check` failures on `master`
+  `d359eae7` and their fixes — the `libExports` `nixpkgs.lib.optionalAttrs`
+  merge that broke the injected-package-set contract in `pvl-child-flake-parity`
+  (`9c133889`), the nixpkgs-lock `kanidm_1_10` end-of-life notice that blocked
+  `lib-kanidm-normalization`, and the x86_64-only prism package contract check
+  registered on aarch64-linux — plus the shared-file/Abird port obligations.
 - `.agents/docs/notes/tooling/tmux-plugins-inlined-2026-10.md`: Records the
   reduction of the tmux plugin set to `tmux-fingers` + `resurrect` (continuum
   dropped, autosave now manual), the per-plugin inline replacements from the
