@@ -251,39 +251,23 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 Package and child-flake conventions are documented in
 [`docs/flake-package.md`](./docs/flake-package.md).
 
-## Linting
-
-- `nix fmt`: format the repo.
-- `nix run .#lint`: run the standard lint and check flow.
-- `nix run .#lint -- fix`: apply safe auto-fixes, then re-run lint.
-- `./scripts/git-install-hooks.sh`: install the repo Git hooks.
-- The Git hook runs on `pre-push`, not `pre-commit`, and only lints the changed
-  scope.
-- Full lint workflow details live in [`docs/linting.md`](./docs/linting.md).
-
 ## Contributing
 
-Before pushing upstream, install the repo hooks once:
+We build Nix in the open and would love your ideas, architectural challenges,
+research, and focused improvements. See [CONTRIBUTING.md](CONTRIBUTING.md) for
+the best ways to take part, including the development and lint workflow.
 
-```sh
-./scripts/git-install-hooks.sh
-```
+## AI disclosure
 
-Use these checks locally before you push:
+**Human-centric design. AI-centric implementation.** Nix is built with extensive
+AI assistance for research, code, tests, and documentation. We believe the best
+software comes from human-led design and AI-assisted implementation: humans own
+the architecture, priorities, and acceptance criteria, while AI helps implement,
+test, and iterate. We don't hand direction to autonomous models or claim every
+generated line is manually reviewed — correctness rests on explicit designs,
+reproducible tests, and continuous validation.
 
-```sh
-nix fmt
-nix run .#lint
-```
+## License
 
-The Git hook is intentionally on `pre-push`, not `pre-commit`. That keeps
-commit-time iteration fast and avoids running the full lint flow on every local
-commit.
-
-The `pre-push` hook is smart diff-based linting. It computes the push base and
-only runs the root diff checks and package checks for what changed, using the
-same `nix run .#lint -- --diff --base <base>` flow that CI and manual local
-usage rely on.
-
-Lint workflow details and package-level commands are documented in
-[`docs/linting.md`](./docs/linting.md).
+[MIT](LICENSE) © 2026 Prasanna Loganathar. Third-party libraries and assets
+retain their respective licenses.
