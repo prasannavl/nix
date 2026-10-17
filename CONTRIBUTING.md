@@ -32,8 +32,8 @@ The Git hook is intentionally on `pre-push`, not `pre-commit`: commit-time
 iteration stays fast, and the full lint flow does not run on every local commit.
 The `pre-push` hook is diff-based — it computes the push base and only runs the
 root diff checks and package checks for what changed, using the same
-`nix run .#lint -- --diff --base <base>` flow that CI and manual local usage rely
-on.
+`nix run .#lint -- --diff --base <base>` flow that CI and manual local usage
+rely on.
 
 Full lint workflow details and package-level commands live in
 [`docs/linting.md`](docs/linting.md).

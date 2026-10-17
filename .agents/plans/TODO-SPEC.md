@@ -29,7 +29,7 @@ states described in `.agents/plans/README.md`.
 
 ## Tests and verification
 
-Every plan lists every test and gate under a `## Tests and verification` section,
-each with the command or evidence that proves it. A plan is not done while any of
-these is open; all must be `[x]` on the closing commit. This maps onto the
-work-capsule validation area.
+Every plan lists every test and gate under a `## Tests and verification`
+section, each with the command or evidence that proves it. A plan is not done
+while any of these is open; all must be `[x]` on the closing commit. This maps
+onto the work-capsule validation area.

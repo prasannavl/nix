@@ -12,13 +12,13 @@ Most files are shared and should stay byte-identical between the two. A small
 set of surfaces is **intentionally divergent** and must not be overwritten when
 syncing:
 
-| Surface | `nix` (open, MIT) | `z` (private) |
-| --- | --- | --- |
-| `LICENSE` | MIT file | absent |
-| README `## Contributing` | open invite | internal access note |
-| README `## AI disclosure` | open framing | private framing |
-| README `## License` | MIT | all rights reserved |
-| `CONTRIBUTING.md` intro | open contributor framing | internal framing |
+| Surface                   | `nix` (open, MIT)        | `z` (private)        |
+| ------------------------- | ------------------------ | -------------------- |
+| `LICENSE`                 | MIT file                 | absent               |
+| README `## Contributing`  | open invite              | internal access note |
+| README `## AI disclosure` | open framing             | private framing      |
+| README `## License`       | MIT                      | all rights reserved  |
+| `CONTRIBUTING.md` intro   | open contributor framing | internal framing     |
 
 ## Safe sync order
 
