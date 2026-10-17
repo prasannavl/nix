@@ -1068,6 +1068,8 @@ removed. Retained public results and runtime source pins remain unchanged.
 - `.agents/docs/playbooks/gcp-ad-hoc-nixos-bootstrap.md`: Procedure for creating
   ad hoc GCP bootstrap VMs and converting them to NixOS with repo or generic
   host configs.
+- `.agents/docs/playbooks/nix-z-cross-sync.md`: Nix ↔ z cross-sync surfaces and
+  safe order.
 - `.agents/docs/playbooks/nixbot-deploy.md`: Reusable nixbot deploy workflow.
 - `.agents/docs/playbooks/nixbot-key-rotation-execution.md`: Phased nixbot key
   rotation execution procedure.

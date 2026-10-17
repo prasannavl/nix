@@ -8,6 +8,9 @@
   - Keep it updated whenever files are added, removed, renamed, or moved under
     `.agents/docs`.
   - Agents should consult this index first to decide what to load into context.
+- Use `.agents/plans/README.md` as the canonical index for durable plans under
+  `.agents/plans/**`, and `.agents/plans/TODO-SPEC.md` for the shared checklist
+  vocabulary (authorship, plan details, status, and tests and verification).
 - Use `.agents/docs/lang-patterns/` for language-specific coding rules and
   conventions.
   - When working in a language, agents should scan the matching
@@ -57,8 +60,8 @@
 
 ## Git
 
-Without user explicit instruction or documented process in a playbook with user
-pre-approval:
+Commits are signed; never disable signing. Without user explicit instruction or
+documented process in a playbook with user pre-approval:
 
 - Do NOT run git reset --hard, delete branches or other destructive git cmds
 - Do NOT commit or push
@@ -66,7 +69,9 @@ pre-approval:
   overwrite user changes
 - Do NOT remove unrelated user changes if code drifts midway
 
-ASK before proceeding with git ops that could lead to data loss or conflicts
+Confirm each push, force-push, tag, publish, deploy, or destructive operation on
+its own: a request to "commit" or "apply" is not authorization to push. ASK
+before proceeding with git ops that could lead to data loss or conflicts.
 
 ## Secrets
 
