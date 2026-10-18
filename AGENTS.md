@@ -1,6 +1,7 @@
 # AGENTS.md
 
 <!-- BEGIN common -->
+
 ## Shared conventions
 
 These are byte-identical across all abird repositories. Repo-specific rules
@@ -19,12 +20,14 @@ follow the markers below.
   uncommitted work untouched.
 - **Git safety.** Commits are signed; never disable signing. Never push,
   force-push, tag, publish, deploy, or run destructive operations — history
-  rewrite, `reset --hard`, branch deletion, or touching another agent's
-  staged or uncommitted work — without explicit user confirmation for each
-  action. A request to "commit" or "apply" is not authorization to push.
+  rewrite, `reset --hard`, branch deletion, or touching another agent's staged
+  or uncommitted work — without explicit user confirmation for each action. A
+  request to "commit" or "apply" is not authorization to push.
+
 <!-- END common -->
 
 <!-- BEGIN monorepo -->
+
 ## Plans and parallel work
 
 - Durable plan: `.agents/plans/<plan-id>.md`. Priority: the
@@ -57,18 +60,21 @@ follow the markers below.
 - Do not use `path:` flake refs for validation or builds. From the repo root use
   `.`; from outside use the absolute repo path; for committed snapshots use
   `git+file://`.
-- Never read `data/secrets/**/*.key` (or equivalent). You may list filenames, but
-  never read their contents, directly or indirectly.
+- Never read `data/secrets/**/*.key` (or equivalent). You may list filenames,
+  but never read their contents, directly or indirectly.
 - Do not commit `.terraform/`, `*.tfstate` or `*.tfstate.*`.
 
 ## Gates
 
-`nix fmt` and `nix run .#lint`; the `pre-push` hook runs the diff-based lint, and
-`nix flake check` runs the full reproducible build and lint.
+`nix fmt` and `nix run .#lint`; the `pre-push` hook runs the diff-based lint,
+and `nix flake check` runs the full reproducible build and lint.
+
 <!-- END monorepo -->
 
 <!-- BEGIN repo-specific -->
+
 ## Repository
 
 Open-source (MIT); the `nix` lineage.
+
 <!-- END repo-specific -->

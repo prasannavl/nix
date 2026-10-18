@@ -1,8 +1,8 @@
 # Plans
 
 This folder is the agent planning entry point. Start here, then work from
-`TODO.md`. Git is the authoritative history (author, time, diff, provenance sha);
-this folder keeps the live queue and per-plan checklists.
+`TODO.md`. Git is the authoritative history (author, time, diff, provenance
+sha); this folder keeps the live queue and per-plan checklists.
 
 ## Layout
 
@@ -25,12 +25,15 @@ One line per plan:
 
 ```markdown
 ## Active
+
 - [~] P0 <plan> — @owner — <one-line> — [details](<plan>/README.md)
 
 ## Icebox
+
 - [ ] <plan> — [details](<plan>/README.md)
 
 ## Closed
+
 - [x] <plan> — <closing-sha> — <date>
 ```
 
@@ -44,9 +47,7 @@ One line per plan:
 Open with the plan's authorship and ownership:
 
 ```markdown
-Author: <user>
-Co-authors: <comma-separated AI models used>
-Owner: @<user|agent>
+Author: <user> Co-authors: <comma-separated AI models used> Owner: @<user|agent>
 ```
 
 Then what the plan is and why it exists, plus **Design**, **Decisions** and
@@ -61,16 +62,20 @@ Then what the plan is and why it exists, plus **Design**, **Decisions** and
 Base: `<sha>`
 
 ## Committed
+
 ### `<sha>` — <what this set landed>
-- [x] <item>
+
+- <item>
 
 ## Uncommitted
-- [ ] <item>
+
+- <item>
 - [ ] <item> — <blocker/reason>
 
 ## Tests and verification
+
 - [x] <test or gate> — `<sha>`
-- [ ] <test or gate>
+- <test or gate>
 ```
 
 - `Base:` is the commit the plan started from.
