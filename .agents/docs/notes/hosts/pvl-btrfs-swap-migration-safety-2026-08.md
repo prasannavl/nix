@@ -34,8 +34,8 @@ For a sized swapfile whose exact parent mount is Btrfs with `subvol=<name>`,
   success (`RemainAfterExit`) and disabling its start rate limiter since
   2026-10: re-running per mount request exhausted `StartLimitBurst` and left
   hosts without swap (`pvl-swap-auto-start-limit-race-2026-10.md`). The
-  provisioner stays idempotent; a failed run still leaves the unit inactive so
-  a later mount attempt retries;
+  provisioner stays idempotent; a failed run still leaves the unit inactive so a
+  later mount attempt retries;
 - relies on the upstream NixOS sized-swap service to create the Btrfs swapfile;
 - introduces a migration target wanted by `multi-user.target` so a live switch
   retries mount and swap units that already failed under the previous

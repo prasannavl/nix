@@ -136,9 +136,9 @@ systemd.services."systemd-backlight@backlight:nvidia_wmi_ec_backlight" = {
   unit would shadow it.
 - `pvl-l5` exposes the same device but writes succeed → keeps the unmodified
   template, no drop-in.
-- Trade-off (remedy boundary above): systemd save/restore for that one device
-  is gone. Firmware brightness keys and logind sysfs writes unaffected;
-  userspace writes already fail with `EIO`.
+- Trade-off (remedy boundary above): systemd save/restore for that one device is
+  gone. Firmware brightness keys and logind sysfs writes unaffected; userspace
+  writes already fail with `EIO`.
 - Option 1 (working backlight interface) still open; needs the interactive
   validation above — a wrong `acpi_backlight=` can leave the panel unusable.
 - `pvl-a1` Nixbot `healthCheck.ignore` entry now redundant, deliberately kept.

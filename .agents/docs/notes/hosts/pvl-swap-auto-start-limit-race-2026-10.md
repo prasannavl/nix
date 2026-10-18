@@ -22,13 +22,14 @@ Swap is `nofail`, so boot succeeded and the loss was silent.
 
 ## Race
 
-- `prepare-btrfs-swap-subvolume-swap.service`: `Type=oneshot`,
-  `RemainAfterExit` unset, pulled in by `requiredBy = [swap.mount]` (hard
-  `Requires=`/`After=`).
-- No retained state → every fresh start request for the swap chain re-executes it.
+- `prepare-btrfs-swap-subvolume-swap.service`: `Type=oneshot`, `RemainAfterExit`
+  unset, pulled in by `requiredBy = [swap.mount]` (hard `Requires=`/`After=`).
+- No retained state → every fresh start request for the swap chain re-executes
+  it.
 - `swap.mount` start requests pile up while the early-boot device/udev phase
   settles, executing only after that churn stops.
-- Cliff: systemd defaults `StartLimitBurst=5` inside `StartLimitIntervalSec=10s`.
+- Cliff: systemd defaults `StartLimitBurst=5` inside
+  `StartLimitIntervalSec=10s`.
 
 `pvl-a1` prepare starts per boot (kernel log, `systemd[1]` messages):
 
@@ -49,13 +50,14 @@ then failed.
 Same generation (`26.05.20261008.7c8764b`), same generated unit shape
 (`RemainAfterExit=no`, `RequiredBy=swap.mount`, burst 5 / 10 s):
 
-| Host     | prepare starts/boot | `start-limit-hit` | panel backlight              |
-| -------- | ------------------- | ----------------- | ---------------------------- |
-| `pvl-l5` | 1-2 (stable)        | 0                 | nvidia EC, healthy           |
-| `pvl-x2` | 2-3 (stable)        | 0                 | none                         |
-| `pvl-a1` | 3-5 (varies)        | 4 (last 10 boots) | nvidia EC, broken (6879)     |
+| Host     | prepare starts/boot | `start-limit-hit` | panel backlight          |
+| -------- | ------------------- | ----------------- | ------------------------ |
+| `pvl-l5` | 1-2 (stable)        | 0                 | nvidia EC, healthy       |
+| `pvl-x2` | 2-3 (stable)        | 0                 | none                     |
+| `pvl-a1` | 3-5 (varies)        | 4 (last 10 boots) | nvidia EC, broken (6879) |
 
-Re-requests only land in the stage-2 window between `Reached target Preparation
+Re-requests only land in the stage-2 window between
+`Reached target Preparation
 for Local File Systems` and `Mounting /swap`:
 
 | Host     | window                                | device/target events inside                                              |
@@ -77,8 +79,8 @@ pressure but does not remove the race.
 - Hard `Requires=` → one trip fails `swap.mount`, then
   `mkswap-swap-swap0.service` and `swap-swap0.swap`.
 - `nofail` only keeps `multi-user.target` reachable; the loss stays silent.
-- No swap → `systemd-oomd` no-op, no slice sets
-  `ManagedOOMMemoryPressure=kill` → memory pressure stalls the host.
+- No swap → `systemd-oomd` no-op, no slice sets `ManagedOOMMemoryPressure=kill`
+  → memory pressure stalls the host.
 
 ## Fix
 
@@ -151,9 +153,10 @@ systemd.services."systemd-backlight@backlight:nvidia_wmi_ec_backlight" = {
   the fix adds no new `Requires=` on `local-fs.target`/`multi-user.target`.
 - Remote-recovery test not completed here: its VMs loop on public
   `tailscale.com` `bootstrapDNS` (`network is unreachable`) until the 1-hour
-  timeout. Injected failures behaved as designed (`swapon: /swap/swap0:
-  skipping - it appears to have holes`, `swapon: cannot open /swap/swap0`);
-  re-run where test VMs have egress.
+  timeout. Injected failures behaved as designed
+  (`swapon: /swap/swap0:
+  skipping - it appears to have holes`,
+  `swapon: cannot open /swap/swap0`); re-run where test VMs have egress.
 
 ## Outstanding
 
@@ -161,8 +164,8 @@ systemd.services."systemd-backlight@backlight:nvidia_wmi_ec_backlight" = {
   `wants = swap-swap0.swap`) duplicates the fstab-generated
   `swap.target -> swap-swap0.swap` edge → a second want-path and more
   re-requests during boot.
-- Nothing reports "swap not active" after boot; a health check would have
-  caught three consecutive no-swap boots.
+- Nothing reports "swap not active" after boot; a health check would have caught
+  three consecutive no-swap boots.
 
 ## Live state
 
