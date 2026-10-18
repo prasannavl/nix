@@ -7,6 +7,25 @@
 result/
 result-*
 .direnv/
+
+# Common build and dep dirs
+/tmp/
+**/target/
+**/node_modules/
+**/dist/
+.venv
+
+# Misc
+crash.log
+**/__pycache__/
+/.continue/
+/.kilocode/
+/.vscode/
+/.claude/
+.codex
+.kilo/
+
+# Repo-specific
 flake.lock
 !/flake.lock
 *.override.nix
@@ -23,20 +42,3 @@ data/secrets/**
 **/.terraform/
 *.tfstate
 *.tfstate.*
-
-# Common build and dep dirs
-/tmp/
-**/target/
-**/npm_modules/
-**/dist/
-.venv
-
-# Misc
-crash.log
-**/__pycache__/
-/.continue/
-/.kilocode/
-/.vscode/
-/.claude/
-.codex
-.kilo/
