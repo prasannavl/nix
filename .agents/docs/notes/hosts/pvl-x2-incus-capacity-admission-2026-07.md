@@ -235,11 +235,14 @@ RAM. Incus limits therefore have two ownership layers:
   eight CPUs, 8 GiB memory, and 512 GiB storage;
 - the seven Abird-dev guests sum to eight CPUs and 7.5 GiB memory, leaving
   project-level controller margin, with per-role network and disk-I/O limits;
-- the physical controller caps outer `gap3-gondor` at 22 CPUs, 50 GiB memory,
-  and 600 Mbit/s;
-- the eleven nested Gondor guests sum to 20 CPUs and 46 GiB memory, leaving two
-  CPUs and 4 GiB for the nested controller. Corp keeps a 24 GiB ceiling and
-  `gap3-rivendell` keeps 11.25 GiB, both above the observed resident set.
+- the physical controller caps outer `gap3-gondor` at 22 CPUs, 28 GiB memory
+  (hard), and 600 Mbit/s; the host itself has 30 GiB RAM plus 63 GiB swap;
+- the eleven nested Gondor guests declare 20 CPUs and 46 GiB memory, which now
+  exceeds the outer ceiling. The parent hard limit is authoritative; nested
+  ceilings only bound individual guests once the parent is throttled.
+
+2026-10-18: outer `gap3-gondor` memory reduced 50 GiB -> 28 GiB so the nested
+stack cannot pin the whole physical host on its own reclaim path.
 
 The stack-facing instance API groups device limits under
 `limits.disk.devices.<name>` and `limits.network.devices.<name>`. Disk `read`
@@ -262,8 +265,8 @@ Its guests therefore leave `limits.memory.oomScoreAdjustment` null: Incus
 classifies the rendered `limits.memory.oom_priority` key as low-level and
 rejects instance creation when that project restriction is active. Do not weaken
 `restricted.containers.lowlevel` for this optional tuning. The outer
-`gap3-gondor` guest remains in the unrestricted default project and keeps its
-declared `-250` adjustment.
+`gap3-gondor` guest remains in the unrestricted default project and declares a
+neutral `0` adjustment, so host OOM victim selection stays unbiased.
 
 Container swap policy is typed as `limits.memory.swap.enable` plus optional
 `limits.memory.swap.max`. The default `{ enable = true; max = null; }` emits no

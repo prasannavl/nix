@@ -444,8 +444,9 @@ in {
                   priority = 7;
                 };
                 memory = {
-                  max = "50GiB";
-                  oomScoreAdjustment = -250;
+                  max = "28GiB";
+                  # Neutral: the host OOM killer stays free to pick this one.
+                  oomScoreAdjustment = 0;
                 };
                 disk = {
                   priority = 7;
