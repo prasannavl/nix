@@ -40,8 +40,8 @@ follow the markers below.
   stable across queue moves, work, closeout, archival and reopening.
 - Start at `.agents/plans/README.md` (overview + spec) and work from
   `.agents/plans/TODO.md` (the queue).
-- **Docs.** Before loading context, list `.agents/docs/` two levels deep and
-  read the relevant subtree; there is no docs index file to maintain.
+- **Docs.** Before loading context, list `.agents/docs/` 2-3 levels deep as
+  needed and read the relevant subtree; there is no docs index file to maintain.
 - Scan `.agents/docs/lang-patterns/<language>.md` before editing a language, and
   `.agents/docs/design-patterns/` for architecture rules.
 - Record reusable, user-approved processes in `.agents/docs/playbooks/` and
