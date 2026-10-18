@@ -16,8 +16,16 @@ follow the markers below.
 - **Shared `.gitignore`.** The block at the top of `.gitignore` is identical
   across repos; repo-specific entries follow it. Keep it mechanical.
 - **Preserve other work.** Never revert or overwrite changes you did not make.
-  Stage explicit paths, not broad globs, and leave other agents' staged or
-  uncommitted work untouched.
+- **Owned changes only.** Commit only the paths you changed for the request.
+  Before committing, inspect `git diff --cached --stat`; if it lists files you
+  did not touch, stop and ask — unless the user explicitly asked you to include
+  them.
+- **Ownership.** A plan directory belongs to the `@owner` on the queue line, and
+  the coordinator alone reconciles `.agents/plans/TODO.md`; do not edit another
+  owner's plan or worktree unless the user explicitly asks.
+- **Clean pushes.** Do not push from a dirty worktree unless the user explicitly
+  asked to include those changes; otherwise commit/stash your own change first,
+  or push from a clean temporary worktree.
 - **Terse writing.** Keep code comments and docs succinct. Comments need not be
   full sentences; prefer symbols and fragments unless the user asked for an
   explanation or the topic is design-level or otherwise complex. Prefer bullets
