@@ -1,90 +1,74 @@
 # AGENTS.md
 
-## Tasks management
+<!-- BEGIN common -->
+## Shared conventions
 
-- Use `.agents/docs/` to document tasks and related context.
-- Use `.agents/docs/README.md` as the canonical top-level index of
-  `.agents/docs/**`.
-  - Keep it updated whenever files are added, removed, renamed, or moved under
-    `.agents/docs`.
-  - Agents should consult this index first to decide what to load into context.
-- Use `.agents/plans/README.md` as the canonical index for durable plans under
-  `.agents/plans/**`, and `.agents/plans/TODO-SPEC.md` for the shared checklist
-  vocabulary (authorship, plan details, status, and tests and verification).
-- Use `.agents/docs/lang-patterns/` for language-specific coding rules and
-  conventions.
-  - When working in a language, agents should scan the matching
-    `.agents/docs/lang-patterns/<language>.md` files before editing.
-  - If a relevant language-pattern file does not exist yet and the user defines
-    durable rules for that language, create it and update the index.
-- Look at `.agents/docs/design-patterns/` for system design and architectural
-  rules and conventions relevant to the task.
-- Use `.agents/docs/playbooks` for user-defined, reusable processes.
-  - When a user asks to "record a process" (or equivalent), create/update a
-    playbook here.
-  - Playbooks should be execution-oriented so an agent can run them step-by-step
-    later.
-  - If a user tweaks a process, update the same playbook (or create a clear
-    versioned successor) so the latest procedure is explicit.
-- Use `.agents/docs/notes` for task-specific memory and decision logs.
-  - Record user interventions, changes in direction, constraints, and key
-    decisions.
-  - Keep notes scoped to a specific task (one task-focused file, not mixed notes
-    across unrelated tasks).
-  - Treat `.agents/docs` updates as a closeout gate, not optional follow-up, for
-    non-trivial repository work.
-  - Before a final response, decide whether the task created durable context:
-    root cause, design decision, user correction, migration/deploy finding,
-    reusable validation sequence, or a changed ownership boundary.
-  - If yes, create or update the appropriate note under `.agents/docs/notes/**`
-    and update `.agents/docs/README.md` in the same turn.
-  - If no durable note is needed for non-trivial work, say that explicitly in
-    the final response.
-  - Format changed Markdown with the repo formatter before finishing.
-- Use `.agents/runs/<session>` as a staging area for temporary edits (inside
-  `.agents/docs` or elsewhere) when multiple agents are working in parallel.
-  - Near completion, replace target files as atomically as possible.
-  - If atomic replacement is not possible, use `.agents/runs/locks` for
-    cross-agent file/folder locks.
-- For tasks that require multiple steps, or multiple file edits, use a git
-  worktree at `worktrees/<session>`, so multiple agents can work in parallel.
-  - When the task is done, and I approve to either merge to main branch or
-    create a PR, do the final merges and delete the worktree.
-- If you have to use tmp files, use `tmp/` dir at the root of our repo and then
-  clean up at the end of the session if everything is successful. Otherwise, ask
-  user if we should keep them for debugging.
-  - We do this for 2 reasons:
-    - 1 easier for user to debug if need to.
-    - 2 we can easily have the agent have read / write permissions to this
-      folder without worrying about external permissions.
+These are byte-identical across all abird repositories. Repo-specific rules
+follow the markers below.
 
-## Git
+- **Source of truth.** Live source, tests and executed results outrank dated
+  prose. Start at `.agents/plans/README.md` (overview + spec), then work from
+  `.agents/plans/TODO.md` (the queue).
+- **XDG paths.** Where the project owns user config, data, cache or state,
+  resolve it under `$XDG_*_HOME/abird/<project>` — an absolute XDG base, falling
+  back to `HOME` when unset. No legacy or alternate root.
+- **Shared `.gitignore`.** The block at the top of `.gitignore` is identical
+  across repos; repo-specific entries follow it. Keep it mechanical.
+- **Preserve other work.** Never revert or overwrite changes you did not make.
+  Stage explicit paths, not broad globs, and leave other agents' staged or
+  uncommitted work untouched.
+- **Git safety.** Commits are signed; never disable signing. Never push,
+  force-push, tag, publish, deploy, or run destructive operations — history
+  rewrite, `reset --hard`, branch deletion, or touching another agent's
+  staged or uncommitted work — without explicit user confirmation for each
+  action. A request to "commit" or "apply" is not authorization to push.
+<!-- END common -->
 
-Commits are signed; never disable signing. Without user explicit instruction or
-documented process in a playbook with user pre-approval:
+<!-- BEGIN monorepo -->
+## Plans and parallel work
 
-- Do NOT run git reset --hard, delete branches or other destructive git cmds
-- Do NOT commit or push
-- Do NOT auto-stage files unless necessary to lint or build, and it doesn't
-  overwrite user changes
-- Do NOT remove unrelated user changes if code drifts midway
+- Durable plan: `.agents/plans/<plan-id>.md`. Priority: the
+  `.agents/plans/queue/p<priority>-<plan-id>.md` symlink (P2 normal; P0 needs
+  explicit human promotion and a named incident coordinator). Live state:
+  `.agents/plans/work/<plan-id>/README.md` with append-only `events/` as the
+  authoritative record. Closeout moves to `.agents/plans/archive/` and
+  `.agents/plans/done/`, removes the queue symlink and keeps the raw events.
+- Plan IDs use `<creation-year>-w<creation-iso-week>-<kebab-name>` and stay
+  stable across queue moves, work, closeout, archival and reopening.
+- Start at `.agents/plans/README.md` (overview + spec) and work from
+  `.agents/plans/TODO.md` (the queue).
+- `.agents/docs/README.md` indexes `.agents/docs/**`; keep it current when files
+  are added, removed, renamed or moved, and consult it before loading context.
+- Scan `.agents/docs/lang-patterns/<language>.md` before editing a language, and
+  `.agents/docs/design-patterns/` for architecture rules.
+- Record reusable, user-approved processes in `.agents/docs/playbooks/` and
+  task-specific memory in `.agents/docs/notes/`; keep notes scoped to one task.
+- Treat `.agents/docs` updates as a closeout gate for non-trivial work.
+- Use `.agents/runs/<session>/` for temporary parallel work (and
+  `.agents/runs/locks` for cross-agent locks); use `worktrees/<session>` for
+  multi-file edits; clean up on success.
+- Keep temporary files in `tmp/` at the repo root and clean them up, or ask
+  before keeping them for debugging.
 
-Confirm each push, force-push, tag, publish, deploy, or destructive operation on
-its own: a request to "commit" or "apply" is not authorization to push. ASK
-before proceeding with git ops that could lead to data loss or conflicts.
+## Safety
 
-## Secrets
+- This monorepo requires an explicit instruction before any commit or push, not
+  only before destructive operations.
+- Do not use `path:` flake refs for validation or builds. From the repo root use
+  `.`; from outside use the absolute repo path; for committed snapshots use
+  `git+file://`.
+- Never read `data/secrets/**/*.key` (or equivalent). You may list filenames, but
+  never read their contents, directly or indirectly.
+- Do not commit `.terraform/`, `*.tfstate` or `*.tfstate.*`.
 
-### Disallowed
+## Gates
 
-- Never read or attempt to read any of the files with `.key` extension inside
-  the tree of `data/secrets`.
-- If an action absolutely requires it, or would incidentally require it, stop
-  and ask the user before proceeding.
+`nix fmt` and `nix run .#lint`; the `pre-push` hook runs the diff-based lint, and
+`nix flake check` runs the full reproducible build and lint.
+<!-- END monorepo -->
 
-### Allowed
+<!-- BEGIN repo-specific -->
+## Repository
 
-- You may list these files when needed and infer reasonable context from
-  filenames.
-- Always tell the user you are listing them.
-- Never read their contents, directly or indirectly.
+Open-source (MIT); the `nix` lineage.
+<!-- END repo-specific -->

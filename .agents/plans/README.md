@@ -1,38 +1,105 @@
-# Plans Index
+# Plans
 
-## Rust foundation integrated — 2026-10-13
+This folder is the agent planning entry point. Start here, then work from
+`TODO.md`. Git is the authoritative history (author, time, diff, provenance sha);
+this folder keeps the live queue and per-plan checklists.
 
-The local main branches contain the reviewed core, mirror and optional VM
-support. Both current-input six-case runtime matrices passed; both committed
-mirrors passed four-route parity. Defaults/regular Cargo remain unchanged. Byte
-determinism remains optional FAIL. The canonical plan is archived at
-`.agents/plans/archive/2026/2026-w40-rust-fabric-implementation.md` and the done
-capsule at `.agents/plans/done/2026/w42/2026-w40-rust-fabric-implementation`.
-Read the synchronized main handoff for actual refs, resource labels and scope.
-No extra metadata investigation or qualification build is selected. The
-2026-10-14 publication follow-up records Abird's normal upstream merge, explicit
-decline of the new Cargo.lock.nix policy in optional foundation routes, and the
-initially retained side-worktree custody. On 2026-10-14 the human explicitly
-authorized discarding that local historical state; both Rust side worktrees are
-removed. Retained public results and runtime source pins remain unchanged.
+## Layout
 
-## Upstream
+```text
+.agents/plans/
+  README.md                 overview + spec
+  TODO.md                   queue: Active / Icebox / Closed
+  <plan>/README.md          plan details + author/co-authors
+  <plan>/TODO.md            Base + Committed + Uncommitted + Tests
+  <plan>/HISTORY.md         optional chronology (heavy plans)
+  archive/<year>-Q<n>.md    quarterly rollup of closed plans
+```
 
-- `.agents/plans/upstream/nixos-lxc-runtime-system-links.md`: Draft upstream
-  NixOS/nixpkgs plan for fixing LXC `/run/current-system` loss, distrobuilder
-  generator store-path assumptions, special-filesystem ownership, and early
-  udev/networkd boot failures.
+Plans are directories, flat under this folder; do not nest plans. One plan per
+effort; split into sibling plans only when a design is too large for one TODO.
 
-## Rust foundation
+## Queue — `TODO.md`
 
-- `.agents/docs/design-patterns/rust-foundation.md`: Cargo/Crane compatibility
-  contract.
-- `.agents/docs/plans/rust-foundation.md`: completed integration route.
-- `.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md`:
-  current results, custody and regeneration.
-- `.agents/docs/notes/tooling/rust-foundation-nixos-vm-2026-10.md`: current main
-  runtime proof and labeled historical results.
-- `.agents/plans/archive/2026/2026-w40-rust-fabric-implementation.md`: closed
-  canonical plan.
-- `.agents/plans/done/2026/w42/2026-w40-rust-fabric-implementation/README.md`:
-  retained public events and integration evidence.
+One line per plan:
+
+```markdown
+## Active
+- [~] P0 <plan> — @owner — <one-line> — [details](<plan>/README.md)
+
+## Icebox
+- [ ] <plan> — [details](<plan>/README.md)
+
+## Closed
+- [x] <plan> — <closing-sha> — <date>
+```
+
+- Active is sorted P0 → P2; moving a plan from Icebox to Active is the act of
+  prioritising it.
+- `[ ]` open · `[~]` active · `[x]` done · `[!]` blocked.
+- P0 requires human promotion and a named incident coordinator.
+
+## Plan — `README.md`
+
+Open with the plan's authorship and ownership:
+
+```markdown
+Author: <user>
+Co-authors: <comma-separated AI models used>
+Owner: @<user|agent>
+```
+
+Then what the plan is and why it exists, plus **Design**, **Decisions** and
+**References** sections as needed. Split a section into `DESIGN.md`,
+`DECISIONS.md` or `REFERENCES.md` only when it grows large, and link back.
+
+## Plan — `TODO.md`
+
+```markdown
+# <plan>
+
+Base: `<sha>`
+
+## Committed
+### `<sha>` — <what this set landed>
+- [x] <item>
+
+## Uncommitted
+- [ ] <item>
+- [ ] <item> — <blocker/reason>
+
+## Tests and verification
+- [x] <test or gate> — `<sha>`
+- [ ] <test or gate>
+```
+
+- `Base:` is the commit the plan started from.
+- Completed work is grouped under the commit that landed it; append new groups.
+- Tests are a flat list; tick each with the sha when the commit's provenance
+  group is added.
+- A plan is done when `## Uncommitted` is empty and every test is `[x]`.
+
+## History — optional `HISTORY.md`
+
+For heavy or multi-agent plans, keep an append-only chronology:
+
+```markdown
+- 2026-10-18 09:14 — @owner — opened; claimed P2
+- 2026-10-18 09:40 — abc1234 — implemented parser; tests pass
+- 2026-10-18 10:02 — @reviewer — reviewed; requested X
+```
+
+Light plans can skip it; the commits are the history.
+
+## Parallel work
+
+The owner on the queue line owns the plan directory; no one else edits it.
+Parallel agents keep scratch under `.agents/runs/<plan>-<agent>/TODO.md` and
+append back only when finished. The coordinator reconciles the queue line and
+the plan's committed groups.
+
+## Closeout
+
+All tests `[x]` and `## Uncommitted` empty → move the queue line to `## Closed`
+with the closing sha and date. Quarterly, roll older `## Closed` entries into
+`archive/<year>-Q<n>.md` and prune their plan directories; git retains them.
