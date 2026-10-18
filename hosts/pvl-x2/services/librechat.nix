@@ -126,7 +126,7 @@ in {
             - ${librechatDataDir}/skill:/app/skill
 
         mongodb:
-          image: docker.io/library/mongo:8.3.11
+          image: docker.io/library/mongo:9.0.4
           restart: unless-stopped
           user: "1000:1000"
           command: mongod --noauth
@@ -135,7 +135,7 @@ in {
 
         meilisearch:
           # Startup upgrades mutate persisted data; back up before deployment.
-          image: docker.io/getmeili/meilisearch:v1.54.2
+          image: docker.io/getmeili/meilisearch:v1.55.0
           restart: unless-stopped
           user: "1000:1000"
           env_file:
