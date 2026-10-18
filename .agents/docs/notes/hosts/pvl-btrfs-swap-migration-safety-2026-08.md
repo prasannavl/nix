@@ -30,9 +30,12 @@ For a sized swapfile whose exact parent mount is Btrfs with `subvol=<name>`,
 - pulls and orders the preparation service after the backing device unit so a
   stage-2 device appearance (for example a non-initrd LUKS unlock) cannot race
   the private top-level mount;
-- runs preparation as a transient prerequisite before the generated mount unit,
-  so every new mount attempt rechecks the subvolume without retaining service
-  state;
+- runs preparation as a prerequisite before the generated mount unit, retaining
+  success (`RemainAfterExit`) and disabling its start rate limiter since
+  2026-10: re-running per mount request exhausted `StartLimitBurst` and left
+  hosts without swap (`pvl-swap-auto-start-limit-race-2026-10.md`). The
+  provisioner stays idempotent; a failed run still leaves the unit inactive so
+  a later mount attempt retries;
 - relies on the upstream NixOS sized-swap service to create the Btrfs swapfile;
 - introduces a migration target wanted by `multi-user.target` so a live switch
   retries mount and swap units that already failed under the previous

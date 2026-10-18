@@ -107,3 +107,38 @@ evaluated all seven affected NixOS hosts.
 
 Diagnosis and implementation made no live unit-state, kernel-module, firmware,
 or deployment change.
+
+## 2026-10 follow-up: the instance is now suppressed
+
+The Nixbot exception kept the failure visible but left the restart storm in
+place.
+
+- Retained journal: 5099 `exit-code`, 1780 `start-limit-hit`, 0 successful runs.
+- Every successful backlight run belongs to a superseded device
+  (`backlight:nvidia_0`, 6 lines, last 2026-07-18) or the ASUS keyboard
+  backlight → this instance never worked.
+- Each udev/logind trigger costs five failed starts inside the early-boot
+  window, enough churn to re-run unrelated one-shots
+  (`../hosts/pvl-swap-auto-start-limit-race-2026-10.md`).
+
+Remedy option 2 implemented in `lib/devices/asus-fa401wv.nix` (`pvl-a1` only):
+an instance drop-in that skips instead of failing.
+
+```nix
+systemd.services."systemd-backlight@backlight:nvidia_wmi_ec_backlight" = {
+  overrideStrategy = "asDropin";
+  unitConfig.ConditionPathExists = "!/sys/class/backlight/nvidia_wmi_ec_backlight";
+};
+```
+
+- `overrideStrategy = "asDropin"` required: the package ships the
+  `systemd-backlight@.service` template, not this instance; a full generated
+  unit would shadow it.
+- `pvl-l5` exposes the same device but writes succeed → keeps the unmodified
+  template, no drop-in.
+- Trade-off (remedy boundary above): systemd save/restore for that one device
+  is gone. Firmware brightness keys and logind sysfs writes unaffected;
+  userspace writes already fail with `EIO`.
+- Option 1 (working backlight interface) still open; needs the interactive
+  validation above — a wrong `acpi_backlight=` can leave the panel unusable.
+- `pvl-a1` Nixbot `healthCheck.ignore` entry now redundant, deliberately kept.

@@ -85,7 +85,17 @@ in
     };
 
     testScript = ''
-      def assert_swap_ready(machine):
+      def provisioner_runs(machine):
+          # provisioner starts this boot
+          return int(
+              machine.succeed(
+                  "journalctl -b --no-pager -o cat "
+                  "-u prepare-btrfs-swap-subvolume-swap.service "
+                  "| grep -c '^Starting' || true"
+              ).strip()
+          )
+
+      def assert_swap_ready(machine, expected_runs):
           machine.wait_for_unit("swap.mount")
           machine.wait_for_unit("swap-swap0.swap")
           machine.succeed("systemctl show --property=Result --value prepare-btrfs-swap-subvolume-swap.service | grep --fixed-strings success")
@@ -93,20 +103,25 @@ in
           machine.succeed("swapon --show=NAME --noheadings | grep --fixed-strings /swap/swap0")
           machine.succeed("! systemctl --failed --no-legend | grep -E 'swap|prepare-btrfs'")
           machine.succeed("systemctl is-system-running --wait | grep --fixed-strings running")
+          runs = provisioner_runs(machine)
+          assert runs == expected_runs, f"provisioner ran {runs} times, expected {expected_runs}"
 
       missing.wait_for_unit("multi-user.target")
       missing.succeed("systemctl is-failed swap.mount")
       missing.succeed("/run/current-system/specialisation/repaired/bin/switch-to-configuration test")
-      assert_swap_ready(missing)
+      assert_swap_ready(missing, 1)
 
       missing.succeed("systemctl stop swap-swap0.swap swap.mount")
+      before = provisioner_runs(missing)
       missing.succeed("systemctl start swap-swap0.swap")
       missing.wait_for_unit("swap-swap0.swap")
+      # chain restart must not re-run provisioning
+      assert provisioner_runs(missing) == before, "restarting the mount chain re-ran the provisioner"
 
       # Boot-goal migration: the repaired configuration provisions @swap on
       # the first boot of an unmigrated disk, without a live switch.
       coldboot.wait_for_unit("multi-user.target")
-      assert_swap_ready(coldboot)
+      assert_swap_ready(coldboot, 1)
 
       # The same repaired configuration must converge identically on a full
       # power cycle: the provisioned subvolume and swapfile persist with an
@@ -117,7 +132,7 @@ in
       coldboot.shutdown()
       coldboot.start()
       coldboot.wait_for_unit("multi-user.target")
-      assert_swap_ready(coldboot)
+      assert_swap_ready(coldboot, 1)
       assert coldboot.succeed("stat --format=%i:%s /swap/swap0").strip() == swap_identity
 
       existing.wait_for_unit("multi-user.target")
@@ -125,7 +140,8 @@ in
       existing.wait_for_unit("swap-swap0.swap")
       swap_identity = existing.succeed("stat --format=%i:%s /swap/swap0").strip()
       existing.succeed("/run/current-system/specialisation/repaired/bin/switch-to-configuration test")
-      assert_swap_ready(existing)
+      # mount already active: requirement satisfied
+      assert_swap_ready(existing, 0)
       assert existing.succeed("stat --format=%i:%s /swap/swap0").strip() == swap_identity
     '';
   }

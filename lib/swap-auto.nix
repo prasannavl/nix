@@ -113,9 +113,16 @@
         BTRFS_DEVICE = fileSystem.device;
         BTRFS_SUBVOLUME = subvolume;
       };
-      unitConfig.DefaultDependencies = false;
+      unitConfig = {
+        DefaultDependencies = false;
+        # rate-limit trip wedges the whole swap chain
+        StartLimitIntervalSec = 0;
+      };
       serviceConfig = {
         Type = "oneshot";
+        # provision once per boot; mount re-requests must not re-run it.
+        # failed runs stay inactive, so later attempts retry
+        RemainAfterExit = true;
         PrivateMounts = true;
         RuntimeDirectory = serviceName;
         TimeoutStartSec = "2min";

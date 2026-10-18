@@ -49,6 +49,9 @@ in
   assert service.after == ["systemd-remount-fs.service" "dev-mapper-root.device"];
   assert service.wants == ["dev-mapper-root.device"];
   assert service.unitConfig.DefaultDependencies == false;
+  # no rate limit; provisioning stays done
+  assert service.unitConfig.StartLimitIntervalSec == 0;
+  assert service.serviceConfig.RemainAfterExit == true;
   assert service.serviceConfig.PrivateMounts == true;
   assert lib.hasInfix "subvolid=5" service.script;
   assert lib.hasInfix "btrfs subvolume create" service.script;

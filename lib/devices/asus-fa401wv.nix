@@ -90,6 +90,15 @@
     '';
   };
 
+  # EC backlight writes fail in firmware (AE_NOT_FOUND); udev re-triggers the
+  # unit, which fails and re-triggers itself (5099 exit-code + 1780 limit hits,
+  # 0 successes) and adds early-boot churn. Skip the instance.
+  # asDropin: the package ships the template, not this instance.
+  systemd.services."systemd-backlight@backlight:nvidia_wmi_ec_backlight" = {
+    overrideStrategy = "asDropin";
+    unitConfig.ConditionPathExists = "!/sys/class/backlight/nvidia_wmi_ec_backlight";
+  };
+
   environment.sessionVariables = {
     # GNOME on vulkan wakes up the dGPU momentarily that causes a 2-3s gap
     # when opening new apps.
