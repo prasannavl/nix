@@ -4,9 +4,9 @@
     package = "pi-models-discovery";
     owner = "maplezzk";
     repo = "pi-extensions";
-    version = "1.6.0";
-    rev = "c1f18faf6d7de16eae3449abcbdc122285caec94";
-    srcHash = "sha256-Yh2CyLnDPfbVUVaV0M5ZhWP5IvteJIq6WsonvMrB9jM=";
+    version = "1.6.1";
+    rev = "c5cf4abf55cded7090078763545f65f6263ef489";
+    srcHash = "sha256-lhZv12UT6YlcUFkAsslVKVFu/6dWYhn8iTRBosXK/po=";
   };
 
   pi-session-manager = {
@@ -19,8 +19,8 @@
   pi-subagents = {
     kind = "npm";
     package = "@gotgenes/pi-subagents";
-    version = "23.4.0";
-    srcHash = "sha256-ilfDRsP3zCEv/0O8yaS1XZz/h78foGOVE/LYcWFv+k4=";
+    version = "25.0.0";
+    srcHash = "sha256-qlVfKq8FaNKMdxGp86jkTzqSfUiRKNh9WYfkPkIbGX0=";
   };
 
   pi-tps = {
@@ -38,10 +38,10 @@
     package = "@agegr/pi-web";
     owner = "agegr";
     repo = "pi-web";
-    version = "0.11.1";
-    srcHash = "sha256-tQZ54GhhqpJOBMQBd/zup3OVQT1qqudkcXLPx4Rl6wk=";
-    releaseHash = "sha256-36a1jaMXUdIdlQIw77wZCX8tw0VC9oIpLy8Xlu/iztA=";
-    npmDepsHash = "sha256-BClKgnW1SJ352JJqVGyqZubsJuh9AXGenj/z9X0hzT0=";
+    version = "0.12.2";
+    srcHash = "sha256-+px44RJG0bhVJ/EQXd8oMY2Rn2fkNU3/sXZhiCepp6A=";
+    releaseHash = "sha256-3SLxCRZVFYie1Ux73KlGCACFpJt2xaKTXc8eAdxPFy4=";
+    npmDepsHash = "sha256-lTmpcxjE+VXOn+DUgKNfjmklEUlPM6FDYrr2JPfBnjg=";
   };
 
   pi-diff = {
@@ -66,9 +66,9 @@
     package = "pi-mcp-adapter";
     owner = "nicobailon";
     repo = "pi-mcp-adapter";
-    version = "5.2.0";
-    srcHash = "sha256-XNMsNuvuuTEiPDUa8Hm7OXQ0tLh+9k/kBF52eYMxPXI=";
-    releaseHash = "sha256-5rqEGUxi0jA7ExKh4i2KEQOHgZ3vJuZ0bf16NY23Res=";
-    npmDepsHash = "sha256-oVDvrzUdvQocV9JHX00sPBnaiKPzi6bJvKVbG6bBIN0=";
+    version = "5.3.2";
+    srcHash = "sha256-ezsZLMFnBZbZDYD+ebP/adhGcrG7nItnp5p2A44zLUI=";
+    releaseHash = "sha256-syx9/d3IGyTExenHwwaVFuFN5jZvM8gVn8/+W8bJ8jk=";
+    npmDepsHash = "sha256-wQNxQkP8Msu6CG82guxuBR45ebgPDwzWJrMYhHlvUb4=";
   };
 }
