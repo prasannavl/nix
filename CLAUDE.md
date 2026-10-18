@@ -1,3 +1,0 @@
-# Claude
-
-@AGENTS.md
