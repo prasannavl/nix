@@ -203,10 +203,9 @@ let
   };
   version = "${RESOLVED_VERSION}";
 in
-  # tailscale 1.104+ needs Go >= 1.27.1; pinned nixpkgs Go is older.
-  (pkgs.unstable.tailscale.override {
-    buildGoModule = pkgs.unstable.buildGo127Module;
-  }).overrideAttrs (finalAttrs: old: {
+  # base package comes from unstable (buildGo127Module; tailscale 1.104+ needs
+  # Go >= 1.27.1, the pinned nixpkgs Go is older), we only pin the source.
+  pkgs.unstable.tailscale.overrideAttrs (finalAttrs: old: {
     version = version;
     src = pkgs.fetchFromGitHub {
       owner = "tailscale";

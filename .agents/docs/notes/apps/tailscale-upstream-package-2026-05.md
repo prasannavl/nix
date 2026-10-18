@@ -27,12 +27,14 @@ Tailscale package and selecting it as `pkgs.tailscale` in the root overlay.
 ## Go toolchain pin
 
 - Tailscale 1.104+ requires Go >= 1.27.1, while the pinned nixpkgs default Go is
-  1.26.8.
-- `default.nix` and `update.sh` both override the base package with
-  `buildGoModule = pkgs.unstable.buildGo127Module`.
-- Keep the override in both places: the vendor-hash probe must build with the
-  same toolchain the final package uses, or the updater fails before any hash
-  mismatch is reported.
+  older.
+- The base package is `pkgs.unstable.tailscale`, whose nixpkgs Tailscale already
+  builds with `buildGo127Module`; neither `default.nix` nor `update.sh` names the
+  Go builder argument. A `tailscale.override { … }` on an argument the upstream
+  constructor no longer takes fails host evaluation before any build starts.
+- Keep both files in that shape: the vendor-hash probe must build the same way
+  the final package does, or the updater fails before any hash mismatch is
+  reported.
 
 ## Updater source ref
 
