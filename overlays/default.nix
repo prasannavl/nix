@@ -20,6 +20,9 @@
         tailscale = final.unstable.tailscale;
       };
       tailscale = final.tailscale-upstream;
+      # 1.1.19 in the pinned nixpkgs fails two dbus tests under xvfb (no
+      # machine-id in the sandbox); 1.1.20 from unstable builds.
+      solaar = final.unstable.solaar;
       vscode-upstream = final.callPackage ../lib/ext/vscode {};
       zed-wrapped = final.callPackage ../lib/ext/zed.nix {};
       nvidiaCustomForKernel = kernelPackages:
