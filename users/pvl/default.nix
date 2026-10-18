@@ -38,6 +38,7 @@ in rec {
     ./sway
     ./niri
     ./gnome
+    ./htop
     ./tmux
     ./git
     ./ranger
