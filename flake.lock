@@ -124,11 +124,11 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1792308474,
-        "narHash": "sha256-3DWIcuXbBqhJpXHaU2N6t5UGr99f5kNpWulqrd+ivjQ=",
+        "lastModified": 1793069849,
+        "narHash": "sha256-cxG/bLeYi3b8TgH1QG+UqOwopqbUmahNyTvuDbvPXs0=",
         "owner": "abird-ai",
         "repo": "dotlink",
-        "rev": "64a318d7ee12d5788fe1539fd43fcefbeae8efe3",
+        "rev": "08ca60d9ac4b5ac508d5004723355cfd50b12cb9",
         "type": "github"
       },
       "original": {
