@@ -57,6 +57,8 @@ init_vars() {
 		pi-anthropic-auth
 	)
 	REQUESTED_PACKAGES=()
+	DEP_NAMES=()
+	DEP_RANGES=()
 }
 
 parse_args() {
@@ -350,23 +352,30 @@ dep_supports_platform() {
 	return 0
 }
 
+# Queue helpers append to DEP_NAMES/DEP_RANGES, read by resolve_deps.
 enqueue_dependencies() {
-	local manifest="$1" queue="$2"
-
-	jq -r '(.dependencies // {}) | to_entries[] | "\(.key)\t\(.value)"' <<<"$manifest" >>"$queue"
-}
-
-enqueue_optional_dependencies() {
-	local manifest="$1" queue="$2"
-	local name range resolved candidate
+	local manifest="$1" name range
 
 	while IFS=$'\t' read -r name range; do
 		[[ -n "$name" ]] || continue
 		is_host_module "$name" && continue
-		resolved="$(resolve_range_version "$name" "$range" 2>/dev/null)" || continue
+		DEP_NAMES+=("$name")
+		DEP_RANGES+=("$range")
+	done < <(jq -r '(.dependencies // {}) | to_entries[] | "\(.key)\t\(.value)"' <<<"$manifest")
+}
+
+enqueue_optional_dependencies() {
+	local manifest="$1" name range resolved candidate
+
+	while IFS=$'\t' read -r name range; do
+		[[ -n "$name" ]] || continue
+		is_host_module "$name" && continue
+		resolved="$(resolve_range_version "$name" "$range" 2>/dev/null || true)"
+		[[ -n "$resolved" ]] || continue
 		candidate="$(npm_manifest "${name}@${resolved}" 2>/dev/null)" || continue
 		dep_supports_platform "$name" "$candidate" || continue
-		printf '%s\t%s\n' "$name" "$range" >>"$queue"
+		DEP_NAMES+=("$name")
+		DEP_RANGES+=("$range")
 	done < <(jq -r '(.optionalDependencies // {}) | to_entries[] | "\(.key)\t\(.value)"' <<<"$manifest")
 }
 
@@ -375,30 +384,27 @@ enqueue_optional_dependencies() {
 # mapping npm name -> { kind, range, version, srcHash }.
 resolve_deps() {
 	local package="$1" version="$2"
-	local registry_name work_dir queue seen deps_json manifest name range resolved tarball hash
+	local registry_name deps_json manifest name range resolved previous tarball hash index=0
+	local -A seen=()
 
 	init_target_platform
 	registry_name="$(jq -er --arg package "$package" '.[$package].package' <<<"$SOURCES_JSON")"
-	work_dir="${RUNTIME_DIR}/deps/${package}"
-	queue="${work_dir}/queue"
-	seen="${work_dir}/seen"
-	deps_json="${work_dir}/deps.json"
-	mkdir -p "$work_dir"
-	: >"$queue"
-	: >"$seen"
+	mkdir -p "${RUNTIME_DIR}/deps"
+	deps_json="${RUNTIME_DIR}/deps/${package}.json"
 	echo '{}' >"$deps_json"
 
 	manifest="$(npm_manifest "${registry_name}@${version}")" ||
 		die "Could not read npm metadata for ${registry_name}@${version}"
-	enqueue_dependencies "$manifest" "$queue"
-	enqueue_optional_dependencies "$manifest" "$queue"
+	enqueue_dependencies "$manifest"
+	enqueue_optional_dependencies "$manifest"
 
-	while IFS=$'\t' read -r -u 9 name range; do
-		[[ -n "$name" ]] || continue
-		is_host_module "$name" && continue
+	while ((index < ${#DEP_NAMES[@]})); do
+		name="${DEP_NAMES[index]}"
+		range="${DEP_RANGES[index]}"
+		index=$((index + 1))
 
 		resolved="$(resolve_range_version "$name" "$range" 2>/dev/null || true)"
-		previous="$(awk -F'\t' -v name="$name" '$1 == name { print $2; exit }' "$seen")"
+		previous="${seen[$name]:-}"
 		if [[ -n "$previous" ]]; then
 			if [[ -n "$resolved" && "$resolved" != "$previous" ]]; then
 				die "${package}: ${name} resolves to both ${previous} and ${resolved} (${range}); a flat node_modules cannot hold both"
@@ -407,7 +413,7 @@ resolve_deps() {
 		fi
 		[[ -n "$resolved" ]] ||
 			die "No published ${name} satisfies ${range} (required by ${package})"
-		printf '%s\t%s\n' "$name" "$resolved" >>"$seen"
+		seen[$name]="$resolved"
 
 		manifest="$(npm_manifest "${name}@${resolved}")"
 		tarball="$(jq -er '.dist.tarball' <<<"$manifest")"
@@ -417,9 +423,9 @@ resolve_deps() {
 			"$deps_json" >"${deps_json}.next"
 		mv "${deps_json}.next" "$deps_json"
 
-		enqueue_dependencies "$manifest" "$queue"
-		enqueue_optional_dependencies "$manifest" "$queue"
-	done 9<"$queue"
+		enqueue_dependencies "$manifest"
+		enqueue_optional_dependencies "$manifest"
+	done
 
 	echo "$deps_json"
 }
