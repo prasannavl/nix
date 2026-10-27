@@ -54,13 +54,6 @@
     npmDepsHash = "sha256-mJxQuoofQ+pqJb05lh8s/s4darGnrT7Or65Z2HqdkJ0=";
   };
 
-  pi-codex-limit = {
-    kind = "npm";
-    package = "pi-codex-limit";
-    version = "1.8.2";
-    srcHash = "sha256-OMu2mwhRU4IGTIPsBTZGzdS8Ro32u7LI7b+PIsYJ+E0=";
-  };
-
   pi-mcp-adapter = {
     kind = "npm";
     package = "pi-mcp-adapter";

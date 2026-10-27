@@ -11,7 +11,8 @@ they gained `pi-processes` for managed background commands plus a batch of
 reporting, memory and prompt-aid extensions: `pi-usage`, `pi-stamp`,
 `pi-openai-toolkit`, `pi-total-recall`, and the JuiceSharp `rpiv-*` set
 (`voice`, `ask-user-question`, `todo`, `btw`, `advisor`). On 2026-10-27 they
-gained `pi-anthropic-auth`. The installation does not take ownership of Pi's
+gained `pi-anthropic-auth` and dropped `pi-codex-limit`, whose Codex usage
+footer `pi-usage` now covers. The installation does not take ownership of Pi's
 writable `~/.pi/agent/settings.json`.
 
 ## Package layout
@@ -35,7 +36,7 @@ promote the Pi derivations into `pkgs/` and register them in
 
 `lib/ext/pi/sources.nix` is the single machine-maintained source of versions,
 upstream revisions, source hashes, release hashes, and npm dependency hashes for
-all nineteen packages. The executable `lib/ext/pi/update.sh` participates in the
+all eighteen packages. The executable `lib/ext/pi/update.sh` participates in the
 standard maintenance interface as the `pi` extension updater:
 
 ```console
@@ -63,7 +64,6 @@ under Pi's auto-discovered global resource directories:
 - the immutable code children under
   `~/.pi/agent/extensions/pi-models-discovery/`
 - `~/.pi/agent/extensions/pi-extensions-i18n`
-- `~/.pi/agent/extensions/pi-codex-limit`
 - `~/.pi/agent/extensions/pi-diff`
 - `~/.pi/agent/extensions/pi-mcp-adapter`
 - `~/.pi/agent/extensions/pi-anthropic-auth`
@@ -113,17 +113,16 @@ package, the in-app switcher is not used: change the locale by editing
 Audit of the other managed extensions: none write inside their store tree.
 `pi-models-discovery` writes `models.json` plus `cache.json` under the
 user-owned `pi-models-discovery` directory, `pi-tps` writes
-`~/.pi/agent/pi-tps.json`, `pi-codex-limit` keeps no writable state (it reads
-Codex credentials through Pi's model registry and renders a footer widget),
-`pi-session-manager` mutates user-owned session files, and `pi-subagents` writes
-user-owned agent definitions and run state. The 2026-10-25 batch writes only
-outside its store trees too: `pi-usage` keeps its settings next to
-`getAgentDir()`, `pi-total-recall` keeps `~/.pi/memory/memory.db` plus its
-session and knowledge indexes under the user's `~/.pi` tree, and the `rpiv-*`
-configs resolve through `$XDG_CONFIG_HOME/<package>/config.json`
-(`~/.config/...` by default, never inside the package). `rpiv-voice` downloads
-its STT model on demand and logs failures under `$TMPDIR`. Only
-`pi-extensions-i18n` needed the locale workaround.
+`~/.pi/agent/pi-tps.json`, `pi-session-manager` mutates user-owned session
+files, and `pi-subagents` writes user-owned agent definitions and run state. The
+2026-10-25 batch writes only outside its store trees too: `pi-usage` keeps its
+settings next to `getAgentDir()`, `pi-total-recall` keeps
+`~/.pi/memory/memory.db` plus its session and knowledge indexes under the user's
+`~/.pi` tree, and the `rpiv-*` configs resolve through
+`$XDG_CONFIG_HOME/<package>/config.json` (`~/.config/...` by default, never
+inside the package). `rpiv-voice` downloads its STT model on demand and logs
+failures under `$TMPDIR`. Only `pi-extensions-i18n` needed the locale
+workaround.
 
 ## Packaging and compatibility
 
@@ -163,13 +162,6 @@ tagged source tree. It loads `src/index.ts` through Pi rather than the published
 from the upstream manifest, and caches only the `@shikijs/cli`, `diff`, and
 `xxhash-wasm` runtime closure. See `.agents/docs/notes/apps/pi-diff-2026-09.md`
 for the full rationale.
-
-The local `pi-codex-limit` derivation packages the `pi-codex-limit` 1.8.2 npm
-tarball from `santychuy/pi-setup` (`extensions/codex-limit`). It is a pure
-TypeScript extension with no runtime npm dependencies, so the derivation unpacks
-the published tarball directly and relies on Pi to provide
-`@earendil-works/pi-tui` at runtime. The extension reads Codex usage and renders
-a subscription-limit footer widget; it declares no skill, prompt, or command.
 
 The local `pi-mcp-adapter` derivation packages `pi-mcp-adapter` 3.2.0 from its
 npm tarball plus the tagged upstream lockfile. The build drops the
@@ -273,7 +265,6 @@ nix-build lib/ext/pi/pi-subagents --no-out-link
 nix-build lib/ext/pi/pi-tps --no-out-link
 nix-build lib/ext/pi/pi-web --no-out-link
 nix-build lib/ext/pi/pi-diff --no-out-link
-nix-build lib/ext/pi/pi-codex-limit --no-out-link
 nix-build lib/ext/pi/pi-mcp-adapter --no-out-link
 nix-build lib/ext/pi/pi-processes --no-out-link
 nix-build lib/ext/pi/pi-usage --no-out-link

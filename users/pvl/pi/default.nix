@@ -14,7 +14,6 @@
     piTps = pkgs.callPackage ../../../lib/ext/pi/pi-tps {};
     piWeb = pkgs.callPackage ../../../lib/ext/pi/pi-web {};
     piDiff = pkgs.callPackage ../../../lib/ext/pi/pi-diff {};
-    piCodexLimit = pkgs.callPackage ../../../lib/ext/pi/pi-codex-limit {};
     piProcesses = pkgs.callPackage ../../../lib/ext/pi/pi-processes {};
     piMcpAdapter = pkgs.callPackage ../../../lib/ext/pi/pi-mcp-adapter {};
     piUsage = pkgs.callPackage ../../../lib/ext/pi/pi-usage {};
@@ -33,7 +32,6 @@
     piSubagentsRoot = "${piSubagents}/lib/node_modules/@gotgenes/pi-subagents";
     piTpsRoot = "${piTps}/share/pi/packages/pi-tps";
     piDiffRoot = "${piDiff}/lib/node_modules/@heyhuynhgiabuu/pi-diff";
-    piCodexLimitRoot = "${piCodexLimit}/share/pi/packages/pi-codex-limit";
     piProcessesRoot = "${piProcesses}/share/pi/packages/pi-processes";
     piUsageRoot = "${piUsage}/share/pi/packages/pi-usage";
     piOpenaiToolkitRoot = "${piOpenaiToolkit}/share/pi/packages/pi-openai-toolkit";
@@ -68,7 +66,6 @@
 
     home.file = {
       ".pi/agent/extensions/bladebro".source = bladebroRoot;
-      ".pi/agent/extensions/pi-codex-limit".source = piCodexLimitRoot;
       ".pi/agent/extensions/pi-diff".source = piDiffRoot;
       ".pi/agent/extensions/pi-extensions-i18n".source = "${piModelsDiscoveryRoot}/node_modules/pi-extensions-i18n";
       ".pi/agent/extensions/pi-models-discovery/index.ts".source = "${piModelsDiscoveryRoot}/index.ts";
