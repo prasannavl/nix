@@ -26,7 +26,6 @@
     piOpenaiToolkit = pkgs.callPackage ../../../lib/ext/pi/pi-openai-toolkit {};
     piTotalRecall = pkgs.callPackage ../../../lib/ext/pi/pi-total-recall {};
     rpivVoice = pkgs.callPackage ../../../lib/ext/pi/rpiv-voice {};
-    rpivAskUserQuestion = pkgs.callPackage ../../../lib/ext/pi/rpiv-ask-user-question {};
     rpivTodo = pkgs.callPackage ../../../lib/ext/pi/rpiv-todo {};
     rpivBtw = pkgs.callPackage ../../../lib/ext/pi/rpiv-btw {};
     rpivAdvisor = pkgs.callPackage ../../../lib/ext/pi/rpiv-advisor {};
@@ -49,7 +48,6 @@
     piOpenaiToolkitRoot = "${piOpenaiToolkit}/share/pi/packages/pi-openai-toolkit";
     piTotalRecallRoot = "${piTotalRecall}/share/pi/packages/pi-total-recall";
     rpivVoiceRoot = "${rpivVoice}/share/pi/packages/rpiv-voice";
-    rpivAskUserQuestionRoot = "${rpivAskUserQuestion}/share/pi/packages/rpiv-ask-user-question";
     rpivTodoRoot = "${rpivTodo}/share/pi/packages/rpiv-todo";
     rpivBtwRoot = "${rpivBtw}/share/pi/packages/rpiv-btw";
     rpivAdvisorRoot = "${rpivAdvisor}/share/pi/packages/rpiv-advisor";
@@ -97,7 +95,6 @@
       ".pi/agent/extensions/pi-openai-toolkit".source = piOpenaiToolkitRoot;
       ".pi/agent/extensions/pi-total-recall".source = piTotalRecallRoot;
       ".pi/agent/extensions/rpiv-voice".source = rpivVoiceRoot;
-      ".pi/agent/extensions/rpiv-ask-user-question".source = rpivAskUserQuestionRoot;
       ".pi/agent/extensions/rpiv-todo".source = rpivTodoRoot;
       ".pi/agent/extensions/rpiv-btw".source = rpivBtwRoot;
       ".pi/agent/extensions/rpiv-advisor".source = rpivAdvisorRoot;

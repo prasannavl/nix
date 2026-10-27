@@ -260,24 +260,6 @@
     };
   };
 
-  rpiv-ask-user-question = {
-    kind = "npm";
-    package = "@juicesharp/rpiv-ask-user-question";
-    owner = "juicesharp";
-    repo = "rpiv-mono";
-    version = "2.15.0";
-    srcHash = "sha256-bHq4BM1Iib60+ta2Zrjnih445KUddAXNfGJwKRKOx1Q=";
-    depsResolver = "registry";
-    deps = {
-      "@juicesharp/rpiv-config" = {
-        kind = "npm-dep";
-        range = "^2.15.0";
-        version = "2.15.0";
-        srcHash = "sha256-Z7QC661n6pbbY5J1/KuXqmagYMox6j96PYaX/bg4xRA=";
-      };
-    };
-  };
-
   rpiv-todo = {
     kind = "npm";
     package = "@juicesharp/rpiv-todo";

@@ -10,10 +10,10 @@ Playwright MCP server; see
 they gained `pi-processes` for managed background commands plus a batch of
 reporting, memory and prompt-aid extensions: `pi-usage`, `pi-stamp`,
 `pi-openai-toolkit`, `pi-total-recall`, and the JuiceSharp `rpiv-*` set
-(`voice`, `ask-user-question`, `todo`, `btw`, `advisor`). On 2026-10-27 they
-gained `pi-anthropic-auth` and dropped `pi-codex-limit`, whose Codex usage
-footer `pi-usage` now covers. They also gained six agent-workflow extensions:
-the narumiruna `pi-tool`, `pi-goal` and `pi-notify`, and the brettinternet
+(`voice`, `todo`, `btw`, `advisor`). On 2026-10-27 they gained
+`pi-anthropic-auth` and dropped `pi-codex-limit`, whose Codex usage footer
+`pi-usage` now covers. They also gained six agent-workflow extensions: the
+narumiruna `pi-tool`, `pi-goal` and `pi-notify`, and the brettinternet
 `pi-wait`, `pi-loop` and `pi-until`. On 2026-10-27 `pi-processes` was replaced
 by `pi-patty-bg-tasks`, which auto-backgrounds long `bash` calls instead of
 requiring the agent to pick a separate tool. The installation does not take
@@ -40,7 +40,7 @@ promote the Pi derivations into `pkgs/` and register them in
 
 `lib/ext/pi/sources.nix` is the single machine-maintained source of versions,
 upstream revisions, source hashes, release hashes, and npm dependency hashes for
-all twenty-four packages. The executable `lib/ext/pi/update.sh` participates in
+all twenty-three packages. The executable `lib/ext/pi/update.sh` participates in
 the standard maintenance interface as the `pi` extension updater:
 
 ```console
@@ -83,7 +83,6 @@ under Pi's auto-discovered global resource directories:
 - `~/.pi/agent/extensions/pi-openai-toolkit`
 - `~/.pi/agent/extensions/pi-total-recall`
 - `~/.pi/agent/extensions/rpiv-voice`
-- `~/.pi/agent/extensions/rpiv-ask-user-question`
 - `~/.pi/agent/extensions/rpiv-todo`
 - `~/.pi/agent/extensions/rpiv-btw`
 - `~/.pi/agent/extensions/rpiv-advisor`
@@ -312,7 +311,6 @@ nix-build lib/ext/pi/pi-anthropic-auth --no-out-link
 nix-build lib/ext/pi/pi-openai-toolkit --no-out-link
 nix-build lib/ext/pi/pi-total-recall --no-out-link
 nix-build lib/ext/pi/rpiv-voice --no-out-link
-nix-build lib/ext/pi/rpiv-ask-user-question --no-out-link
 nix-build lib/ext/pi/rpiv-todo --no-out-link
 nix-build lib/ext/pi/rpiv-btw --no-out-link
 nix-build lib/ext/pi/rpiv-advisor --no-out-link
