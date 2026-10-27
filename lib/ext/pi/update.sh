@@ -128,6 +128,10 @@ current_version() {
 	jq -er --arg package "$1" '.[$package].version' <<<"$SOURCES_JSON"
 }
 
+deps_resolver() {
+	jq -r --arg package "$1" '.[$package].depsResolver // empty' <<<"$SOURCES_JSON"
+}
+
 resolve_metadata() {
 	local package="$1"
 	local registry_name selector
@@ -222,7 +226,7 @@ set_npm_deps_hash() {
 
 render_sources() {
 	local package field value
-	local -a fields=(kind package owner repo version rev srcHash releaseHash npmDepsHash)
+	local -a fields=(kind package owner repo version rev srcHash releaseHash npmDepsHash depsResolver)
 
 	echo "{"
 	for package in "${ALL_PACKAGES[@]}"; do
@@ -231,6 +235,19 @@ render_sources() {
 			value="$(jq -c --arg package "$package" --arg field "$field" '.[$package][$field] // empty' "$WORKING_SOURCES")"
 			[[ -n "$value" ]] && printf '    %s = %s;\n' "$field" "$value"
 		done
+		if jq -e --arg package "$package" '.[$package].deps | length > 0' "$WORKING_SOURCES" >/dev/null; then
+			echo "    deps = {"
+			jq -r --arg package "$package" '
+				.[$package].deps | to_entries | sort_by(.key)[]
+				| "      \(.key | tojson) = {\n"
+				  + "        kind = \(.value.kind | tojson);\n"
+				  + "        range = \(.value.range | tojson);\n"
+				  + "        version = \(.value.version | tojson);\n"
+				  + "        srcHash = \(.value.srcHash | tojson);\n"
+				  + "      };"
+			' "$WORKING_SOURCES"
+			echo "    };"
+		fi
 		echo "  };"
 		[[ "$package" != "${ALL_PACKAGES[-1]}" ]] && echo
 	done
@@ -272,6 +289,145 @@ compute_npm_deps_hash() {
 	set_npm_deps_hash "$package" "$npm_deps_hash"
 }
 
+init_target_platform() {
+	local system
+
+	[[ -n "${TARGET_OS:-}" ]] && return 0
+	system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+	TARGET_CPU="${system%%-*}"
+	TARGET_OS="${system#*-}"
+	case "$TARGET_CPU" in
+	x86_64) TARGET_CPU=x64 ;;
+	aarch64) TARGET_CPU=arm64 ;;
+	esac
+}
+
+# Pi supplies these modules to every extension, so they are never pinned.
+is_host_module() {
+	case "$1" in
+	@earendil-works/* | @mariozechner/* | typebox | @sinclair/typebox) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+npm_manifest() {
+	npm --cache "$NPM_CACHE" --loglevel=silent view "$1" --json
+}
+
+# Highest published version satisfying a declared range.
+resolve_range_version() {
+	npm --cache "$NPM_CACHE" --loglevel=silent view "$1@$2" version --json |
+		jq -er 'if type == "array" then last else . end'
+}
+
+# Optional dependencies only arrive when they match the build platform. Most
+# native packages declare os/cpu; the sherpa-onnx-*/decibri-* prebuilds do not,
+# so fall back to the platform tokens in their names.
+dep_supports_platform() {
+	local name="$1" manifest="$2"
+	local os cpu
+
+	read -r os cpu < <(jq -r '
+		def as_list: if type == "array" then join(",") elif type == "string" then . else "" end;
+		"\(.os // [] | as_list) \(.cpu // [] | as_list)"
+	' <<<"$manifest")
+	if [[ -n "$os" && ",${os}," != *",${TARGET_OS},"* ]]; then return 1; fi
+	if [[ -n "$cpu" && ",${cpu}," != *",${TARGET_CPU},"* ]]; then return 1; fi
+	if [[ "$name" =~ -(win32|win|darwin|android|freebsd|ia32|arm|arm64|musl|x32)(-|$) ]]; then
+		return 1
+	fi
+	return 0
+}
+
+enqueue_dependencies() {
+	local manifest="$1" queue="$2"
+
+	jq -r '(.dependencies // {}) | to_entries[] | "\(.key)\t\(.value)"' <<<"$manifest" >>"$queue"
+}
+
+enqueue_optional_dependencies() {
+	local manifest="$1" queue="$2"
+	local name range resolved candidate
+
+	while IFS=$'\t' read -r name range; do
+		[[ -n "$name" ]] || continue
+		is_host_module "$name" && continue
+		resolved="$(resolve_range_version "$name" "$range" 2>/dev/null)" || continue
+		candidate="$(npm_manifest "${name}@${resolved}" 2>/dev/null)" || continue
+		dep_supports_platform "$name" "$candidate" || continue
+		printf '%s\t%s\n' "$name" "$range" >>"$queue"
+	done < <(jq -r '(.optionalDependencies // {}) | to_entries[] | "\(.key)\t\(.value)"' <<<"$manifest")
+}
+
+# Walk the published dependency graph breadth-first and pin every runtime
+# package that Pi does not supply itself. Returns the path of a JSON file
+# mapping npm name -> { kind, range, version, srcHash }.
+resolve_deps() {
+	local package="$1" version="$2"
+	local registry_name work_dir queue seen deps_json manifest name range resolved tarball hash
+
+	init_target_platform
+	registry_name="$(jq -er --arg package "$package" '.[$package].package' <<<"$SOURCES_JSON")"
+	work_dir="${RUNTIME_DIR}/deps/${package}"
+	queue="${work_dir}/queue"
+	seen="${work_dir}/seen"
+	deps_json="${work_dir}/deps.json"
+	mkdir -p "$work_dir"
+	: >"$queue"
+	: >"$seen"
+	echo '{}' >"$deps_json"
+
+	manifest="$(npm_manifest "${registry_name}@${version}")" ||
+		die "Could not read npm metadata for ${registry_name}@${version}"
+	enqueue_dependencies "$manifest" "$queue"
+	enqueue_optional_dependencies "$manifest" "$queue"
+
+	while IFS=$'\t' read -r -u 9 name range; do
+		[[ -n "$name" ]] || continue
+		is_host_module "$name" && continue
+
+		resolved="$(resolve_range_version "$name" "$range" 2>/dev/null || true)"
+		previous="$(awk -F'\t' -v name="$name" '$1 == name { print $2; exit }' "$seen")"
+		if [[ -n "$previous" ]]; then
+			if [[ -n "$resolved" && "$resolved" != "$previous" ]]; then
+				die "${package}: ${name} resolves to both ${previous} and ${resolved} (${range}); a flat node_modules cannot hold both"
+			fi
+			continue
+		fi
+		[[ -n "$resolved" ]] ||
+			die "No published ${name} satisfies ${range} (required by ${package})"
+		printf '%s\t%s\n' "$name" "$resolved" >>"$seen"
+
+		manifest="$(npm_manifest "${name}@${resolved}")"
+		tarball="$(jq -er '.dist.tarball' <<<"$manifest")"
+		hash="$(prefetch_unpack_hash "$tarball")"
+		jq --arg name "$name" --arg range "$range" --arg version "$resolved" --arg srcHash "$hash" \
+			'.[$name] = {kind: "npm-dep", range: $range, version: $version, srcHash: $srcHash}' \
+			"$deps_json" >"${deps_json}.next"
+		mv "${deps_json}.next" "$deps_json"
+
+		enqueue_dependencies "$manifest" "$queue"
+		enqueue_optional_dependencies "$manifest" "$queue"
+	done 9<"$queue"
+
+	echo "$deps_json"
+}
+
+set_deps_record() {
+	local package="$1"
+	local deps_file="$2"
+	local next_file
+
+	next_file="${STAGING_DIR}/sources.next.json"
+	jq --sort-keys \
+		--arg package "$package" \
+		--slurpfile deps "$deps_file" \
+		'.[$package].deps = ($deps[0] | to_entries | sort_by(.key) | from_entries)' \
+		"$WORKING_SOURCES" >"$next_file"
+	mv "$next_file" "$WORKING_SOURCES"
+	write_staged_sources
+}
+
 update_package() {
 	local package="$1"
 	local metadata current version rev="" src_hash="" release_hash="" npm_deps_hash=""
@@ -310,6 +466,9 @@ update_package() {
 	set_source_record "$package" "$version" "$rev" "$src_hash" "$release_hash" "$npm_deps_hash"
 	if [[ "$package" == "pi-web" || "$package" == "pi-diff" || "$package" == "pi-mcp-adapter" ]]; then
 		compute_npm_deps_hash "$package"
+	fi
+	if [[ "$(deps_resolver "$package")" == "registry" ]]; then
+		set_deps_record "$package" "$(resolve_deps "$package" "$version")"
 	fi
 	build_package "$package"
 	CHANGED=1
