@@ -5,6 +5,7 @@
     ./beszel
     ./dockge.nix
     ./docmost
+    ./dotlink.nix
     ./feishin
     ./immich
     ./jellyfin

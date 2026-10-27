@@ -4,8 +4,8 @@
   services.dotlink = {
     enable = true;
     user = "pvl";
-    # pvl-x2 has no source checkout yet; ~/Projects is the access root.
-    workingDirectory = "/home/pvl/Projects/";
+    # Source checkout root on pvl-x2; created so WorkingDirectory exists.
+    workingDirectory = "/home/pvl/src/";
     logging.verbosity = "tools";
 
     # Host integrations for Bubblewrap shell tools; maps to --allow-* flags.
@@ -22,9 +22,28 @@
       gpu = ["amd"];
     };
 
-    # Only caches that already exist on pvl-x2; read/write.
+    # Every cache kind the module supports, read/write. A kind whose directory
+    # is absent is skipped with a warning instead of failing startup, so this
+    # also covers caches created after deployment.
     cacheAccess = {
+      "cargo-registry" = "rw";
+      "cargo-git" = "rw";
+      "ccache" = "rw";
+      "go-mod" = "rw";
+      "go-build" = "rw";
+      "gradle" = "rw";
+      "maven" = "rw";
+      "npm" = "rw";
       "pip" = "rw";
+      "pnpm" = "rw";
+      "sccache" = "rw";
+      "uv" = "rw";
+      "yarn" = "rw";
     };
   };
+
+  # The launch directory is not optional for systemd; create it on activation.
+  systemd.tmpfiles.rules = [
+    "d /home/pvl/src 0755 pvl pvl -"
+  ];
 }
