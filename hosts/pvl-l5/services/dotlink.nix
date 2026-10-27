@@ -20,15 +20,23 @@
       gpu = ["amd" "nvidia"];
     };
 
-    # Shell-only developer caches discovered on both hosts, read/write.
+    # Every cache kind the module supports, read/write. A kind whose directory
+    # is absent is skipped with a warning instead of failing startup, so this
+    # also covers caches created after deployment.
     cacheAccess = {
       "cargo-registry" = "rw";
       "cargo-git" = "rw";
-      "npm" = "rw";
-      "yarn" = "rw";
-      "pip" = "rw";
+      "ccache" = "rw";
       "go-mod" = "rw";
       "go-build" = "rw";
+      "gradle" = "rw";
+      "maven" = "rw";
+      "npm" = "rw";
+      "pip" = "rw";
+      "pnpm" = "rw";
+      "sccache" = "rw";
+      "uv" = "rw";
+      "yarn" = "rw";
     };
   };
 }
