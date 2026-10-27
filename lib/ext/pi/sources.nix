@@ -71,4 +71,224 @@
     releaseHash = "sha256-syx9/d3IGyTExenHwwaVFuFN5jZvM8gVn8/+W8bJ8jk=";
     npmDepsHash = "sha256-wQNxQkP8Msu6CG82guxuBR45ebgPDwzWJrMYhHlvUb4=";
   };
+
+  pi-processes = {
+    kind = "npm";
+    package = "@aliou/pi-processes";
+    owner = "aliou";
+    repo = "pi-processes";
+    version = "0.13.2";
+    srcHash = "sha256-nAbY++xI1NveMJtHO8Sz/VuYNOkHX3QCqmTeJVax760=";
+    depsResolver = "registry";
+    deps = {
+      "@aliou/pi-utils-settings" = {
+        kind = "npm-dep";
+        range = "^0.19.1";
+        version = "0.19.2";
+        srcHash = "sha256-4+j8HhUAkRua8m4pkm17egWWnk0cqbi+g7si79yTEB4=";
+      };
+      "@aliou/pi-utils-ui" = {
+        kind = "npm-dep";
+        range = "^0.5.0";
+        version = "0.5.1";
+        srcHash = "sha256-OYy43GsCNwjEL4W+nGB2pQ9uCKEYAXTGA4cHmoCIkNY=";
+      };
+      "@aliou/sh" = {
+        kind = "npm-dep";
+        range = "^0.2.2";
+        version = "0.2.2";
+        srcHash = "sha256-vke0WUMdxPWuPHH/eAW/jJ8JWQjfQwnc/ulLOxW9PLQ=";
+      };
+    };
+  };
+
+  pi-usage = {
+    kind = "npm";
+    package = "@narumitw/pi-usage";
+    owner = "narumiruna";
+    repo = "pi-extensions";
+    version = "0.68.1";
+    srcHash = "sha256-a9PjVn0rusQ16ccp45hy+c6L22kE0q5haRivqsRk5jg=";
+    depsResolver = "registry";
+    deps = {
+      "@narumitw/pi-tui-kit" = {
+        kind = "npm-dep";
+        range = "^0.66.0";
+        version = "0.66.0";
+        srcHash = "sha256-bY+XeIFE99LDQI9KiPy+ADz4VwolHtXMoA+SVU7p2Cs=";
+      };
+      "diff" = {
+        kind = "npm-dep";
+        range = "9.0.0";
+        version = "9.0.0";
+        srcHash = "sha256-cW9eX7r0oy9cABMNiBQixDcPfGaUxLDRuiWioD7Hqrg=";
+      };
+      "grok-mermaid" = {
+        kind = "npm-dep";
+        range = "0.2.3";
+        version = "0.2.3";
+        srcHash = "sha256-tT9tKcotpywP98aI4H8AJZa6cikj9adGFZpialQ0Dxk=";
+      };
+      "highlight.js" = {
+        kind = "npm-dep";
+        range = "11.12.0";
+        version = "11.12.0";
+        srcHash = "sha256-fcEJdFLzFkMR1rlm9sPVCr6A8YhUgm6+JNlLjMIrHk0=";
+      };
+    };
+  };
+
+  pi-openai-toolkit = {
+    kind = "npm";
+    package = "pi-openai-toolkit";
+    owner = "awoaCrim";
+    repo = "pi-openai-toolkit";
+    version = "0.24.0";
+    srcHash = "sha256-saY6V102yQqJAIp6e2BW0SB4hXIVHKCBlBBhSdtmq3c=";
+  };
+
+  pi-total-recall = {
+    kind = "npm";
+    package = "pi-total-recall";
+    owner = "samfoy";
+    repo = "pi-total-recall";
+    version = "1.9.1";
+    srcHash = "sha256-qFfpzYav7LzsaZccBCAo/5EYsBXhJdajVwhlqh1dPHQ=";
+  };
+
+  rpiv-voice = {
+    kind = "npm";
+    package = "@juicesharp/rpiv-voice";
+    owner = "juicesharp";
+    repo = "rpiv-mono";
+    version = "2.15.0";
+    srcHash = "sha256-710aXXZCYmzkTprH9+4OGuQdGJFGsudH/rmc+NZRzYg=";
+    depsResolver = "registry";
+    deps = {
+      "@decibri/decibri-linux-x64-gnu" = {
+        kind = "npm-dep";
+        range = "3.4.2";
+        version = "3.4.2";
+        srcHash = "sha256-lwo+o90s+NoWnciUwDkhMSy3Ix14T8tV4VZ7wzn/X3w=";
+      };
+      "@juicesharp/rpiv-config" = {
+        kind = "npm-dep";
+        range = "^2.15.0";
+        version = "2.15.0";
+        srcHash = "sha256-Z7QC661n6pbbY5J1/KuXqmagYMox6j96PYaX/bg4xRA=";
+      };
+      "decibri" = {
+        kind = "npm-dep";
+        range = "^3.4.0";
+        version = "3.4.2";
+        srcHash = "sha256-tfmbL30sQYBZeQBIpFGpoeVVk4dVDzV6uvjg/wNFIBQ=";
+      };
+      "sherpa-onnx-linux-x64" = {
+        kind = "npm-dep";
+        range = "^1.13.8";
+        version = "1.13.8";
+        srcHash = "sha256-k7U4/iFkNGZyRacNcsI1QFaKAQ+w+HnMeub53T8lC1c=";
+      };
+      "sherpa-onnx-node" = {
+        kind = "npm-dep";
+        range = "^1.13.0";
+        version = "1.13.8";
+        srcHash = "sha256-LMjPL7ng1JvcbJw+ZDzmNkd+LZQz/552U+P9s+8PM00=";
+      };
+    };
+  };
+
+  rpiv-ask-user-question = {
+    kind = "npm";
+    package = "@juicesharp/rpiv-ask-user-question";
+    owner = "juicesharp";
+    repo = "rpiv-mono";
+    version = "2.15.0";
+    srcHash = "sha256-bHq4BM1Iib60+ta2Zrjnih445KUddAXNfGJwKRKOx1Q=";
+    depsResolver = "registry";
+    deps = {
+      "@juicesharp/rpiv-config" = {
+        kind = "npm-dep";
+        range = "^2.15.0";
+        version = "2.15.0";
+        srcHash = "sha256-Z7QC661n6pbbY5J1/KuXqmagYMox6j96PYaX/bg4xRA=";
+      };
+    };
+  };
+
+  rpiv-todo = {
+    kind = "npm";
+    package = "@juicesharp/rpiv-todo";
+    owner = "juicesharp";
+    repo = "rpiv-mono";
+    version = "2.15.0";
+    srcHash = "sha256-9/1DJUvVV6o75HCu6mFvRya5+dTFfGm/BPy20xGQvVY=";
+    depsResolver = "registry";
+    deps = {
+      "@juicesharp/rpiv-config" = {
+        kind = "npm-dep";
+        range = "^2.15.0";
+        version = "2.15.0";
+        srcHash = "sha256-Z7QC661n6pbbY5J1/KuXqmagYMox6j96PYaX/bg4xRA=";
+      };
+    };
+  };
+
+  rpiv-btw = {
+    kind = "npm";
+    package = "@juicesharp/rpiv-btw";
+    owner = "juicesharp";
+    repo = "rpiv-mono";
+    version = "2.15.0";
+    srcHash = "sha256-42hv077U5//X9KnShuNSql1oo42aHczzQboYWp2BUko=";
+  };
+
+  rpiv-advisor = {
+    kind = "npm";
+    package = "@juicesharp/rpiv-advisor";
+    owner = "juicesharp";
+    repo = "rpiv-mono";
+    version = "2.15.0";
+    srcHash = "sha256-AaH67C9qKXKfuMEIOlAUKzV7oXFpIgAmqbYGM45+Et4=";
+    depsResolver = "registry";
+    deps = {
+      "@juicesharp/rpiv-config" = {
+        kind = "npm-dep";
+        range = "^2.15.0";
+        version = "2.15.0";
+        srcHash = "sha256-Z7QC661n6pbbY5J1/KuXqmagYMox6j96PYaX/bg4xRA=";
+      };
+    };
+  };
+
+  pi-stamp = {
+    kind = "npm";
+    package = "@narumitw/pi-stamp";
+    owner = "narumiruna";
+    repo = "pi-extensions";
+    version = "0.53.0";
+    srcHash = "sha256-oHgovJqc8Y4BxRyiNP+RXRm7cWFjDchljKzg5jQMjnQ=";
+    depsResolver = "registry";
+    deps = {
+      "@narumitw/pi-tui-kit" = {
+        kind = "npm-dep";
+        range = "^0.59.0";
+        version = "0.59.0";
+        srcHash = "sha256-dMzOHA7jxKShvU2okzNt7qRNm/5ONa+05ZkcfVTALbI=";
+      };
+      "grok-mermaid" = {
+        kind = "npm-dep";
+        range = "0.2.3";
+        version = "0.2.3";
+        srcHash = "sha256-tT9tKcotpywP98aI4H8AJZa6cikj9adGFZpialQ0Dxk=";
+      };
+      "highlight.js" = {
+        kind = "npm-dep";
+        range = "11.12.0";
+        version = "11.12.0";
+        srcHash = "sha256-fcEJdFLzFkMR1rlm9sPVCr6A8YhUgm6+JNlLjMIrHk0=";
+      };
+    };
+  };
+
 }

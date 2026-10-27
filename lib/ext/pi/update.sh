@@ -44,6 +44,16 @@ init_vars() {
 		pi-diff
 		pi-codex-limit
 		pi-mcp-adapter
+		pi-processes
+		pi-usage
+		pi-openai-toolkit
+		pi-total-recall
+		rpiv-voice
+		rpiv-ask-user-question
+		rpiv-todo
+		rpiv-btw
+		rpiv-advisor
+		pi-stamp
 	)
 	REQUESTED_PACKAGES=()
 }
@@ -447,7 +457,7 @@ update_package() {
 		read -r owner repo <<<"$(github_repo "$package")"
 		src_hash="$(prefetch_unpack_hash "https://github.com/${owner}/${repo}/archive/${rev}.tar.gz")"
 		;;
-	pi-session-manager | pi-subagents | pi-codex-limit)
+	pi-session-manager | pi-subagents | pi-codex-limit | pi-processes | pi-usage | pi-openai-toolkit | pi-total-recall | rpiv-voice | rpiv-ask-user-question | rpiv-todo | rpiv-btw | rpiv-advisor | pi-stamp)
 		tarball="$(jq -er '.dist.tarball' <<<"$metadata")"
 		src_hash="$(prefetch_unpack_hash "$tarball")"
 		;;

@@ -15,7 +15,17 @@
     piWeb = pkgs.callPackage ../../../lib/ext/pi/pi-web {};
     piDiff = pkgs.callPackage ../../../lib/ext/pi/pi-diff {};
     piCodexLimit = pkgs.callPackage ../../../lib/ext/pi/pi-codex-limit {};
+    piProcesses = pkgs.callPackage ../../../lib/ext/pi/pi-processes {};
     piMcpAdapter = pkgs.callPackage ../../../lib/ext/pi/pi-mcp-adapter {};
+    piUsage = pkgs.callPackage ../../../lib/ext/pi/pi-usage {};
+    piOpenaiToolkit = pkgs.callPackage ../../../lib/ext/pi/pi-openai-toolkit {};
+    piTotalRecall = pkgs.callPackage ../../../lib/ext/pi/pi-total-recall {};
+    rpivVoice = pkgs.callPackage ../../../lib/ext/pi/rpiv-voice {};
+    rpivAskUserQuestion = pkgs.callPackage ../../../lib/ext/pi/rpiv-ask-user-question {};
+    rpivTodo = pkgs.callPackage ../../../lib/ext/pi/rpiv-todo {};
+    rpivBtw = pkgs.callPackage ../../../lib/ext/pi/rpiv-btw {};
+    rpivAdvisor = pkgs.callPackage ../../../lib/ext/pi/rpiv-advisor {};
+    piStamp = pkgs.callPackage ../../../lib/ext/pi/pi-stamp {};
     bladebro = pkgs.callPackage ../../../pkgs/ext/bladebro {};
     piModelsDiscoveryRoot = "${piModelsDiscovery}/share/pi/packages/pi-models-discovery";
     piSessionManagerRoot = "${piSessionManager}/share/pi/packages/pi-session-manager";
@@ -23,6 +33,16 @@
     piTpsRoot = "${piTps}/share/pi/packages/pi-tps";
     piDiffRoot = "${piDiff}/lib/node_modules/@heyhuynhgiabuu/pi-diff";
     piCodexLimitRoot = "${piCodexLimit}/share/pi/packages/pi-codex-limit";
+    piProcessesRoot = "${piProcesses}/share/pi/packages/pi-processes";
+    piUsageRoot = "${piUsage}/share/pi/packages/pi-usage";
+    piOpenaiToolkitRoot = "${piOpenaiToolkit}/share/pi/packages/pi-openai-toolkit";
+    piTotalRecallRoot = "${piTotalRecall}/share/pi/packages/pi-total-recall";
+    rpivVoiceRoot = "${rpivVoice}/share/pi/packages/rpiv-voice";
+    rpivAskUserQuestionRoot = "${rpivAskUserQuestion}/share/pi/packages/rpiv-ask-user-question";
+    rpivTodoRoot = "${rpivTodo}/share/pi/packages/rpiv-todo";
+    rpivBtwRoot = "${rpivBtw}/share/pi/packages/rpiv-btw";
+    rpivAdvisorRoot = "${rpivAdvisor}/share/pi/packages/rpiv-advisor";
+    piStampRoot = "${piStamp}/share/pi/packages/pi-stamp";
     piMcpAdapterRoot = "${piMcpAdapter}/lib/node_modules/pi-mcp-adapter";
     bladebroRoot = "${bladebro}/share/pi/packages/bladebro";
     piDiffConfig = {disabledTools = ["apply_patch"];};
@@ -55,6 +75,18 @@
       ".pi/agent/extensions/pi-models-discovery/package.json".source = "${piModelsDiscoveryRoot}/package.json";
       ".pi/agent/extensions/pi-models-discovery/src".source = "${piModelsDiscoveryRoot}/src";
       ".pi/agent/extensions/pi-mcp-adapter".source = piMcpAdapterRoot;
+      # pi-processes ships three extensions through its package manifest, so the
+      # whole package directory is linked; its node_modules sits beside them.
+      ".pi/agent/extensions/pi-processes".source = piProcessesRoot;
+      ".pi/agent/extensions/pi-usage".source = piUsageRoot;
+      ".pi/agent/extensions/pi-openai-toolkit".source = piOpenaiToolkitRoot;
+      ".pi/agent/extensions/pi-total-recall".source = piTotalRecallRoot;
+      ".pi/agent/extensions/rpiv-voice".source = rpivVoiceRoot;
+      ".pi/agent/extensions/rpiv-ask-user-question".source = rpivAskUserQuestionRoot;
+      ".pi/agent/extensions/rpiv-todo".source = rpivTodoRoot;
+      ".pi/agent/extensions/rpiv-btw".source = rpivBtwRoot;
+      ".pi/agent/extensions/rpiv-advisor".source = rpivAdvisorRoot;
+      ".pi/agent/extensions/pi-stamp".source = piStampRoot;
       ".pi/agent/extensions/pi-session-manager.ts".source = "${piSessionManagerRoot}/extensions/session-manager.ts";
       # @gotgenes/pi-subagents ships only the runtime extension. Unlike the
       # previous nicobailon/pi-subagents package it provides no skills or
@@ -72,6 +104,10 @@
       };
 
       ".pi/agent/skills/pi-models-discovery/SKILL.md".source = "${piModelsDiscoveryRoot}/SKILL.md";
+      ".pi/agent/skills/pi-processes".source = "${piProcessesRoot}/skills/pi-processes";
+      # pi-total-recall's manifest points its skill at the bundled
+      # pi-session-search copy.
+      ".pi/agent/skills/session-history".source = "${piTotalRecallRoot}/node_modules/pi-session-search/skills/session-history";
       ".pi/agent/skills/mcp-scripting".source = "${piMcpAdapterRoot}/skills/mcp-scripting";
     };
   };
