@@ -10,8 +10,9 @@ Playwright MCP server; see
 they gained `pi-processes` for managed background commands plus a batch of
 reporting, memory and prompt-aid extensions: `pi-usage`, `pi-stamp`,
 `pi-openai-toolkit`, `pi-total-recall`, and the JuiceSharp `rpiv-*` set
-(`voice`, `ask-user-question`, `todo`, `btw`, `advisor`). The installation
-does not take ownership of Pi's writable `~/.pi/agent/settings.json`.
+(`voice`, `ask-user-question`, `todo`, `btw`, `advisor`). On 2026-10-27 they
+gained `pi-anthropic-auth`. The installation does not take ownership of Pi's
+writable `~/.pi/agent/settings.json`.
 
 ## Package layout
 
@@ -34,7 +35,7 @@ promote the Pi derivations into `pkgs/` and register them in
 
 `lib/ext/pi/sources.nix` is the single machine-maintained source of versions,
 upstream revisions, source hashes, release hashes, and npm dependency hashes for
-all eighteen packages. The executable `lib/ext/pi/update.sh` participates in the
+all nineteen packages. The executable `lib/ext/pi/update.sh` participates in the
 standard maintenance interface as the `pi` extension updater:
 
 ```console
@@ -65,6 +66,7 @@ under Pi's auto-discovered global resource directories:
 - `~/.pi/agent/extensions/pi-codex-limit`
 - `~/.pi/agent/extensions/pi-diff`
 - `~/.pi/agent/extensions/pi-mcp-adapter`
+- `~/.pi/agent/extensions/pi-anthropic-auth`
 - `~/.pi/agent/extensions/pi-processes`
 - `~/.pi/agent/extensions/pi-usage`
 - `~/.pi/agent/extensions/pi-stamp`
@@ -234,6 +236,10 @@ The rest of the 2026-10-25 additions:
 - `pi-openai-toolkit` (`pi-openai-toolkit`): pure TypeScript, no runtime
   dependencies; its manifest registers six extensions (runtime, web search,
   image generation, Codex fast/Astra, responses websocket).
+- `pi-anthropic-auth` (`@gotgenes/pi-anthropic-auth`): pure TypeScript under
+  `src/`, no runtime dependencies beyond the `@earendil-works` peers, so it is a
+  plain tarball copy with no `depsResolver`; it registers the
+  `anthropic-auth:status` command.
 - `pi-total-recall` (`pi-total-recall`): the tarball bundles its three runtime
   packages (`@samfp/pi-memory`, `pi-session-search`, `pi-knowledge-search`)
   through `bundleDependencies`, and its `pi` manifest points both the three
@@ -272,6 +278,7 @@ nix-build lib/ext/pi/pi-mcp-adapter --no-out-link
 nix-build lib/ext/pi/pi-processes --no-out-link
 nix-build lib/ext/pi/pi-usage --no-out-link
 nix-build lib/ext/pi/pi-stamp --no-out-link
+nix-build lib/ext/pi/pi-anthropic-auth --no-out-link
 nix-build lib/ext/pi/pi-openai-toolkit --no-out-link
 nix-build lib/ext/pi/pi-total-recall --no-out-link
 nix-build lib/ext/pi/rpiv-voice --no-out-link

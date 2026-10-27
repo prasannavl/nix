@@ -291,4 +291,12 @@
     };
   };
 
+  pi-anthropic-auth = {
+    kind = "npm";
+    package = "@gotgenes/pi-anthropic-auth";
+    owner = "gotgenes";
+    repo = "pi-anthropic-auth";
+    version = "3.4.3";
+    srcHash = "sha256-EVnHIONBOe/mHvOyAjnznJIK8mU2acavwDVKknv7JPo=";
+  };
 }
