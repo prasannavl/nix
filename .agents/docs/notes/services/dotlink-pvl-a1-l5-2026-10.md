@@ -22,6 +22,19 @@ v0.10.0 (no diff under `nix/`, `flake.nix` or `flake.lock` upstream between the
 v0.9.0 bump and `08ca60d`); the release is a source and tool-surface bump
 (`grep`/`edit`/`patch`/`ls`, OAuth and HTTP hardening).
 
+On 2026-10-27 the input was bumped again to `dotlink v0.11.0` (`aa8d817`)
+without any host configuration change. This release does change the module:
+supervision moved from `Restart=on-failure`/`RestartSec=5s` to `Restart=always`
+with `RestartSec=2s` doubling through `RestartSteps=8` to `RestartMaxDelaySec`
+10 min, `RestartPreventExitStatus="2 CONFIG"` leaves usage and configuration
+exits stopped for the operator, `startLimitIntervalSec=0` drops the start fuse,
+`KillMode=control-group` reaches sandboxed descendants, `NotifyAccess=main`
+feeds `RESTART_RESET=1`, and the unit now runs with
+`DOTLINK_SUPERVISOR=systemd`. The module asserts systemd 255 or newer; the hosts
+run 260.5, and 258 or newer is required for the uptime-based restart-backoff
+reset. Tunnel polls also hold for 30 s instead of 15 s, and protected-path
+handling was tightened.
+
 ## Flake input
 
 `abird-ai/dotlink` is consumed as a root flake input because it ships both the
@@ -175,9 +188,9 @@ module passes it to systemd without the `-` prefix. Consequences:
   the assertion.
 - A missing, non-directory or unreadable path fails the unit before exec:
   systemd cannot `chdir` and reports `status=200/CHDIR` with
-  `Failed at step CHDIR spawning …: No such file or directory`. With
-  `Restart=on-failure`/`RestartSec=5s` that becomes a five-second restart loop,
-  never a silent fallback to `/`.
+  `Failed at step CHDIR spawning …: No such file or directory`. Since v0.11.0
+  that is a supervised restart with 2 s doubling backoff (to 10 min) rather than
+  a five-second loop; configuration and usage exits stay stopped instead.
 - Started by hand from a deleted directory, dotlink fails at startup itself:
   `std::env::current_dir()` errors, printing
   `Error: No such file or directory (os error 2)`.
