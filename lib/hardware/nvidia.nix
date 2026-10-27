@@ -23,8 +23,17 @@
     # NVIDIA hardware settings
     nvidia = {
       modesetting.enable = true;
-      powerManagement.enable = lib.mkDefault true;
-      powerManagement.finegrained = lib.mkDefault true;
+      # nixpkgs defaults kernelSuspendNotifier to `open && version >= 595`. That
+      # routes suspend/hibernate through the driver's kernel notifiers, and the
+      # 595.91.07 open module returns status=0x11 from them
+      # (`NVRM: PM suspend notifier failed: 0x11`). nixpkgs also then skips the
+      # nvidia-suspend/resume/hibernate units entirely. Force the systemd
+      # nvidia-sleep.sh path, which keeps PreserveVideoMemoryAllocations working.
+      powerManagement = {
+        enable = lib.mkDefault true;
+        finegrained = lib.mkDefault true;
+        kernelSuspendNotifier = lib.mkDefault false;
+      };
       open = lib.mkDefault true;
       nvidiaSettings = lib.mkDefault true;
       dynamicBoost.enable = lib.mkDefault true;
