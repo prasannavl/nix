@@ -110,15 +110,6 @@
     };
   };
 
-  pi-usage-mtrojnar = {
-    kind = "npm";
-    package = "@mtrojnar/pi-usage";
-    owner = "mtrojnar";
-    repo = "pi-usage";
-    version = "0.2.0";
-    srcHash = "sha256-f8o1G93CUUwtBAaFKRccZYCZe9tsvqoeIZiBI1iftec=";
-  };
-
   pi-tool = {
     kind = "npm";
     package = "@narumitw/pi-tool";

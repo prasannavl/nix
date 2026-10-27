@@ -17,7 +17,6 @@
     piMcpAdapter = pkgs.callPackage ../../../lib/ext/pi/pi-mcp-adapter {};
     piPattyBgTasks = pkgs.callPackage ../../../lib/ext/pi/pi-patty-bg-tasks {};
     piUsage = pkgs.callPackage ../../../lib/ext/pi/pi-usage {};
-    piUsageMtrojnar = pkgs.callPackage ../../../lib/ext/pi/pi-usage-mtrojnar {};
     piTool = pkgs.callPackage ../../../lib/ext/pi/pi-tool {};
     piGoal = pkgs.callPackage ../../../lib/ext/pi/pi-goal {};
     piWait = pkgs.callPackage ../../../lib/ext/pi/pi-wait {};
@@ -41,7 +40,6 @@
     piDiffRoot = "${piDiff}/lib/node_modules/@heyhuynhgiabuu/pi-diff";
     piPattyBgTasksRoot = "${piPattyBgTasks}/share/pi/packages/pi-patty-bg-tasks";
     piUsageRoot = "${piUsage}/share/pi/packages/pi-usage";
-    piUsageMtrojnarRoot = "${piUsageMtrojnar}/share/pi/packages/pi-usage-mtrojnar";
     piToolRoot = "${piTool}/share/pi/packages/pi-tool";
     piGoalRoot = "${piGoal}/share/pi/packages/pi-goal";
     piWaitRoot = "${piWait}/share/pi/packages/pi-wait";
@@ -90,7 +88,6 @@
       ".pi/agent/extensions/pi-mcp-adapter".source = piMcpAdapterRoot;
       ".pi/agent/extensions/pi-patty-bg-tasks".source = piPattyBgTasksRoot;
       ".pi/agent/extensions/pi-usage".source = piUsageRoot;
-      ".pi/agent/extensions/pi-usage-mtrojnar".source = piUsageMtrojnarRoot;
       ".pi/agent/extensions/pi-tool".source = piToolRoot;
       ".pi/agent/extensions/pi-goal".source = piGoalRoot;
       ".pi/agent/extensions/pi-wait".source = piWaitRoot;
