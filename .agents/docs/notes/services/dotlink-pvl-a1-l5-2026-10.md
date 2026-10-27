@@ -35,6 +35,27 @@ run 260.5, and 258 or newer is required for the uptime-based restart-backoff
 reset. Tunnel polls also hold for 30 s instead of 15 s, and protected-path
 handling was tightened.
 
+On 2026-10-27 the input was bumped once more to `dotlink v0.12.0` (`c1633b2`)
+after a fleet deploy failed on `pvl-x2` alone. That host enabled the service but
+had never run `dotlink --setup`, so there was no `~/.config/abird/dotlink` at
+all; dotlink exited 78/`CONFIG`, and because v0.11.0 stops 78 permanently the
+unit settled in `failed`, `switch-to-configuration` returned 4, and the manager
+rolled the host back to its Oct 18 generation. The first deploy to carry the
+service to x2 was therefore the one that broke. v0.11.0 had only converted a
+silent restart loop into a visible failure; the underlying defect is that the
+host depended on out-of-band interactive state.
+
+v0.12.0 removes that failure mode: with no saved profile and non-interactive
+stdin, dotlink now exits `NOTCONFIGURED` (systemd code 6) with a notice instead
+of an error, and the module declares `SuccessExitStatus=NOTCONFIGURED` plus
+`RestartPreventExitStatus="2 CONFIG NOTCONFIGURED"`. An unconfigured host leaves
+the unit inactive, so its activation succeeds and the fleet converges. Invalid
+profiles, policies and credentials still exit 78 and still fail loudly. x2 is
+still unconfigured after this bump: the service simply stays inactive there
+until `dotlink --setup` runs, or until the instance gains declarative `settings`
+with `credentials.runtimeApiKeyFile` from agenix. The latter is the durable fix,
+because it removes the per-host manual step the fleet cannot reproduce.
+
 ## Flake input
 
 `abird-ai/dotlink` is consumed as a root flake input because it ships both the
