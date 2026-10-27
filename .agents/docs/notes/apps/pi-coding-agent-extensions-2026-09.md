@@ -12,8 +12,11 @@ reporting, memory and prompt-aid extensions: `pi-usage`, `pi-stamp`,
 `pi-openai-toolkit`, `pi-total-recall`, and the JuiceSharp `rpiv-*` set
 (`voice`, `ask-user-question`, `todo`, `btw`, `advisor`). On 2026-10-27 they
 gained `pi-anthropic-auth` and dropped `pi-codex-limit`, whose Codex usage
-footer `pi-usage` now covers. The installation does not take ownership of Pi's
-writable `~/.pi/agent/settings.json`.
+footer `pi-usage` now covers. They also gained a second, independent usage
+monitor, `pi-usage-mtrojnar` (`@mtrojnar/pi-usage`), linked beside it, plus six
+agent-workflow extensions: the narumiruna `pi-tool`, `pi-goal` and `pi-notify`,
+and the brettinternet `pi-wait`, `pi-loop` and `pi-until`. The installation does
+not take ownership of Pi's writable `~/.pi/agent/settings.json`.
 
 ## Package layout
 
@@ -36,8 +39,8 @@ promote the Pi derivations into `pkgs/` and register them in
 
 `lib/ext/pi/sources.nix` is the single machine-maintained source of versions,
 upstream revisions, source hashes, release hashes, and npm dependency hashes for
-all eighteen packages. The executable `lib/ext/pi/update.sh` participates in the
-standard maintenance interface as the `pi` extension updater:
+all twenty-five packages. The executable `lib/ext/pi/update.sh` participates in
+the standard maintenance interface as the `pi` extension updater:
 
 ```console
 scripts/update.sh --report --only-ext-pi
@@ -69,6 +72,13 @@ under Pi's auto-discovered global resource directories:
 - `~/.pi/agent/extensions/pi-anthropic-auth`
 - `~/.pi/agent/extensions/pi-processes`
 - `~/.pi/agent/extensions/pi-usage`
+- `~/.pi/agent/extensions/pi-usage-mtrojnar`
+- `~/.pi/agent/extensions/pi-tool`
+- `~/.pi/agent/extensions/pi-goal`
+- `~/.pi/agent/extensions/pi-wait`
+- `~/.pi/agent/extensions/pi-loop`
+- `~/.pi/agent/extensions/pi-until`
+- `~/.pi/agent/extensions/pi-notify`
 - `~/.pi/agent/extensions/pi-stamp`
 - `~/.pi/agent/extensions/pi-openai-toolkit`
 - `~/.pi/agent/extensions/pi-total-recall`
@@ -116,9 +126,15 @@ user-owned `pi-models-discovery` directory, `pi-tps` writes
 `~/.pi/agent/pi-tps.json`, `pi-session-manager` mutates user-owned session
 files, and `pi-subagents` writes user-owned agent definitions and run state. The
 2026-10-25 batch writes only outside its store trees too: `pi-usage` keeps its
-settings next to `getAgentDir()`, `pi-total-recall` keeps
-`~/.pi/memory/memory.db` plus its session and knowledge indexes under the user's
-`~/.pi` tree, and the `rpiv-*` configs resolve through
+settings next to `getAgentDir()`, and `pi-usage-mtrojnar` resolves the same
+`<agent dir>/pi-usage.json` under `$PI_CODING_AGENT_DIR`. Both usage monitors
+claim `/usage` and the footer widget, and they share that settings file with
+disjoint schemas, so enabling both is a deliberate side-by-side choice. Pi 1.2.0
+disambiguates the duplicate command name (`/usage:1` for this package,
+`/usage:2` for `pi-usage-mtrojnar`), so both stay reachable, but they contend
+for the one `usage` status key and each one sees the other's settings keys.
+`pi-total-recall` keeps `~/.pi/memory/memory.db` plus its session and knowledge
+indexes under the user's `~/.pi` tree, and the `rpiv-*` configs resolve through
 `$XDG_CONFIG_HOME/<package>/config.json` (`~/.config/...` by default, never
 inside the package). `rpiv-voice` downloads its STT model on demand and logs
 failures under `$TMPDIR`. Only `pi-extensions-i18n` needed the locale
@@ -162,6 +178,38 @@ tagged source tree. It loads `src/index.ts` through Pi rather than the published
 from the upstream manifest, and caches only the `@shikijs/cli`, `diff`, and
 `xxhash-wasm` runtime closure. See `.agents/docs/notes/apps/pi-diff-2026-09.md`
 for the full rationale.
+
+The local `pi-usage-mtrojnar` derivation packages `@mtrojnar/pi-usage` 0.2.0, a
+fork of `timm-u/pi-usage`. It is pure TypeScript with no runtime npm
+dependencies, so the derivation copies the published tarball unchanged and Pi
+supplies the `@earendil-works/*` peers. The pname carries the `-mtrojnar` suffix
+to keep the extension directory distinct from `pi-usage`. Upstream declares
+`@earendil-works/pi-coding-agent >=0.85.0 <1`, which excludes the installed
+1.2.0; the extension was smoke-tested against that release in RPC mode
+(`get_commands` returns `/usage`, no load error).
+
+The local `pi-tool` and `pi-goal` derivations package `@narumitw/pi-tool` 0.4.0
+and `@narumitw/pi-goal` 0.54.13 from the narumiruna monorepo. Each loads its
+`dist/` bundle and pins `@narumitw/pi-tui-kit` separately (`^0.60.0` -> 0.60.0
+and `^0.59.0` -> 0.59.0), because `deps` are nested per consumer. `pi-tool`
+registers `/tool`, `pi-goal` registers `/goal`; both keep settings in the
+user-owned agent directory.
+
+The local `pi-notify` derivation packages `@narumitw/pi-notify` 0.4.1 from the
+same monorepo, pinning `@narumitw/pi-tui-kit` `^0.65.6` (0.65.6). It registers
+`/notify` and keeps `pi-notify.json` in the user-owned agent directory.
+
+The local `pi-wait`, `pi-loop` and `pi-until` derivations package the
+brettinternet extensions: unscoped `pi-wait` 0.1.5, `@brettinternet/pi-loop`
+0.1.8, and unscoped `pi-until` 0.1.5. All three unscoped-free names are
+published by the same npm maintainer, and the unscoped `pi-loop` on the registry
+belongs to a different author (`jnyross`, no `pi` manifest), which is why the
+scoped name is pinned. The first two are pure TypeScript with no runtime
+dependencies; `pi-until` pins `xstate` 5.33.2 through `depsResolver`. They
+register the `/loop` and `/until` commands, and `pi-wait` contributes the
+`wait_then_continue` and `cancel_wait` tools rather than a command. `pi-loop`
+keeps no writable state, and `pi-until` writes telemetry under
+`~/.pi/agent/pi-until/`.
 
 The local `pi-mcp-adapter` derivation packages `pi-mcp-adapter` 3.2.0 from its
 npm tarball plus the tagged upstream lockfile. The build drops the
@@ -268,6 +316,13 @@ nix-build lib/ext/pi/pi-diff --no-out-link
 nix-build lib/ext/pi/pi-mcp-adapter --no-out-link
 nix-build lib/ext/pi/pi-processes --no-out-link
 nix-build lib/ext/pi/pi-usage --no-out-link
+nix-build lib/ext/pi/pi-usage-mtrojnar --no-out-link
+nix-build lib/ext/pi/pi-tool --no-out-link
+nix-build lib/ext/pi/pi-goal --no-out-link
+nix-build lib/ext/pi/pi-wait --no-out-link
+nix-build lib/ext/pi/pi-loop --no-out-link
+nix-build lib/ext/pi/pi-until --no-out-link
+nix-build lib/ext/pi/pi-notify --no-out-link
 nix-build lib/ext/pi/pi-stamp --no-out-link
 nix-build lib/ext/pi/pi-anthropic-auth --no-out-link
 nix-build lib/ext/pi/pi-openai-toolkit --no-out-link

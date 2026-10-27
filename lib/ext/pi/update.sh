@@ -45,6 +45,13 @@ init_vars() {
 		pi-mcp-adapter
 		pi-processes
 		pi-usage
+		pi-usage-mtrojnar
+		pi-tool
+		pi-goal
+		pi-wait
+		pi-loop
+		pi-until
+		pi-notify
 		pi-openai-toolkit
 		pi-total-recall
 		rpiv-voice
@@ -463,7 +470,7 @@ update_package() {
 		read -r owner repo <<<"$(github_repo "$package")"
 		src_hash="$(prefetch_unpack_hash "https://github.com/${owner}/${repo}/archive/${rev}.tar.gz")"
 		;;
-	pi-session-manager | pi-subagents | pi-processes | pi-usage | pi-openai-toolkit | pi-total-recall | rpiv-voice | rpiv-ask-user-question | rpiv-todo | rpiv-btw | rpiv-advisor | pi-stamp | pi-anthropic-auth)
+	pi-session-manager | pi-subagents | pi-processes | pi-usage | pi-usage-mtrojnar | pi-tool | pi-goal | pi-wait | pi-loop | pi-until | pi-notify | pi-openai-toolkit | pi-total-recall | rpiv-voice | rpiv-ask-user-question | rpiv-todo | rpiv-btw | rpiv-advisor | pi-stamp | pi-anthropic-auth)
 		tarball="$(jq -er '.dist.tarball' <<<"$metadata")"
 		src_hash="$(prefetch_unpack_hash "$tarball")"
 		;;

@@ -17,6 +17,13 @@
     piProcesses = pkgs.callPackage ../../../lib/ext/pi/pi-processes {};
     piMcpAdapter = pkgs.callPackage ../../../lib/ext/pi/pi-mcp-adapter {};
     piUsage = pkgs.callPackage ../../../lib/ext/pi/pi-usage {};
+    piUsageMtrojnar = pkgs.callPackage ../../../lib/ext/pi/pi-usage-mtrojnar {};
+    piTool = pkgs.callPackage ../../../lib/ext/pi/pi-tool {};
+    piGoal = pkgs.callPackage ../../../lib/ext/pi/pi-goal {};
+    piWait = pkgs.callPackage ../../../lib/ext/pi/pi-wait {};
+    piLoop = pkgs.callPackage ../../../lib/ext/pi/pi-loop {};
+    piUntil = pkgs.callPackage ../../../lib/ext/pi/pi-until {};
+    piNotify = pkgs.callPackage ../../../lib/ext/pi/pi-notify {};
     piOpenaiToolkit = pkgs.callPackage ../../../lib/ext/pi/pi-openai-toolkit {};
     piTotalRecall = pkgs.callPackage ../../../lib/ext/pi/pi-total-recall {};
     rpivVoice = pkgs.callPackage ../../../lib/ext/pi/rpiv-voice {};
@@ -34,6 +41,13 @@
     piDiffRoot = "${piDiff}/lib/node_modules/@heyhuynhgiabuu/pi-diff";
     piProcessesRoot = "${piProcesses}/share/pi/packages/pi-processes";
     piUsageRoot = "${piUsage}/share/pi/packages/pi-usage";
+    piUsageMtrojnarRoot = "${piUsageMtrojnar}/share/pi/packages/pi-usage-mtrojnar";
+    piToolRoot = "${piTool}/share/pi/packages/pi-tool";
+    piGoalRoot = "${piGoal}/share/pi/packages/pi-goal";
+    piWaitRoot = "${piWait}/share/pi/packages/pi-wait";
+    piLoopRoot = "${piLoop}/share/pi/packages/pi-loop";
+    piUntilRoot = "${piUntil}/share/pi/packages/pi-until";
+    piNotifyRoot = "${piNotify}/share/pi/packages/pi-notify";
     piOpenaiToolkitRoot = "${piOpenaiToolkit}/share/pi/packages/pi-openai-toolkit";
     piTotalRecallRoot = "${piTotalRecall}/share/pi/packages/pi-total-recall";
     rpivVoiceRoot = "${rpivVoice}/share/pi/packages/rpiv-voice";
@@ -78,6 +92,13 @@
       # whole package directory is linked; its node_modules sits beside them.
       ".pi/agent/extensions/pi-processes".source = piProcessesRoot;
       ".pi/agent/extensions/pi-usage".source = piUsageRoot;
+      ".pi/agent/extensions/pi-usage-mtrojnar".source = piUsageMtrojnarRoot;
+      ".pi/agent/extensions/pi-tool".source = piToolRoot;
+      ".pi/agent/extensions/pi-goal".source = piGoalRoot;
+      ".pi/agent/extensions/pi-wait".source = piWaitRoot;
+      ".pi/agent/extensions/pi-loop".source = piLoopRoot;
+      ".pi/agent/extensions/pi-until".source = piUntilRoot;
+      ".pi/agent/extensions/pi-notify".source = piNotifyRoot;
       ".pi/agent/extensions/pi-openai-toolkit".source = piOpenaiToolkitRoot;
       ".pi/agent/extensions/pi-total-recall".source = piTotalRecallRoot;
       ".pi/agent/extensions/rpiv-voice".source = rpivVoiceRoot;

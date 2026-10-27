@@ -131,6 +131,105 @@
     };
   };
 
+  pi-usage-mtrojnar = {
+    kind = "npm";
+    package = "@mtrojnar/pi-usage";
+    owner = "mtrojnar";
+    repo = "pi-usage";
+    version = "0.2.0";
+    srcHash = "sha256-f8o1G93CUUwtBAaFKRccZYCZe9tsvqoeIZiBI1iftec=";
+  };
+
+  pi-tool = {
+    kind = "npm";
+    package = "@narumitw/pi-tool";
+    owner = "narumiruna";
+    repo = "pi-extensions";
+    version = "0.4.0";
+    srcHash = "sha256-nx77WOA1YgfH6OL1rpWi4d+42yCBbc0XD2E55hquHhg=";
+    depsResolver = "registry";
+    deps = {
+      "@narumitw/pi-tui-kit" = {
+        kind = "npm-dep";
+        range = "^0.60.0";
+        version = "0.60.0";
+        srcHash = "sha256-5Ur+CMeoEjI6TGZKnzNnlz87Bz934cLX0YOoFCa6HKA=";
+      };
+    };
+  };
+
+  pi-goal = {
+    kind = "npm";
+    package = "@narumitw/pi-goal";
+    owner = "narumiruna";
+    repo = "pi-extensions";
+    version = "0.54.13";
+    srcHash = "sha256-gC58I5R2J3JfXGhnsI6u4E0TBp8L10G5xDDrojMDRvU=";
+    depsResolver = "registry";
+    deps = {
+      "@narumitw/pi-tui-kit" = {
+        kind = "npm-dep";
+        range = "^0.59.0";
+        version = "0.59.0";
+        srcHash = "sha256-dMzOHA7jxKShvU2okzNt7qRNm/5ONa+05ZkcfVTALbI=";
+      };
+    };
+  };
+
+  pi-wait = {
+    kind = "npm";
+    package = "pi-wait";
+    owner = "brettinternet";
+    repo = "pi-extensions";
+    version = "0.1.5";
+    srcHash = "sha256-75Akl6k4aQzGyrH+sRb2fP2vVtSJeTpiyx6JEUdLf1Y=";
+  };
+
+  pi-loop = {
+    kind = "npm";
+    package = "@brettinternet/pi-loop";
+    owner = "brettinternet";
+    repo = "pi-extensions";
+    version = "0.1.8";
+    srcHash = "sha256-6lvBJyZGQLvtsKjhd4qxwWo4RqWGU0XhVU1NNLD+noM=";
+  };
+
+  pi-until = {
+    kind = "npm";
+    package = "pi-until";
+    owner = "brettinternet";
+    repo = "pi-extensions";
+    version = "0.1.5";
+    srcHash = "sha256-UZ5Sr6Kwr5Av5sy2Ze0Yh5PK8DO4mBl1v+aQdUF0738=";
+    depsResolver = "registry";
+    deps = {
+      "xstate" = {
+        kind = "npm-dep";
+        range = "5.33.2";
+        version = "5.33.2";
+        srcHash = "sha256-paJo8o1sjXbVAZWOx6s9fq6tmh14QsrZs2QphktQ7rk=";
+      };
+    };
+  };
+
+  pi-notify = {
+    kind = "npm";
+    package = "@narumitw/pi-notify";
+    owner = "narumiruna";
+    repo = "pi-extensions";
+    version = "0.4.1";
+    srcHash = "sha256-V+RUrT2kN64agmEncL112Zq1bO4ltqMD+PaxlVVNns8=";
+    depsResolver = "registry";
+    deps = {
+      "@narumitw/pi-tui-kit" = {
+        kind = "npm-dep";
+        range = "^0.65.6";
+        version = "0.65.6";
+        srcHash = "sha256-bNL0qOxPeNiDFN4jWKkxVpNTK3eh1DHUO3SPXDzm6+s=";
+      };
+    };
+  };
+
   pi-openai-toolkit = {
     kind = "npm";
     package = "pi-openai-toolkit";
