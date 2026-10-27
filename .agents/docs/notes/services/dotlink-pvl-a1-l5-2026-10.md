@@ -1,4 +1,4 @@
-# dotlink MCP bridge on pvl-a1 and pvl-l5
+# dotlink MCP bridge on pvl-a1, pvl-l5 and pvl-x2
 
 On 2026-10-11 the Pvl hosts `pvl-a1` and `pvl-l5` gained a managed `dotlink`
 service. dotlink is a permission-scoped local MCP bridge that opens an outbound
@@ -15,6 +15,12 @@ was absent (see
 On 2026-10-14 the service was updated to `dotlink v0.9.0`, which adds opt-in KVM
 and AMD/NVIDIA GPU device access. Both hosts now enable `hostAccess.kvm` and
 `hostAccess.gpu = [ "amd" "nvidia" ]`.
+
+On 2026-10-27 the service was updated to `dotlink v0.10.0` and gained a third
+instance on `pvl-x2` (see [pvl-x2](#pvl-x2)). The module itself is unchanged by
+v0.10.0 (no diff under `nix/`, `flake.nix` or `flake.lock` upstream between the
+v0.9.0 bump and `08ca60d`); the release is a source and tool-surface bump
+(`grep`/`edit`/`patch`/`ls`, OAuth and HTTP hardening).
 
 ## Flake input
 
@@ -42,7 +48,9 @@ The 2026-10-13 bump advanced only the `dotlink` node in `flake.lock` from
 `3335af57` (2026-10-11) to `5e46cbf1` (2026-10-13); no other input moved. The
 v0.8.1 fix advanced the same node to `5f46990` (2026-10-13); again no other
 input moved. The v0.9.0 bump advanced the same node to `dcea9b1` (2026-10-14),
-again with no other input moved.
+again with no other input moved. The v0.10.0 bump moved it to `08ca60d`
+(2026-10-27) through `nix flake update dotlink`; the diff touches only those
+three lock lines.
 
 ## Host services
 
@@ -69,11 +77,17 @@ services.dotlink = {
   cacheAccess = {
     "cargo-registry" = "rw";
     "cargo-git" = "rw";
-    "npm" = "rw";
-    "yarn" = "rw";
-    "pip" = "rw";
+    "ccache" = "rw";
     "go-mod" = "rw";
     "go-build" = "rw";
+    "gradle" = "rw";
+    "maven" = "rw";
+    "npm" = "rw";
+    "pip" = "rw";
+    "pnpm" = "rw";
+    "sccache" = "rw";
+    "uv" = "rw";
+    "yarn" = "rw";
   };
 };
 ```
@@ -121,17 +135,61 @@ the source of truth for the host grants. The options map to `--allow-*` flags:
   `SupplementaryGroups = [ "kvm" "render" "video" ]` on the unit when KVM or GPU
   access is enabled; the groups are unit-scoped and do not change the user's
   global groups.
-- `cacheAccess` → `--allow-cache-<kind>=rw` for the seven caches present on both
-  hosts (Cargo registry/git, npm, Yarn, pip, Go mod/build). Since v0.8.1 a cache
-  whose directory is absent is skipped with a warning instead of aborting
+- `cacheAccess` → `--allow-cache-<kind>=rw` for all thirteen module-supported
+  kinds (Cargo registry/git, ccache, Go mod/build, Gradle, Maven, npm, pip,
+  pnpm, sccache, uv, Yarn), each `rw`, on every dotlink host. Since v0.8.1 a
+  cache whose directory is absent is skipped with a warning instead of aborting
   startup, so a configured-but-uncreated cache (for example `go-mod` on a host
-  that never ran Go builds) no longer kills the unit. `pvl-a1` additionally has
-  a `uv` cache that is only granted through its saved profile.
+  that never ran Go builds) no longer kills the unit and later caches need no
+  module edit. Only the caches actually present are mounted today.
+
+## pvl-x2
+
+`hosts/pvl-x2/services/dotlink.nix` is imported from that host's
+`services/default.nix` and differs from the a1/l5 module in four ways:
+
+- `workingDirectory = "/home/pvl/src/"` — the host's source checkout root. It
+  does not exist yet, so the module adds
+  `systemd.tmpfiles.rules = [ "d /home/pvl/src 0755 pvl pvl -" ]`; activation
+  owns the directory instead of relying on a manual `mkdir` before first start.
+- `hostAccess.gpu = [ "amd" ]` only: `pvl-x2` is the AMD Strix Halo host with no
+  NVIDIA device, so only the AMD character devices and driver resources are
+  granted. `hostAccess.kvm` is on (`kvm-amd` is loaded and `/dev/kvm` exists).
+- `cacheAccess` is the same thirteen-kind `rw` set as a1/l5. Only `~/.cache/pip`
+  exists today; the absent kinds are skipped with the v0.8.1 warning.
+- The remaining host grants (`nixDaemon`, `nixConfig`, `gitConfig`, `sshAgent`)
+  match a1/l5. `~/.config/git/config` and the GCR socket at
+  `/run/user/1000/gcr/ssh` exist; there is no `~/.config/nix/nix.conf`.
+
+`pvl-x2` has no saved dotlink profile yet, so the unit stays down until one
+manual `dotlink --setup` as `pvl` creates one (the same first-run gate as the
+other hosts).
+
+## Invalid working directory
+
+`workingDirectory` is not validated beyond the module assertion that it is a
+non-null absolute path (`lib.hasPrefix "/"`); nothing checks existence, and the
+module passes it to systemd without the `-` prefix. Consequences:
+
+- A relative, null or otherwise non-absolute value fails Nix evaluation through
+  the assertion.
+- A missing, non-directory or unreadable path fails the unit before exec:
+  systemd cannot `chdir` and reports `status=200/CHDIR` with
+  `Failed at step CHDIR spawning …: No such file or directory`. With
+  `Restart=on-failure`/`RestartSec=5s` that becomes a five-second restart loop,
+  never a silent fallback to `/`.
+- Started by hand from a deleted directory, dotlink fails at startup itself:
+  `std::env::current_dir()` errors, printing
+  `Error: No such file or directory (os error 2)`.
+- The launch directory is captured once at startup and never re-validated, so
+  deleting it while the unit runs does not stop the unit; shell tool calls that
+  mount that path fail instead. Relative grants and the default `"."` read
+  permission keep resolving against the captured path.
 
 The module adds `--allow-shell` automatically whenever a host integration or
 cache is requested. Shell **network** access is not a module option; it stays
 enabled through each host's saved profile (`permissions.allow_network = true`,
-along with `allow_shell = true` and the same seven caches).
+along with `allow_shell = true` and the seven caches it was set up with).
 
 ## Build
 
@@ -148,7 +206,9 @@ The v0.8.0 bump needed only seven derivations (Rust 1.98.1 toolchain plus
 cache. `dotlink v0.8.0` raises the profile schema to v10, which both hosts
 already use or migrate to in memory. The v0.8.1 bump rebuilt `dotlink-0.8.1`
 from source (about 1m25s) because the fixed binary was not yet in the cache. The
-v0.9.0 bump likewise rebuilt `dotlink-deps`/`dotlink` from source.
+v0.9.0 bump likewise rebuilt `dotlink-deps`/`dotlink` from source. The v0.10.0
+bump again rebuilt `dotlink-deps-0.10.0` and `dotlink-0.10.0` from source; it is
+not shared across hosts beyond the local store/cache.
 
 ## KVM and GPU access
 
@@ -165,15 +225,18 @@ fields, so the hosts' saved profiles remain compatible.
 ## Validation
 
 - `nix eval --raw .#nixosConfigurations.pvl-a1.config.system.build.toplevel.drvPath`
-  and the same for `pvl-l5` evaluate.
-- `nix eval` confirms `services.dotlink.user = "pvl"`,
-  `workingDirectory = "/home/pvl/spaces/abird/"`, an unset `profile`, and the
-  unit's `User`/`WorkingDirectory`/`SetLoginEnvironment`/`ExecStart`.
-- `nix build .#nixosConfigurations.pvl-a1.config.services.dotlink.package`
-  succeeds and `dotlink --version` reports `dotlink v0.9.0`.
-- Both hosts evaluate to the same generated `ExecStart` with `--allow-shell`,
+  and the same for `pvl-l5` and `pvl-x2` evaluate.
+- `nix eval` confirms `services.dotlink.user = "pvl"`, `workingDirectory`
+  (`/home/pvl/spaces/abird/` on a1/l5, `/home/pvl/src/` on x2), an unset
+  `profile`, and the unit's
+  `User`/`WorkingDirectory`/`SetLoginEnvironment`/`ExecStart`.
+- `nix build .#nixosConfigurations.<host>.config.services.dotlink.package`
+  succeeds and `dotlink --version` reports `dotlink v0.10.0`.
+- a1/l5 evaluate to the same generated `ExecStart` with `--allow-shell`,
   `--allow-nix-daemon`, `--allow-nix-config`, `--allow-ssh-agent`,
   `--allow-git-config`, `--allow-kvm`, `--allow-gpu=amd`, `--allow-gpu=nvidia`,
-  and the seven `--allow-cache-<kind>=rw` grants, plus
+  and the thirteen `--allow-cache-<kind>=rw` grants, plus
   `SupplementaryGroups = [ "kvm" "render" "video" ]`, and no `DOTLINK_CONFIG`
   (profile reuse).
+- `pvl-x2` renders the same flags except `--allow-gpu=amd` only, with
+  `WorkingDirectory = /home/pvl/src/`.
