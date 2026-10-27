@@ -14,8 +14,8 @@
     piTps = pkgs.callPackage ../../../lib/ext/pi/pi-tps {};
     piWeb = pkgs.callPackage ../../../lib/ext/pi/pi-web {};
     piDiff = pkgs.callPackage ../../../lib/ext/pi/pi-diff {};
-    piProcesses = pkgs.callPackage ../../../lib/ext/pi/pi-processes {};
     piMcpAdapter = pkgs.callPackage ../../../lib/ext/pi/pi-mcp-adapter {};
+    piPattyBgTasks = pkgs.callPackage ../../../lib/ext/pi/pi-patty-bg-tasks {};
     piUsage = pkgs.callPackage ../../../lib/ext/pi/pi-usage {};
     piUsageMtrojnar = pkgs.callPackage ../../../lib/ext/pi/pi-usage-mtrojnar {};
     piTool = pkgs.callPackage ../../../lib/ext/pi/pi-tool {};
@@ -39,7 +39,7 @@
     piSubagentsRoot = "${piSubagents}/lib/node_modules/@gotgenes/pi-subagents";
     piTpsRoot = "${piTps}/share/pi/packages/pi-tps";
     piDiffRoot = "${piDiff}/lib/node_modules/@heyhuynhgiabuu/pi-diff";
-    piProcessesRoot = "${piProcesses}/share/pi/packages/pi-processes";
+    piPattyBgTasksRoot = "${piPattyBgTasks}/share/pi/packages/pi-patty-bg-tasks";
     piUsageRoot = "${piUsage}/share/pi/packages/pi-usage";
     piUsageMtrojnarRoot = "${piUsageMtrojnar}/share/pi/packages/pi-usage-mtrojnar";
     piToolRoot = "${piTool}/share/pi/packages/pi-tool";
@@ -88,9 +88,7 @@
       ".pi/agent/extensions/pi-models-discovery/package.json".source = "${piModelsDiscoveryRoot}/package.json";
       ".pi/agent/extensions/pi-models-discovery/src".source = "${piModelsDiscoveryRoot}/src";
       ".pi/agent/extensions/pi-mcp-adapter".source = piMcpAdapterRoot;
-      # pi-processes ships three extensions through its package manifest, so the
-      # whole package directory is linked; its node_modules sits beside them.
-      ".pi/agent/extensions/pi-processes".source = piProcessesRoot;
+      ".pi/agent/extensions/pi-patty-bg-tasks".source = piPattyBgTasksRoot;
       ".pi/agent/extensions/pi-usage".source = piUsageRoot;
       ".pi/agent/extensions/pi-usage-mtrojnar".source = piUsageMtrojnarRoot;
       ".pi/agent/extensions/pi-tool".source = piToolRoot;
@@ -125,7 +123,6 @@
       };
 
       ".pi/agent/skills/pi-models-discovery/SKILL.md".source = "${piModelsDiscoveryRoot}/SKILL.md";
-      ".pi/agent/skills/pi-processes".source = "${piProcessesRoot}/skills/pi-processes";
       # pi-total-recall's manifest points its skill at the bundled
       # pi-session-search copy.
       ".pi/agent/skills/session-history".source = "${piTotalRecallRoot}/node_modules/pi-session-search/skills/session-history";

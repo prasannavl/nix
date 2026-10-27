@@ -15,8 +15,11 @@ gained `pi-anthropic-auth` and dropped `pi-codex-limit`, whose Codex usage
 footer `pi-usage` now covers. They also gained a second, independent usage
 monitor, `pi-usage-mtrojnar` (`@mtrojnar/pi-usage`), linked beside it, plus six
 agent-workflow extensions: the narumiruna `pi-tool`, `pi-goal` and `pi-notify`,
-and the brettinternet `pi-wait`, `pi-loop` and `pi-until`. The installation does
-not take ownership of Pi's writable `~/.pi/agent/settings.json`.
+and the brettinternet `pi-wait`, `pi-loop` and `pi-until`. On 2026-10-27
+`pi-processes` was replaced by `pi-patty-bg-tasks`, which auto-backgrounds long
+`bash` calls instead of requiring the agent to pick a separate tool. The
+installation does not take ownership of Pi's writable
+`~/.pi/agent/settings.json`.
 
 ## Package layout
 
@@ -70,7 +73,7 @@ under Pi's auto-discovered global resource directories:
 - `~/.pi/agent/extensions/pi-diff`
 - `~/.pi/agent/extensions/pi-mcp-adapter`
 - `~/.pi/agent/extensions/pi-anthropic-auth`
-- `~/.pi/agent/extensions/pi-processes`
+- `~/.pi/agent/extensions/pi-patty-bg-tasks`
 - `~/.pi/agent/extensions/pi-usage`
 - `~/.pi/agent/extensions/pi-usage-mtrojnar`
 - `~/.pi/agent/extensions/pi-tool`
@@ -90,7 +93,7 @@ under Pi's auto-discovered global resource directories:
 - `~/.pi/agent/extensions/pi-session-manager.ts`
 - `~/.pi/agent/extensions/pi-tps.ts`
 - `~/.pi/agent/extensions/pi-subagents`
-- the packaged `pi-models-discovery`, `pi-processes`, `session-history` (from
+- the packaged `pi-models-discovery`, `session-history` (from
   `pi-total-recall`), and `mcp-scripting` skills under `~/.pi/agent/skills`
 
 `pi-models-discovery` writes its cache to
@@ -218,16 +221,16 @@ caches only the runtime closure. See
 `.agents/docs/notes/apps/pi-mcp-adapter-playwright-2026-09.md` for the MCP
 server declaration and the container gating.
 
-The local `pi-processes` derivation packages `@aliou/pi-processes` from its npm
-tarball. Upstream publishes only a `pnpm-lock.yaml`, so the derivation assembles
-`node_modules` from the three pinned `@aliou` runtime dependencies
-(`pi-utils-settings` 0.19.2, `pi-utils-ui` 0.5.0, `sh` 0.2.2) that the release
-lock resolves; Pi supplies `@earendil-works/*` and `typebox`. Bump those pins in
-`default.nix` when a package update moves them. The package declares three
-extensions (`processes`, `processes-logs`, `processes-dock`) through its `pi`
-manifest, so the module links the whole package directory and Pi resolves the
-entries from it. Settings land in the user-owned
-`~/.pi/agent/extensions/<name>.json`; process logs live under `$TMPDIR`.
+The local `pi-patty-bg-tasks` derivation packages `pi-patty-bg-tasks` 1.1.6 from
+its npm tarball. It has no runtime dependencies, so the derivation copies the
+tarball unchanged and relies on Pi for the `@earendil-works/*` peers. Unlike
+`pi-processes` it overrides the built-in `bash` tool: foreground calls
+auto-background after 120 seconds, `run_in_background` or Ctrl+B background one
+immediately, and the extension adds `bash_bg`, `jobs`, `job_decide`, `agent_bg`
+and `monitor` plus the `/bg`, `/bg-list` and `/bg-version` commands. Job logs
+are file-backed under `/tmp/pi-bg/<id>.log`, capped at 100 MB, and the 16-job
+cap, stall threshold and timeouts are hard-coded rather than configurable. It
+ships no skill and no settings file; nothing is written inside the store tree.
 
 Each derivation stays self-contained: it unpacks its pinned tarball into
 `$out/share/pi/packages/<pname>` and copies the runtime dependencies recorded in
@@ -314,7 +317,7 @@ nix-build lib/ext/pi/pi-tps --no-out-link
 nix-build lib/ext/pi/pi-web --no-out-link
 nix-build lib/ext/pi/pi-diff --no-out-link
 nix-build lib/ext/pi/pi-mcp-adapter --no-out-link
-nix-build lib/ext/pi/pi-processes --no-out-link
+nix-build lib/ext/pi/pi-patty-bg-tasks --no-out-link
 nix-build lib/ext/pi/pi-usage --no-out-link
 nix-build lib/ext/pi/pi-usage-mtrojnar --no-out-link
 nix-build lib/ext/pi/pi-tool --no-out-link
@@ -343,7 +346,8 @@ Manager resource layout and issue `get_commands`. A successful result includes
 and the `pi-subagents` commands (`/subagents:settings`, `/subagents:sessions`),
 plus the `pi-mcp-adapter` commands (`/mcp-adapter`, `/mcp-auth`, `/mcp`); after
 the gotgenes switch the six prompt templates and the
-`pi-subagents`/`council-mode` skills are no longer installed. `pi-processes`
-adds the `process` tool with the `/ps`, `/ps:logs`, `/ps:dock`, `/ps:pin`,
-`/ps:kill`, `/ps:clear`, and `/ps:settings` commands. Validate the standalone UI
-command with `pi-web --help`; this does not start a listener.
+`pi-subagents`/`council-mode` skills are no longer installed.
+`pi-patty-bg-tasks` adds the `bash_bg`, `jobs`, `job_decide`, `agent_bg` and
+`monitor` tools, the `/bg`, `/bg-list`, `/bg-version` commands, and the `bash`
+tool override. Validate the standalone UI command with `pi-web --help`; this
+does not start a listener.

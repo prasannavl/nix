@@ -65,34 +65,13 @@
     npmDepsHash = "sha256-wQNxQkP8Msu6CG82guxuBR45ebgPDwzWJrMYhHlvUb4=";
   };
 
-  pi-processes = {
+  pi-patty-bg-tasks = {
     kind = "npm";
-    package = "@aliou/pi-processes";
-    owner = "aliou";
-    repo = "pi-processes";
-    version = "0.13.2";
-    srcHash = "sha256-nAbY++xI1NveMJtHO8Sz/VuYNOkHX3QCqmTeJVax760=";
-    depsResolver = "registry";
-    deps = {
-      "@aliou/pi-utils-settings" = {
-        kind = "npm-dep";
-        range = "^0.19.1";
-        version = "0.19.2";
-        srcHash = "sha256-4+j8HhUAkRua8m4pkm17egWWnk0cqbi+g7si79yTEB4=";
-      };
-      "@aliou/pi-utils-ui" = {
-        kind = "npm-dep";
-        range = "^0.5.0";
-        version = "0.5.1";
-        srcHash = "sha256-OYy43GsCNwjEL4W+nGB2pQ9uCKEYAXTGA4cHmoCIkNY=";
-      };
-      "@aliou/sh" = {
-        kind = "npm-dep";
-        range = "^0.2.2";
-        version = "0.2.2";
-        srcHash = "sha256-vke0WUMdxPWuPHH/eAW/jJ8JWQjfQwnc/ulLOxW9PLQ=";
-      };
-    };
+    package = "pi-patty-bg-tasks";
+    owner = "patty-io";
+    repo = "pi-patty-bg-tasks";
+    version = "1.1.6";
+    srcHash = "sha256-B8LavEHyGf3vBjDmZ7gBKSJDzE/t1RvVuaYCY0NDqx8=";
   };
 
   pi-usage = {
