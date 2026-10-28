@@ -4,9 +4,9 @@
     owner = "agavra";
     repo = "tuicr";
     tagPrefix = "v";
-    version = "0.27.0";
-    rev = "9175dc95b97a0a7dd290d43d38385745a7fb7d40";
-    hash = "sha256-kObt0MLJZYASWM1vexZTPaIeFaU2XpT9sHUSdClRz2Y=";
-    cargoHash = "sha256-azgmxJP3iQO+WfJCWqfi19rCSb6D0a0luWcgEW+8Sbg=";
+    version = "0.28.0";
+    rev = "52a56e1a471960511c693f21a539c81ff934af55";
+    hash = "sha256-Q1VcRGTN3BO/UYTY0/SBN05v/0Dy+iEUNFshHoBjNVM=";
+    cargoHash = "sha256-+HbzMHq3OCuF+RCGXaLSbN4+xcFTYyKUI54advFKcEU=";
   };
 }
