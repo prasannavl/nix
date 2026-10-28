@@ -56,6 +56,27 @@ until `dotlink --setup` runs, or until the instance gains declarative `settings`
 with `credentials.runtimeApiKeyFile` from agenix. The latter is the durable fix,
 because it removes the per-host manual step the fleet cannot reproduce.
 
+On 2026-10-28 the input was bumped to `dotlink v0.13.0` (`28bcd5a`) and then to
+`v0.13.1` (`bb8a917`). Neither release touches `nix/`: the module, its options
+and the rendered unit are unchanged, so no host configuration moved. Both
+releases are tool-surface and performance work — native macOS/Windows fixes in
+v0.13.0, and in v0.13.1 one shared mutation engine for `edit`/`patch`/`bedit`
+with borrowed buffers, a 64 MiB aggregate retained-buffer budget, and operation
+ceilings made explicit (`edit` 512 ops / 64 files, `patch` 32 files / 64 hunks,
+`bedit` 32 ranges). Sandbox policy also tightened: `--allow-rw=/` combined with
+`--allow-shell` is now an explicit private-path isolation opt-out, and shell
+grants that overlap a denied or protected path are rejected instead of silently
+narrowed. This repository grants no root-rw and no overlapping denies, so those
+rules do not change the fleet's flags.
+
+One behavioural change matters operationally: since v0.13.0
+`logging.verbosity = "tools"` records each complete shell command in the journal
+as one escaped `c="..."` record, while other payloads stay size-only. All three
+hosts run `tools` verbosity (it was chosen for tool-activity visibility), so
+journald now retains full command history — including any inline credentials a
+caller types. That is the intended audit mode; journal access and retention are
+the mitigations, not a configuration change.
+
 ## Flake input
 
 `abird-ai/dotlink` is consumed as a root flake input because it ships both the
@@ -84,7 +105,8 @@ v0.8.1 fix advanced the same node to `5f46990` (2026-10-13); again no other
 input moved. The v0.9.0 bump advanced the same node to `dcea9b1` (2026-10-14),
 again with no other input moved. The v0.10.0 bump moved it to `08ca60d`
 (2026-10-27) through `nix flake update dotlink`; the diff touches only those
-three lock lines.
+three lock lines. The same command moved it to `28bcd5a` (v0.13.0) and then to
+`bb8a917` (v0.13.1) at 2026-10-28, again changing only the `dotlink` node.
 
 ## Host services
 
@@ -265,7 +287,7 @@ fields, so the hosts' saved profiles remain compatible.
   `profile`, and the unit's
   `User`/`WorkingDirectory`/`SetLoginEnvironment`/`ExecStart`.
 - `nix build .#nixosConfigurations.<host>.config.services.dotlink.package`
-  succeeds and `dotlink --version` reports `dotlink v0.10.0`.
+  succeeds and `dotlink --version` reports `dotlink v0.13.1`.
 - a1/l5 evaluate to the same generated `ExecStart` with `--allow-shell`,
   `--allow-nix-daemon`, `--allow-nix-config`, `--allow-ssh-agent`,
   `--allow-git-config`, `--allow-kvm`, `--allow-gpu=amd`, `--allow-gpu=nvidia`,
