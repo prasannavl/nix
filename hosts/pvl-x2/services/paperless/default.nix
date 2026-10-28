@@ -29,7 +29,7 @@ in {
       source = ''
         services:
           broker:
-            image: docker.io/valkey/valkey:9.1.2-alpine
+            image: docker.io/valkey/valkey:9.1.3-alpine
             container_name: paperless-broker
             user: 0:0
             volumes:

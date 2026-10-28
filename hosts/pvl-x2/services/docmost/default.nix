@@ -27,7 +27,7 @@ in {
 
         services:
           docmost:
-            image: docker.io/docmost/docmost:0.96.0
+            image: docker.io/docmost/docmost:0.97.0
             user: 0:0
             depends_on:
               - db

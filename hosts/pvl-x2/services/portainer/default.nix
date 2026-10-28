@@ -16,7 +16,7 @@
 
       services:
         portainer:
-          image: docker.io/portainer/portainer-ce:2.45.2
+          image: docker.io/portainer/portainer-ce:2.45.3
           container_name: portainer
           ports:
             - "${toString exposedPorts.edge.port}:8000"
