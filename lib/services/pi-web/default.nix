@@ -119,6 +119,7 @@ in {
             "HOME=${userHome}"
             "PI_WEB_NO_OPEN=1"
             "PI_WEB_SKIP_VERSION_CHECK=1"
+            "PI_WEB_DISABLE_MCP=1"
           ]
           ++ lib.optional (cfg.allowedHosts != []) "PI_WEB_ALLOWED_HOSTS=${lib.concatStringsSep "," cfg.allowedHosts}";
         EnvironmentFile = lib.mkIf (cfg.environmentFile != null) cfg.environmentFile;
