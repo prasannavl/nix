@@ -1501,7 +1501,10 @@
   machineProjectNameRef = name: machine: "${resolveMachineProject machine}/${resolveMachineName name machine}";
 
   createOnlyDevices = machine:
-    lib.filterAttrs (_: dev: dev.type != "disk") machine.devices;
+    lib.filterAttrs (_: dev: !builtins.elem dev.type ["disk" "proxy"]) machine.devices;
+  proxyDeviceProperties = machine:
+    lib.mapAttrs (resolveDeviceProperties machine)
+    (lib.filterAttrs (_: dev: dev.type == "proxy") machine.devices);
   syncableDevices = machine:
     lib.filterAttrs (_: dev: dev.type == "disk") machine.devices;
 
@@ -1629,6 +1632,17 @@
   configHash = name: machine:
     builtins.hashString "sha256" (builtins.toJSON (configHashPayload name machine));
 
+  # One-time proof for metadata written before proxy hotplug support.
+  legacyConfigHash = name: machine:
+    builtins.hashString "sha256" (builtins.toJSON (
+      (configHashPayload name machine)
+      // {
+        createOnlyDevices =
+          lib.mapAttrs (resolveDeviceProperties machine)
+          (lib.filterAttrs (_: dev: dev.type != "disk") machine.devices);
+      }
+    ));
+
   effectiveBootTag = machine:
     if globalCfg.bootTag == "0"
     then machine.bootTag
@@ -1698,6 +1712,9 @@
       autoStart = machine.autoStart;
       reconcilePolicy = machine.reconcilePolicy;
       configHash = hash;
+      configHashPayload = configHashPayload name machine;
+      legacyConfigHash = legacyConfigHash name machine;
+      proxyDevices = proxyDeviceProperties machine;
       bootTag = effectiveBootTag machine;
       recreateTag = effectiveRecreateTag machine;
       removalPolicy = machine.removalPolicy;
@@ -1750,6 +1767,7 @@
       removalPolicy = machine.removalPolicy;
       hostSuspendPolicy = machine.hostSuspendPolicy;
       devices = builtins.fromJSON (diskGcMetadataJson machine);
+      proxyDevices = builtins.attrNames (proxyDeviceProperties machine);
     }
     // limitMetadata machine
     // liveNetworkMetadata machine;
@@ -2645,6 +2663,7 @@
         config = limitConfig machine;
         devices = limitDeviceProperties machine;
         networkDevices = liveNetworkDeviceProperties machine;
+        proxyDevices = proxyDeviceProperties machine;
         cpuCapacity = globalCfg.cpuCapacity;
       }
     )
@@ -3534,7 +3553,7 @@ in {
           }
           // lib.optionalAttrs hasInstances {
             incus-machines-limits = {
-              description = "Reconcile live Incus instance limits and network properties";
+              description = "Reconcile live Incus limits, network properties and proxy devices";
               wantedBy = ["sysinit-reactivation.target"];
               before = map (name: "incus-${name}.service") (builtins.attrNames allInstances);
               after = localIncusDeps ++ remoteProjectDelegationDeps ++ ["network-online.target"];

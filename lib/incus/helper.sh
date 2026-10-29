@@ -1580,6 +1580,116 @@ reconcile_instance_limits() {
 		"limits"
 }
 
+# Old config hashes included proxy definitions. Only migrate when the old hash
+# proves unchanged immutable configuration and the set of previously owned proxies.
+proxy_metadata_for_state() {
+	local state instance config meta current_hash desired_hash owned observed payload candidate
+	state="$1"
+	instance="$2"
+	config="$(printf '%s' "$instance" | jq -c '.metadata.config // {}')"
+	meta="$(nixos_meta_from_config_json "$config")"
+	if ! printf '%s' "$state" | jq -e 'has("proxyDevices")' >/dev/null ||
+		printf '%s' "$meta" | jq -e 'has("proxyDevices")' >/dev/null; then
+		printf '%s\n' "$meta"
+		return 0
+	fi
+
+	current_hash="$(printf '%s' "$meta" | jq -r '.configHash // empty')"
+	desired_hash="$(printf '%s' "$state" | jq -r '.configHash')"
+	observed="$(printf '%s' "$instance" | jq -c '.metadata.devices // {} | with_entries(select(.value.type == "proxy"))')"
+	if [ "$current_hash" = "$desired_hash" ]; then
+		owned='[]'
+	elif [ -n "$current_hash" ] && [ "$current_hash" = "$(printf '%s' "$state" | jq -r '.legacyConfigHash // empty')" ]; then
+		owned="$(printf '%s' "$state" | jq -c '.proxyDevices | keys')"
+		current_hash="$desired_hash"
+	elif [ "$observed" = '{}' ] && [ "$(printf '%s' "$state" | jq -c '.proxyDevices')" = '{}' ]; then
+		# No proxy transition: preserve ordinary immutable-drift handling.
+		owned='[]'
+	else
+		payload="$(jq -cSn --argjson state "$state" --argjson observed "$observed" '
+			$state.configHashPayload
+			| .createOnlyDevices += $observed
+		')"
+		candidate="$(printf '%s' "$payload" | sha256sum | cut -d ' ' -f 1)"
+		if [ "$candidate" != "$current_hash" ]; then
+			echo "Cannot prove legacy Incus proxy ownership/config hash; migrate unchanged immutable configuration first or authorize an explicit recreateTag" >&2
+			return 1
+		fi
+		owned="$(printf '%s' "$observed" | jq -c 'keys')"
+		current_hash="$desired_hash"
+	fi
+	jq -cn --argjson meta "$meta" --argjson owned "$owned" --arg hash "$current_hash" '
+		$meta | .proxyDevices = $owned | .configHash = $hash
+	'
+}
+
+reconcile_instance_proxies() {
+	local name state instance meta config current expanded desired owned claimed dev props previous updates
+	name="$1"
+	state="$2"
+	instance="$3"
+	meta="$4"
+	if ! printf '%s' "$state" | jq -e 'has("proxyDevices")' >/dev/null; then
+		return 0
+	fi
+	config="$(printf '%s' "$instance" | jq -c '.metadata.config // {}')"
+	current="$(printf '%s' "$instance" | jq -c '.metadata.devices // {}')"
+	expanded="$(printf '%s' "$instance" | jq -c '.metadata.expanded_devices // {}')"
+	desired="$(printf '%s' "$state" | jq -c '.proxyDevices')"
+	owned="$(printf '%s' "$meta" | jq -c '.proxyDevices // []')"
+
+	# Never adopt a foreign/profile device or change another device type merely
+	# because its name collides with a declared/previously managed proxy.
+	if ! jq -en --argjson current "$current" --argjson expanded "$expanded" \
+		--argjson desired "$desired" --argjson owned "$owned" '
+		($owned | type == "array" and all(.[]; type == "string"))
+		and ($desired | type == "object" and all(.[]; .type == "proxy"))
+		and all(($owned + ($desired | keys) | unique)[]; . as $name |
+			(if $current | has($name) then
+				$current[$name].type == "proxy" and ($owned | index($name) != null)
+			else ($desired | has($name) | not) or ($expanded | has($name) | not) end))
+	' >/dev/null; then
+		echo "Refusing conflicting, inherited or unowned proxy devices on $current_project/$name" >&2
+		return 1
+	fi
+
+	# Reserve names before mutation. A failed add/update or metadata write remains
+	# retryable, and a later declaration removal can clean up partially added devices.
+	claimed="$(jq -cn --argjson meta "$meta" --argjson desired "$desired" '
+		$meta | .proxyDevices = ((.proxyDevices // []) + ($desired | keys) | unique)
+	')"
+	set_nixos_meta_if_changed "$name" "$config" "$claimed" || return
+
+	# Remove obsolete owned listeners before adds, allowing a rename on one port.
+	while IFS= read -r dev; do
+		if printf '%s' "$current" | jq -e --arg dev "$dev" 'has($dev)' >/dev/null; then
+			incus_project_retry_etag config device remove "$(instance_ref "$name")" "$dev" || return
+		fi
+	done < <(jq -cn --argjson owned "$owned" --argjson desired "$desired" '$owned - ($desired | keys)' | jq -r '.[]')
+
+	while IFS= read -r dev; do
+		props="$(printf '%s' "$desired" | jq -c --arg dev "$dev" '.[$dev]')"
+		previous="$(printf '%s' "$current" | jq -c --arg dev "$dev" '.[$dev] // null')"
+		if [ "$previous" = 'null' ]; then
+			add_device_from_props "$name" "$dev" "$props" || return
+		else
+			# Empty values clear optional keys in the same ETag-checked native
+			# update; never temporarily unset required listen/connect properties.
+			updates="$(jq -cn --argjson previous "$previous" --argjson desired "$props" '
+				($previous | with_entries(.value = "")) + $desired | del(.type)
+			')"
+			set_device_config_json_if_changed "$name" "$dev" "$previous" "$updates" || return
+		fi
+	done < <(printf '%s' "$desired" | jq -r 'keys[]')
+
+	# Preserve unrelated live metadata after all device operations succeed.
+	instance="$(incus query "$(query_ref "$(instance_query_path "$name")")" --raw)" || return
+	config="$(printf '%s' "$instance" | jq -c '.metadata.config // {}')"
+	meta="$(nixos_meta_from_config_json "$config")"
+	meta="$(jq -cn --argjson meta "$meta" --argjson desired "$desired" '$meta | .proxyDevices = ($desired | keys)')"
+	set_nixos_meta_if_changed "$name" "$config" "$meta"
+}
+
 limits_main() {
 	local id name state_file state_json reconcile_policy current_instance current_config current_devices
 	local current_meta current_controller current_managed_by desired_config desired_devices desired_limits
@@ -1629,6 +1739,15 @@ limits_main() {
 		if [ -n "$controller_id" ] && [ -n "$current_controller" ] && [ "$current_controller" != "$controller_id" ]; then
 			echo "Refusing to reconcile live properties for Incus instance $current_project/$name owned by controller $current_controller" >&2
 			exit 1
+		fi
+
+		if [ "$(printf '%s' "$current_meta" | jq -r '.recreateTag // empty')" = "$(printf '%s' "$state_json" | jq -r '.recreateTag // empty')" ]; then
+			current_meta="$(proxy_metadata_for_state "$state_json" "$current_instance")" || return
+			reconcile_instance_proxies "$name" "$state_json" "$current_instance" "$current_meta" || return
+			current_instance="$(incus query "$(query_ref "$(instance_query_path "$name")")" --raw)"
+			current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}')"
+			current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}')"
+			current_meta="$(nixos_meta_from_config_json "$current_config")"
 		fi
 
 		desired_config="$(
@@ -2849,8 +2968,11 @@ machine_main() {
 				exit 1
 			fi
 
-			current_config_hash="$(printf '%s' "$current_meta" | jq -r '.configHash // empty')"
 			current_recreate_tag="$(printf '%s' "$current_meta" | jq -r '.recreateTag // empty')"
+			if [ "$adopting_existing" -eq 0 ] && [ "$current_recreate_tag" = "$desired_recreate_tag" ]; then
+				current_meta="$(proxy_metadata_for_state "$state_json" "$current_instance")" || return
+			fi
+			current_config_hash="$(printf '%s' "$current_meta" | jq -r '.configHash // empty')"
 			current_boot_tag="$(printf '%s' "$current_meta" | jq -r '.bootTag // empty')"
 			if [ "$current_recreate_tag" != "$desired_recreate_tag" ]; then
 				needs_recreate_from_tag=1
@@ -2943,6 +3065,13 @@ machine_main() {
 		current_instance="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null || echo '{}')"
 		current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}' 2>/dev/null || echo '{}')"
 		current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}' 2>/dev/null || echo '{}')"
+		current_meta="$(nixos_meta_from_config_json "$current_config")"
+
+		current_meta="$(proxy_metadata_for_state "$state_json" "$current_instance")" || return
+		reconcile_instance_proxies "$instance_name" "$state_json" "$current_instance" "$current_meta" || return
+		current_instance="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw)"
+		current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}')"
+		current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}')"
 		current_meta="$(nixos_meta_from_config_json "$current_config")"
 
 		prepare_certificate_delegation_permissions "$current_config" "$desired_disk_gc_metadata"

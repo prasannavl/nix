@@ -1093,6 +1093,369 @@ class IncusHelperTest(unittest.TestCase):
         self.assertIn("ignored by declarative reconcile and is not ready", explicit_result.stderr)
         self.assertIn("/1.0/instances/ignored?project=default", explicit_log)
 
+    @staticmethod
+    def proxy_definition(**changes):
+        return {
+            "type": "proxy",
+            "bind": "instance",
+            "listen": "tcp:10.10.0.10:5000",
+            "connect": "tcp:127.0.0.1:5000",
+            **changes,
+        }
+
+    @staticmethod
+    def payload_hash(payload):
+        import hashlib
+
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        ).hexdigest()
+
+    def proxy_state(self, proxies, *, immutable_config=None, **kwargs):
+        state = self.machine_state(**kwargs)
+        payload = {
+            "preseedTag": "0",
+            "config": immutable_config or {},
+            "kind": "lxc",
+            "project": "default",
+            "image": {"alias": "nixos-test"},
+            "createOnlyDevices": {},
+        }
+        state.update(
+            {
+                "configHashPayload": payload,
+                "configHash": self.payload_hash(payload),
+                "legacyConfigHash": self.payload_hash({**payload, "createOnlyDevices": proxies}),
+                "proxyDevices": proxies,
+            }
+        )
+        meta = json.loads(state["userMeta"]["user.nixos-meta"])
+        meta.update(configHash=state["configHash"], proxyDevices=sorted(proxies))
+        state["userMeta"]["user.nixos-meta"] = json.dumps(meta)
+        return state
+
+    def install_proxy_instance(
+        self, proxies, *, legacy=False, owned=None, status="Running", immutable_config=None
+    ):
+        state = self.proxy_state(proxies, immutable_config=immutable_config)
+        response = self.instance_response(status=status)
+        meta = json.loads(state["userMeta"]["user.nixos-meta"])
+        if legacy:
+            meta.pop("proxyDevices")
+            meta["configHash"] = state["legacyConfigHash"]
+        elif owned is not None:
+            meta["proxyDevices"] = owned
+        response["metadata"]["config"]["user.nixos-meta"] = json.dumps(meta)
+        response["metadata"]["devices"].update(json.loads(json.dumps(proxies)))
+        self.proxy_instance_file = self.work_dir / "instance.json"
+        self.proxy_instance_file.write_text(json.dumps(response))
+        return response
+
+    def run_proxy_state(self, state, *, mode="live", check=True, **env):
+        state_file = self.write_machine_state(state)
+        return self.run_helper(
+            "limits_main --all" if mode == "live" else "machine_main",
+            check=check,
+            INCUS_MACHINES_DECLARED_INSTANCES='["web"]',
+            INCUS_MACHINES_INSTANCE_STATE_DIR=str(self.work_dir),
+            INCUS_MACHINES_INSTANCE_STATE_FILE=str(state_file),
+            INCUS_MACHINES_INSTANCE_RECONCILE_POLICIES=json.dumps(
+                {"web": state["reconcilePolicy"]}
+            ),
+            TEST_INCUS_INSTANCE_FILE=str(self.proxy_instance_file),
+            **env,
+        )
+
+    def proxy_observed(self):
+        response = json.loads(self.proxy_instance_file.read_text())
+        return response["metadata"]["devices"], json.loads(
+            response["metadata"]["config"]["user.nixos-meta"]
+        )
+
+    def assert_no_instance_lifecycle(self):
+        self.assertEqual(
+            [],
+            [
+                c
+                for _, c in self.mutation_commands()
+                if c[0] in {"create", "delete", "start", "stop"}
+            ],
+        )
+
+    def test_proxy_live_add_update_clear_rename_remove_and_idempotency(self):
+        for policy in ("auto", "declarative"):
+            with self.subTest(policy=policy):
+                self.clear_incus_log()
+                self.install_proxy_instance({})
+                original = self.proxy_definition(proxy_protocol="true")
+                self.run_proxy_state(self.proxy_state({"cache": original}, reconcile_policy=policy))
+                self.assertEqual(original, self.proxy_observed()[0]["cache"])
+                updated = self.proxy_definition(connect="tcp:127.0.0.1:5001")
+                self.run_proxy_state(self.proxy_state({"cache": updated}, reconcile_policy=policy))
+                commands = [c for _, c in self.mutation_commands()]
+                self.assertTrue(
+                    any(
+                        c[:4] == ["config", "device", "set", "web"]
+                        and "proxy_protocol=" in c
+                        and "connect=tcp:127.0.0.1:5001" in c
+                        for c in commands
+                    )
+                )
+                self.assertFalse(any(c[:3] == ["config", "device", "unset"] for c in commands))
+                self.run_proxy_state(
+                    self.proxy_state({"renamed": updated}, reconcile_policy=policy)
+                )
+                devices, meta = self.proxy_observed()
+                self.assertNotIn("cache", devices)
+                self.assertEqual(updated, devices["renamed"])
+                self.assertEqual(["renamed"], meta["proxyDevices"])
+                self.assert_no_instance_lifecycle()
+                self.clear_incus_log()
+                self.run_proxy_state(
+                    self.proxy_state({"renamed": updated}, reconcile_policy=policy)
+                )
+                self.assertEqual([], self.mutation_commands())
+                self.run_proxy_state(self.proxy_state({}, reconcile_policy=policy))
+                self.assertNotIn("renamed", self.proxy_observed()[0])
+                self.assertEqual([], self.proxy_observed()[1]["proxyDevices"])
+                self.assert_no_instance_lifecycle()
+
+    def test_proxy_legacy_hash_migrates_changes_and_removals_without_recreation(self):
+        for mode in ("live", "machine"):
+            for desired in (
+                {},
+                {"cache": self.proxy_definition(connect="tcp:127.0.0.1:5001")},
+                {"renamed": self.proxy_definition()},
+            ):
+                with self.subTest(mode=mode, desired=desired):
+                    self.clear_incus_log()
+                    self.install_proxy_instance({"cache": self.proxy_definition()}, legacy=True)
+                    state = self.proxy_state(desired)
+                    self.run_proxy_state(state, mode=mode)
+                    devices, meta = self.proxy_observed()
+                    self.assertEqual(sorted(desired), meta["proxyDevices"])
+                    self.assertEqual(state["configHash"], meta["configHash"])
+                    self.assertEqual(
+                        desired, {n: v for n, v in devices.items() if v["type"] == "proxy"}
+                    )
+                    self.assert_no_instance_lifecycle()
+
+    def test_proxy_legacy_declared_hash_recovers_live_drift_without_claiming_foreign_devices(self):
+        old = {"cache": self.proxy_definition()}
+        response = self.install_proxy_instance(old, legacy=True)
+        response["metadata"]["devices"]["cache"]["connect"] = "tcp:127.0.0.1:9999"
+        foreign = self.proxy_definition(listen="tcp:10.10.0.10:6000")
+        response["metadata"]["devices"]["manual"] = foreign
+        self.proxy_instance_file.write_text(json.dumps(response))
+        self.run_proxy_state(self.proxy_state(old))
+        devices, meta = self.proxy_observed()
+        self.assertEqual(old["cache"], devices["cache"])
+        self.assertEqual(foreign, devices["manual"])
+        self.assertEqual(["cache"], meta["proxyDevices"])
+        self.assert_no_instance_lifecycle()
+
+    def test_proxy_legacy_ambiguous_hash_fails_closed(self):
+        for mode in ("live", "machine"):
+            with self.subTest(mode=mode):
+                self.clear_incus_log()
+                self.install_proxy_instance({"cache": self.proxy_definition()}, legacy=True)
+                before = self.proxy_instance_file.read_bytes()
+                state = self.proxy_state(
+                    {"cache": self.proxy_definition(connect="tcp:127.0.0.1:6000")},
+                    immutable_config={"security.nesting": "true"},
+                )
+                result = self.run_proxy_state(state, mode=mode, check=False)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("Cannot prove legacy", result.stderr)
+                self.assertEqual(before, self.proxy_instance_file.read_bytes())
+                self.assertEqual([], self.mutation_commands())
+
+    def test_proxy_conflicts_fail_before_mutation(self):
+        for conflict in ("foreign", "type", "inherited", "controller"):
+            with self.subTest(conflict=conflict):
+                self.clear_incus_log()
+                response = self.install_proxy_instance(
+                    {"cache": self.proxy_definition()}, owned=[] if conflict == "foreign" else None
+                )
+                if conflict == "type":
+                    response["metadata"]["devices"]["cache"] = {"type": "disk", "source": "/keep"}
+                if conflict == "inherited":
+                    response["metadata"]["expanded_devices"] = {
+                        "cache": response["metadata"]["devices"].pop("cache")
+                    }
+                if conflict == "controller":
+                    meta = json.loads(response["metadata"]["config"]["user.nixos-meta"])
+                    meta["controller"] = "other"
+                    response["metadata"]["config"]["user.nixos-meta"] = json.dumps(meta)
+                self.proxy_instance_file.write_text(json.dumps(response))
+                before = self.proxy_instance_file.read_bytes()
+                result = self.run_proxy_state(
+                    self.proxy_state({"cache": self.proxy_definition()}),
+                    check=False,
+                    INCUS_MACHINES_CONTROLLER_ID="owner",
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(before, self.proxy_instance_file.read_bytes())
+                self.assertEqual([], self.mutation_commands())
+
+    def test_proxy_failure_reservations_make_partial_additions_retryable_and_removable(self):
+        for retry in (True, False):
+            with self.subTest(retry=retry):
+                self.clear_incus_log()
+                self.install_proxy_instance({})
+                desired = {
+                    "a": self.proxy_definition(),
+                    "b": self.proxy_definition(listen="tcp:10.10.0.10:5001"),
+                }
+                result = self.run_proxy_state(
+                    self.proxy_state(desired),
+                    check=False,
+                    TEST_INCUS_FAIL_PREFIXES=json.dumps(
+                        [["--project", "default", "config", "device", "add", "web", "b"]]
+                    ),
+                )
+                self.assertNotEqual(0, result.returncode)
+                devices, meta = self.proxy_observed()
+                self.assertIn("a", devices)
+                self.assertNotIn("b", devices)
+                self.assertEqual(["a", "b"], meta["proxyDevices"])
+                self.run_proxy_state(self.proxy_state(desired if retry else {}))
+                devices, meta = self.proxy_observed()
+                self.assertEqual(sorted(desired) if retry else [], meta["proxyDevices"])
+                self.assertEqual(retry, "a" in devices)
+                self.assertEqual(retry, "b" in devices)
+                self.assert_no_instance_lifecycle()
+
+    def test_proxy_update_and_remove_failures_do_not_replace_guest(self):
+        for mode in ("live", "machine"):
+            for operation in ("set", "remove"):
+                with self.subTest(mode=mode, operation=operation):
+                    self.clear_incus_log()
+                    old = {"cache": self.proxy_definition()}
+                    self.install_proxy_instance(old)
+                    desired = (
+                        {}
+                        if operation == "remove"
+                        else {"cache": self.proxy_definition(connect="tcp:127.0.0.1:6000")}
+                    )
+                    result = self.run_proxy_state(
+                        self.proxy_state(desired),
+                        mode=mode,
+                        check=False,
+                        TEST_INCUS_FAIL_PREFIXES=json.dumps(
+                            [["--project", "default", "config", "device", operation]]
+                        ),
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertEqual(old["cache"], self.proxy_observed()[0]["cache"])
+                    self.assert_no_instance_lifecycle()
+
+    def test_proxy_live_path_respects_stopped_missing_and_ignored_guests(self):
+        for case in ("stopped", "missing", "ignored"):
+            with self.subTest(case=case):
+                self.clear_incus_log()
+                response = self.install_proxy_instance(
+                    {}, status="Stopped" if case == "stopped" else "Running"
+                )
+                if case == "missing":
+                    response["exists"] = False
+                    self.proxy_instance_file.write_text(json.dumps(response))
+                state = self.proxy_state(
+                    {"cache": self.proxy_definition()},
+                    state="stopped" if case == "stopped" else "running",
+                    reconcile_policy="ignore" if case == "ignored" else "auto",
+                )
+                self.run_proxy_state(state)
+                self.assertEqual(case == "stopped", "cache" in self.proxy_observed()[0])
+                self.assert_no_instance_lifecycle()
+                if case != "stopped":
+                    self.assertEqual([], self.mutation_commands())
+
+    def test_proxy_fresh_guest_receives_device_before_start(self):
+        self.install_proxy_instance({})
+        self.proxy_instance_file.write_text(json.dumps({"exists": False}))
+        self.run_proxy_state(self.proxy_state({"cache": self.proxy_definition()}), mode="machine")
+        commands = [c for _, c in self.mutation_commands()]
+        add_index = next(
+            i
+            for i, c in enumerate(commands)
+            if c[:5] == ["config", "device", "add", "web", "cache"]
+        )
+        self.assertLess(add_index, commands.index(["start", "web"]))
+        self.assertEqual(
+            "Running", json.loads(self.proxy_instance_file.read_text())["metadata"]["status"]
+        )
+
+    def test_proxy_migration_does_not_mask_explicit_recreation_or_modern_immutable_drift(self):
+        for legacy in (True, False):
+            with self.subTest(legacy=legacy):
+                self.clear_incus_log()
+                self.install_proxy_instance({"cache": self.proxy_definition()}, legacy=legacy)
+                state = self.proxy_state(
+                    {"cache": self.proxy_definition()},
+                    immutable_config={"security.nesting": "true"},
+                    recreate_tag="recreate-2" if legacy else "recreate-1",
+                )
+                self.run_proxy_state(state, mode="machine")
+                commands = [c for _, c in self.mutation_commands()]
+                self.assertIn(["delete", "web", "--force"], commands)
+                self.assertIn(["create", "local:nixos-test", "web"], commands)
+
+
+    def test_proxy_metadata_failure_prevents_device_mutation(self):
+        self.install_proxy_instance({})
+        result = self.run_proxy_state(
+            self.proxy_state({"cache": self.proxy_definition()}),
+            check=False,
+            TEST_INCUS_FAIL_PREFIXES=json.dumps(
+                [["--project", "default", "config", "set", "web"]]
+            ),
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn("cache", self.proxy_observed()[0])
+        self.assertFalse(any(c[:2] == ["config", "device"] for _, c in self.mutation_commands()))
+        self.assert_no_instance_lifecycle()
+
+    def test_proxy_updates_preserve_pending_declarative_immutable_drift(self):
+        self.install_proxy_instance({"cache": self.proxy_definition()})
+        old_hash = self.proxy_observed()[1]["configHash"]
+        desired = {"cache": self.proxy_definition(connect="tcp:127.0.0.1:5001")}
+        state = self.proxy_state(
+            desired, reconcile_policy="declarative", immutable_config={"security.nesting": "true"}
+        )
+        result = self.run_proxy_state(state, mode="machine")
+        self.assertIn("pending recreate drift", result.stderr)
+        self.assertEqual(old_hash, self.proxy_observed()[1]["configHash"])
+        self.assertEqual(desired["cache"], self.proxy_observed()[0]["cache"])
+        self.assert_no_instance_lifecycle()
+
+    def test_proxy_native_updates_retry_etag_without_recreating(self):
+        self.install_proxy_instance({"cache": self.proxy_definition()})
+        state = self.proxy_state({"cache": self.proxy_definition(connect="tcp:127.0.0.1:5001")})
+        self.run_proxy_state(
+            state,
+            TEST_INCUS_FAIL_ONCE_PREFIXES=json.dumps(
+                [["--project", "default", "config", "device", "set"]]
+            ),
+        )
+        calls = [c for _, c in self.mutation_commands() if c[:3] == ["config", "device", "set"]]
+        self.assertEqual(2, len(calls))
+        self.assertEqual(state["proxyDevices"]["cache"], self.proxy_observed()[0]["cache"])
+        self.assert_no_instance_lifecycle()
+
+
+    def test_proxy_retired_missing_override_does_not_touch_inherited_device(self):
+        response = self.install_proxy_instance({}, owned=["retired"])
+        inherited = self.proxy_definition()
+        response["metadata"]["expanded_devices"] = {"retired": inherited}
+        self.proxy_instance_file.write_text(json.dumps(response))
+        self.run_proxy_state(self.proxy_state({}))
+        self.assertEqual([], self.proxy_observed()[1]["proxyDevices"])
+        after = json.loads(self.proxy_instance_file.read_text())
+        self.assertEqual(inherited, after["metadata"]["expanded_devices"]["retired"])
+        self.assertFalse(any(c[:2] == ["config", "device"] for _, c in self.mutation_commands()))
+        self.assert_no_instance_lifecycle()
+
 
 if __name__ == "__main__":
     unittest.main()

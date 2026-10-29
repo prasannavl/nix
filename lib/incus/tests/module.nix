@@ -194,6 +194,7 @@
               };
               startPriority = -10;
               config."security.nesting" = "true";
+              config."user.hash-fixture" = "café \"quoted\"\nline";
               limits = {
                 cpu = {
                   count = 2;
@@ -216,6 +217,10 @@
               bootTag = "boot-local";
               recreateTag = "recreate-local";
               devices = {
+                cache = incusLib.mkIncusProxy {
+                  connectHost = "127.0.0.1";
+                  listenPort = 5000;
+                };
                 data = {
                   source = "/var/lib/incus-machines/managed-dirs/web-data";
                   path = "/data";
@@ -278,6 +283,29 @@
           };
         }
       ];
+    }).config;
+  changedProxyConfig =
+    (evalConfig.extendModules {
+      modules = [{services.incus-manager.default.instances.web.devices.cache.extraProperties.connect = lib.mkForce "tcp:127.0.0.1:5001";}];
+    }).config;
+  addedProxyConfig =
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.incus-manager.default.instances.web.devices.other = incusLib.mkIncusProxy {
+            connectHost = "127.0.0.1";
+            listenPort = 5002;
+          };
+        }
+      ];
+    }).config;
+  removedProxyConfig =
+    (evalConfig.extendModules {
+      modules = [{services.incus-manager.default.instances.web.devices = lib.mkForce (builtins.removeAttrs config.services.incus-manager.default.instances.web.devices ["cache"]);}];
+    }).config;
+  immutableDriftConfig =
+    (evalConfig.extendModules {
+      modules = [{services.incus-manager.default.instances.web.config."security.nesting" = lib.mkForce "false";}];
     }).config;
   changedNetworkConfig =
     (evalConfig.extendModules {
@@ -428,6 +456,15 @@
   autoStartSettle0 = config.systemd.services.incus-machines-autostart-settle-0;
   autoStartSettle1 = config.systemd.services.incus-machines-autostart-settle-1;
   delegationUnit = config.systemd.services.incus-cert-delegation-tenant;
+  proxyVariants = [changedProxyConfig addedProxyConfig removedProxyConfig];
+  changedProxyState = builtins.fromJSON changedProxyConfig.environment.etc."incus-machines/web.json".text;
+  proxyMigrationState = pkgs.writeText "proxy-migration-state.json" (builtins.toJSON changedProxyState);
+  proxyMigrationInstance = pkgs.writeText "proxy-migration-instance.json" (builtins.toJSON {
+    metadata = {
+      config."user.nixos-meta" = builtins.toJSON ((builtins.removeAttrs webMeta ["proxyDevices"]) // {configHash = webState.legacyConfigHash;});
+      devices = webState.createOnlyDevices // webState.proxyDevices;
+    };
+  });
 in
   assert lib.all (assertion: assertion.assertion) managedFabricPolicy.assertions;
   assert lib.hasInfix ''iifname "incusbr0" ip saddr 10.10.30.0/24 oifname "platformbr0" ip saddr 10.10.30.20 ip daddr 10.10.0.10 tcp dport 18444 accept'' managedFabricRules;
@@ -517,6 +554,24 @@ in
   assert webState.limitDevices.root."limits.read" == "100MiB";
   assert webState.limitDevices.data."limits.max" == "1000iops";
   assert webState.limitDevices.eth0."limits.max" == "250Mbit";
+  assert webState.proxyDevices.cache.type == "proxy";
+  assert !(webState.createOnlyDevices ? cache);
+  assert webMeta.proxyDevices == ["cache"];
+  assert webState.configHash != webState.legacyConfigHash;
+  assert lib.all (
+    variant: let
+      state = builtins.fromJSON variant.environment.etc."incus-machines/web.json".text;
+    in
+      state.configHash
+      == webState.configHash
+      && state.legacyConfigHash != webState.legacyConfigHash
+      && variant.systemd.services.incus-web.restartTriggers == webUnit.restartTriggers
+      && variant.systemd.services.incus-web.serviceConfig == webUnit.serviceConfig
+      && variant.systemd.services.incus-machines-limits.restartTriggers != limitsUnit.restartTriggers
+  )
+  proxyVariants;
+  assert (builtins.fromJSON immutableDriftConfig.environment.etc."incus-machines/web.json".text).configHash != webState.configHash;
+  assert immutableDriftConfig.systemd.services.incus-web.restartTriggers != webUnit.restartTriggers;
   assert changedLimitWebState.configHash == webState.configHash;
   assert changedNetworkWebState.configHash == webState.configHash;
   assert changedNetworkWebState.networkDevices.eth0."ipv4.routes" == "10.10.32.0/24";
@@ -614,6 +669,11 @@ in
   assert autoStartSettle1.after == ["incus-ignored.service"];
   assert autoStartSettle1.before == [];
   assert lib.hasInfix "--machine ignored" autoStartSettle1.serviceConfig.ExecStart;
-    pkgs.runCommand "incus-module-test" {} ''
+    pkgs.runCommand "incus-module-test" {nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.coreutils];} ''
+      source ${../helper.sh}
+      init_vars
+      meta="$(proxy_metadata_for_state "$(<${proxyMigrationState})" "$(<${proxyMigrationInstance})")"
+      jq -en --argjson meta "$meta" --arg hash ${lib.escapeShellArg changedProxyState.configHash} \
+        '$meta.configHash == $hash and $meta.proxyDevices == ["cache"]'
       touch "$out"
     ''

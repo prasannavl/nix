@@ -45,6 +45,58 @@ def query_response(path):
         print(json.dumps(response))
 
 
+def stateful_command(args):
+    path = Path(os.environ["TEST_INCUS_INSTANCE_FILE"])
+    state = json.loads(path.read_text())
+    command = args[2:] if args[:1] == ["--project"] else args
+    exists = state.get("exists", True)
+    if command[:1] == ["info"] and len(command) > 1:
+        return 0 if exists else 1
+    if command[:1] == ["query"] and "/1.0/instances/" in command[1]:
+        print(json.dumps(state))
+        return 0
+    if command[:1] == ["create"]:
+        state = {
+            "exists": True,
+            "metadata": {"status": "Stopped", "type": "container", "config": {}, "devices": {}},
+        }
+    elif command[:1] == ["delete"]:
+        state["exists"] = False
+    elif command[:1] in (["start"], ["stop"]):
+        state["metadata"]["status"] = "Running" if command[0] == "start" else "Stopped"
+    elif command[:1] == ["config"]:
+        if command[1] == "device":
+            operation, name = command[2], command[4]
+            devices = state["metadata"]["devices"]
+            if operation == "add":
+                if name in devices:
+                    print("Device already exists", file=sys.stderr)
+                    return 1
+                devices[name] = {"type": command[5]}
+                devices[name].update(arg.split("=", 1) for arg in command[6:])
+            elif operation == "set":
+                candidate = dict(devices[name])
+                candidate.update(arg.split("=", 1) for arg in command[5:])
+                if candidate["type"] == "proxy" and not all(
+                    candidate.get(k) for k in ("listen", "connect")
+                ):
+                    print("Invalid incomplete proxy update", file=sys.stderr)
+                    return 1
+                devices[name] = candidate
+            elif operation == "remove":
+                del devices[name]
+            elif operation == "unset":
+                devices[name].pop(command[5], None)
+        elif command[1] == "set":
+            state["metadata"]["config"].update(arg.split("=", 1) for arg in command[3:])
+        elif command[1] == "unset":
+            state["metadata"]["config"].pop(command[3], None)
+    else:
+        return None
+    path.write_text(json.dumps(state))
+    return 0
+
+
 def main():
     args = sys.argv[1:]
     write_log(args)
@@ -61,6 +113,11 @@ def main():
 
     if not args:
         return 0
+
+    if os.environ.get("TEST_INCUS_INSTANCE_FILE"):
+        result = stateful_command(args)
+        if result is not None:
+            return result
 
     if args[0] == "info":
         return 0
