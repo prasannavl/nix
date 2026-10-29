@@ -31,6 +31,7 @@
     rpivAdvisor = pkgs.callPackage ../../../lib/ext/pi/rpiv-advisor {};
     piStamp = pkgs.callPackage ../../../lib/ext/pi/pi-stamp {};
     piAnthropicAuth = pkgs.callPackage ../../../lib/ext/pi/pi-anthropic-auth {};
+    piToolManager = pkgs.callPackage ../../../lib/ext/pi/pi-tool-manager {};
     bladebro = pkgs.callPackage ../../../pkgs/ext/bladebro {};
     piModelsDiscoveryRoot = "${piModelsDiscovery}/share/pi/packages/pi-models-discovery";
     piSessionManagerRoot = "${piSessionManager}/share/pi/packages/pi-session-manager";
@@ -53,6 +54,7 @@
     rpivAdvisorRoot = "${rpivAdvisor}/share/pi/packages/rpiv-advisor";
     piStampRoot = "${piStamp}/share/pi/packages/pi-stamp";
     piAnthropicAuthRoot = "${piAnthropicAuth}/share/pi/packages/pi-anthropic-auth";
+    piToolManagerRoot = "${piToolManager}/share/pi/packages/pi-tool-manager";
     piMcpAdapterRoot = "${piMcpAdapter}/lib/node_modules/pi-mcp-adapter";
     bladebroRoot = "${bladebro}/share/pi/packages/bladebro";
     piDiffConfig = {disabledTools = ["apply_patch"];};
@@ -100,6 +102,7 @@
       ".pi/agent/extensions/rpiv-advisor".source = rpivAdvisorRoot;
       ".pi/agent/extensions/pi-stamp".source = piStampRoot;
       ".pi/agent/extensions/pi-anthropic-auth".source = piAnthropicAuthRoot;
+      ".pi/agent/extensions/pi-tool-manager".source = piToolManagerRoot;
       ".pi/agent/extensions/pi-session-manager.ts".source = "${piSessionManagerRoot}/extensions/session-manager.ts";
       # @gotgenes/pi-subagents ships only the runtime extension. Unlike the
       # previous nicobailon/pi-subagents package it provides no skills or

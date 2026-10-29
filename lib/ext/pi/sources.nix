@@ -335,6 +335,15 @@
     };
   };
 
+  pi-tool-manager = {
+    kind = "npm";
+    package = "pi-tool-manager";
+    owner = "Star-233";
+    repo = "pi-tool-manager";
+    version = "0.1.1";
+    srcHash = "sha256-NivFJ1+lwxGeGnjkrqwZ7WwGBMKzioKU0wY/+60/3eQ=";
+  };
+
   pi-anthropic-auth = {
     kind = "npm";
     package = "@gotgenes/pi-anthropic-auth";
