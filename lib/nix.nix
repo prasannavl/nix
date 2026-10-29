@@ -9,6 +9,8 @@
 in {
   nix = {
     settings = {
+      # Optional cache outages may fall back to another substituter or a build.
+      fallback = lib.mkIf ((repository.nix.caches or {}) != {}) (lib.mkDefault true);
       experimental-features = [
         "nix-command"
         "flakes"

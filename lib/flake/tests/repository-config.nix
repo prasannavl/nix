@@ -124,11 +124,12 @@ in
   assert require (builtins.isAttrs repositoryConfig.modules) "repository modules must be an attribute set";
   assert require (builtins.all (name: builtins.hasAttr name repositoryConfig.stacks) (builtins.attrNames (repositoryConfig.modules.stacks or {}))) "repository module stacks must name declared stacks";
   assert require (builtins.isAttrs repositoryConfig.shared) "repository shared data must be an attribute set";
-  assert require (builtins.attrNames repositoryConfig.nix == ["substituters" "trustedPublicKeys"]) "repository nix policy must be normalized";
+  assert require (builtins.attrNames repositoryConfig.nix == ["caches" "substituters" "trustedPublicKeys"]) "repository nix policy must be normalized";
   assert require (builtins.isList repositoryConfig.nix.substituters) "repository nix substituters must be a list";
   assert require (builtins.isList repositoryConfig.nix.trustedPublicKeys) "repository nix trusted public keys must be a list";
   assert require (validNixPolicy.nix
     == {
+      caches = {};
       substituters = ["https://cache.example.test"];
       trustedPublicKeys = ["cache.example.test-1:key"];
     }) "repository nix policy must preserve validated values";

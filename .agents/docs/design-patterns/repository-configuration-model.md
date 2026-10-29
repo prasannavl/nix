@@ -89,11 +89,22 @@ Families may declare placement scopes only over their own stacks. The fold does
 not re-export raw families or its private stack-to-family index. Consumers use
 normalized `scopeOwners` and `fabrics` where those relationships matter.
 
-The repository Nix policy has one purpose: extra binary-cache locations and the
-keys trusted by systems in this repository. Deployment inventory contributes the
-current local cache URL during root assembly. Repository-specific public keys
-remain manifest data; shared `lib/nix.nix` contains only common public caches
-and consumes the normalized policy.
+The repository Nix policy owns binary-cache locations and the public keys
+trusted by its systems. Named `nix.caches` origins declare an HTTP(S) URL,
+priority and owner (`host`, optional `fabric`). Optional `consumers` selects
+exact host/fabric identities: omitted or null means all; an empty list means
+none. Root assembly renders eligible native substituters per system and excludes
+every named alias owned by that exact host/fabric, even when explicitly allowed.
+A cache gateway is transport, not a second store owner. Extra origins require no
+fixed parent/child depth or new scheduler.
+
+Deployment inventory still names one authoritative release cache. Its legacy URL
+is injected only when no named origin already describes it. Optional cache
+substitution uses Nix's native build fallback; explicit deployment copies still
+require the exact closure. Repository-specific public keys remain manifest data;
+shared `lib/nix.nix` contains only common public caches and consumes the
+normalized policy. Signatures are never disabled and private keys never enter
+the client policy.
 
 ## Accounts Contract
 

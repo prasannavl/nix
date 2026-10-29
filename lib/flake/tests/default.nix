@@ -318,6 +318,7 @@
   };
 in
   {
+    lib-flake-nix-cache-policy = import ./nix-cache-policy.nix {inherit pkgs;};
     lib-flake-fabric-contract = import ./fabric-contract.nix {inherit pkgs;};
     lib-flake-fabric-projection = import ./fabric-projection.nix {inherit pkgs;};
     lib-flake-phase-projection = import ./phase-projection.nix {inherit pkgs;};

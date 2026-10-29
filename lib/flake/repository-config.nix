@@ -39,7 +39,8 @@
     // builtins.mapAttrs (_: extension: extension.specification) validatedProjectionDomainExtensions;
   projectionAdapters = builtins.mapAttrs (_: extension: extension.adapter) validatedProjectionDomainExtensions;
   normalizedNix = assert require (builtins.isAttrs nix) "repository nix policy must be an attribute set";
-  assert requireOnly ["substituters" "trustedPublicKeys"] nix "repository nix policy"; {
+  assert requireOnly ["substituters" "trustedPublicKeys" "caches"] nix "repository nix policy"; {
+    caches = (import ./nix-cache-policy.nix).normalize (nix.caches or {});
     substituters = uniqueStrings "repository nix substituters" (nix.substituters or []);
     trustedPublicKeys = uniqueStrings "repository nix trusted public keys" (nix.trustedPublicKeys or []);
   };

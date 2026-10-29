@@ -43,8 +43,9 @@
     else repositoryInventory;
   inventoryNixCache = nixbotInventory.config.registries.nix or null;
   repositoryNix = {
+    caches = repositoryConfig.nix.caches;
     substituters = nixpkgs.lib.unique (
-      nixpkgs.lib.optional (inventoryNixCache != null) inventoryNixCache.url
+      nixpkgs.lib.optional (inventoryNixCache != null && !(builtins.elem inventoryNixCache.url (map (cache: cache.url) (builtins.attrValues repositoryConfig.nix.caches)))) inventoryNixCache.url
       ++ repositoryConfig.nix.substituters
     );
     trustedPublicKeys = repositoryConfig.nix.trustedPublicKeys;
@@ -135,15 +136,9 @@
   effectiveStacks = repositoryConfig.materializeScopeStacks effectiveScopeStacks;
   nixbotControllerCapability = nixbotInventory.config.controller;
   nixbotInventoryHosts = builtins.attrNames nixbotInventory.hosts;
-  nixbotControllerCandidates =
-    builtins.filter (
-      host:
-        (nixbotInventory.hosts.${host}.resourceId or host)
-        == nixbotControllerCapability
-    )
-    nixbotInventoryHosts;
-  nixbotControllerHost = assert require (builtins.length nixbotControllerCandidates == 1) "inventory controller capability ${nixbotControllerCapability} must select exactly one host";
-    builtins.head nixbotControllerCandidates;
+  nixbotControllerEndpoint = inventoryEndpointForHost nixbotControllerCapability;
+  nixbotControllerHost = assert require (nixbotControllerEndpoint != null) "inventory controller capability ${nixbotControllerCapability} must select one host";
+    nixbotControllerEndpoint.host;
   closeoutRuntimeHosts = nixpkgs.lib.unique (
     builtins.concatMap
     (closeout: closeout.affected_hosts)
@@ -221,7 +216,11 @@
     repository = {
       inherit fabrics;
       inventory = nixbotInventory;
-      nix = repositoryNix;
+      nix = (import ./nix-cache-policy.nix).forHost {
+        policy = repositoryNix;
+        host = hostName;
+        fabric = effectiveStack.topology.network.fabric or null;
+      };
       inherit (repositoryConfig) shared;
       stacks = effectiveStacks;
     };
