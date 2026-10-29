@@ -199,7 +199,120 @@
     ownedRoles.app = {host = "app";};
     definition = definitions.app;
   };
+  withAccess = rules:
+    (mkFabricStack {
+      addressBases = {
+        ipv4 = "10.20";
+        ipv6 = "fd42:20:20";
+      };
+      definitions.app = definitions.app // {access = rules;};
+      registryFor = minimalRegistryFor;
+    }).contract;
+  groupedRule = {
+    from = [
+      {
+        endpointGroup = "live";
+        role = "app";
+      }
+      {
+        endpointGroup = "cold";
+        role = "app";
+      }
+    ];
+    to = [
+      {
+        stack = "app";
+        endpointGroups = ["live" "cold"];
+      }
+    ];
+    tcp = [22];
+    udp = [53];
+  };
+  grouped = withAccess {grouped = groupedRule;};
+  explicit = withAccess (builtins.listToAttrs (builtins.concatMap (source:
+    map (destination: {
+      name = "${source}-${destination}";
+      value = {
+        from = {
+          endpointGroups = [source];
+          role = "app";
+        };
+        to = {
+          stack = "app";
+          endpointGroup = destination;
+        };
+        tcp = [22];
+        udp = [53];
+      };
+    }) ["live" "cold"]) ["live" "cold"]));
+  flows = c: builtins.sort builtins.lessThan (map (edge: builtins.toJSON (builtins.removeAttrs edge ["id" "logicalEdge"])) c.access);
+  ids = c: builtins.sort builtins.lessThan (map (edge: edge.id) c.access);
+  reordered = withAccess {
+    grouped =
+      groupedRule
+      // {
+        from = pkgs.lib.reverseList groupedRule.from;
+        to = [
+          {
+            stack = "app";
+            endpointGroups = ["cold" "live"];
+          }
+        ];
+      };
+  };
+  rejectsRule = rule: !(builtins.tryEval (builtins.deepSeq (withAccess {bad = rule;}) true)).success;
 in
+  assert flows grouped == flows explicit;
+  assert builtins.length grouped.access == 4;
+  assert ids grouped == ids reordered;
+  assert (builtins.head contract.access).id == "self:app";
+  assert rejectsRule (groupedRule // {from = [];});
+  assert rejectsRule (groupedRule // {to = [];});
+  assert rejectsRule (groupedRule // {to = [{stack = "missing";}];});
+  assert rejectsRule (groupedRule // {to = [{stack = [];}];});
+  assert rejectsRule (groupedRule // {from = [1];});
+  assert rejectsRule (groupedRule // {from = [{endpointGroups = [];}];});
+  assert rejectsRule (groupedRule // {from = [{endpointGroups = ["live" "live"];}];});
+  assert rejectsRule (groupedRule
+    // {
+      from = [
+        {
+          endpointGroup = "live";
+          endpointGroups = ["cold"];
+        }
+      ];
+    });
+  assert rejectsRule (groupedRule
+    // {
+      to = [
+        {
+          stack = "app";
+          endpointGroups = ["missing"];
+        }
+      ];
+    });
+  assert rejectsRule (groupedRule
+    // {
+      to = [
+        {
+          stack = "app";
+          endpointGroup = "live";
+          endpointGroups = ["cold"];
+        }
+      ];
+    });
+  assert rejectsRule (groupedRule // {from = [{role = "missing";}];});
+  assert rejectsRule (groupedRule
+    // {
+      from = [
+        {
+          role = "app";
+          typo = true;
+        }
+      ];
+    });
+  assert rejectsRule (groupedRule // {from = groupedRule.from ++ groupedRule.from;});
+  assert rejectsRule (groupedRule // {to = groupedRule.to ++ groupedRule.to;});
   assert builtins.all (value: value) (builtins.attrValues contract.validation);
   assert !invalidFamilies.success;
   assert !duplicatePrefixes.success;

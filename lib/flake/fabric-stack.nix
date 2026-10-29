@@ -206,34 +206,46 @@
     if !builtins.hasAttr group definition.endpointGroups
     then throw "Unknown endpoint group ${definition.stackName}.${group}"
     else endpointFabricName definition group;
+  accessSelectors = import ./access-selectors.nix;
   normalizeAccess = definition: id: rawDeclaration: let
     declaration = checkedAttrs "fabric access rule ${id}" ["from" "tcp" "to" "udp"] rawDeclaration;
-    source = checkedAttrs "fabric access source ${id}" ["endpointGroups" "role"] (declaration.from or {});
-    destination = checkedAttrs "fabric access destination ${id}" ["endpointGroup" "role" "stack"] declaration.to;
-    sourceGroups = source.endpointGroups or [definition.activeEndpointGroup];
-    destinationDefinition = definitions.${destination.stack};
-    destinationGroup = destination.endpointGroup or destinationDefinition.activeEndpointGroup;
+    normalizeSelector = source: raw: let
+      context = "fabric access ${
+        if source
+        then "source"
+        else "destination"
+      } ${id}";
+      selector = checkedAttrs context (["endpointGroup" "endpointGroups" "role"]
+        ++ (
+          if source
+          then []
+          else ["stack"]
+        ))
+      raw;
+      target =
+        if source
+        then definition
+        else if builtins.isString (selector.stack or null) && builtins.hasAttr selector.stack definitions
+        then definitions.${selector.stack}
+        else throw "Unknown destination stack for ${context}";
+      groups = accessSelectors.names context selector "endpointGroup" "endpointGroups" [target.activeEndpointGroup];
+      selectedFabrics = map (fabricForGroup target) groups;
+    in
+      (
+        if !source && builtins.length selectedFabrics == 1
+        then {fabric = builtins.head selectedFabrics;}
+        else {fabrics = selectedFabrics;}
+      )
+      // (
+        if selector ? role
+        then {role = selector.role;}
+        else {}
+      );
   in
     {
-      inherit id;
-      from =
-        {
-          fabrics = map (fabricForGroup definition) sourceGroups;
-        }
-        // (
-          if source ? role
-          then {role = source.role;}
-          else {}
-        );
-      to =
-        {
-          fabric = fabricForGroup destinationDefinition destinationGroup;
-        }
-        // (
-          if destination ? role
-          then {role = destination.role;}
-          else {}
-        );
+      id = id;
+      from = accessSelectors.mapSelectors "access ${id} from" (normalizeSelector true) (declaration.from or {});
+      to = accessSelectors.mapSelectors "access ${id} to" (normalizeSelector false) declaration.to;
     }
     // (
       if declaration ? tcp

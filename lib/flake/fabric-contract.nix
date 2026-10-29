@@ -114,33 +114,45 @@
         else addressFor {inherit fabric family role;}
     );
   };
-  expandAccess = edge:
-    map (sourceFabric: let
-      source = selectorFor ((builtins.removeAttrs edge.from ["fabrics"]) // {fabric = sourceFabric;});
-      destination = selectorFor edge.to;
+  accessSelectors = import ./access-selectors.nix;
+  accessPairs = builtins.concatMap (edge:
+    map (pair: let
+      legacy = builtins.isAttrs edge.from && builtins.isAttrs edge.to && edge.to ? fabric;
+      endpointId = selector: "${selector.fabric}:${selector.role or "*"}";
     in
-      {
-        id = "${edge.id}:${sourceFabric}";
+      pair
+      // {
+        id =
+          if legacy
+          then "${edge.id}:${pair.from.fabric}"
+          else "${edge.id}:${endpointId pair.from}:${endpointId pair.to}";
         logicalEdge = edge.id;
-        families = enabledFamilies;
-        inherit source destination;
-        from = source.project;
-        to = destination.project;
-        sourceAddress = source.addresses.${preferredServiceFamily};
-        destinationAddress = destination.addresses.${preferredServiceFamily};
-      }
-      // (
-        if edge ? tcp
-        then {tcpPorts = edge.tcp;}
-        else {}
-      )
-      // (
-        if edge ? udp
-        then {udpPorts = edge.udp;}
-        else {}
-      ))
-    edge.from.fabrics;
-  expandedAccess = builtins.concatMap expandAccess access;
+      }) (accessSelectors.expand "role" edge))
+  access;
+  expandedAccess = map (edge: let
+    source = selectorFor edge.from;
+    destination = selectorFor edge.to;
+  in
+    {
+      inherit (edge) id logicalEdge;
+      families = enabledFamilies;
+      inherit source destination;
+      from = source.project;
+      to = destination.project;
+      sourceAddress = source.addresses.${preferredServiceFamily};
+      destinationAddress = destination.addresses.${preferredServiceFamily};
+    }
+    // (
+      if edge ? tcp
+      then {tcpPorts = edge.tcp;}
+      else {}
+    )
+    // (
+      if edge ? udp
+      then {udpPorts = edge.udp;}
+      else {}
+    ))
+  accessPairs;
   familyComplete = attrs: builtins.attrNames attrs == enabledFamilies;
   validAddressId = addressId: let
     parsed = builtins.tryEval (builtins.fromJSON (toString addressId));
@@ -190,15 +202,13 @@
   knownAccessSelectors =
     builtins.all (
       edge:
-        edge.from.fabrics
-        != []
-        && builtins.all (fabric: builtins.hasAttr fabric fabrics) edge.from.fabrics
+        builtins.hasAttr edge.from.fabric fabrics
         && builtins.hasAttr edge.to.fabric fabrics
-        && (!(edge.from ? role) || builtins.all (fabric: (reservationForRole fabric edge.from.role != []) || builtins.elem edge.from.role fabrics.${fabric}.memberRoles) edge.from.fabrics)
+        && (!(edge.from ? role) || (reservationForRole edge.from.fabric edge.from.role != []) || builtins.elem edge.from.role fabrics.${edge.from.fabric}.memberRoles)
         && (!(edge.to ? role) || (reservationForRole edge.to.fabric edge.to.role != []) || builtins.elem edge.to.role fabrics.${edge.to.fabric}.memberRoles)
         && validPorts edge
     )
-    access;
+    accessPairs;
   validPrefix = family: prefix:
     if family == "ipv4"
     then builtins.match "([0-9]{1,3}\\.){3}0/24" prefix != null

@@ -52,7 +52,66 @@
         };
     }
   );
+  groupedRule = {
+    from = [
+      {
+        fabrics = ["source" "destination"];
+        endpoint = "app";
+      }
+    ];
+    to = [{fabrics = ["source" "destination"];}];
+    tcp = [22];
+    udp = [53];
+  };
+  withAccess = access: mkFabric (projection // {access = access;});
+  grouped = withAccess {grouped = groupedRule;};
+  explicit = withAccess (builtins.listToAttrs (builtins.concatMap (source:
+    map (destination: {
+      name = "${source}-${destination}";
+      value = {
+        from = {
+          fabrics = [source];
+          endpoint = "app";
+        };
+        to.fabric = destination;
+        tcp = [22];
+        udp = [53];
+      };
+    }) ["source" "destination"]) ["source" "destination"]));
+  flows = f: builtins.sort builtins.lessThan (map builtins.toJSON f.forwardRules);
+  rejectsRule = rule: let
+    result = builtins.tryEval (builtins.deepSeq (withAccess {bad = rule;}).forwardRules (assertionsPass (withAccess {bad = rule;})));
+  in
+    !result.success || !result.value;
 in
+  assert assertionsPass grouped;
+  assert flows grouped == flows explicit;
+  assert builtins.length grouped.forwardRules == 8;
+  assert rejectsRule (groupedRule // {from = [];});
+  assert rejectsRule (groupedRule // {to = [];});
+  assert rejectsRule (groupedRule // {from = [{fabrics = [];}];});
+  assert rejectsRule (groupedRule
+    // {
+      to = [
+        {
+          fabric = "source";
+          fabrics = ["destination"];
+        }
+      ];
+    });
+  assert rejectsRule (groupedRule // {to = [{fabrics = ["source" "source"];}];});
+  assert rejectsRule (groupedRule // {to = groupedRule.to ++ groupedRule.to;});
+  assert rejectsRule (groupedRule
+    // {
+      from = [
+        {
+          fabrics = ["source"];
+          typo = "app";
+        }
+      ];
+    });
+  assert rejectsRule (groupedRule // {to.fabric = "unknown";});
+  assert rejectsRule (groupedRule // {tcp = [0];});
   assert assertionsPass fabric;
   assert !assertionsPass duplicateSubnet;
   assert !assertionsPass unknownAccessEndpoint;

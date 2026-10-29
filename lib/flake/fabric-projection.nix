@@ -38,21 +38,11 @@
       builtins.isString selector.endpoint
       && builtins.hasAttr selector.endpoint endpoints
     );
+  accessPairs = builtins.concatMap ((import ./access-selectors.nix).expand "endpoint") (builtins.attrValues access);
   validEdge = edge:
-    edge ? from
-    && builtins.isAttrs edge.from
-    && edge.from ? fabrics
-    && builtins.isList edge.from.fabrics
-    && edge.from.fabrics != []
-    && unique edge.from.fabrics
-    && lib.all builtins.isString edge.from.fabrics
-    && lib.all (fabric: builtins.hasAttr fabric fabrics) edge.from.fabrics
-    && knownEndpoint edge.from
-    && edge ? to
-    && builtins.isAttrs edge.to
-    && edge.to ? fabric
-    && builtins.isString edge.to.fabric
+    builtins.hasAttr edge.from.fabric fabrics
     && builtins.hasAttr edge.to.fabric fabrics
+    && knownEndpoint edge.from
     && knownEndpoint edge.to
     && validPorts edge;
   prefixLength = {
@@ -86,26 +76,23 @@
     if selector ? endpoint
     then addressForId fabric family endpoints.${selector.endpoint}
     else prefixes.${fabric}.${family};
-  expandEdge = _name: edge:
-    builtins.concatMap (
-      sourceFabric:
-        map (
-          family:
-            {
-              from = sourceFabric;
-              to = edge.to.fabric;
-              destination = selectorAddress edge.to edge.to.fabric family;
-            }
-            // lib.optionalAttrs (edge.from ? endpoint) {
-              source = selectorAddress edge.from sourceFabric family;
-            }
-            // lib.optionalAttrs (edge ? tcp) {tcpPorts = edge.tcp;}
-            // lib.optionalAttrs (edge ? udp) {udpPorts = edge.udp;}
-        )
-        enabledFamilies
+  expandEdge = edge:
+    map (
+      family:
+        {
+          from = edge.from.fabric;
+          to = edge.to.fabric;
+          destination = selectorAddress edge.to edge.to.fabric family;
+        }
+        // lib.optionalAttrs (edge.from ? endpoint) {
+          source = selectorAddress edge.from edge.from.fabric family;
+        }
+        // lib.optionalAttrs (edge ? tcp) {tcpPorts = edge.tcp;}
+        // lib.optionalAttrs (edge ? udp) {udpPorts = edge.udp;}
     )
-    edge.from.fabrics;
-  forwardRules = builtins.concatLists (lib.mapAttrsToList expandEdge access);
+    enabledFamilies;
+  forwardRules = assert lib.assertMsg (lib.all validEdge accessPairs) "Invalid fabric projection access rules";
+    builtins.concatMap expandEdge accessPairs;
 in {
   inherit
     addressForId
@@ -146,7 +133,7 @@ in {
       message = "Fabric projection must declare at least one fabric and endpoint";
     }
     {
-      assertion = lib.all validEdge (builtins.attrValues access);
+      assertion = lib.all validEdge accessPairs;
       message = "Fabric projection access edges must use unique known sources, known endpoints, and valid unique ports";
     }
   ];
