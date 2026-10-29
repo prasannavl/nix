@@ -10,6 +10,7 @@ in
   import ../lib/flake/repository-config.nix {
     defaultScope = "pvl";
     shared.accounts = accounts;
+    nix.caches = import ./pvl/nix-caches.nix;
     nix.trustedPublicKeys = [
       (readPublicKey ../data/secrets/globals/nix/builder-abird.pub)
       (readPublicKey ../data/secrets/globals/nix/builder-pvl.pub)

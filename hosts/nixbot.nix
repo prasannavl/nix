@@ -1,4 +1,5 @@
 let
+  caches = import ../config/pvl/nix-caches.nix;
   secretPaths = rec {
     globals = "data/secrets/globals";
     machine = host: "${globals}/machine/${host}.key.age";
@@ -55,7 +56,7 @@ in {
     builders = ["pvl-x2"];
     registries.nix = {
       host = "pvl-x2";
-      url = "http://pvl-x2:5000";
+      url = caches.pvl.url;
     };
     repoUrl = "ssh://git@github.com/prasannavl/nix.git";
     hostDefaults = {

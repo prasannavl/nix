@@ -51,11 +51,22 @@
         tcp = [53];
         udp = [53];
       };
-      platform-to-gondor-ci-cache = {
-        from.fabrics = ["abird-platform"];
-        to = {
-          fabric = "abird-gondor";
+      platform-ci-management = {
+        from = {
+          fabric = "abird-platform";
           endpoint = "ci";
+        };
+        to.fabrics = ["abird-gondor" "abird" "abird-dev"];
+        tcp = [22];
+      };
+      platform-ci-to-parent-cache = {
+        from = {
+          fabric = "abird-platform";
+          endpoint = "ci";
+        };
+        to = {
+          fabric = "abird-platform";
+          endpoint = "nest";
         };
         tcp = [5000];
       };
@@ -215,7 +226,16 @@
     # classified first as its own contained routed child in both families.
     defaultPolicy = fpp.open;
     enabledFamilies = abirdFabric.enabledFamilies;
-    forwardRules = abirdFabric.forwardRules;
+    forwardRules =
+      abirdFabric.forwardRules
+      ++ map (family: {
+        from = "abird-platform";
+        to = "default";
+        source = (abirdFabric.addressesFor "abird-platform" "ci").${family};
+        destination = (defaultAddress 20).${family};
+        tcpPorts = [22];
+      })
+      abirdFabric.enabledFamilies;
     projects = projects;
     routedFabrics.abird-gondor = {
       parent = "default";
@@ -350,7 +370,7 @@ in {
         message = "Pvl requires the stable Abird Nest endpoint";
       }
       {
-        assertion = builtins.length abirdFabric.forwardRules == 14;
+        assertion = builtins.length abirdFabric.forwardRules == 20;
         message = "Pvl requires all dual-family Abird access rules";
       }
       {
@@ -481,6 +501,12 @@ in {
           extraDevices = {
             incus-api = incusLib.mkIncusProxy {
               connectHost = "10.10.20.1";
+            };
+            # Read-only cache delegation. No routable parent service is granted.
+            parent-cache-ipv4 = incusLib.mkIncusProxy {
+              connectHost = "127.0.0.1";
+              listenHost = (abirdFabric.addressesFor "abird-platform" "nest").ipv4;
+              listenPort = 5000;
             };
             delegated-platform-certs = incusLib.mkCertDelegation "abird-platform";
             delegated-abird-certs = incusLib.mkCertDelegation "abird";
