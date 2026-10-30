@@ -165,6 +165,7 @@ in
     lib-ai-projection = aiTests.projection;
     lib-incus-helper = incusTests.helper;
     lib-incus-module = incusTests.module;
+    lib-excalidash-helper = import ../services/excalidash/tests {inherit pkgs;};
     lib-forgejo-helper = forgejoTests.helper;
     lib-gcp-vms-firewall = gcpVmsFirewallTest;
     lib-host-network-qos-helper = hostNetworkQosTests.helper;
