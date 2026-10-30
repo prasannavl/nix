@@ -3,6 +3,7 @@
 
   services.pi-web = {
     enable = true;
+    mcp.enable = false;
     tailnetAccess = true;
     allowedHosts = [
       config.networking.hostName
