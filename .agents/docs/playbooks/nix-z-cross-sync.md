@@ -1,34 +1,46 @@
 # Nix ↔ z cross-sync
 
-`nix` (open source, MIT) and `z` (private infrastructure) are the same monorepo
-in two lineages, cross-wired by local remotes:
+`nix` (`~/src/nix`, MIT) and `z` (`~/spaces/abird/src/z`, private
+infrastructure) share implementation, not repository identity. Neither lineage
+is universally canonical. Local cross-remotes are `abird` in nix and `pvl` in z.
 
-- `~/src/nix` → `origin` `git@github.com:prasannavl/nix.git`, plus `abird` → the
-  local `z` checkout.
-- `z` → `origin` `ssh://github.com/abird-ai/z`, plus `pvl` → the local `nix`
-  checkout.
+## Ownership boundaries
 
-Most files are shared and should stay byte-identical between the two. A small
-set of surfaces is **intentionally divergent** and must not be overwritten when
-syncing:
+- Shared libraries, package mechanics and generic tests converge byte-for-byte,
+  including executable modes and symlink targets.
+- Keep host/user policy, topology tests, manifests, overlays, product
+  membership, flake input choices and historical evidence under their
+  repository's authority. Adapt mixed changes at their existing injection
+  boundaries.
+- Preserve licensing: nix keeps MIT and open-contribution framing; z keeps its
+  private-access/all-rights-reserved framing and no MIT license file.
+- Keep shared `AGENTS.md` marker blocks and the `.gitignore` header identical.
+  Repository-specific additions belong after their boundary markers.
+- Never copy private products, keys, credentials or state into the other lineage
+  merely to achieve a tree-wide match.
 
-| Surface                   | `nix` (open, MIT)        | `z` (private)        |
-| ------------------------- | ------------------------ | -------------------- |
-| `LICENSE`                 | MIT file                 | absent               |
-| README `## Contributing`  | open invite              | internal access note |
-| README `## AI disclosure` | open framing             | private framing      |
-| README `## License`       | MIT                      | all rights reserved  |
-| `CONTRIBUTING.md` intro   | open contributor framing | internal framing     |
+## Review-gated procedure
 
-## Safe sync order
+1. Inspect both statuses, indexes, worktrees and previous port ledgers. Freeze
+   explicit source ranges, including merges. Checkpoint only when authorized.
+2. Work in isolated target worktrees. Preserve staged work with explicit
+   snapshots; do not use repository-global stashes or overwrite unrelated work.
+3. Review 25 source commits per batch unless the user changes the boundary.
+   Account for every commit and each partial disposition: ported, already
+   adopted, adapted or skipped, with reasons and source references.
+4. Port coherent implementation/test/caller units. Retain newer destination
+   fixes, intentional policy and supported functionality. Do not merge an entire
+   divergent repository, replay obsolete layouts or assume chronological newness
+   makes one implementation authoritative.
+5. Run canonical formatting/lint, affected tests and exact byte/type/mode
+   comparisons. Record exclusions, test limits and remaining differences.
+6. Stage explicit owned paths, present the diff and ledger, then stop for user
+   approval. A request to combine batches is not permission to commit them.
+7. Commit only approved units with signing enabled. Reverse-port approved shared
+   adaptations as needed; finish with the exhaustive shared-surface audit.
+8. Integrate into main only with approval and a clean, verified target. Preserve
+   both repositories' history; do not reset, force-push or delete unrelated
+   work.
 
-1. Reconcile the receiving side (`git fetch`, then `git merge --ff-only` while
-   the tree is clean).
-2. Land shared changes on the canonical side.
-3. Fast-forward the cross-remote.
-4. Re-apply the divergent surfaces on the side that owns them: `nix` keeps MIT
-   and the open framing; `z` keeps the closed surfaces.
-5. Verify the shared set still diffs clean (for example `git diff --no-index` on
-   the shared files) and the divergent files remain untouched.
-
-Do not push either remote without explicit user confirmation.
+No push, publication, live probe or deployment is implicit in a port or commit
+request. Follow the active task's narrower restrictions and approval gates.
