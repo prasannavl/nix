@@ -70,6 +70,8 @@ in {
       '';
     };
 
+    mcp.enable = lib.mkEnableOption "MCP support in Pi Web" // {default = true;};
+
     environmentFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
@@ -119,8 +121,8 @@ in {
             "HOME=${userHome}"
             "PI_WEB_NO_OPEN=1"
             "PI_WEB_SKIP_VERSION_CHECK=1"
-            "PI_WEB_DISABLE_MCP=1"
           ]
+          ++ lib.optional (!cfg.mcp.enable) "PI_WEB_DISABLE_MCP=1"
           ++ lib.optional (cfg.allowedHosts != []) "PI_WEB_ALLOWED_HOSTS=${lib.concatStringsSep "," cfg.allowedHosts}";
         EnvironmentFile = lib.mkIf (cfg.environmentFile != null) cfg.environmentFile;
         ExecStart = "${lib.getExe cfg.package} --no-open --hostname ${effectiveBindAddress} --port ${toString cfg.port}";
