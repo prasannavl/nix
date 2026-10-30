@@ -180,6 +180,7 @@ in
     lib-openssh = import ./openssh.nix {inherit pkgs;};
     lib-ollama-helper = ollamaTests.helper;
     lib-ollama-module = ollamaTests.module;
+    lib-pi-updater = import ../ext/pi/tests {inherit pkgs;};
     lib-podman-image-updater = podmanImageUpdaterTest;
     lib-prism-llama-cpp-updater = prismLlamaCppUpdaterTest;
     lib-service-module = serviceModuleTest;

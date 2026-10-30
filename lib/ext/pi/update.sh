@@ -35,35 +35,8 @@ init_vars() {
 	STAGING_DIR=""
 	WORKING_SOURCES=""
 	SOURCES_JSON=""
-	ALL_PACKAGES=(
-		pi-models-discovery
-		pi-session-manager
-		pi-subagents
-		pi-tps
-		pi-web
-		pi-diff
-		pi-mcp-adapter
-		pi-patty-bg-tasks
-		pi-usage
-		pi-tool
-		pi-goal
-		pi-wait
-		pi-loop
-		pi-until
-		pi-notify
-		pi-openai-toolkit
-		pi-total-recall
-		rpiv-voice
-		rpiv-todo
-		rpiv-btw
-		rpiv-advisor
-		pi-stamp
-		pi-anthropic-auth
-		pi-tool-manager
-	)
+	ALL_PACKAGES=()
 	REQUESTED_PACKAGES=()
-	DEP_NAMES=()
-	DEP_RANGES=()
 }
 
 parse_args() {
@@ -194,6 +167,8 @@ report_package() {
 prefetch_unpack_hash() {
 	local url="$1"
 
+	[[ "$url" == https://* ]] || die "Expected HTTPS source URL"
+
 	nix store prefetch-file --json --hash-type sha256 --unpack "$url" |
 		jq -er .hash
 }
@@ -248,20 +223,21 @@ render_sources() {
 
 	echo "{"
 	for package in "${ALL_PACKAGES[@]}"; do
-		echo "  ${package} = {"
+		printf '  %s = {\n' "$(jq -nr --arg value "$package" '$value | tojson | gsub("\\$\\{"; "\\${")')"
 		for field in "${fields[@]}"; do
-			value="$(jq -c --arg package "$package" --arg field "$field" '.[$package][$field] // empty' "$WORKING_SOURCES")"
+			value="$(jq -r --arg package "$package" --arg field "$field" '.[$package][$field] // empty | tojson | gsub("\\$\\{"; "\\${")' "$WORKING_SOURCES")"
 			[[ -n "$value" ]] && printf '    %s = %s;\n' "$field" "$value"
 		done
-		if jq -e --arg package "$package" '.[$package].deps | length > 0' "$WORKING_SOURCES" >/dev/null; then
+		if jq -e --arg package "$package" '.[$package] | has("deps")' "$WORKING_SOURCES" >/dev/null; then
 			echo "    deps = {"
 			jq -r --arg package "$package" '
+				def nix_string: tojson | gsub("\\$\\{"; "\\${");
 				.[$package].deps | to_entries | sort_by(.key)[]
-				| "      \(.key | tojson) = {\n"
-				  + "        kind = \(.value.kind | tojson);\n"
-				  + "        range = \(.value.range | tojson);\n"
-				  + "        version = \(.value.version | tojson);\n"
-				  + "        srcHash = \(.value.srcHash | tojson);\n"
+				| "      \(.key | nix_string) = {\n"
+				  + "        kind = \(.value.kind | nix_string);\n"
+				  + "        range = \(.value.range | nix_string);\n"
+				  + "        version = \(.value.version | nix_string);\n"
+				  + "        srcHash = \(.value.srcHash | nix_string);\n"
 				  + "      };"
 			' "$WORKING_SOURCES"
 			echo "    };"
@@ -310,7 +286,11 @@ compute_npm_deps_hash() {
 init_target_platform() {
 	local system
 
-	[[ -n "${TARGET_OS:-}" ]] && return 0
+	TARGET_LIBC="${TARGET_LIBC:-glibc}"
+	if [[ -n "${TARGET_OS:-}" ]]; then
+		[[ -n "${TARGET_CPU:-}" ]] || die "TARGET_OS requires TARGET_CPU"
+		return 0
+	fi
 	system="$(nix eval --impure --raw --expr builtins.currentSystem)"
 	TARGET_CPU="${system%%-*}"
 	TARGET_OS="${system#*-}"
@@ -323,7 +303,9 @@ init_target_platform() {
 # Pi supplies these modules to every extension, so they are never pinned.
 is_host_module() {
 	case "$1" in
-	@earendil-works/* | @mariozechner/* | typebox | @sinclair/typebox) return 0 ;;
+	@earendil-works/pi-ai | @earendil-works/pi-agent-core | @earendil-works/pi-coding-agent | @earendil-works/pi-tui | \
+		@mariozechner/pi-ai | @mariozechner/pi-agent-core | @mariozechner/pi-coding-agent | @mariozechner/pi-tui | \
+		typebox | @sinclair/typebox) return 0 ;;
 	*) return 1 ;;
 	esac
 }
@@ -338,40 +320,70 @@ resolve_range_version() {
 		jq -er 'if type == "array" then last else . end'
 }
 
-# Optional dependencies only arrive when they match the build platform. Most
-# native packages declare os/cpu; the sherpa-onnx-*/decibri-* prebuilds do not,
-# so fall back to the platform tokens in their names.
+# Honor npm allow/deny lists; infer missing native-platform metadata from names.
 dep_supports_platform() {
-	local name="$1" manifest="$2"
-	local os cpu
+	local name="$1" manifest="$2" os cpu
 
-	read -r os cpu < <(jq -r '
-		def as_list: if type == "array" then join(",") elif type == "string" then . else "" end;
-		"\(.os // [] | as_list) \(.cpu // [] | as_list)"
-	' <<<"$manifest")
-	if [[ -n "$os" && ",${os}," != *",${TARGET_OS},"* ]]; then return 1; fi
-	if [[ -n "$cpu" && ",${cpu}," != *",${TARGET_CPU},"* ]]; then return 1; fi
-	if [[ "$name" =~ -(win32|win|darwin|android|freebsd|ia32|arm|arm64|musl|x32)(-|$) ]]; then
-		return 1
+	jq -e --arg os "$TARGET_OS" --arg cpu "$TARGET_CPU" --arg libc "${TARGET_LIBC:-glibc}" '
+		def supports($target):
+			(if type == "string" then [.] else . end) as $values
+			| ($values | map(select(startswith("!") | not))) as $positive
+			| ($values | index("!" + $target)) == null
+			and (($positive | length) == 0 or ($positive | index($target)) != null
+				or ($positive | index("any")) != null);
+		(.os // [] | supports($os)) and (.cpu // [] | supports($cpu))
+		and (.libc // [] | supports($libc))
+	' <<<"$manifest" >/dev/null || return 1
+	if jq -e '(.os // [] | length) == 0' <<<"$manifest" >/dev/null &&
+		[[ "$name" =~ -(linux|win32|win|darwin|android|freebsd)(-|$) ]]; then
+		os="${BASH_REMATCH[1]}"
+		[[ "$os" != win ]] || os=win32
+		[[ "$os" == "$TARGET_OS" ]] || return 1
+	fi
+	if jq -e '(.cpu // [] | length) == 0' <<<"$manifest" >/dev/null &&
+		[[ "$name" =~ -(x86_64|aarch64|arm64|x64|ia32|x32|arm)(-|$) ]]; then
+		cpu="${BASH_REMATCH[1]}"
+		case "$cpu" in
+		x86_64) cpu=x64 ;;
+		aarch64) cpu=arm64 ;;
+		x32) cpu=ia32 ;;
+		esac
+		[[ "$cpu" == "$TARGET_CPU" ]] || return 1
+	fi
+	if [[ "$TARGET_OS" == linux ]] && jq -e '(.libc // [] | length) == 0' <<<"$manifest" >/dev/null; then
+		if [[ "$name" =~ -musl(-|$) && "${TARGET_LIBC:-glibc}" != musl ]]; then return 1; fi
+		if [[ "$name" =~ -gnu(-|$) && "${TARGET_LIBC:-glibc}" != glibc ]]; then return 1; fi
 	fi
 	return 0
 }
 
 # Queue helpers append to DEP_NAMES/DEP_RANGES, read by resolve_deps.
 enqueue_dependencies() {
-	local manifest="$1" name range
+	local manifest="$1" name range entries
 
+	entries="$(jq -r '
+		(.optionalDependencies // {}) as $optional
+		| (.dependencies // {}) | to_entries[] | .key as $name
+		| select($optional | has($name) | not)
+		| if (.value | type) != "string" then error("invalid dependency range")
+		  else [.key, .value] | @tsv end
+	' <<<"$manifest")" || die "Invalid dependency metadata"
 	while IFS=$'\t' read -r name range; do
 		[[ -n "$name" ]] || continue
 		is_host_module "$name" && continue
 		DEP_NAMES+=("$name")
 		DEP_RANGES+=("$range")
-	done < <(jq -r '(.dependencies // {}) | to_entries[] | "\(.key)\t\(.value)"' <<<"$manifest")
+	done <<<"$entries"
 }
 
 enqueue_optional_dependencies() {
-	local manifest="$1" name range resolved candidate
+	local manifest="$1" name range resolved candidate entries
 
+	entries="$(jq -r '
+		(.optionalDependencies // {}) | to_entries[]
+		| if (.value | type) != "string" then error("invalid optional dependency range")
+		  else [.key, .value] | @tsv end
+	' <<<"$manifest")" || die "Invalid optional dependency metadata"
 	while IFS=$'\t' read -r name range; do
 		[[ -n "$name" ]] || continue
 		is_host_module "$name" && continue
@@ -381,7 +393,7 @@ enqueue_optional_dependencies() {
 		dep_supports_platform "$name" "$candidate" || continue
 		DEP_NAMES+=("$name")
 		DEP_RANGES+=("$range")
-	done < <(jq -r '(.optionalDependencies // {}) | to_entries[] | "\(.key)\t\(.value)"' <<<"$manifest")
+	done <<<"$entries"
 }
 
 # Walk the published dependency graph breadth-first and pin every runtime
@@ -391,6 +403,7 @@ resolve_deps() {
 	local package="$1" version="$2"
 	local registry_name deps_json manifest name range resolved previous tarball hash index=0
 	local -A seen=()
+	local -a DEP_NAMES=() DEP_RANGES=()
 
 	init_target_platform
 	registry_name="$(jq -er --arg package "$package" '.[$package].package' <<<"$SOURCES_JSON")"
@@ -420,12 +433,13 @@ resolve_deps() {
 			die "No published ${name} satisfies ${range} (required by ${package})"
 		seen[$name]="$resolved"
 
-		manifest="$(npm_manifest "${name}@${resolved}")"
-		tarball="$(jq -er '.dist.tarball' <<<"$manifest")"
-		hash="$(prefetch_unpack_hash "$tarball")"
+		manifest="$(npm_manifest "${name}@${resolved}")" || die "Could not read npm metadata for ${name}@${resolved}"
+		tarball="$(jq -er '.dist.tarball | select(type == "string" and length > 0)' <<<"$manifest")" || die "Missing tarball for ${name}@${resolved}"
+		hash="$(prefetch_unpack_hash "$tarball")" || die "Could not hash ${name}@${resolved}"
+		[[ -n "$hash" ]] || die "Empty hash for ${name}@${resolved}"
 		jq --arg name "$name" --arg range "$range" --arg version "$resolved" --arg srcHash "$hash" \
 			'.[$name] = {kind: "npm-dep", range: $range, version: $version, srcHash: $srcHash}' \
-			"$deps_json" >"${deps_json}.next"
+			"$deps_json" >"${deps_json}.next" || die "Could not record ${name}"
 		mv "${deps_json}.next" "$deps_json"
 
 		enqueue_dependencies "$manifest"
@@ -453,7 +467,7 @@ set_deps_record() {
 update_package() {
 	local package="$1"
 	local metadata current version rev="" src_hash="" release_hash="" npm_deps_hash=""
-	local owner repo tarball
+	local owner repo tarball deps_file
 
 	metadata="$(resolve_metadata "$package")"
 	current="$(current_version "$package")"
@@ -463,34 +477,26 @@ update_package() {
 		return
 	fi
 
-	case "$package" in
-	pi-models-discovery | pi-tps)
+	if jq -e --arg package "$package" '.[$package] | has("rev")' <<<"$SOURCES_JSON" >/dev/null; then
 		rev="$(jq -er '.gitHead' <<<"$metadata")"
 		read -r owner repo <<<"$(github_repo "$package")"
 		src_hash="$(prefetch_unpack_hash "https://github.com/${owner}/${repo}/archive/${rev}.tar.gz")"
-		;;
-	pi-session-manager | pi-subagents | pi-patty-bg-tasks | pi-usage | pi-tool | pi-goal | pi-wait | pi-loop | pi-until | pi-notify | pi-openai-toolkit | pi-total-recall | rpiv-voice | rpiv-todo | rpiv-btw | rpiv-advisor | pi-stamp | pi-anthropic-auth | pi-tool-manager)
+	elif jq -e --arg package "$package" '.[$package] | has("srcHash")' <<<"$SOURCES_JSON" >/dev/null; then
 		tarball="$(jq -er '.dist.tarball' <<<"$metadata")"
 		src_hash="$(prefetch_unpack_hash "$tarball")"
-		;;
-	pi-web | pi-mcp-adapter)
-		tarball="$(jq -er '.dist.tarball' <<<"$metadata")"
-		src_hash="$(prefetch_unpack_hash "$tarball")"
+	fi
+	if jq -e --arg package "$package" '.[$package] | has("releaseHash")' <<<"$SOURCES_JSON" >/dev/null; then
 		read -r owner repo <<<"$(github_repo "$package")"
 		release_hash="$(prefetch_unpack_hash "https://github.com/${owner}/${repo}/archive/refs/tags/v${version}.tar.gz")"
-		;;
-	pi-diff)
-		read -r owner repo <<<"$(github_repo "$package")"
-		release_hash="$(prefetch_unpack_hash "https://github.com/${owner}/${repo}/archive/refs/tags/v${version}.tar.gz")"
-		;;
-	esac
+	fi
 
 	set_source_record "$package" "$version" "$rev" "$src_hash" "$release_hash" "$npm_deps_hash"
-	if [[ "$package" == "pi-web" || "$package" == "pi-diff" || "$package" == "pi-mcp-adapter" ]]; then
+	if jq -e --arg package "$package" '.[$package] | has("npmDepsHash")' <<<"$SOURCES_JSON" >/dev/null; then
 		compute_npm_deps_hash "$package"
 	fi
 	if [[ "$(deps_resolver "$package")" == "registry" ]]; then
-		set_deps_record "$package" "$(resolve_deps "$package" "$version")"
+		deps_file="$(resolve_deps "$package" "$version")"
+		set_deps_record "$package" "$deps_file"
 	fi
 	build_package "$package"
 	CHANGED=1
@@ -548,11 +554,13 @@ ensure_runtime_shell() {
 main() {
 	local package
 
+	shopt -s inherit_errexit
 	ensure_runtime_shell "$@"
 	init_vars
 	parse_args "$@"
-	validate_options
 	SOURCES_JSON="$(nix eval --json --file "$SOURCES_FILE")"
+	mapfile -t ALL_PACKAGES < <(jq -r 'keys[]' <<<"$SOURCES_JSON")
+	validate_options
 	init_runtime
 	trap cleanup EXIT
 
