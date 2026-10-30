@@ -1,11 +1,16 @@
 {inputs, ...}: {
   imports = [inputs.dotlink.nixosModules.default];
 
+  # Launch directory is the access root for relative grants; keep it present
+  # even before the first checkout exists.
+  systemd.tmpfiles.rules = [
+    "d /home/pvl/spaces/abird 0755 pvl pvl -"
+  ];
+
   services.dotlink = {
     enable = true;
     user = "pvl";
-    # Source checkout root on pvl-x2; created so WorkingDirectory exists.
-    workingDirectory = "/home/pvl/src/";
+    workingDirectory = "/home/pvl/spaces/abird/";
     logging.verbosity = "tools";
 
     # Host integrations for Bubblewrap shell tools; maps to --allow-* flags.
@@ -16,8 +21,8 @@
       nixConfig = true;
       gitConfig = true;
       sshAgent = true;
-      # /dev/kvm plus the AMD (Strix Halo) GPU devices/driver resources.
-      # pvl-x2 is AMD-only, so there is no NVIDIA grant.
+      # /dev/kvm (AMD-V) plus the AMD iGPU devices/driver resources. This host
+      # has no NVIDIA device class.
       kvm = true;
       gpu = ["amd"];
     };
@@ -41,9 +46,4 @@
       "yarn" = "rw";
     };
   };
-
-  # The launch directory is not optional for systemd; create it on activation.
-  systemd.tmpfiles.rules = [
-    "d /home/pvl/src 0755 pvl pvl -"
-  ];
 }

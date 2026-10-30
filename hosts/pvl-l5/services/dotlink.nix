@@ -1,6 +1,12 @@
 {inputs, ...}: {
   imports = [inputs.dotlink.nixosModules.default];
 
+  # Launch directory is the access root for relative grants; keep it present
+  # even before the first checkout exists.
+  systemd.tmpfiles.rules = [
+    "d /home/pvl/spaces/abird 0755 pvl pvl -"
+  ];
+
   services.dotlink = {
     enable = true;
     user = "pvl";
