@@ -258,6 +258,22 @@ let
     src = fixtureRoot;
     pname = "fallback-test";
   };
+  gitLockArgs = {
+    pkgs = fakePkgs;
+    src = ./fixtures/git-lock;
+    pname = "git-lock-fixture";
+  };
+  filteredGitLockPackage =
+    helper.mkRustDerivation (gitLockArgs
+      // {pkgs = builtins.removeAttrs fakePkgs ["craneLib"];});
+  filteredCraneGitLock = helper.mkRustDerivation gitLockArgs;
+  filteredIsolatedGitLock = helper.mkCargoWorkspacePackage gitLockArgs;
+  filteredTrunkGitLock = helper.mkTrunkProject gitLockArgs;
+  originalGitLock = builtins.readFile (gitLockArgs.src + "/Cargo.lock");
+  explicitGitLock =
+    helper.mkRustDerivation (gitLockArgs
+      // {cargoLock.lockFileContents = originalGitLock;});
+  filteredGitLock = filteredGitLockPackage.cargoLock.lockFileContents;
   results = {
     unboundResolverFailsClearly = fails ((module {}).toolchainFor null);
     defaultUnchanged = resolver.craneLibFor null == baseLibrary && resolver.craneLibFor {} == baseLibrary;
@@ -523,6 +539,19 @@ let
         buildAttrs.cargoDeps = toolB;
       }).outPath;
     defaultWithoutCrane = fallbackPackage.outPath == "/nix/store/00000000000000000000000000000000-fallback";
+    noPolicyPreservesOriginalLock = fallbackPackage.cargoLock.lockFileContents == builtins.readFile (fixtureRoot + "/Cargo.lock");
+    filteredFallbackInstallsVendorLock = (filteredGitLockPackage.rustPlatformLockfile or null) == filteredGitLock;
+    filteredCranePackageAndVendorAgree = filteredCraneGitLock.cargoLockContents == filteredGitLock && filteredCraneGitLock.cargoVendorDir.cargoLockContents == filteredGitLock;
+    filteredIsolatedSourceAndVendorAgree = filteredIsolatedGitLock.cargoLock.lockFileContents == filteredGitLock && (filteredIsolatedGitLock.rustPlatformLockfile or null) == filteredGitLock;
+    filteredTrunkPackageAndVendorAgree = filteredTrunkGitLock.cargoLockContents == filteredGitLock && filteredTrunkGitLock.cargoVendorDir.cargoLockContents == filteredGitLock;
+    explicitLockOverridesSidecar = explicitGitLock.cargoLockContents == originalGitLock && explicitGitLock.cargoVendorDir.cargoLockContents == originalGitLock;
+    privateGitSourceIsReplacedForNix = let
+      contents = filteredGitLock;
+      source = "git+https://example.invalid/private?rev=012345#012345";
+    in
+      builtins.replaceStrings [source] [""] contents
+      == contents
+      && builtins.match ".*private-kernel.*" (builtins.replaceStrings ["\n"] [" "] contents) != null;
   };
 in
   assert builtins.all (name:

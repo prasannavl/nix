@@ -1,0 +1,10 @@
+version = 4
+
+[[package]]
+name = "git-lock-fixture"
+version = "0.1.0"
+
+[[package]]
+name = "private-kernel"
+version = "1.2.3"
+source = "git+https://example.invalid/private?rev=012345#012345"

@@ -513,6 +513,23 @@
       preBuild = joinLines (map (dep: "inheritCargoArtifacts ${dep}") (builtins.tail deps));
     };
 
+  cargoLockContentsFor = src: let
+    original = builtins.readFile (src + "/Cargo.lock");
+    policyPath = src + "/Cargo.lock.nix";
+    removedSources =
+      if builtins.isPath src && builtins.pathExists policyPath
+      then import policyPath
+      else [];
+    removeSource = contents: source: let
+      line = "source = \"${source}\"\n";
+      replaced = builtins.replaceStrings [line] [""] contents;
+    in
+      if replaced != contents
+      then replaced
+      else throw "Cargo.lock.nix source is absent from Cargo.lock: ${source}";
+  in
+    builtins.foldl' removeSource original removedSources;
+
   # importCargoLock vendors the supplied lock but does not install it in the
   # source tree. Keep explicit lock overrides coherent with cargoSetupHook's
   # comparison, after caller patches and before the setup hook. Unchanged locks
@@ -575,7 +592,7 @@
     # would realise it during evaluation (IFD); Crane can consume its lockfile
     # from the source tree inside the build instead.
     else if builtins.isPath src && builtins.pathExists (src + "/Cargo.lock")
-    then {cargoLockContents = builtins.readFile (src + "/Cargo.lock");}
+    then {cargoLockContents = cargoLockContentsFor src;}
     else {};
 
   cargoWorkspacePrePatch = {
@@ -961,10 +978,10 @@ in rec {
       resolvedCargoLock =
         if cargoLock != null
         then cargoLock
-        else {lockFileContents = builtins.readFile (src + "/Cargo.lock");};
+        else {lockFileContents = cargoLockContentsFor src;};
       resolvedCraneCargoLockAttrs =
         if cargoLock == null
-        then {cargoLockContents = builtins.readFile (src + "/Cargo.lock");}
+        then {cargoLockContents = cargoLockContentsFor src;}
         else if builtins.isAttrs cargoLock && builtins.hasAttr "lockFileContents" cargoLock
         then {cargoLockContents = cargoLock.lockFileContents;}
         else {cargoLock = cargoLock;};
@@ -1282,7 +1299,7 @@ in rec {
     resolvedCargoLock =
       if cargoLock != null
       then cargoLock
-      else {lockFileContents = builtins.readFile (src + "/Cargo.lock");};
+      else {lockFileContents = cargoLockContentsFor src;};
     buildArgs = builtins.removeAttrs args [
       "pkgs"
       "build"
@@ -1540,10 +1557,10 @@ in rec {
         resolvedCargoLock =
           if cargoLock != null
           then cargoLock
-          else {lockFileContents = builtins.readFile (src + "/Cargo.lock");};
+          else {lockFileContents = cargoLockContentsFor src;};
         resolvedCraneCargoLockAttrs =
           if cargoLock == null
-          then {cargoLockContents = builtins.readFile (src + "/Cargo.lock");}
+          then {cargoLockContents = cargoLockContentsFor src;}
           else if builtins.isAttrs cargoLock && builtins.hasAttr "lockFileContents" cargoLock
           then {cargoLockContents = cargoLock.lockFileContents;}
           else {cargoLock = cargoLock;};
