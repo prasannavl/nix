@@ -109,14 +109,14 @@
       ];
     # Nix 2.34 resolves symbolic output checks (e.g. libv8's
     # `disallowedReferences = [ "out" ... ]`) against only the outputs it
-    # realizes in the current build. When the builder store holds a partial
-    # output set for this out-of-cache Node pin -- GC on pvl-x2 can retain
-    # `out` while collecting `libv8`/`dev` -- rebuilding the missing outputs
+    # realizes in the current build. When a builder store holds a partial
+    # output set for this out-of-cache Node pin -- GC can retain `out` while
+    # collecting libv8/dev/npm/corepack -- rebuilding the missing outputs
     # aborts with "output name 'out' ... not a valid output of this
     # derivation", even though the derivation is correct. Drop the
     # cross-output reference checks for this pin so partial store state cannot
-    # wedge the fleet build. The build script is unchanged, so output contents
-    # are unaffected.
+    # wedge a build. The build script is unchanged, so output contents are
+    # unaffected.
     outputChecks = {};
   });
   nodejs = buildEnv {
