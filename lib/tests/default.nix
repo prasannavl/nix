@@ -169,6 +169,7 @@ in
     lib-gcp-vms-firewall = gcpVmsFirewallTest;
     lib-host-network-qos-helper = hostNetworkQosTests.helper;
     lib-host-network-qos-module = hostNetworkQosTests.module;
+    lib-kanidm-cli-metadata = import ../../pkgs/ext/kanidm-server/tests/cli.nix {inherit pkgs;};
     lib-kanidm-helper = kanidmTests.helper;
     lib-kanidm-normalization = kanidmTests.normalization;
     lib-llama-router-helper = llamaRouterTests.helper;
