@@ -140,6 +140,12 @@ to restart every dependent stack when its implementation changes.
   per-user managed target, run `podman system migrate`, then queue the target to
   start after the reload job exits. Always queue recovery after a failed stop or
   migration attempt.
+- A user service that invokes the same rootless Podman instance must not add a
+  private mount namespace through directives such as `ReadWritePaths`. Podman
+  cannot re-exec into its existing shared rootless user namespace from that
+  filesystem namespace. Create external private data roots during system
+  activation, protect them with ownership and mode, and keep sensitive roots
+  inaccessible to separate backup or maintenance units instead.
 - Keep ordinary service restart and drain stamps independent. Compose source,
   images, secrets, environment, and service-unit changes continue to restart
   only the affected managed services.
