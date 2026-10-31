@@ -12,8 +12,12 @@
   Markdown with the repo formatter before concluding the task.
 - Acceptable ways to do that are:
   - `deno fmt <paths...>` for targeted Markdown edits.
-  - `nix fmt <paths...>` or repo-standard fix flows when broader formatting is
-    already being run.
+  - `nix fmt` for the repository, or `nix fmt -- --project <package>` for a
+    package. The wrapper does not accept positional file paths.
+
+Plan events follow ordinary Markdown formatting and linting. Append-only means
+preserve historical content and sequence; it does not require preserving raw
+whitespace against the repository formatter.
 
 ## Lint interaction
 
@@ -28,5 +32,5 @@
 - Keep headings, lists, and fenced code blocks in formatter-stable form.
 - Prefer concise durable prose in `.agents/docs` notes and playbooks; avoid
   conversational filler.
-- When updating `.agents/docs`, keep `.agents/docs/README.md` in sync with file
-  adds, removals, renames, or moves.
+- Discover relevant `.agents/docs` subtrees directly; no index file is
+  maintained.

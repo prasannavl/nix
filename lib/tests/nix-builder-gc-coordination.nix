@@ -1,9 +1,6 @@
 {pkgs}: let
   lib = pkgs.lib;
   lockPath = "/build/abird-nix-store-gc-test.lock";
-  fakeAgent = pkgs.writeShellScriptBin "abird-host-agent" ''
-    exit 0
-  '';
   fakeGc = pkgs.writeShellScript "fake-nix-collect-garbage" ''
     printf '%s\n' "$@" >>/build/abird-nix-store-gc-test.args
   '';
@@ -11,35 +8,22 @@
     inherit lib lockPath pkgs;
     nixCollectGarbageProgram = fakeGc;
   };
-  evalConfig = import (pkgs.path + "/nixos/lib/eval-config.nix") {
-    system = pkgs.stdenv.hostPlatform.system;
-    inherit pkgs;
-    modules = [
-      ../services/abird-host-agent
-      ../services/nix-builder-gc-coordination
-      {
-        networking.hostName = "builder-test";
-        nix.gc = {
-          automatic = true;
-          options = "--delete-older-than 14d";
-        };
-        services = {
-          abird-host-agent = {
-            enable = true;
-            package = fakeAgent;
-          };
-          nix-builder-gc-coordination.enable = true;
-        };
-      }
-    ];
+  evalConfig = import ./fixtures/nix-builder-gc-coordination.nix {
+    pkgs = pkgs;
+    settings = {
+      max-jobs = 3;
+      cores = 2;
+      http-connections = 5;
+    };
   };
   config = evalConfig.config;
   guardedGc = config.services.abird-host-agent.nixCollectGarbageProgram;
   configuredAgent = builtins.head (lib.splitString " " config.systemd.services.abird-host-agent-jobs.serviceConfig.ExecStart);
 in
   assert config.nix.settings.min-free == 0;
-  assert config.nix.settings.max-jobs == 16;
-  assert config.nix.settings.http-connections == 16;
+  assert config.nix.settings.max-jobs == 3;
+  assert config.nix.settings.cores == 2;
+  assert config.nix.settings.http-connections == 5;
   assert !(lib.any (package: lib.hasInfix "abird-nix-build-lease" package.name) config.environment.systemPackages);
   assert !(builtins.any (lib.hasInfix "abird-nix-store-gc.lock") config.systemd.tmpfiles.rules);
   assert lib.hasInfix "flock --exclusive 9" config.systemd.services.nix-gc.script;

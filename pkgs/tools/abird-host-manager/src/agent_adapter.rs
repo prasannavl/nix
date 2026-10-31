@@ -6040,6 +6040,7 @@ mod tests {
     fn deferred_job_polling_survives_a_transient_transport_drop() {
         let temp = tempfile::tempdir().unwrap();
         let marker = temp.path().join("dropped");
+        let submitted = temp.path().join("submitted");
         let ssh = temp.path().join("ssh");
         write_executable(
             &ssh,
@@ -6050,9 +6051,11 @@ case "$*" in
     printf '%s\n' '{{"ok":true,"result":{{"spec":{{"schema_version":1,"job_id":"job-1"}}}}}}'
     ;;
   *"'job' 'submit'"*)
+    cat > '{}'
     printf '%s\n' '{{"ok":true,"result":{{"job":{{"status":"pending"}}}}}}'
     ;;
   *"'job' 'status'"*)
+    [ -e '{}' ] || exit 1
     if [ ! -e '{}' ]; then
       : > '{}'
       exit 255
@@ -6062,6 +6065,8 @@ case "$*" in
   *) exit 2 ;;
 esac
 "#,
+                submitted.display(),
+                submitted.display(),
                 marker.display(),
                 marker.display()
             ),
@@ -6098,6 +6103,10 @@ esac
         let mut adapter = NativeAdapter::load(&config_path).unwrap();
         adapter.run("hold-source", &mut transaction).unwrap();
         assert!(marker.exists());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(submitted).unwrap()).unwrap(),
+            serde_json::json!({"schema_version": 1, "job_id": "job-1"})
+        );
     }
 
     #[test]

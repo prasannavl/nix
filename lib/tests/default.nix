@@ -168,6 +168,7 @@ in
     lib-excalidash-helper = import ../services/excalidash/tests {inherit pkgs;};
     lib-forgejo-helper = forgejoTests.helper;
     lib-gcp-vms-firewall = gcpVmsFirewallTest;
+    lib-hardware-nvidia = import ./hardware-nvidia.nix {pkgs = pkgs;};
     lib-host-network-qos-helper = hostNetworkQosTests.helper;
     lib-host-network-qos-module = hostNetworkQosTests.module;
     lib-kanidm-cli-metadata = import ../../pkgs/ext/kanidm-server/tests/cli.nix {inherit pkgs;};
@@ -175,7 +176,8 @@ in
     lib-kanidm-normalization = kanidmTests.normalization;
     lib-llama-router-helper = llamaRouterTests.helper;
     lib-llama-router-module = llamaRouterTests.module;
-    lib-lint-events = import ./lint-events.nix {pkgs = pkgs;};
+    lib-lint-markdown = import ./lint-markdown.nix {pkgs = pkgs;};
+    lib-update-helper-repository = import ../../scripts/support/tests {pkgs = pkgs;};
     lib-lint-manifest-temp-cleanup = lintManifestTempCleanupTest;
     lib-lint-no-ifd = lintNoIfdTest;
     lib-model-reconciler-wrapper = modelReconcilerTest;

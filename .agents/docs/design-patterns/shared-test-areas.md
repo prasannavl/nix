@@ -1,174 +1,96 @@
 # Shared Test Areas
 
-Shared `lib/`, `pkgs/`, and `scripts/` test areas stay byte-identical across
-repositories. Test content is therefore split by ownership instead of by area
-alone: generic contract checks stay with their area and stay byte-identical,
-while every repository's own test content consolidates in repository-owned
-identity homes. Like `external-source-units.md`, this document itself is
-byte-tracked across repositories.
+## Generic first
+
+Shared `lib/`, `pkgs/` and `scripts/` test areas carry byte-identical generic
+checks, fixtures and registration across repositories holding that area.
+
+- Generalize reusable behavior before assigning repository ownership. Host names
+  in a synthetic inventory do not make an ordering test repository-specific.
+- Use neutral fixtures and explicit parameters for behavior, failure paths,
+  configuration overrides and package contracts. A generic repository-contract
+  check may verify each repository's wrappers against its own declared inputs;
+  it must not bake in one repository's revisions or package counts.
+- Keep actual host/stack declarations, approved pin snapshots, package
+  membership, local default policy and private acceptance ledgers
+  repository-owned. Move only those assertions, not an entire mixed suite.
+- Preserve every assertion or record its generic replacement. Renaming or moving
+  a suite must not make discovery silently skip it or duplicate inherited tests.
+- This convention does not require transplanting private product test trees into
+  a repository that does not own the product.
 
 ## Layout
 
-- `<area>/tests/default.nix` (Python areas: `<area>/tests/test_<tool>.py`) holds
-  only generic, host-neutral checks. It may not import repository hosts, stacks,
-  configuration composition, or product packages, and it is registered by shared
-  wiring such as `lib/tests/default.nix`. Every repository holding the area must
-  carry the exact same bytes. Shared test trees may carry repo-only identity
-  files beside the shared files (per-stack service files, prefixed sibling
-  modules), but shared files never reference or import them, so the shared bytes
-  and their registration stay identical everywhere.
-- `lib/flake/tests/` holds the flake-lib-level areas only (service moves, phase
-  projections, fabric contracts, service-client endpoints, stack folds,
-  repository configuration, isolated flake wiring). Its generic files are
-  shared; the repository's own flake-level identity content lives in a
-  per-topology identity directory `lib/flake/tests/<topology>/` (`abird/` in
-  Abird, `pvl/` in Pvl - one directory per named topology, so Gap3 flake-level
-  content would live in `gap3/`). The directory's `default.nix` is a pure
-  aggregator importing each area file; area files are named after their generic
-  counterparts (`phase-projection.nix` beside the shared
-  `../phase-projection.nix`), and real-topology fixtures, named-host variants,
-  product wiring assertions, and their check registrations live there.
-- Language-specific synthetic checks and fixtures localize in
-  `lib/flake/<language>/tests/`, registered by the shared flake-check
-  aggregator. Repository product integration remains in
-  `lib/flake/tests/<topology>/`. See
+```text
+<area>/tests/
+  default.nix                 generic registration
+  test_<area>.py              generic Python checks
+  fixtures/                   generic fixtures
+  abird/                      z-owned assertions and fixtures
+    <area>.nix
+    test_<area>.py
+    __init__.py               when needed for unittest discovery
+  pvl/                        nix-owned assertions and fixtures
+    <area>.nix
+    test_<area>.py
+    __init__.py
+```
+
+The repository prefix belongs in a subdirectory, not merely a sibling filename.
+Do not create an identity directory when its contents can be generic.
+
+- Flake-library contracts stay in `lib/flake/tests/`; real repository
+  composition stays in `lib/flake/tests/abird/` or `lib/flake/tests/pvl/`. Their
+  `default.nix` files aggregate owned checks.
+- Language-specific synthetic fixtures stay in `lib/flake/<language>/tests/`;
+  product integration stays repository-owned. See
   [language packaging](language-packaging.md).
-- Service-level identity checks localize with their service: a repo-only
-  per-stack file `<service>/tests/<stack>.nix` sits beside the service's shared
-  synthetic contracts (for example `lib/services/kanidm/tests/gap3.nix` for the
-  real Gap3 OAuth-client fixture), one file per stack, registered through the
-  same repository composition as the topology directories. The service's shared
-  files stay byte-identical and never reference the per-stack files.
-- Identity checks carry the repository prefix (for example `abird-...`), so
-  check output shows ownership; generic checks keep the area's shared name.
-  Repo-only sibling files in shared Python trees carry the repository prefix in
-  their file name (`test_nixbot_pvl.py`); area files inside a topology identity
-  directory are named by their area and per-stack service files by their stack,
-  because the directory already carries the ownership.
+- Service identity checks stay beside their generic area, beneath the repository
+  prefix: `lib/services/kanidm/tests/abird/gap3.nix` imports the real Gap3
+  declaration; `lib/services/kanidm/tests/default.nix` remains generic.
+- Library-wide builder-GC checks use synthetic capacities in
+  `lib/tests/nix-builder-gc-coordination.nix`; actual defaults are asserted
+  under `lib/tests/abird/` and `lib/tests/pvl/`. Production host policy need not
+  move merely to equalize tests.
+- Shared Nixbot ordering and packaging tests use neutral fixtures/contracts.
+  Only the private migration-ledger assertion and its ledger belong under
+  `pkgs/tools/nixbot/tests/abird/`.
+- Reusable Rust/Bash route data belongs inside the Rust package source boundary,
+  with an explicit copy into the Bash sandbox. Generic tests never parse a
+  private migration ledger as their fixture source.
 
-Keeping each identity home where a reader would look - flake-level checks in the
-topology's directory under `lib/flake/tests/`, service-level checks with the
-service - scales without scattering: the shared trees keep a fixed,
-byte-portable file list, identity content sits beside the generic coverage it
-instantiates, and a new stack or topology adds one repo-owned file instead of
-touching any shared file. It also matches reality: identity checks are
-repo-scale integration facts (they import real hosts and stacks), not synthetic
-properties of a single area.
+## Registration and discovery
 
-## Registration
+- Shared registration stays byte-identical and never names repository identity
+  paths. Nix identity checks enter through the repository-owned
+  `lib/flake/repo-checks.nix`, injected by `flake.nix` into shared assembly.
+  Default injection is empty; identity sources must have disjoint check names.
+- Repository composition may register service, library and script identity
+  checks directly or through owned aggregators. Keep each check reachable
+  exactly once.
+- Generic Python discovery may traverse importable repository-prefix packages
+  without naming a repository. Add `__init__.py` where required and verify both
+  discovery and the actual Nix sandbox. Shared non-collected mixins provide
+  helpers without rerunning the generic test class in each identity suite.
+- Check names identify ownership (`abird-...`, `pvl-...`) when assertions are
+  repository-specific; shared checks retain their generic area names.
+- No cross-checkout path, second repository input or credentials are required by
+  a shared test. Cross-repository byte comparison is an external validation
+  gate, not a runtime dependency of either test suite.
 
-Identity homes are imported exactly once each, by the repository's check
-composition file (`lib/flake/repo-checks.nix`: the topology directories, the
-per-stack service files, plus promoted product checks), and reach `checks`
-through injection rather than a bridge: the repository manifest (`flake.nix`)
-passes that composition as a `repoChecksFn` argument to the shared flake
-assembly (`lib/flake/root.nix`, `lib/flake/default.nix`), which merges it into
-`checks` after the generic library and flake tests. Every injected argument is
-defaulted (empty function, empty list, null), so the shared assembly stays
-repository-blind and evaluates without any repository composition: no shared
-file references repository identity content, and a repository without identity
-content simply passes nothing. The same injection carries the rest of the
-repository's composition facts (data-file paths, the input-set input-name table,
-extra common NixOS modules, the default machine profile, and the composed
-repository configuration `repositoryConfig` read from the repository's
-`config/`). The shared flake tests register the generic repository-config
-contract check (`lib/flake/tests/repository-config.nix`) only when that
-composition is supplied, and a repository's own topology assertions for it live
-in its identity directory (`lib/flake/tests/<topology>/config-stacks.nix`).
+Repository-owned flake identity assertions may instantiate the shared assembly
+with their own injected composition. Force products, promotions and generic
+checks only, never that instance's identity checks: doing so would recurse
+through `repo-checks.nix` into the same identity suite.
 
-Shared registration files (`lib/tests/default.nix`, `<area>/tests/default.nix`)
-never reference identity content; generic test files register checks as a
-function of the library alone. Instantiating flake-library wiring inside an
-identity file is expected and cheap: it passes the repository's own
-`repoChecksFn` so its assertions cover the same merge the manifest produces, and
-its assertions force only that instance's attributes, so no shared file's
-evaluation depends on identity content. The instantiation creates an import
-cycle (repo-checks.nix -> identity directory -> flake-isolated area file ->
-repo-checks.nix) that terminates only by laziness: identity asserts may force
-products, promotions, and non-identity checks of the injected instance, never
-the instance's identity checks themselves, which would recurse infinitely.
+## Documentation and maintenance
 
-Repository composition lives in repository-owned territory for a hard reason:
-byte-identical files cannot name per-repository identity paths. A shared test
-file that imported its own repository's identity content would need a different
-import line per repository, permanently diverging and requiring hand adaptation
-at every port - the exact churn this split removes. (Fixed structural paths that
-every repository provides by policy - the `hosts/` tree and the `config/`
-composition root the manifest injects - remain byte-nameable precisely because
-both repositories carry them; identity content is the part that cannot be
-named.) A fixed neutral name referenced from a shared file would keep the bytes
-equal but is a service locator Nix does not have: it silently couples shared
-evaluation to repository-provided content, places a per-repository divergent
-file inside the shared tree, and fails when the file is absent. Indirection can
-only move such divergence around, never reduce it. Manifest injection instead
-conserves divergence and gives it its cheapest home: `flake.nix` is already
-per-repository by nature (its inputs), so declaring repository facts there as
-data costs zero new divergence and keeps the invariant absolute - shared
-`lib/flake` files are byte-portable, and repository facts flow down as defaulted
-arguments. This is also what makes localized per-stack service files safe: since
-registration never flows through the service's shared files, a repo-only file
-can sit beside them without forcing any shared byte or shared evaluation to
-change.
-
-## Documentation rule
-
-Shared test READMEs stay byte-identical: generic contract descriptions only.
-Repository-specific acceptance instructions, internal note references, and
-product proof commands move into the owning identity file's header comments (the
-topology area file, or the per-stack service file) or the repository's own
-documentation, never into a shared README or a shared test file.
-
-## Porting rule
-
-When porting test changes between repositories:
-
-1. Adopt generic test files byte-for-byte.
-2. Adapt only the repository-owned identity homes (the topology identity
-   directory and the per-stack service files), replacing fixtures with the
-   destination repository's own topology, and keep them reachable through the
-   destination's `repo-checks.nix` and manifest wiring.
-3. If a fixture has no destination equivalent, keep the shared synthetic
-   coverage instead of leaving a generic file divergent.
-4. Never move repository-specific content back into a generic file, a shared
-   README, or a shared registration file.
-
-## Worked examples
-
-These are the initial Abird instances of the split; the Pvl analogues follow the
-same rules.
-
-- `lib/flake/tests/service-client-endpoints.nix` (generic endpoint and
-  firewall-source math, shared bytes) versus
-  `lib/flake/tests/abird/service-client-endpoints.nix`'s
-  `abird-service-client-endpoints` (real stack SMTP routing and bounded firewall
-  integration cases).
-- `lib/flake/tests/default.nix` (generic isolated-flake assertions) versus
-  `lib/flake/tests/abird/flake-isolated.nix`'s `abird-flake-isolated` (product
-  package, module, and standalone-module wiring assertions).
-- `lib/flake/tests/phase-projection.nix` and `lib/flake/tests/service-moves.nix`
-  (synthetic generic fixtures, shared bytes) versus
-  `lib/flake/tests/abird/phase-projection.nix`'s `abird-phase-projection-zulip`
-  and `lib/flake/tests/abird/service-moves.nix`'s `abird-service-moves-zulip`
-  (real stack, placement, and zulip move contracts against the repository's
-  actual hosts and stacks).
-- `lib/services/kanidm/tests/default.nix` (synthetic normalization contracts,
-  shared bytes) versus `lib/services/kanidm/tests/gap3.nix`'s
-  `abird-kanidm-gap3-normalization` (real Gap3 host OAuth-client fixture) and
-  its acceptance-proof documentation: the identity check is service-level, so it
-  localizes with the kanidm service's own tests as a per-stack file, beside -
-  never inside - the shared synthetic contracts.
-- `pkgs/tools/nixbot/tests/test_nixbot.py`: synthetic control-plane ordering
-  coverage is generic and byte-shared; named-topology ordering variants belong
-  in the owning repository's identity home or a repo-only sibling module. Shared
-  test mechanics live on the non-collected `NixbotScriptMixin` base, so a
-  sibling subclass inherits the helpers without re-running the shared tests.
-
-The Pvl instances: `lib/flake/tests/pvl/flake-isolated.nix`'s
-`pvl-flake-isolated` (the `cr` app program assertion for Pvl's codex-wrapper
-product, moved out of the shared `tests/default.nix`), the repo-only sibling
-`test_nixbot_pvl.py` (named Pvl topology control-plane ordering, moved out of
-the shared `test_nixbot.py`; the shared unittest discovery picks it up
-automatically), and the kanidm upstream acceptance-proof pointer (moved out of
-the shared kanidm README into the identity directory's header documentation).
-Pvl carries no service-level identity checks yet; if it gains one, it becomes a
-per-stack file under that service's `tests/`.
+- Shared test READMEs describe generic contracts only and stay byte-identical.
+  Real-host acceptance instructions and private proof references belong in the
+  owning prefix subtree or repository documentation.
+- Update active imports, fixture paths and discovery when moving tests.
+  Historical audit/event content is not rewritten to pretend the new layout
+  existed before.
+- Before closing a port, compare generic path presence, bytes and modes, then
+  run generic and repository-owned checks in both repositories. Different
+  identity coverage is legitimate; missing shared coverage is not.

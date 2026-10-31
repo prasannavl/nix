@@ -1,14 +1,14 @@
-# This repository's check composition: the single repo-owned file through which
-# identity checks (topology directories under lib/flake/tests/, per-stack
-# files localized with their services) and product check promotions enter
-# the shared flake library's checks output. Only repository-owned files
-# reference it (the manifest flake.nix and the identity area file
-# lib/flake/tests/pvl/flake-isolated.nix); shared files stay
-# repository-blind and receive this function as an injected argument with an
-# empty default. See .agents/docs/design-patterns/shared-test-areas.md.
+# Repository-owned composition; shared assembly receives this function by injection.
+# Identity checks live under tests/<repository>/ and register exactly once.
 {
   pkgs,
   crane ? null,
   ...
-}:
-import ./tests/pvl {inherit pkgs crane;}
+}: let
+  topologyChecks = import ./tests/pvl {inherit pkgs crane;};
+  policyChecks = {
+    pvl-nix-builder-gc-defaults = import ../tests/pvl/nix-builder-gc-coordination.nix {pkgs = pkgs;};
+  };
+in
+  assert builtins.intersectAttrs topologyChecks policyChecks == {};
+    topologyChecks // policyChecks

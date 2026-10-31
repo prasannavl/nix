@@ -25,6 +25,7 @@
       mkdir -p "$repo/pkgs/tools"
       cp -R ${../.} "$repo/pkgs/tools/nixbot"
       mkdir -p "$repo/pkgs/tools/abird-host-manager/tests/fixtures"
+      cp ${../../abird-host-manager/default.nix} "$repo/pkgs/tools/abird-host-manager/default.nix"
       cp ${../../abird-host-manager/tests/fixtures/named-routes.json} \
         "$repo/pkgs/tools/abird-host-manager/tests/fixtures/named-routes.json"
       cp ${../../../../flake.nix} "$repo/flake.nix"

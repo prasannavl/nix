@@ -5,8 +5,6 @@ includes = ["**/*.nix"]
 [formatter.deno]
 command = "deno"
 options = ["fmt"]
-# Preserve the original bytes of append-only plan events.
-excludes = [".agents/plans/**/events/**"]
 includes = [
   "*.md",
   "**/*.md",
