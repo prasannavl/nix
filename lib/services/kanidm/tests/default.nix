@@ -21,6 +21,8 @@
   app = options:
     kanidm.mkApplyScript {
       url = "https://localhost:18443";
+      # Shape check only; stub CLI avoids forcing the pinned package.
+      kanidmPackage = pkgs.hello;
       state.oauthApps.agent =
         {
           origin = "https://localhost:18443";
