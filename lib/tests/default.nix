@@ -175,6 +175,7 @@ in
     lib-kanidm-normalization = kanidmTests.normalization;
     lib-llama-router-helper = llamaRouterTests.helper;
     lib-llama-router-module = llamaRouterTests.module;
+    lib-lint-events = import ./lint-events.nix {pkgs = pkgs;};
     lib-lint-manifest-temp-cleanup = lintManifestTempCleanupTest;
     lib-lint-no-ifd = lintNoIfdTest;
     lib-model-reconciler-wrapper = modelReconcilerTest;

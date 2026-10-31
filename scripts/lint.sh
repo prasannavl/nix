@@ -305,6 +305,18 @@ collect_root_files() {
 	collect_files "$@" | collect_root_only_files_from
 }
 
+exclude_plan_events() {
+	local path=""
+
+	# Pinned Deno's ignore glob can miss later explicit file arguments.
+	while IFS= read -r -d $'\0' path; do
+		case "${path}" in
+		.agents/plans/events/* | .agents/plans/*/events/*) ;;
+		*) printf '%s\0' "${path}" ;;
+		esac
+	done
+}
+
 ##### Package Paths #####
 
 matches_selected_project() {
@@ -733,7 +745,7 @@ run_lint_action() {
 
 	mapfile -d $'\0' -t nix_files < <(collect_root_files '*.nix')
 	mapfile -d $'\0' -t shell_files < <(collect_root_files '*.sh' '.githooks/*')
-	mapfile -d $'\0' -t deno_files < <(collect_root_files '*.md' '*.json' '*.jsonc')
+	mapfile -d $'\0' -t deno_files < <(collect_root_files '*.md' '*.json' '*.jsonc' | exclude_plan_events)
 	mapfile -d $'\0' -t markdown_files < <(collect_root_files '*.md')
 	mapfile -d $'\0' -t tf_files < <(collect_root_files '*.tf' '*.tfvars')
 
@@ -780,7 +792,7 @@ run_lint_action() {
 			fi
 
 			if [ "${#markdown_files[@]}" -gt 0 ]; then
-				run_step markdownlint-fix "Fixing ${scope} Markdown files" markdownlint-cli2 --fix "${markdown_files[@]}"
+				run_step markdownlint-fix "Fixing ${scope} Markdown files" markdownlint-cli2 --fix "${markdown_files[@]}" '#.agents/plans/**/events/**'
 			fi
 
 			if [ "${#tf_project_dirs[@]}" -gt 0 ]; then
@@ -806,7 +818,7 @@ run_lint_action() {
 		fi
 
 		if [ "${#deno_files[@]}" -gt 0 ]; then
-			run_step deno-fmt-check 'Checking Markdown/JSON formatting drift' deno fmt --check "${deno_files[@]}"
+			run_step deno-fmt-check 'Checking Markdown/JSON formatting drift' deno fmt --check --permit-no-files "${deno_files[@]}"
 		fi
 
 		if [ "${#tf_files[@]}" -gt 0 ]; then
