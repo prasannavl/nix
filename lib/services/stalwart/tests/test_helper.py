@@ -59,9 +59,9 @@ class StalwartHelperTest(unittest.TestCase):
             f"#!{shutil.which('bash')}\n"
             'printf \'%s\\n\' "$*" >>"$TEST_STALWART_SYSTEMCTL_LOG"\n'
             'case "$*" in\n'
-            '  "--user is-active --quiet mock-stalwart.service") exit 0 ;;\n'
-            '  "--user stop mock-stalwart.service") exit 0 ;;\n'
-            '  "--user start mock-stalwart.service") exit 0 ;;\n'
+            '  "--user show mock-stalwart.service --property=ActiveState --value") echo active; exit 0 ;;\n'
+            '  "--user stop mock-stalwart.service mock-stalwart-stage.service") exit 0 ;;\n'
+            '  "--user start mock-stalwart.service mock-stalwart-ready.target") exit "${TEST_STALWART_START_STATUS:-0}" ;;\n'
             "esac\n"
             "exit 64\n",
         )
@@ -82,12 +82,14 @@ class StalwartHelperTest(unittest.TestCase):
                 "STALWART_RECOVERY_URL": "http://127.0.0.1:18081",
                 "STALWART_DOMAIN_ID": "__domain__",
                 "STALWART_DOMAIN_NAME": "abird.ai",
+                "XDG_RUNTIME_DIR": str(self.state_dir),
+                "XDG_STATE_HOME": str(self.work_dir / "xdg-state"),
             }
         )
         env.update(overrides)
         return env
 
-    def run_helper(self, script: str, *, check=True, **env_overrides):
+    def run_helper(self, script: str, *, check=True, stdin=None, **env_overrides):
         prelude = f"""
             set -Eeuo pipefail
             source {self.helper}
@@ -99,6 +101,7 @@ class StalwartHelperTest(unittest.TestCase):
             cwd=self.repo_root,
             env=self.helper_env(**env_overrides),
             text=True,
+            input=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=check,
@@ -110,6 +113,7 @@ class StalwartHelperTest(unittest.TestCase):
         return path
 
     def test_recovery_api_probe_uses_list_object(self):
+        (self.state_dir / "mock-recovery.running").touch()
         self.run_helper(
             "wait_for_recovery_api",
             NOTIFY_SOCKET="/run/systemd/notify",
@@ -172,9 +176,9 @@ class StalwartHelperTest(unittest.TestCase):
 
         self.assertEqual(
             [
-                "--user is-active --quiet mock-stalwart.service",
-                "--user stop mock-stalwart.service",
-                "--user start mock-stalwart.service",
+                "--user show mock-stalwart.service --property=ActiveState --value",
+                "--user stop mock-stalwart.service mock-stalwart-stage.service",
+                "--user start mock-stalwart.service mock-stalwart-ready.target",
             ],
             self.systemctl_log_file.read_text(encoding="utf-8").splitlines(),
         )
@@ -182,6 +186,140 @@ class StalwartHelperTest(unittest.TestCase):
         self.assertIn("--publish 127.0.0.1:28081:8080", runtime_log)
         self.assertNotIn("stop mock-stalwart", runtime_log)
         self.assertNotIn("start mock-stalwart", runtime_log)
+
+    def recovery_script(self, action="true"):
+        for name in ["config", "plan", "token"]:
+            (self.work_dir / name).write_text("{}\n", encoding="utf-8")
+        (self.work_dir / "data").mkdir(exist_ok=True)
+        return f"""
+            stalwart_config_host_path={self.work_dir / 'config'}
+            stalwart_container=mock-stalwart
+            stalwart_data_dir={self.work_dir / 'data'}
+            stalwart_kanidm_ldap_token_host_path={self.work_dir / 'token'}
+            stalwart_plan_container_path=/etc/stalwart/plan.json
+            stalwart_plan_host_path={self.work_dir / 'plan'}
+            with_recovery {action}
+        """
+
+    def test_restart_hook_can_reacquire_apply_lock(self):
+        self._write_executable(
+            self.fake_bin / "systemctl",
+            f"#!{shutil.which('bash')}\n"
+            'case "$2" in\n'
+            ' show) echo active ;;\n'
+            ' stop) test "$4" = mock-stalwart-stage.service ;;\n'
+            ' start) flock -n "$XDG_RUNTIME_DIR/stalwart-apply-mock-stalwart.service.lock" true ;;\n'
+            ' *) exit 64 ;;\n'
+            'esac\n',
+        )
+        self.run_helper("stalwart_service_name=mock-stalwart.service\n" + self.recovery_script())
+
+    def test_failure_restores_service_and_preserves_original_status(self):
+        result = self.run_helper(
+            "stalwart_service_name=mock-stalwart.service\n" + self.recovery_script("bash -c 'exit 42'"),
+            check=False,
+        )
+        self.assertEqual(42, result.returncode)
+        self.assertIn("--user start mock-stalwart.service", self.systemctl_log_file.read_text())
+        self.assertFalse((self.state_dir / "mock-recovery.running").exists())
+        self.assertEqual([], list(self.state_dir.glob("stalwart-recovery-secrets.*")))
+
+    def test_apply_failure_cannot_be_hidden_by_later_reconciliation(self):
+        result = self.run_helper(
+            "stalwart_service_name=mock-stalwart.service\n"
+            "prepare_apply_inputs() { return 0; }\n"
+            + self.recovery_script("apply_plan"),
+            check=False,
+            TEST_STALWART_APPLY_FAILURE="49",
+        )
+        self.assertEqual(49, result.returncode)
+        self.assertIn("--user start mock-stalwart.service", self.systemctl_log_file.read_text())
+        self.assertFalse((self.state_dir / "mock-recovery.running").exists())
+        self.assertFalse((self.work_dir / "xdg-state").exists())
+
+    def test_failed_readiness_fails_recovery(self):
+        result = self.run_helper(
+            "stalwart_service_name=mock-stalwart.service\n" + self.recovery_script(),
+            check=False,
+            TEST_STALWART_START_STATUS="73",
+        )
+        self.assertEqual(1, result.returncode)
+        self.assertIn("failed to restore Stalwart instance", result.stderr)
+
+    def test_original_error_survives_failed_restoration(self):
+        result = self.run_helper(
+            "stalwart_service_name=mock-stalwart.service\n" + self.recovery_script("bash -c 'exit 42'"),
+            check=False,
+            TEST_STALWART_START_STATUS="73",
+        )
+        self.assertEqual(42, result.returncode)
+        self.assertIn("failed to restore Stalwart instance", result.stderr)
+
+    def test_removal_accepts_concurrent_auto_remove(self):
+        self._write_executable(
+            self.fake_bin / "podman",
+            f"#!{shutil.which('bash')}\n"
+            'case "$*" in\n'
+            ' "container exists mock-recovery") exit 0 ;;\n'
+            ' "rm -f --ignore mock-recovery") exit 0 ;;\n'
+            ' "rm -f mock-recovery") exit 1 ;;\n'
+            ' *) exit 64 ;;\n'
+            'esac\n',
+        )
+        self.run_helper("runtime_remove_instance mock-recovery")
+
+    def test_removal_does_not_ignore_runtime_errors(self):
+        self._write_executable(self.fake_bin / "podman", f"#!{shutil.which('bash')}\nexit 125\n")
+        result = self.run_helper("runtime_remove_instance mock-recovery", check=False)
+        self.assertEqual(125, result.returncode)
+
+    def test_automated_cli_does_not_attach_stdin(self):
+        self.run_helper(
+            self.recovery_script("stalwart_cli_for mock-recovery http://127.0.0.1:18081 query Domain"),
+            stdin="unused automation input\n",
+            TEST_STALWART_CAPTURE_STDIN="1",
+        )
+        self.assertEqual("non-interactive", (self.state_dir / "stdin").read_text())
+        self.assertNotIn("--interactive", self.runtime_log_file.read_text())
+
+    def test_public_cli_forwards_stdin(self):
+        self.run_helper(
+            "stalwart_container=mock-stalwart\nstalwart_url=http://127.0.0.1:18081\nstalwart_cli query Domain",
+            stdin="public CLI input\n",
+            TEST_STALWART_CAPTURE_STDIN="1",
+        )
+        self.assertEqual("public CLI input\n", (self.state_dir / "stdin").read_text())
+
+    def test_recovery_cli_preserves_stdin_across_readiness_probe(self):
+        self.run_helper(
+            self.recovery_script().replace("with_recovery true", "recovery_cli query Domain"),
+            stdin="recovery CLI input\n",
+            TEST_STALWART_CAPTURE_STDIN="1",
+        )
+        self.assertEqual("recovery CLI input\n", (self.state_dir / "stdin").read_text())
+        cli_runs = [line for line in self.runtime_log_file.read_text().splitlines() if "--entrypoint" in line]
+        self.assertNotIn("--interactive", cli_runs[0])
+        self.assertIn("--interactive", cli_runs[1])
+
+    def test_startup_never_controls_parent(self):
+        self.run_helper("stalwart_startup=1\nstalwart_service_name=mock-stalwart.service\n" + self.recovery_script())
+        self.assertEqual("", self.systemctl_log_file.read_text())
+
+    def test_recovery_refuses_running_database_owner(self):
+        (self.state_dir / "mock-stalwart.running").touch()
+        result = self.run_helper("stalwart_startup=1\n" + self.recovery_script(), check=False)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("database owner is still running", result.stderr)
+        self.assertFalse((self.state_dir / "recovery-run-attempts").exists())
+
+    def test_recovery_exit_fails_without_api_timeout(self):
+        result = self.run_helper(self.recovery_script(), check=False, TEST_STALWART_RECOVERY_EXITS="1")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("exited before its API became ready", result.stderr)
+        self.assertNotIn("did not become ready after", result.stderr)
+
+    def test_success_releases_locks_before_returning(self):
+        self.run_helper(self.recovery_script() + "\nflock -n \"$XDG_RUNTIME_DIR/stalwart-apply-stalwart-apply.lock\" true\nflock -n \"$XDG_RUNTIME_DIR/stalwart-apply-stalwart-apply.lock.lifecycle\" true")
 
     def test_recovery_retries_transient_podman_engine_failures(self):
         config = self.work_dir / "retry-config.json"

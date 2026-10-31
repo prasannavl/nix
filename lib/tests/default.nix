@@ -201,6 +201,7 @@ in
     lib-profiles-incus-lxc = import ./profiles-incus-lxc.nix {inherit pkgs;};
     lib-stalwart-cli = stalwartTests.cli;
     lib-stalwart-helper = stalwartTests.helper;
+    lib-stalwart-lifecycle = stalwartTests.lifecycle;
     lib-stalwart-provisioning = stalwartTests.provisioning;
   }
   // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isx86_64 {

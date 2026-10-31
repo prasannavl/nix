@@ -12,6 +12,9 @@ def fail(message, status=64):
 def parse_cli_args(args):
     if args[:2] == ["image", "exists"]:
         sys.exit(0)
+    if args[:2] == ["container", "exists"]:
+        state = Path(os.environ["TEST_STALWART_STATE_DIR"]) / (args[2] + ".running")
+        sys.exit(0 if state.exists() else 1)
     if args and args[0] in {"stop", "start", "rm"}:
         return [args[0]]
     if args and args[0] == "inspect":
@@ -139,15 +142,32 @@ def main():
         if attempts <= failures:
             fail("transient podman engine failure", 125)
 
+    if sys.argv[1:2] == ["run"] and "--detach" in sys.argv:
+        name = sys.argv[sys.argv.index("--name") + 1]
+        if not os.environ.get("TEST_STALWART_RECOVERY_EXITS"):
+            (Path(os.environ["TEST_STALWART_STATE_DIR"]) / (name + ".running")).touch()
     cli_args = parse_cli_args(sys.argv[1:])
     command = cli_args[0] if len(cli_args) > 0 else ""
     object_name = cli_args[1] if len(cli_args) > 1 else ""
 
+    if os.environ.get("TEST_STALWART_CAPTURE_STDIN") and command in {"apply", "query"}:
+        value = sys.stdin.read() if "--interactive" in sys.argv else "non-interactive"
+        (Path(os.environ["TEST_STALWART_STATE_DIR"]) / "stdin").write_text(value, encoding="utf-8")
+
+    if command == "apply" and os.environ.get("TEST_STALWART_APPLY_FAILURE"):
+        fail("injected apply failure", int(os.environ["TEST_STALWART_APPLY_FAILURE"]))
+
     if command in {"stop", "start", "rm"}:
+        state = Path(os.environ["TEST_STALWART_STATE_DIR"]) / (sys.argv[-1] + ".running")
+        if command == "start":
+            state.touch()
+        else:
+            state.unlink(missing_ok=True)
         return
 
     if command == "inspect":
-        print("false")
+        state = Path(os.environ["TEST_STALWART_STATE_DIR"]) / (sys.argv[-1] + ".running")
+        print("true" if state.exists() else "false")
         return
 
     log_file = Path(os.environ["TEST_STALWART_LOG"])

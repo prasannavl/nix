@@ -25,6 +25,8 @@
       touch "$out"
     '';
 
+  lifecycle = pkgs.testers.runNixOSTest ./lifecycle.nix;
+
   provisioning = import ./provisioning.nix {
     inherit pkgs mkUserdataProvisioning;
   };
