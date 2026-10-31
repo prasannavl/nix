@@ -199,6 +199,7 @@ in
     lib-abird-host-agent-transfer = import ./abird-host-agent-transfer.nix {inherit pkgs;};
     lib-podman-compose-quadlet-conversion = podmanComposeTests.quadlet-conversion;
     lib-profiles-incus-lxc = import ./profiles-incus-lxc.nix {inherit pkgs;};
+    lib-stalwart-cli = stalwartTests.cli;
     lib-stalwart-helper = stalwartTests.helper;
     lib-stalwart-provisioning = stalwartTests.provisioning;
   }

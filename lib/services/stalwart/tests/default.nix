@@ -2,6 +2,8 @@
   pkgs,
   mkUserdataProvisioning,
 }: {
+  cli = import ./cli.nix {inherit pkgs;};
+
   helper =
     pkgs.runCommand "stalwart-helper-test" {
       nativeBuildInputs = [
