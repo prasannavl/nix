@@ -40,10 +40,10 @@ Full lint workflow details and package-level commands live in
 
 ## How work is planned
 
-Read [.agents/plans/TODO-SPEC.md](.agents/plans/TODO-SPEC.md) for the shared
-checklist vocabulary and [.agents/plans/README.md](.agents/plans/README.md) for
-the full planning model — the queue, work capsules, append-only events, and the
-done/archive lifecycle.
+Start with [.agents/plans/README.md](.agents/plans/README.md) and the current
+[plan queue](.agents/plans/TODO.md). Follow [AGENTS.md](AGENTS.md) for
+repository layout and ownership rules; do not recreate retired planning
+documents.
 
 ## Engineering principles
 
