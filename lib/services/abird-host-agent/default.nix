@@ -280,7 +280,6 @@
         repository_url = nixbotRepository.url;
         repository_path = nixbotRepository.path;
         repository_ssh_key_paths = nixbotRepository.sshIdentityFiles;
-        config_override_path = cfg.nixbotDeploy.configOverride;
         revision =
           if config.system.configurationRevision == null
           then "UNCOMMITTED-CONTROLLER-GENERATION"

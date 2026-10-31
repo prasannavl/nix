@@ -92,20 +92,14 @@ args @ {
         "-o"
         "IdentitiesOnly=no"
       ];
-  managerWrapperArgs =
-    lib.optionals (matchingRepository != null) [
-      "--set-default"
-      "GIT_SSH_COMMAND"
-      matchingRepository.gitSshCommand
-      "--set-default"
-      "ABIRD_HOST_MANAGER_PUBLISH_GIT_SSH_COMMAND"
-      publishGitSshCommand
-    ]
-    ++ lib.optionals (cfg.configOverride != null) [
-      "--set-default"
-      "ABIRD_HOST_MANAGER_CONFIG_OVERRIDE"
-      (toString cfg.configOverride)
-    ];
+  managerWrapperArgs = lib.optionals (matchingRepository != null) [
+    "--set-default"
+    "GIT_SSH_COMMAND"
+    matchingRepository.gitSshCommand
+    "--set-default"
+    "ABIRD_HOST_MANAGER_PUBLISH_GIT_SSH_COMMAND"
+    publishGitSshCommand
+  ];
   managerPackage = pkgs.symlinkJoin {
     name = "abird-host-manager-runtime";
     paths = [cfg.package];
@@ -127,14 +121,11 @@ args @ {
       after = ["network-online.target" "nixbot.service"] ++ lib.optional (repoReadyUnit != null) repoReadyUnit;
       restartTriggers = [manifest];
       path = [pkgs.gitMinimal pkgs.nix];
-      environment =
-        {
-          ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION = "1";
-          HOME = "/var/lib/${cfg.user}";
-        }
-        // lib.optionalAttrs (cfg.configOverride != null) {
-          ABIRD_HOST_MANAGER_CONFIG_OVERRIDE = toString cfg.configOverride;
-        };
+      environment = {
+        ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION = "1";
+        NIXBOT_EXECUTOR_KIND = "managed";
+        HOME = "/var/lib/${cfg.user}";
+      };
       script = ''
         set -eu
         ${lib.getExe' managerPackage "abird-host-manager"} \
@@ -165,6 +156,7 @@ args @ {
       path = [pkgs.gitMinimal pkgs.nix];
       environment = {
         ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION = "1";
+        NIXBOT_EXECUTOR_KIND = "managed";
         HOME = "/var/lib/${cfg.user}";
       };
       script = ''
@@ -232,16 +224,6 @@ in {
       type = lib.types.str;
       default = "${cfg.repository}/hosts/nixbot.nix";
       description = "Repository-derived host-manager inventory.";
-    };
-
-    configOverride = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
-      description = ''
-        Optional controller-local inventory override evaluated on top of
-        configPath for both projected reconciliation units and remotely
-        dispatched controller commands.
-      '';
     };
 
     stateDirectory = lib.mkOption {

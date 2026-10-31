@@ -1,4 +1,4 @@
-//! Shared raw-terminal handling for interactive controls.
+//! Shared terminal-mode and cursor restoration for interactive controls.
 //!
 //! The interactive key reader puts stdin into raw mode and releases it when the
 //! last producer drops. The attributes captured at entry are also published
@@ -8,7 +8,27 @@
 
 use std::io::{self, IsTerminal};
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+
+pub(crate) const HIDE_CURSOR: &str = "\x1b[?25l";
+pub(crate) const SHOW_CURSOR: &str = "\x1b[?25h";
+
+// Published before a frame can hide the cursor; cleared after a visible frame.
+static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn publish_cursor_hidden(hidden: bool) {
+    CURSOR_HIDDEN.store(hidden, Ordering::Release);
+}
+
+fn restore_cursor() {
+    if CURSOR_HIDDEN.swap(false, Ordering::AcqRel) {
+        // A signal may have interrupted a synchronized frame. End it before
+        // showing the cursor; no allocation or reporter/stdio locks on exit.
+        const RESTORE: &[u8] = b"\x1b[?2026l\x1b[?25h";
+        // SAFETY: static bytes and a standard descriptor; write is signal-safe.
+        let _ = unsafe { libc::write(libc::STDERR_FILENO, RESTORE.as_ptr().cast(), RESTORE.len()) };
+    }
+}
 
 /// Attributes captured when raw mode was entered, published for the force-exit
 /// signal handler and intentionally never freed: a handler may read it at any
@@ -44,9 +64,10 @@ pub fn restore(original: &libc::termios) {
     let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) };
 }
 
-/// Restore the attributes published at raw-mode entry, if any. A no-op when raw
-/// mode was never entered, so every exit path can call it unconditionally.
+/// Restore owned cursor visibility and raw-mode attributes, if any. Cursor
+/// cleanup also applies to progress without an interactive key reader.
 pub fn restore_published() {
+    restore_cursor();
     let pointer = ORIGINAL.load(Ordering::Acquire);
     if pointer.is_null() {
         return;
@@ -56,8 +77,8 @@ pub fn restore_published() {
     let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, pointer) };
 }
 
-/// Restore the published attributes from an async-signal context, using only
-/// async-signal-safe operations: an atomic load plus `tcsetattr(2)`.
+/// Restore from an async-signal context using only atomics, `write(2)` and
+/// `tcsetattr(2)`, even when normal reporter cleanup is unavailable.
 pub fn restore_for_forced_exit() {
     restore_published();
 }
@@ -118,6 +139,160 @@ mod tests {
         assert_ne!(raw.c_lflag & libc::ISIG, 0, "Ctrl-C must still interrupt");
         assert_eq!(raw.c_cc[libc::VMIN], 0);
         assert_eq!(raw.c_cc[libc::VTIME], 0);
+    }
+
+    #[test]
+    fn cursor_and_terminal_modes_are_restored_for_every_exit() {
+        use std::fs::File;
+        use std::io::{Read, Write};
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const CHILD: &str = "ABIRD_TEST_CURSOR_EXIT";
+        const TEST: &str =
+            "terminal_mode::tests::cursor_and_terminal_modes_are_restored_for_every_exit";
+        if let Ok(mode) = std::env::var(CHILD) {
+            let _terminal = crate::progress::guard_terminal_exit();
+            if !mode.ends_with("no-reader") {
+                enter_raw_mode().expect("test tty");
+            }
+            let reporter = crate::progress::command_reporter();
+            reporter.started("cursor probe");
+            match mode.as_str() {
+                "normal" => reporter.complete_active("cursor probe"),
+                "failure" => reporter.fail_active("cursor probe", "synthetic failure"),
+                "early-return" | "no-reader" => {}
+                "panic" => panic!("synthetic terminal panic"),
+                "locked-panic" => {
+                    struct PanicMessage;
+                    impl std::fmt::Display for PanicMessage {
+                        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                            panic!("panic while a buffered frame owns the output lock")
+                        }
+                    }
+                    reporter.message(PanicMessage);
+                }
+                "forced" | "forced-no-reader" => {
+                    crate::fleet::signal::install().unwrap();
+                    // Exercise force-exit with an interrupted synchronized frame.
+                    io::stderr().write_all(b"\x1b[?2026h").unwrap();
+                    for _ in 0..3 {
+                        // SAFETY: this isolated child installed its own handler.
+                        assert_eq!(unsafe { libc::raise(libc::SIGINT) }, 0);
+                    }
+                    panic!("third interrupt did not exit");
+                }
+                _ => unreachable!(),
+            }
+            return;
+        }
+
+        for mode in [
+            "normal",
+            "failure",
+            "early-return",
+            "no-reader",
+            "panic",
+            "locked-panic",
+            "forced",
+            "forced-no-reader",
+        ] {
+            let (mut master, mut slave) = (-1, -1);
+            let size = libc::winsize {
+                ws_row: 24,
+                ws_col: 100,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            // SAFETY: valid output descriptors and initialized window size.
+            assert_eq!(
+                unsafe {
+                    libc::openpty(&mut master, &mut slave, ptr::null_mut(), ptr::null(), &size)
+                },
+                0
+            );
+            // SAFETY: openpty returned two owned descriptors.
+            let (mut master, slave) =
+                unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) };
+            let attributes = || {
+                let mut value = unsafe { std::mem::zeroed::<libc::termios>() };
+                // SAFETY: live slave descriptor and writable termios storage.
+                assert_eq!(unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut value) }, 0);
+                (
+                    value.c_iflag,
+                    value.c_oflag,
+                    value.c_cflag,
+                    value.c_lflag,
+                    value.c_cc,
+                )
+            };
+            let original = attributes();
+            // SAFETY: live master descriptor; nonblocking reads only affect it.
+            assert_ne!(
+                unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) },
+                -1
+            );
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD, mode)
+                .env("TERM", "xterm-256color")
+                .stdin(Stdio::from(slave.try_clone().unwrap()))
+                .stdout(Stdio::from(slave.try_clone().unwrap()))
+                .stderr(Stdio::from(slave.try_clone().unwrap()))
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut bytes = Vec::new();
+            let mut buffer = [0; 4096];
+            let status = loop {
+                let exited = child.try_wait().unwrap();
+                loop {
+                    match master.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(n) => bytes.extend_from_slice(&buffer[..n]),
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(error) => panic!("pty read: {error}"),
+                    }
+                }
+                if let Some(status) = exited {
+                    break status;
+                }
+                if Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("{mode}: terminal cleanup hung");
+                }
+                let mut poll = libc::pollfd {
+                    fd: master.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: valid descriptor storage, bounded wait for child output.
+                unsafe {
+                    libc::poll(&mut poll, 1, 20);
+                }
+            };
+            let output = String::from_utf8_lossy(&bytes);
+            let hidden = output.rfind(HIDE_CURSOR).expect("live frame hides cursor");
+            let shown = output.rfind(SHOW_CURSOR).expect("exit restores cursor");
+            assert!(shown > hidden, "{mode}: cursor left hidden: {output:?}");
+            assert_eq!(attributes(), original, "{mode}: raw mode leaked");
+            if mode.starts_with("forced") {
+                let interrupted_frame = output.rfind("\x1b[?2026h").unwrap();
+                assert!(
+                    output[interrupted_frame..].contains("\x1b[?2026l\x1b[?25h"),
+                    "{mode}: interrupted frame was not closed before cursor restoration"
+                );
+                assert_eq!(status.code(), Some(130), "{output}");
+            } else {
+                assert_eq!(
+                    status.success(),
+                    !mode.contains("panic"),
+                    "{mode}: {output}"
+                );
+            }
+        }
     }
 
     #[test]

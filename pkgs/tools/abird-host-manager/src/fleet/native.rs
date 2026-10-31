@@ -57,8 +57,8 @@ use super::system_identity;
 use super::task::{InternalTask, StepSpecSource, TaskOutcome, TaskScope};
 use super::transport::{
     HostKeyPolicy, HostTransport, ProcessStatus, ProxyCommandTemplate, SelfTargetDecision,
-    SelfTargetEvidence, SelfTargetMode, SshEndpoint, SshRoutePlan, TransportRole, plan_proxy_chain,
-    plan_self_target,
+    SelfTargetEvidence, SelfTargetMode, SshEndpoint, SshRoutePlan, TransportRole,
+    output_indicates_transport_loss, plan_proxy_chain, plan_self_target,
 };
 
 const SSH_CONTROL_PATH_LIMIT: usize = 108;
@@ -66,6 +66,12 @@ const CONTROL_SOCKET_DIGEST_HEX_LEN: usize = 20;
 /// System `true`, used for the transport connectivity probe without relying on
 /// the ambient remote PATH.
 const SYSTEM_TRUE: &str = "/run/current-system/sw/bin/true";
+
+fn route_relevant_transport_failure(output: &str) -> bool {
+    output_indicates_transport_loss(output)
+        || output.contains("Connection refused")
+        || output.contains("Network is unreachable")
+}
 
 fn health_failure_message(
     host: &str,
@@ -1194,6 +1200,30 @@ impl<'a> NativeFleetEffects<'a> {
         Ok(output.succeeded())
     }
 
+    fn route_failure_hint(&self, host: &str, evidence: &str) -> String {
+        if !route_relevant_transport_failure(evidence) {
+            return String::new();
+        }
+        let Some(route) = self
+            .inventory
+            .hosts
+            .get(host)
+            .and_then(|host| host.routing.as_ref())
+        else {
+            return String::new();
+        };
+        if route.active == super::inventory_routing::RouteName::Default {
+            String::new()
+        } else if route.effective {
+            "; try --route=default".to_owned()
+        } else {
+            format!(
+                "; route {} is unavailable on this host path",
+                route.active.as_str()
+            )
+        }
+    }
+
     fn execution_target(&mut self, resolved: &ResolvedHost) -> Result<HostExecutionTarget> {
         if let Some(target) = self.prepared_targets.get(&resolved.inventory_name) {
             return Ok(target.clone());
@@ -1251,9 +1281,10 @@ impl<'a> NativeFleetEffects<'a> {
         let evidence = probe.combined_output();
         if temporary_transport_failure(&evidence) {
             bail!(
-                "primary deploy target {} has a temporary transport failure; bootstrap fallback is delayed: {}",
+                "primary deploy target {} has a temporary transport failure; bootstrap fallback is delayed: {}{}",
                 resolved.inventory_name,
-                evidence.trim()
+                evidence.trim(),
+                self.route_failure_hint(&resolved.inventory_name, &evidence)
             );
         }
         if resolved
@@ -1262,9 +1293,10 @@ impl<'a> NativeFleetEffects<'a> {
             .is_none_or(|user| user == resolved.user)
         {
             bail!(
-                "primary deploy target {} is unavailable and no distinct operatorUser is configured: {}",
+                "primary deploy target {} is unavailable and no distinct operatorUser is configured: {}{}",
                 resolved.inventory_name,
-                evidence.trim()
+                evidence.trim(),
+                self.route_failure_hint(&resolved.inventory_name, &evidence)
             );
         }
 
@@ -1327,10 +1359,12 @@ impl<'a> NativeFleetEffects<'a> {
         }
         if !probe.succeeded() {
             retire_control_master(&target);
+            let evidence = probe.combined_output();
             bail!(
-                "primary deploy target {} is unavailable: {}",
+                "primary deploy target {} is unavailable: {}{}",
                 resolved.inventory_name,
-                probe.combined_output().trim()
+                evidence.trim(),
+                self.route_failure_hint(&resolved.inventory_name, &evidence)
             );
         }
         self.prepared_targets
@@ -2047,6 +2081,7 @@ impl<'a> NativeFleetEffects<'a> {
                 &nix_target,
             )?;
             let scope: Arc<dyn TaskScope> = self.progress.host_scope(host);
+            let route_hint = self.route_failure_hint(host, "connection timed out");
             run_step(&scope, TransferStep::DirectPush, |task| {
                 let output = self.host_runtime.execute_local_command_with_env(
                     &command,
@@ -2055,7 +2090,15 @@ impl<'a> NativeFleetEffects<'a> {
                     task,
                 )?;
                 if !output.succeeded() {
-                    bail!("copy closure to {host} failed: {}", output.stderr.trim());
+                    let hint = if route_relevant_transport_failure(&output.stderr) {
+                        route_hint.as_str()
+                    } else {
+                        ""
+                    };
+                    bail!(
+                        "copy closure to {host} failed: {}{hint}",
+                        output.stderr.trim()
+                    );
                 }
                 Ok(())
             })?;
@@ -4341,6 +4384,25 @@ yqPpbFFUX2lXWPH9I3zqYt2VnWDScGTitnk6RpLFwc3nSFWiDm1rkzj/Tf
 
         assert_eq!(error.to_string(), "admission failed");
         assert_eq!(stages, ["distribute", "protect", "admit-generation"]);
+    }
+
+    #[test]
+    fn route_remediation_is_limited_to_transport_failures() {
+        for evidence in [
+            "ssh: connect to host example port 22: Connection refused",
+            "ssh: connect to host example port 22: Network is unreachable",
+            "ssh: connect to host example port 22: No route to host",
+            "Connection timed out during banner exchange",
+        ] {
+            assert!(route_relevant_transport_failure(evidence), "{evidence}");
+        }
+        for evidence in [
+            "Permission denied (publickey)",
+            "Host key verification failed",
+            "No space left on device",
+        ] {
+            assert!(!route_relevant_transport_failure(evidence), "{evidence}");
+        }
     }
 
     #[test]

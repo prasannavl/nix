@@ -12,15 +12,20 @@ use std::net::{Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 
 use anyhow::{Context, Result, bail};
 
-/// Host names that identify the local machine: the kernel node name, its short
-/// form, and the canonical name (FQDN) when the resolver supplies one.
+/// Kernel-managed host names only. Route authority uses this set so resolver
+/// answers cannot make an unmanaged caller impersonate a tracked host.
+pub fn local_kernel_host_aliases() -> BTreeSet<String> {
+    node_name().into_iter().collect()
+}
+
+/// Host names that identify the local machine for diagnostic self-target
+/// planning, including the resolver's canonical name when available.
 pub fn local_host_aliases() -> BTreeSet<String> {
-    let mut aliases = BTreeSet::new();
-    if let Some(node) = node_name() {
-        add_name_and_short(&mut aliases, &node);
-        if let Some(canonical) = canonical_name(&node) {
-            add_name_and_short(&mut aliases, &canonical);
-        }
+    let mut aliases = local_kernel_host_aliases();
+    if let Some(node) = node_name()
+        && let Some(canonical) = canonical_name(&node)
+    {
+        add_name_and_short(&mut aliases, &canonical);
     }
     aliases
 }

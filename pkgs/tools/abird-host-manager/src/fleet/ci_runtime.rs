@@ -23,7 +23,7 @@ use super::repository::{
     CommandRequest, CommandRunner, CommitSha, DirtyForwarding, ProcessCommandRunner,
     SSH_ARGV_PREFIX, StagedPatch, decode_argv, plan_ci_trigger,
 };
-use super::system::resolve_host;
+use super::system::{ResolvedHost, resolve_host};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CiRevisionSource {
@@ -293,7 +293,22 @@ pub struct CiConnection {
     pub port: u16,
     pub private_key: Option<CiPrivateKey>,
     pub known_hosts: Option<String>,
-    pub proxy_jump: Option<String>,
+    pub proxy_command: Option<String>,
+    pub proxy_identity_keys: Vec<PathBuf>,
+    pub proxy_known_hosts: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct CiProxyCommand {
+    command: Option<String>,
+    identity_keys: Vec<PathBuf>,
+    known_hosts: Vec<String>,
+}
+
+const PROXY_KNOWN_HOSTS_PLACEHOLDER: &str = "__ABIRD_CI_PROXY_KNOWN_HOSTS_6C4D2F0A__";
+
+fn proxy_identity_placeholder(index: usize) -> String {
+    format!("__ABIRD_CI_PROXY_IDENTITY_{index}_6C4D2F0A__")
 }
 
 #[derive(Clone, Debug)]
@@ -313,13 +328,27 @@ pub fn resolve_ci_connection(input: &CiConnectionInput<'_>) -> Result<CiConnecti
         .context("CI trigger host is not configured")?;
     validate_ssh_target(requested)?;
 
-    let resolved_name = input.inventory.host_for_resource(requested).ok();
+    let resolved_name = match input.inventory.host_for_resource(requested) {
+        Ok(host) => Some(host),
+        Err(error)
+            if explicit_host.is_some()
+                && error
+                    .to_string()
+                    .starts_with("unknown inventory host or resource") =>
+        {
+            None
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "CI controller is not present unambiguously in tracked inventory: {requested}"
+                )
+            });
+        }
+    };
     let resolved = resolved_name
         .map(|_| resolve_host(input.inventory, requested, &Options::default()))
         .transpose()?;
-    if explicit_host.is_none() && resolved.is_none() {
-        bail!("configured CI controller is not present in the inventory: {requested}");
-    }
 
     let declared_user = resolved_name.and_then(|name| {
         input.inventory.hosts[name]
@@ -356,6 +385,11 @@ pub fn resolve_ci_connection(input: &CiConnectionInput<'_>) -> Result<CiConnecti
         .ci_known_hosts
         .clone()
         .or_else(|| resolved.as_ref().and_then(|host| host.known_hosts.clone()));
+    let proxy = resolved
+        .as_ref()
+        .map(|host| resolve_ci_proxy_command(input.inventory, host, input.options))
+        .transpose()?
+        .unwrap_or_default();
 
     Ok(CiConnection {
         inventory_name: resolved.as_ref().map(|host| host.inventory_name.clone()),
@@ -367,8 +401,170 @@ pub fn resolve_ci_connection(input: &CiConnectionInput<'_>) -> Result<CiConnecti
         port: resolved.as_ref().map_or(22, |host| host.port),
         private_key,
         known_hosts,
-        proxy_jump: resolved.and_then(|host| host.proxy_jump),
+        proxy_command: proxy.command,
+        proxy_identity_keys: proxy.identity_keys,
+        proxy_known_hosts: proxy.known_hosts,
     })
+}
+
+fn resolve_ci_proxy_command(
+    inventory: &Inventory,
+    resolved: &ResolvedHost,
+    options: &Options,
+) -> Result<CiProxyCommand> {
+    if let Some(command) = &resolved.proxy_command {
+        return Ok(CiProxyCommand {
+            command: Some(render_proxy_template(
+                command,
+                &resolved.target,
+                resolved.port,
+            )),
+            ..CiProxyCommand::default()
+        });
+    }
+    let Some(first_hop) = resolved.proxy_jump.as_deref() else {
+        return Ok(CiProxyCommand::default());
+    };
+    let mut hops = Vec::new();
+    resolve_ci_hop(inventory, first_hop, options, &mut Vec::new(), &mut hops)?;
+    let mut upstream = None;
+    let mut identity_keys = Vec::new();
+    let mut known_hosts = Vec::new();
+    for (index, hop) in hops.iter().enumerate() {
+        let (hop_user, hop_port, hop_identity) = if let Some(operator_user) = &hop.operator_user {
+            (
+                operator_user.as_str(),
+                hop.operator_port,
+                hop.operator_key.as_ref(),
+            )
+        } else {
+            (hop.user.as_str(), hop.port, hop.identity_key.as_ref())
+        };
+        validate_ssh_target(&hop.target)?;
+        validate_ssh_user(hop_user)?;
+        let next = hops.get(index + 1);
+        let (next_target, next_port) = next.map_or((&resolved.target, resolved.port), |next| {
+            (
+                &next.target,
+                if next.operator_user.is_some() {
+                    next.operator_port
+                } else {
+                    next.port
+                },
+            )
+        });
+        let mut tokens = vec![
+            "ssh".to_owned(),
+            "-F".to_owned(),
+            "/dev/null".to_owned(),
+            "-o".to_owned(),
+            "BatchMode=yes".to_owned(),
+            "-o".to_owned(),
+            "ConnectTimeout=30".to_owned(),
+            "-o".to_owned(),
+            "ConnectionAttempts=1".to_owned(),
+            "-o".to_owned(),
+            "ServerAliveInterval=5".to_owned(),
+            "-o".to_owned(),
+            "ServerAliveCountMax=3".to_owned(),
+            "-o".to_owned(),
+            "LogLevel=ERROR".to_owned(),
+            "-o".to_owned(),
+            "GlobalKnownHostsFile=/dev/null".to_owned(),
+            "-o".to_owned(),
+            "StrictHostKeyChecking=accept-new".to_owned(),
+            "-o".to_owned(),
+            format!("UserKnownHostsFile={PROXY_KNOWN_HOSTS_PLACEHOLDER}"),
+            "-p".to_owned(),
+            hop_port.to_string(),
+        ];
+        if let Some(identity_key) = hop_identity {
+            let placeholder = proxy_identity_placeholder(identity_keys.len());
+            identity_keys.push(identity_key.clone());
+            tokens.extend([
+                "-i".to_owned(),
+                placeholder,
+                "-o".to_owned(),
+                "IdentitiesOnly=yes".to_owned(),
+            ]);
+        }
+        if let Some(contents) = &hop.known_hosts {
+            known_hosts.push(contents.clone());
+        }
+        if hop.proxy_command.is_some() && upstream.is_some() {
+            bail!("nested CI proxy hop cannot combine proxyCommand with an upstream hop");
+        }
+        let proxy = hop
+            .proxy_command
+            .as_ref()
+            .map(|command| render_proxy_template(command, &hop.target, hop_port))
+            .or(upstream.take());
+        if let Some(proxy) = proxy {
+            tokens.extend(["-o".to_owned(), format!("ProxyCommand={proxy}")]);
+        }
+        tokens.extend([
+            "-W".to_owned(),
+            forward_destination(next_target, next_port),
+            "--".to_owned(),
+            format!("{hop_user}@{}", hop.target),
+        ]);
+        upstream = Some(
+            tokens
+                .iter()
+                .map(|token| shell_quote(token))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    Ok(CiProxyCommand {
+        command: upstream,
+        identity_keys,
+        known_hosts,
+    })
+}
+
+fn resolve_ci_hop(
+    inventory: &Inventory,
+    name: &str,
+    options: &Options,
+    visiting: &mut Vec<String>,
+    hops: &mut Vec<ResolvedHost>,
+) -> Result<()> {
+    if let Some(cycle_start) = visiting.iter().position(|candidate| candidate == name) {
+        let mut cycle = visiting[cycle_start..].to_vec();
+        cycle.push(name.to_owned());
+        bail!("CI proxy jump cycle detected: {}", cycle.join(" -> "));
+    }
+    visiting.push(name.to_owned());
+    let hop = resolve_host(inventory, name, options)?;
+    if let Some(next) = hop.proxy_jump.as_deref() {
+        resolve_ci_hop(inventory, next, options, visiting, hops)?;
+    }
+    visiting.pop();
+    hops.push(hop);
+    Ok(())
+}
+
+fn render_proxy_template(template: &str, host: &str, port: u16) -> String {
+    template
+        .replace("%h", host)
+        .replace("%p", &port.to_string())
+}
+
+fn forward_destination(host: &str, port: u16) -> String {
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn replace_shell_quoted_marker(command: &mut String, marker: &str, value: &str) {
+    *command = command.replace(marker, &value.replace('\'', "'\\''"));
 }
 
 fn validate_ssh_user(user: &str) -> Result<()> {
@@ -465,6 +661,16 @@ impl CiCredentialStore {
         repository_root: &Path,
         materializer: &mut M,
     ) -> Result<PathBuf> {
+        self.materialize_key_as(key, repository_root, materializer, "ci-key")
+    }
+
+    fn materialize_key_as<M: CiCredentialMaterializer>(
+        &self,
+        key: &CiPrivateKey,
+        repository_root: &Path,
+        materializer: &mut M,
+        name: &str,
+    ) -> Result<PathBuf> {
         match key {
             CiPrivateKey::Inline(contents) => {
                 if contents.trim().is_empty() {
@@ -474,7 +680,7 @@ impl CiCredentialStore {
                 if !bytes.ends_with(b"\n") {
                     bytes.push(b'\n');
                 }
-                self.write_private("ci-key", &bytes)
+                self.write_private(name, &bytes)
             }
             CiPrivateKey::Source(declaration) => {
                 let source = resolve_declared_path(repository_root, declaration)?;
@@ -484,7 +690,7 @@ impl CiCredentialStore {
                         source.display()
                     );
                 }
-                let destination = self.destination("ci-key");
+                let destination = self.destination(name);
                 if let Err(error) = materializer.materialize(&source, &destination) {
                     let _ = fs::remove_file(&destination);
                     return Err(error).with_context(|| {
@@ -580,7 +786,23 @@ pub fn execute_ci_trigger<E: CommandRunner, M: CiCredentialMaterializer>(
         .as_ref()
         .map(|key| store.materialize_key(key, repository_root, materializer))
         .transpose()?;
+    let proxy_identity_keys = connection
+        .proxy_identity_keys
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            store.materialize_key_as(
+                &CiPrivateKey::Source(source.clone()),
+                repository_root,
+                materializer,
+                &format!("proxy-key-{index}"),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
 
+    if connection.proxy_command.is_some() && connection.known_hosts.is_none() {
+        bail!("a routed CI controller requires configured CI known-hosts material");
+    }
     let known_hosts = if let Some(configured) = &connection.known_hosts {
         if !valid_known_hosts(configured) {
             bail!("configured CI known-hosts material contains no host key");
@@ -589,13 +811,36 @@ pub fn execute_ci_trigger<E: CommandRunner, M: CiCredentialMaterializer>(
     } else {
         String::new()
     };
-    // No configured pin leaves the file empty: `accept-new` trusts the CI host
-    // on first contact and still rejects a changed key afterwards.
     let mut known_hosts_bytes = known_hosts.trim_end_matches('\n').as_bytes().to_vec();
     if !known_hosts_bytes.is_empty() {
         known_hosts_bytes.push(b'\n');
     }
     let known_hosts_path = store.write_private("known-hosts", &known_hosts_bytes)?;
+
+    let proxy_known_hosts_path = if connection
+        .proxy_command
+        .as_deref()
+        .is_some_and(|command| command.contains(PROXY_KNOWN_HOSTS_PLACEHOLDER))
+    {
+        for configured in &connection.proxy_known_hosts {
+            if !valid_known_hosts(configured) {
+                bail!("configured CI proxy known-hosts material contains no host key");
+            }
+        }
+        let mut bytes = known_hosts.trim_end_matches('\n').as_bytes().to_vec();
+        if !bytes.is_empty() {
+            bytes.push(b'\n');
+        }
+        bytes.extend(
+            connection
+                .proxy_known_hosts
+                .iter()
+                .flat_map(|configured| configured.trim_end_matches('\n').bytes().chain([b'\n'])),
+        );
+        Some(store.write_private("proxy-known-hosts", &bytes)?)
+    } else {
+        None
+    };
 
     let mut args = vec![
         OsString::from("-F"),
@@ -605,7 +850,11 @@ pub fn execute_ci_trigger<E: CommandRunner, M: CiCredentialMaterializer>(
         OsString::from("-o"),
         OsString::from("GlobalKnownHostsFile=/dev/null"),
         OsString::from("-o"),
-        OsString::from("StrictHostKeyChecking=accept-new"),
+        OsString::from(if connection.known_hosts.is_some() {
+            "StrictHostKeyChecking=yes"
+        } else {
+            "StrictHostKeyChecking=accept-new"
+        }),
         OsString::from("-o"),
         OsString::from(format!("UserKnownHostsFile={}", known_hosts_path.display())),
     ];
@@ -623,9 +872,29 @@ pub fn execute_ci_trigger<E: CommandRunner, M: CiCredentialMaterializer>(
             OsString::from("IdentitiesOnly=yes"),
         ]);
     }
-    if let Some(proxy_jump) = &connection.proxy_jump {
-        validate_ssh_target(proxy_jump)?;
-        args.extend([OsString::from("-J"), OsString::from(proxy_jump)]);
+    if let Some(proxy_command) = &connection.proxy_command {
+        let mut proxy_command = proxy_command.clone();
+        if let Some(path) = &proxy_known_hosts_path {
+            replace_shell_quoted_marker(
+                &mut proxy_command,
+                PROXY_KNOWN_HOSTS_PLACEHOLDER,
+                &path.to_string_lossy(),
+            );
+        }
+        for (index, path) in proxy_identity_keys.iter().enumerate() {
+            replace_shell_quoted_marker(
+                &mut proxy_command,
+                &proxy_identity_placeholder(index),
+                &path.to_string_lossy(),
+            );
+        }
+        if proxy_command.contains("__ABIRD_CI_PROXY_") {
+            bail!("CI proxy command contains unresolved credential material");
+        }
+        args.extend([
+            OsString::from("-o"),
+            OsString::from(format!("ProxyCommand={proxy_command}")),
+        ]);
     }
     args.extend([
         OsString::from("--"),

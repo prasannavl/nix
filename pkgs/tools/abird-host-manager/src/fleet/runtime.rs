@@ -8,6 +8,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
 
+use super::inventory_overlay;
+use super::inventory_routing::{self, RouteRequest, SelfIdentity};
 use crate::programs::{clear_git_repository_environment, nix::Nix};
 
 use super::ci_runtime::{
@@ -60,7 +62,8 @@ Build: --build-host, --build-host-deploy-mode, --build-cache-url,
 Deploy: --goal, --deploy-jobs, --deploy-jobs-per-domain, --verify-jobs,
         --bootstrap, --no-rollback, --no-verify, --restart-managed
 Repository: --dirty, --dirty-staged, --repo-url, --repo-path, --ci-trigger
-Behavior: --dry, --force, --skip-global-lock, --no-override,
+Behavior: --dry, --force, --skip-global-lock,
+          --config-override, --no-override, --route=auto|default|cf|ts,
           --prefix-host-logs, --verbose, --quiet, --log-format
 Authentication: --user, --ssh-key, --operator-user, --operator-key,
                 --bootstrap-key, --known-hosts, --age-key-file,
@@ -127,6 +130,22 @@ struct RepositoryRuntime {
     _temporary_known_hosts: Option<tempfile::TempDir>,
 }
 
+#[derive(Clone, Debug)]
+struct PinnedInventoryInput {
+    source_root: PathBuf,
+    source_config: PathBuf,
+    overlay: Option<PathBuf>,
+}
+
+impl PinnedInventoryInput {
+    fn config_at(&self, repository: &Path) -> PathBuf {
+        self.source_config
+            .strip_prefix(&self.source_root)
+            .map(|relative| repository.join(relative))
+            .unwrap_or_else(|_| self.source_config.clone())
+    }
+}
+
 fn repository_manager(runtime: &RuntimeConfig, url: Option<&str>) -> Result<RepositoryRuntime> {
     let mut temporary = None;
     let environment = match url.map(ssh_repository_endpoint).transpose()? {
@@ -184,7 +203,47 @@ fn create_private_known_hosts(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn reject_managed_overlay_before_dispatch(invocation: &Invocation) -> Result<()> {
+    let managed = inventory_routing::managed_execution_context()?;
+    inventory_overlay::reject_managed_explicit_input(
+        invocation.options.config_override.as_deref(),
+        managed,
+    )?;
+    if !managed || invocation.options.no_override {
+        return Ok(());
+    }
+    let current = env::current_dir().context("resolve managed inventory policy")?;
+    let source_root = invocation
+        .options
+        .repo_path
+        .as_deref()
+        .map(|path| absolute_from(path, &current))
+        .unwrap_or_else(|| current.clone());
+    let config = absolute_from(
+        invocation
+            .options
+            .config
+            .as_deref()
+            .unwrap_or_else(|| Path::new("hosts/nixbot.nix")),
+        &source_root,
+    );
+    if config.is_file()
+        && inventory_overlay::resolve_from(
+            &config,
+            None,
+            false,
+            inventory_overlay::OverlayPolicy::Allowed,
+            &current,
+        )?
+        .is_some()
+    {
+        bail!("Nixbot config overrides are allowed only for direct developer execution");
+    }
+    Ok(())
+}
+
 pub fn run(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
+    reject_managed_overlay_before_dispatch(&invocation)?;
     super::signal::install()?;
     // Seed the verbose section once, before any phase or host builds a view over
     // the same reporter. Later views must leave the operator's section alone.
@@ -300,7 +359,7 @@ fn run_unlocked(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
             Ok(())
         }
         Action::ListGroups => {
-            let inventory = load_inventory(&invocation, &runtime)?;
+            let inventory = load_inventory_raw(&invocation, &runtime)?;
             print_groups(&inventory);
             Ok(())
         }
@@ -428,7 +487,18 @@ fn run_ci_trigger(invocation: &Invocation, runtime: &RuntimeConfig) -> Result<()
         );
     }
     let repository_root = repository_root(&runtime.git_program, &env::current_dir()?)?;
-    let inventory = load_inventory_at(invocation, runtime, &repository_root)?;
+    let pinned_inventory = pin_inventory_input(
+        invocation,
+        &repository_root,
+        inventory_overlay::OverlayPolicy::Forbidden,
+    )?;
+    let inventory = load_inventory_from_pinned(
+        invocation,
+        runtime,
+        &repository_root,
+        true,
+        &pinned_inventory,
+    )?;
     let (action, clean_mode) = ci_action(&invocation.action)?;
     let mut source =
         ProcessCiRepositorySource::new(runtime.git_program.clone(), ProcessCommandRunner);
@@ -452,6 +522,19 @@ fn run_ci_trigger(invocation: &Invocation, runtime: &RuntimeConfig) -> Result<()
         options: &invocation.options,
         default_private_key: Some(&default_key),
     })?;
+    ensure_explicit_named_route_effective(&inventory, connection.inventory_name.as_deref())?;
+    if let Some(name) = connection.inventory_name.as_deref() {
+        let host = &inventory.hosts[name];
+        if let Some(line) = inventory_routing::route_line(
+            name,
+            host.target.as_deref(),
+            host.port,
+            host.routing.as_ref(),
+        ) {
+            eprintln!("{line}");
+        }
+    }
+    eprintln!("Route scope: caller to controller only; not forwarded");
     let mut materializer = AgeOrFileCredentialMaterializer {
         identities: super::native::age_identities(&invocation.options),
     };
@@ -494,6 +577,17 @@ fn ci_action(action: &Action) -> Result<(String, CiCleanMode)> {
     Ok(result)
 }
 
+fn resolves_routing(action: &Action) -> bool {
+    !matches!(
+        action,
+        Action::TerraformAll
+            | Action::TerraformDns
+            | Action::TerraformPlatform
+            | Action::TerraformApps
+            | Action::TerraformProject(_)
+    )
+}
+
 fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
     let _interactive = capture_verbose_key(&invocation);
     let current = env::current_dir().context("resolve fleet invocation directory")?;
@@ -503,10 +597,23 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
         .or_else(|| invocation.options.repo_path.clone())
         .map(Ok)
         .unwrap_or_else(|| repository_root(&runtime.git_program, &current))?;
+    let source_root = absolute_from(&source_root, &current);
 
+    let resolve_routes = resolves_routing(&invocation.action);
+    let pinned_inventory = pin_inventory_input(
+        &invocation,
+        &source_root,
+        inventory_overlay::OverlayPolicy::Allowed,
+    )?;
     if matches!(invocation.action, Action::DevBuild) {
         let state = allocate_run_state(&runtime)?;
-        let inventory = load_inventory_at(&invocation, &runtime, &source_root)?;
+        let inventory = load_inventory_from_pinned(
+            &invocation,
+            &runtime,
+            &source_root,
+            resolve_routes,
+            &pinned_inventory,
+        )?;
         let selection = select_inventory(&inventory, &invocation)?;
         let mut effects = NativeFleetEffects::new_with_diagnostics(
             &invocation,
@@ -533,9 +640,15 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
         .unwrap_or(execution_root);
     let staged_patch = staged_patch(&invocation, &source_root, &runtime)?;
     let configured_repo_url = if invocation.options.repo_url.is_none() && source_root.is_dir() {
-        load_inventory_at(&invocation, &runtime, &source_root)
-            .ok()
-            .and_then(|inventory| inventory.config.repo_url)
+        load_inventory_from_pinned(
+            &invocation,
+            &runtime,
+            &source_root,
+            false,
+            &pinned_inventory,
+        )
+        .ok()
+        .and_then(|inventory| inventory.config.repo_url)
     } else {
         None
     };
@@ -587,11 +700,18 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
             let action = if invocation.options.use_repo_script
                 && env::var("NIXBOT_REEXECED_FROM_REPO").as_deref() != Ok("1")
             {
-                reexec_from_workspace(&runtime, &source_root, &workspace.root)
+                reexec_from_workspace(&runtime, &source_root, &workspace.root, &pinned_inventory)
             } else {
                 (|| {
-                    let inventory = load_inventory_at(&invocation, &runtime, &workspace.root)?;
+                    let inventory = load_inventory_from_pinned(
+                        &invocation,
+                        &runtime,
+                        &workspace.root,
+                        resolve_routes,
+                        &pinned_inventory,
+                    )?;
                     let selection = select_inventory(&inventory, &invocation)?;
+                    print_hosts(&inventory, &selection);
                     let mut effects = NativeFleetEffects::new_with_diagnostics(
                         &invocation,
                         &runtime.nix_program,
@@ -645,19 +765,34 @@ fn reexec_from_workspace(
     runtime: &RuntimeConfig,
     source_root: &Path,
     workspace: &Path,
+    pinned_inventory: &PinnedInventoryInput,
 ) -> Result<()> {
     if runtime.repo_reexec_arguments.is_empty() {
         bail!("--use-repo-script requires the invoking binary to preserve its arguments");
     }
+    let reexec_arguments = super::inventory_overlay::normalize_reexec_arguments(
+        &runtime.repo_reexec_arguments,
+        pinned_inventory.overlay.as_deref(),
+    );
+    let executor_kind = if inventory_routing::managed_execution_context()? {
+        "managed"
+    } else {
+        "developer"
+    };
     let mut command = Command::new(&runtime.nix_program);
     clear_git_repository_environment(&mut command);
-    let status = command
+    command
         .args(["run", runtime.repo_reexec_installable.as_str(), "--"])
-        .args(&runtime.repo_reexec_arguments)
+        .args(&reexec_arguments)
         .current_dir(workspace)
         .env("NIXBOT_REEXECED_FROM_REPO", "1")
+        .env("NIXBOT_EXECUTOR_KIND", executor_kind)
         .env("NIXBOT_REPO_ROOT", source_root)
-        .env("NIXBOT_REPO_WORKTREE_ROOT", workspace)
+        .env("NIXBOT_REPO_WORKTREE_ROOT", workspace);
+    for name in inventory_overlay::OVERLAY_ENVIRONMENT {
+        command.env_remove(name);
+    }
+    let status = command
         .status()
         .context("re-execute fleet command from the exact repository worktree")?;
     if status.success() {
@@ -939,23 +1074,80 @@ pub fn load_inventory(invocation: &Invocation, runtime: &RuntimeConfig) -> Resul
     load_inventory_at(invocation, runtime, &current)
 }
 
+fn load_inventory_raw(invocation: &Invocation, runtime: &RuntimeConfig) -> Result<Inventory> {
+    let current = env::current_dir().context("resolve inventory working directory")?;
+    let pinned = pin_inventory_input(
+        invocation,
+        &current,
+        inventory_overlay::OverlayPolicy::Allowed,
+    )?;
+    load_inventory_from_pinned(invocation, runtime, &current, false, &pinned)
+}
+
 pub fn load_inventory_at(
     invocation: &Invocation,
     runtime: &RuntimeConfig,
     repository: &Path,
 ) -> Result<Inventory> {
-    let config = invocation
-        .options
-        .config
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("hosts/nixbot.nix"));
-    let config = absolute_from(&config, repository);
+    let pinned = pin_inventory_input(
+        invocation,
+        repository,
+        inventory_overlay::OverlayPolicy::Allowed,
+    )?;
+    load_inventory_from_pinned(invocation, runtime, repository, true, &pinned)
+}
+
+// Freeze paths and overlay presence before checkout; the tracked inventory may
+// not exist until a managed clone or revision checkout. Validate it at load time.
+fn pin_inventory_input(
+    invocation: &Invocation,
+    source_root: &Path,
+    policy: inventory_overlay::OverlayPolicy,
+) -> Result<PinnedInventoryInput> {
+    let invocation_cwd =
+        env::current_dir().context("resolve operator overlay from invocation directory")?;
+    let source_root = absolute_from(source_root, &invocation_cwd);
+    let source_config = absolute_from(
+        invocation
+            .options
+            .config
+            .as_deref()
+            .unwrap_or_else(|| Path::new("hosts/nixbot.nix")),
+        &source_root,
+    );
+    let managed = inventory_routing::managed_execution_context()?;
+    inventory_overlay::reject_managed_explicit_input(
+        invocation.options.config_override.as_deref(),
+        managed,
+    )?;
+    let overlay = inventory_overlay::resolve_from(
+        &source_config,
+        invocation.options.config_override.as_deref(),
+        invocation.options.no_override,
+        policy,
+        &invocation_cwd,
+    )?;
+    if managed && overlay.is_some() {
+        bail!("Nixbot config overrides are allowed only for direct developer execution");
+    }
+    Ok(PinnedInventoryInput {
+        source_root,
+        source_config,
+        overlay,
+    })
+}
+
+fn load_inventory_from_pinned(
+    invocation: &Invocation,
+    runtime: &RuntimeConfig,
+    repository: &Path,
+    resolve_routes: bool,
+    pinned: &PinnedInventoryInput,
+) -> Result<Inventory> {
+    let config = pinned.config_at(repository);
     if !config.is_file() {
         bail!("deploy config not found: {}", config.display());
     }
-    let overlay = (!invocation.options.no_override)
-        .then(|| overlay_path(&config))
-        .filter(|path| path.is_file());
     let repository = find_repository_root(
         config
             .parent()
@@ -966,11 +1158,32 @@ pub fn load_inventory_at(
         .join("default.nix")
         .is_file()
         .then_some(repository_config_dir.as_path());
-    let value = Nix::new(&runtime.nix_program)?
-        .eval_inventory_file_with_overlay_json(&config, overlay.as_deref(), repository_config)
+    let (mut value, base, override_value) = Nix::new(&runtime.nix_program)?
+        .eval_inventory_file_with_overlay_layers_json(
+            &config,
+            pinned.overlay.as_deref(),
+            repository_config,
+        )
         .with_context(|| format!("evaluate fleet inventory {}", config.display()))?;
+    let identity = (resolve_routes && invocation.options.route == RouteRequest::Auto)
+        .then(SelfIdentity::detect)
+        .transpose()?;
+    let route_decision = if resolve_routes {
+        Some(inventory_routing::apply_named_routes_with_source(
+            &mut value,
+            &base,
+            override_value.as_ref(),
+            invocation.options.route,
+            invocation.options.route_source,
+            identity.as_ref(),
+        )?)
+    } else {
+        inventory_routing::validate_named_routes(&value, &base, override_value.as_ref())?;
+        None
+    };
     let mut inventory: Inventory = serde_json::from_value(value)
         .with_context(|| format!("decode fleet inventory {}", config.display()))?;
+    inventory.route_decision = route_decision;
     let key = inventory
         .config
         .deploy_deps_key
@@ -1029,7 +1242,7 @@ fn select_inventory(inventory: &Inventory, invocation: &Invocation) -> Result<Se
             .deploy_jobs_per_domain
             .unwrap_or(invocation.options.deploy_jobs_per_domain)
     };
-    select(
+    let selection = select(
         inventory,
         &SelectionOptions {
             groups,
@@ -1039,7 +1252,35 @@ fn select_inventory(inventory: &Inventory, invocation: &Invocation) -> Result<Se
             control_plane_first: invocation.options.control_plane_first,
             deploy_jobs_per_domain,
         },
-    )
+    )?;
+    ensure_explicit_named_route_effective(inventory, selection.ordered.iter().map(String::as_str))?;
+    Ok(selection)
+}
+
+fn ensure_explicit_named_route_effective<'a>(
+    inventory: &Inventory,
+    hosts: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let Some(route) =
+        inventory
+            .route_decision
+            .as_ref()
+            .and_then(|decision| match decision.request {
+                RouteRequest::Cf | RouteRequest::Ts => Some(decision.request.as_str()),
+                RouteRequest::Auto | RouteRequest::Default => None,
+            })
+    else {
+        return Ok(());
+    };
+    if hosts.into_iter().any(|name| {
+        inventory.hosts[name]
+            .routing
+            .as_ref()
+            .is_some_and(|route| route.effective)
+    }) {
+        return Ok(());
+    }
+    bail!("explicit route {route} does not affect any selected host path")
 }
 
 fn split_values(raw: &str) -> Vec<String> {
@@ -1054,15 +1295,6 @@ fn absolute_from(path: &Path, base: &Path) -> PathBuf {
         return path.to_path_buf();
     }
     base.join(path)
-}
-
-fn overlay_path(config: &Path) -> PathBuf {
-    let mut name = config
-        .file_stem()
-        .map(|name| name.to_os_string())
-        .unwrap_or_default();
-    name.push(".override.nix");
-    config.with_file_name(name)
 }
 
 fn print_groups(inventory: &Inventory) {
@@ -1110,7 +1342,16 @@ fn print_hosts(inventory: &Inventory, selection: &Selection) {
         if let Some(parent) = &host.parent {
             annotations.push(format!("parent: {parent}"));
         }
-        eprintln!("  - {name} ({})", annotations.join(", "));
+        let proxy = host.proxy_jump.as_deref().or_else(|| {
+            host.proxy_command
+                .as_deref()
+                .filter(|command| !command.is_empty())
+                .map(|_| "proxy-command")
+        });
+        let via = proxy
+            .map(|proxy| format!(" via {proxy}"))
+            .unwrap_or_default();
+        eprintln!("  - {name} ({}){via}", annotations.join(", "));
     }
 }
 
@@ -1131,6 +1372,57 @@ mod tests {
 
         assert!(same_file(&lock, &alias));
         assert!(same_file(&temporary.path().join(".").join("lock.d"), &lock));
+    }
+
+    #[test]
+    fn explicit_named_route_must_affect_a_selected_host_path() {
+        use super::super::inventory::{Host, Inventory};
+        use super::super::inventory_routing::{
+            HostRouteResolution, RouteDecision, RouteName, RouteRequest, RouteSource,
+        };
+
+        let route = |effective| HostRouteResolution {
+            requested: RouteRequest::Ts,
+            active: RouteName::Ts,
+            selected: if effective {
+                RouteName::Ts
+            } else {
+                RouteName::Default
+            },
+            fallback: !effective,
+            effective,
+            source: RouteSource::Cli,
+            self_host: None,
+            route_hop: effective.then(|| "gateway".to_owned()),
+            proxy_command: false,
+            hops: Vec::new(),
+        };
+        let mut inventory = Inventory {
+            route_decision: Some(RouteDecision {
+                request: RouteRequest::Ts,
+                selected: RouteName::Ts,
+                source: RouteSource::Cli,
+                self_host: None,
+            }),
+            ..Inventory::default()
+        };
+        inventory.hosts.insert(
+            "internal".to_owned(),
+            Host {
+                routing: Some(route(false)),
+                ..Host::default()
+            },
+        );
+        inventory.hosts.insert(
+            "gateway".to_owned(),
+            Host {
+                routing: Some(route(true)),
+                ..Host::default()
+            },
+        );
+
+        assert!(super::ensure_explicit_named_route_effective(&inventory, ["internal"]).is_err());
+        super::ensure_explicit_named_route_effective(&inventory, ["internal", "gateway"]).unwrap();
     }
 
     #[test]

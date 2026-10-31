@@ -1,15 +1,12 @@
 {pkgs}: let
   lib = pkgs.lib;
   digest = builtins.concatStringsSep "" (lib.replicate 64 "a");
-  controllerOverride = pkgs.writeText "controller.override.nix" ''
-    {
-      hosts.controller.proxyCommand = null;
-    }
-  '';
   fakeNixbot = pkgs.writeShellScriptBin "nixbot" "exit 0";
   fakeManager = pkgs.writeShellScriptBin "abird-host-manager" ''
     test -z "''${ABIRD_HOST_MANAGER_GIT:-}"
-    test "''${ABIRD_HOST_MANAGER_CONFIG_OVERRIDE:-}" = ${lib.escapeShellArg (toString controllerOverride)}
+    test -z "''${ABIRD_HOST_MANAGER_CONFIG_OVERRIDE:-}"
+    test "''${ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION:-}" = 1
+    test "''${NIXBOT_EXECUTOR_KIND:-}" = managed
     test -n "''${GIT_SSH_COMMAND:-}"
     case "$GIT_SSH_COMMAND" in
       *'/var/lib/nixbot/.ssh/id_ed25519_z'*) ;;
@@ -95,7 +92,6 @@
         services.abird-host-manager = {
           enable = true;
           package = fakeManager;
-          configOverride = controllerOverride;
           failedJobSupersessionProjections = ["move-zulip"];
         };
       }
@@ -131,7 +127,8 @@ in
   assert lib.hasInfix "transaction _close-reconcile" closeoutService.script;
   assert lib.hasInfix "--expected-projection-sha256 ${digest}" closeoutService.script;
   assert service.serviceConfig.User == "nixbot";
-  assert service.environment.ABIRD_HOST_MANAGER_CONFIG_OVERRIDE == toString controllerOverride;
+  assert service.environment.ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION == "1";
+  assert service.environment.NIXBOT_EXECUTOR_KIND == "managed";
   assert service.requires == ["nixbot-repo-z-ready.service"];
   assert lib.elem "nixbot-repo-z-ready.service" service.after;
   assert managerRuntime != null;

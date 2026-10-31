@@ -11,11 +11,10 @@ use anyhow::{Context, Result, bail};
 /// Programs the manager spawns directly that a NixOS base system does not
 /// already guarantee.
 ///
-/// Target-side tools, conditional tools such as `cloudflared` (needed only for
-/// a configured `proxy_command`), and core utilities provided by the packaged
-/// runtime PATH are intentionally absent, so this list tracks real controller
-/// spawn sites rather than every provisioned binary.
-pub const REQUIRED_PROGRAMS: &[&str] = &["git", "nix", "ssh", "tofu"];
+/// Target-side tools and core utilities provided by the packaged runtime PATH
+/// are intentionally absent. Route commands are inventory-driven, so their
+/// runtime must be checked before a route can select one.
+pub const REQUIRED_PROGRAMS: &[&str] = &["cloudflared", "git", "nix", "ssh", "tofu"];
 
 #[derive(Clone, Copy, Debug)]
 pub enum CleanMode {

@@ -4,6 +4,7 @@ use abird_host_manager::fleet::cli::{
     ActivationGoal, BuildHostDeployMode, DiscoverKeys, Invocation, JobCount, LogFormat,
 };
 use abird_host_manager::fleet::environment::{Environment, LocalSelfTarget, github_nix_access};
+use abird_host_manager::fleet::inventory_routing::{RouteRequest, RouteSource};
 
 fn environment(values: &[(&str, &str)]) -> Environment {
     Environment::from_map(
@@ -159,6 +160,23 @@ fn conflicting_identity_flag_and_environment_override_is_rejected() {
     let error =
         Invocation::parse_legacy_with_environment(["deploy", "--user", "root"], &env).unwrap_err();
     assert!(error.to_string().contains("conflicting user overrides"));
+}
+
+#[test]
+fn route_environment_is_exact_and_cli_wins() {
+    let env = environment(&[("NIXBOT_ROUTE", "default")]);
+    let invocation =
+        Invocation::parse_legacy_with_environment(["deploy", "--route=ts"], &env).unwrap();
+    assert_eq!(invocation.options.route, RouteRequest::Ts);
+    assert_eq!(invocation.options.route_source, RouteSource::Cli);
+
+    let from_environment = Invocation::parse_legacy_with_environment(["deploy"], &env).unwrap();
+    assert_eq!(from_environment.options.route_source, RouteSource::Env);
+
+    for value in ["on", " ts", "ts ", "unknown"] {
+        let env = environment(&[("NIXBOT_ROUTE", value)]);
+        assert!(Invocation::parse_legacy_with_environment(["deploy"], &env).is_err());
+    }
 }
 
 #[test]

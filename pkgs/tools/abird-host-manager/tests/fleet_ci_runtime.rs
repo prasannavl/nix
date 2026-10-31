@@ -16,8 +16,14 @@ mod cli;
 mod environment;
 #[path = "../src/fleet/inventory.rs"]
 mod inventory;
+#[allow(clippy::all)]
+#[path = "../src/fleet/inventory_routing.rs"]
+mod inventory_routing;
 #[path = "../src/fleet/system.rs"]
 mod system;
+#[allow(clippy::all)]
+#[path = "../src/fleet/system_identity.rs"]
+mod system_identity;
 #[path = "../src/test_support.rs"]
 mod test_support;
 
@@ -70,6 +76,7 @@ fn inventory() -> Inventory {
             host_defaults: HostDefaults::default(),
             ..DeployConfig::default()
         },
+        route_decision: None,
     }
 }
 
@@ -114,7 +121,10 @@ fn request_input<'a>(
 fn default_head_and_group_only_scope_are_forwarded_without_host_flattening() {
     let fixture = TempDir::new().unwrap();
     let inventory = inventory();
-    let options = Options::default();
+    let options = Options {
+        route: inventory_routing::RouteRequest::Cf,
+        ..Options::default()
+    };
     let mut repository = FakeRepository {
         resolved: BTreeMap::from([("HEAD".to_owned(), sha("abcdef0123456789"))]),
         ..FakeRepository::default()
@@ -137,6 +147,14 @@ fn default_head_and_group_only_scope_are_forwarded_without_host_flattening() {
     );
     assert!(!prepared.plan.argv.iter().any(|arg| arg == "--host"));
     assert!(!prepared.plan.argv.iter().any(|arg| arg == "--hosts"));
+    assert!(!prepared.plan.argv.iter().any(|arg| arg == "--route"));
+    assert!(
+        !prepared
+            .plan
+            .argv
+            .iter()
+            .any(|arg| arg.starts_with("--route="))
+    );
 }
 
 #[test]
@@ -282,7 +300,7 @@ fn absent_staged_changes_continue_from_committed_state_but_base_mismatch_fails()
 fn ci_connection_uses_explicit_values_then_inventory_system_values_then_defaults() {
     let inventory = inventory();
     let explicit = Options {
-        ci_host: Some("literal.example".to_owned()),
+        ci_host: Some("controller-node".to_owned()),
         ci_user: Some("runner".to_owned()),
         ci_ssh_key: Some("INLINE PRIVATE KEY".to_owned()),
         ci_known_hosts: Some("literal.example ssh-ed25519 explicit".to_owned()),
@@ -294,7 +312,11 @@ fn ci_connection_uses_explicit_values_then_inventory_system_values_then_defaults
         default_private_key: Some(Path::new("fixtures/default-ci-key.enc")),
     })
     .unwrap();
-    assert_eq!(connection.target, "literal.example");
+    assert_eq!(
+        connection.inventory_name.as_deref(),
+        Some("controller-node")
+    );
+    assert_eq!(connection.target, "ci.internal");
     assert_eq!(connection.user, "runner");
     assert_eq!(
         connection.private_key,
@@ -304,6 +326,22 @@ fn ci_connection_uses_explicit_values_then_inventory_system_values_then_defaults
         connection.known_hosts.as_deref(),
         Some("literal.example ssh-ed25519 explicit")
     );
+
+    let unresolved = Options {
+        ci_host: Some("literal.example".to_owned()),
+        ..Options::default()
+    };
+    let unresolved = resolve_ci_connection(&CiConnectionInput {
+        inventory: &inventory,
+        options: &unresolved,
+        default_private_key: None,
+    })
+    .unwrap();
+    assert_eq!(unresolved.inventory_name, None);
+    assert_eq!(unresolved.target, "literal.example");
+    assert_eq!(unresolved.user, "nixbot");
+    assert_eq!(unresolved.port, 22);
+    assert_eq!(unresolved.proxy_command, None);
 
     let inherited = resolve_ci_connection(&CiConnectionInput {
         inventory: &inventory,
@@ -324,6 +362,92 @@ fn ci_connection_uses_explicit_values_then_inventory_system_values_then_defaults
     assert_eq!(
         inherited.known_hosts.as_deref(),
         Some("ci.internal ssh-ed25519 inventory-host-key")
+    );
+}
+
+#[test]
+fn ci_connection_renders_the_full_selected_proxy_chain() {
+    let mut inventory = inventory();
+    inventory.hosts.insert(
+        "edge".to_owned(),
+        Host {
+            target: Some("edge.example".to_owned()),
+            user: Some("edge-user".to_owned()),
+            port: Some(2200),
+            identity_key: Some(PathBuf::from("edge-key")),
+            operator_user: Some("edge-operator".to_owned()),
+            operator_key: Some(PathBuf::from("edge-operator-key")),
+            bootstrap_port: Some(2201),
+            known_hosts: Some("edge.example ssh-ed25519 edge-host-key".to_owned()),
+            proxy_command: Some("cloudflared access ssh --hostname %h".to_owned()),
+            ..Host::default()
+        },
+    );
+    inventory
+        .hosts
+        .get_mut("controller-node")
+        .unwrap()
+        .proxy_jump = Some("edge".to_owned());
+
+    let mut connection = resolve_ci_connection(&CiConnectionInput {
+        inventory: &inventory,
+        options: &Options::default(),
+        default_private_key: None,
+    })
+    .unwrap();
+    let proxy = connection.proxy_command.as_deref().unwrap();
+    assert!(proxy.contains("edge-operator@edge.example"), "{proxy}");
+    assert!(proxy.contains("'-p' '2201'"), "{proxy}");
+    assert!(proxy.contains("ci.internal:2222"), "{proxy}");
+    assert!(
+        proxy.contains("cloudflared access ssh --hostname edge.example"),
+        "{proxy}"
+    );
+    assert!(proxy.contains("IdentitiesOnly=yes"), "{proxy}");
+    assert!(
+        proxy.contains("__ABIRD_CI_PROXY_KNOWN_HOSTS_6C4D2F0A__"),
+        "{proxy}"
+    );
+
+    let fixture = TempDir::new().unwrap();
+    fs::write(
+        fixture.path().join("edge-operator-key"),
+        "EDGE OPERATOR PRIVATE KEY\n",
+    )
+    .unwrap();
+    connection.private_key = None;
+    connection.known_hosts = Some("ci.internal ssh-ed25519 configured".to_owned());
+    let mut runner = RecordingRunner {
+        outputs: VecDeque::from([CommandOutput::success(Vec::new())]),
+        ..RecordingRunner::default()
+    };
+    let report = execute_ci_trigger(
+        &trigger_plan(false, None),
+        &connection,
+        fixture.path(),
+        fixture.path(),
+        &CiPrograms::new("ssh"),
+        &mut runner,
+        &mut CopyMaterializer,
+    )
+    .unwrap();
+    assert!(
+        report
+            .ssh_argv
+            .iter()
+            .any(|arg| arg.to_string_lossy().starts_with("ProxyCommand="))
+    );
+    assert!(!report.ssh_argv.iter().any(|arg| arg == "-J"));
+    let rendered_proxy = report
+        .ssh_argv
+        .iter()
+        .find_map(|arg| arg.to_str()?.strip_prefix("ProxyCommand="))
+        .unwrap();
+    assert!(!rendered_proxy.contains("__ABIRD_CI_PROXY_"));
+    assert!(rendered_proxy.contains("proxy-key-0"), "{rendered_proxy}");
+    assert!(
+        rendered_proxy.contains("proxy-known-hosts"),
+        "{rendered_proxy}"
     );
 }
 
@@ -421,7 +545,9 @@ fn configured_material_is_private_and_ssh_receives_only_safe_argv_and_exact_stdi
         port: 22,
         private_key: Some(CiPrivateKey::Source(key)),
         known_hosts: Some("ci.example ssh-ed25519 synthetic-host-key".to_owned()),
-        proxy_jump: None,
+        proxy_command: None,
+        proxy_identity_keys: Vec::new(),
+        proxy_known_hosts: Vec::new(),
     };
     let patch = b"binary\0patch\n".to_vec();
     let plan = trigger_plan(true, Some(patch.clone()));
@@ -465,10 +591,7 @@ fn configured_material_is_private_and_ssh_receives_only_safe_argv_and_exact_stdi
         .iter()
         .map(|arg| arg.to_string_lossy())
         .collect::<Vec<_>>();
-    assert!(
-        args.iter()
-            .any(|arg| arg == "StrictHostKeyChecking=accept-new")
-    );
+    assert!(args.iter().any(|arg| arg == "StrictHostKeyChecking=yes"));
     assert!(args.iter().any(|arg| arg == "IdentitiesOnly=yes"));
     let remote = args.last().unwrap();
     assert!(remote.starts_with("__nixbot_argv64 "));
@@ -492,7 +615,9 @@ fn absent_known_hosts_uses_an_empty_file_and_propagates_remote_status() {
         port: 2222,
         private_key: None,
         known_hosts: None,
-        proxy_jump: None,
+        proxy_command: None,
+        proxy_identity_keys: Vec::new(),
+        proxy_known_hosts: Vec::new(),
     };
     let mut runner = RecordingRunner {
         outputs: VecDeque::from([CommandOutput {
@@ -524,6 +649,23 @@ fn absent_known_hosts_uses_an_empty_file_and_propagates_remote_status() {
             .any(|arg| arg == "StrictHostKeyChecking=accept-new")
     );
     assert_eq!(runner.known_hosts, Some((0o600, String::new())));
+
+    let routed = ci_runtime::CiConnection {
+        proxy_command: Some("cloudflared access ssh --hostname ci.example".to_owned()),
+        ..connection
+    };
+    let error = execute_ci_trigger(
+        &trigger_plan(false, None),
+        &routed,
+        fixture.path(),
+        fixture.path(),
+        &CiPrograms::new("ssh"),
+        &mut RecordingRunner::default(),
+        &mut CopyMaterializer,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("routed CI controller requires"), "{error}");
 }
 
 fn executable(directory: &Path, name: &str, body: &str) -> PathBuf {
@@ -553,7 +695,9 @@ fn system_executor_runs_the_argv_request_without_a_shell_wrapper() {
         port: 22,
         private_key: None,
         known_hosts: Some("ci.example ssh-ed25519 configured".to_owned()),
-        proxy_jump: None,
+        proxy_command: None,
+        proxy_identity_keys: Vec::new(),
+        proxy_known_hosts: Vec::new(),
     };
     let payload = b"synthetic patch".to_vec();
     let report = execute_ci_trigger(
@@ -640,7 +784,9 @@ fn age_key_materializer_uses_declared_identity_and_private_output_lifecycle() {
         port: 22,
         private_key: Some(CiPrivateKey::Source(source)),
         known_hosts: Some("ci.example ssh-ed25519 configured".to_owned()),
-        proxy_jump: None,
+        proxy_command: None,
+        proxy_identity_keys: Vec::new(),
+        proxy_known_hosts: Vec::new(),
     };
     let mut runner = RecordingRunner {
         outputs: VecDeque::from([CommandOutput::success(Vec::new())]),
@@ -700,7 +846,9 @@ fn empty_inline_private_key_is_rejected_before_ssh() {
         port: 22,
         private_key: Some(CiPrivateKey::Inline(" \n".to_owned())),
         known_hosts: Some("ci.example ssh-ed25519 configured".to_owned()),
-        proxy_jump: None,
+        proxy_command: None,
+        proxy_identity_keys: Vec::new(),
+        proxy_known_hosts: Vec::new(),
     };
     let mut runner = RecordingRunner::default();
     let error = execute_ci_trigger(

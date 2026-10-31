@@ -67,6 +67,146 @@ class NixbotScriptMixin:
 
 
 class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
+    def test_json_object_to_bash_map_preserves_scalar_bytes(self):
+        values = {
+            "text": "  first\\line\nsecond\tline\n\n",
+            "empty": "",
+            "null": None,
+            "port": 2222,
+            "flag": False,
+        }
+        result = self.run_script(
+            """
+            declare -A fields=([stale]=old)
+            json_object_to_bash_map "$JSON_FIELDS" fields
+            test -z "${fields[stale]+present}"
+            jq -cn --arg text "${fields[text]}" --arg empty "${fields[empty]}" \
+              --arg null "${fields[null]}" --arg port "${fields[port]}" \
+              --arg flag "${fields[flag]}" \
+              '{text:$text,empty:$empty,null:$null,port:$port,flag:$flag}'
+            json_object_to_bash_map '{}' fields
+            test "${#fields[@]}" -eq 0
+            """,
+            env={"JSON_FIELDS": json.dumps(values)},
+        )
+        self.assertEqual(
+            {**values, "null": "", "port": "2222", "flag": "false"},
+            json.loads(result.stdout),
+        )
+
+    def test_json_object_to_bash_map_rejects_unrepresentable_input(self):
+        for raw in [
+            "", "{", "[]", "null", '{} {}', '{"": "empty key"}',
+            '{"nested": {}}', '{"nested": []}',
+            '{"nul": "\\u0000"}', '{"\\u0000": "key"}',
+        ]:
+            with self.subTest(raw=raw):
+                result = self.run_script(
+                    """
+                    declare -A fields=([stale]=old)
+                    if json_object_to_bash_map "$JSON_FIELDS" fields; then
+                      exit 99
+                    fi
+                    test "${#fields[@]}" -eq 0
+                    """,
+                    env={"JSON_FIELDS": raw},
+                )
+                self.assertIn("jq:", result.stderr)
+
+    def test_ci_connection_preserves_multiline_inventory_fields(self):
+        for scope in ["host", "defaults"]:
+            for known in [
+                "controller.example ssh-ed25519 AAAA",
+                "controller.example ssh-ed25519 AAAA\n",
+                "controller.example ssh-ed25519 AAAA\ncontroller.example ssh-rsa BBBB\n\n",
+            ]:
+                with self.subTest(scope=scope, known=known):
+                    config = {
+                        "hosts": {
+                            "controller": {
+                                "target": "controller.example", "proxyJump": "gateway",
+                            },
+                            "gateway": {"target": "gateway.example"},
+                        },
+                        "config": {"hostDefaults": {
+                            "operatorUser": "operator", "operatorKey": "operator.age",
+                        }},
+                    }
+                    owner = (
+                        config["hosts"]["controller"] if scope == "host"
+                        else config["config"]["hostDefaults"]
+                    )
+                    owner["knownHosts"] = known
+                    result = self.run_script(
+                        f"""
+                        init_vars
+                        NIXBOT_CONFIG_PATH={self.work_dir / "nixbot.nix"}
+                        init_deploy_settings "$INVENTORY_JSON" "" 0
+                        CI_TRIGGER_HOST=controller
+                        resolve_ci_trigger_connection
+                        jq -cn --arg known "$CI_TRIGGER_KNOWN_HOSTS" \
+                          --arg command "$CI_TRIGGER_PROXY_COMMAND" \
+                          --argjson chain "$CI_TRIGGER_PROXY_CHAIN" \
+                          '{{known:$known,command:$command,chain:$chain}}'
+                        """,
+                        env={"INVENTORY_JSON": json.dumps(config)},
+                    )
+                    parsed = json.loads(result.stdout)
+                    self.assertEqual(known, parsed["known"])
+                    self.assertEqual("", parsed["command"])
+                    self.assertEqual("gateway", parsed["chain"]["node"])
+                    self.assertEqual(
+                        "operator@gateway.example", parsed["chain"]["connectTarget"],
+                    )
+                    self.assertEqual("operator.age", parsed["chain"]["keyPath"])
+
+    def test_deploy_and_role_contexts_preserve_multiline_inventory_fields(self):
+        known = "app.example ssh-ed25519 AAAA\napp.example ssh-rsa BBBB\n\n"
+        proxy = "  exec tunnel \\\n  --host %h\n"
+        config = {
+            "hosts": {"app": {
+                "target": "app.example", "port": 2222, "proxyCommand": proxy,
+            }},
+            "config": {"hostDefaults": {
+                "knownHosts": known, "key": "deploy.age",
+                "operatorUser": "operator", "operatorKey": "operator.age",
+                "ageIdentityKey": "identity.age",
+            }},
+        }
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=1
+            NIXBOT_CONFIG_PATH={self.work_dir / "nixbot.nix"}
+            init_deploy_settings "$INVENTORY_JSON" "" 0
+            should_use_local_self_target() {{ return 1; }}
+            build_deploy_ssh_contexts() {{
+              jq -cn --arg port "$3" --arg bootstrapPort "$4" \
+                --arg known "$5" --arg chain "$6" --arg proxy "$7" \
+                --arg key "$8" --arg operatorKey "$9" \
+                '{{port:$port,bootstrapPort:$bootstrapPort,known:$known,chain:$chain,
+                  proxy:$proxy,key:$key,operatorKey:$operatorKey}}'
+            }}
+            prepare_deploy_context app primary-only
+            test "$PREP_DEPLOY_AGE_IDENTITY_KEY" = identity.age
+            role_target='' role_nix_opts=''
+            declare -a role_opts=()
+            prepare_role_host_ssh_context app role_target role_opts role_nix_opts
+            test "$role_target" = root@app.example
+            CI_TRIGGER_HOST=app
+            resolve_ci_trigger_connection
+            test "$CI_TRIGGER_PROXY_COMMAND" = "$EXPECTED_PROXY"
+            """,
+            env={"INVENTORY_JSON": json.dumps(config), "EXPECTED_PROXY": proxy},
+        )
+        expected = {
+            "port": "2222", "bootstrapPort": "2222", "known": known,
+            "chain": "", "proxy": proxy, "key": "deploy.age", "operatorKey": "operator.age",
+        }
+        self.assertEqual(
+            [expected, expected], [json.loads(line) for line in result.stdout.splitlines()],
+        )
+
     def test_initialization_clears_only_inherited_git_checkout_selectors(self):
         selectors = (
             "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -438,7 +578,7 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             """
         )
 
-        self.assertEqual("10.10.30.80|gateway", result.stdout.strip())
+        self.assertEqual("10.10.0.80|", result.stdout.strip())
 
     def test_health_check_ignored_failed_system_units_follow_inventory_endpoint(self):
         result = self.run_script(
@@ -459,7 +599,7 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
               }},
               "config": {{}}
             }}'
-            init_deploy_settings "$config_json"
+            init_deploy_settings "$config_json" "" 0
             printf 'a1:'
             health_check_ignored_failed_system_units_for pvl-a1 | paste -sd, -
             printf 'l5:'
@@ -787,12 +927,13 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             CI_TRIGGER=1
             NIXBOT_CLEAN_MODE=all
             SHA=""
-            load_deploy_config_json() { printf '{}'; }
+            load_deploy_config_bundle() { printf '{"config":{},"override":{},"overrideActive":0}'; }
             init_deploy_settings() { :; }
             apply_config_defaults() {
               CI_TRIGGER_USER=ci
               CI_TRIGGER_HOST=ci-host
             }
+            resolve_ci_trigger_connection() { :; }
             configure_ci_trigger_ssh_opts() { CI_TRIGGER_SSH_OPTS=(); }
             encode_ssh_command_args() { printf '%s\n' "$*"; }
             ssh() {
@@ -819,8 +960,9 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             SHA=abcdef0
             CI_TRIGGER_USER=ci
             CI_TRIGGER_HOST=ci-host
-            load_deploy_config_json() { printf '{}'; }
+            load_deploy_config_bundle() { printf '{"config":{},"override":{},"overrideActive":0}'; }
             init_deploy_settings() { :; }
+            resolve_ci_trigger_connection() { :; }
             configure_ci_trigger_ssh_opts() { CI_TRIGGER_SSH_OPTS=(); }
             encode_ssh_command_args() { printf '%s\n' "$*"; }
             ssh() {
@@ -846,8 +988,9 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             SHA=abcdef0
             CI_TRIGGER_USER=ci
             CI_TRIGGER_HOST=ci-host
-            load_deploy_config_json() { printf '{}'; }
+            load_deploy_config_bundle() { printf '{"config":{},"override":{},"overrideActive":0}'; }
             init_deploy_settings() { :; }
+            resolve_ci_trigger_connection() { :; }
             configure_ci_trigger_ssh_opts() { CI_TRIGGER_SSH_OPTS=(); }
             encode_ssh_command_args() { printf '%s\\n' "$*"; }
             ssh() { printf '%s\\n' "$*"; }
@@ -867,8 +1010,9 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             SHA=abcdef0
             CI_TRIGGER_USER=ci
             CI_TRIGGER_HOST=ci-host
-            load_deploy_config_json() { printf '{}'; }
+            load_deploy_config_bundle() { printf '{"config":{},"override":{},"overrideActive":0}'; }
             init_deploy_settings() { :; }
+            resolve_ci_trigger_connection() { :; }
             configure_ci_trigger_ssh_opts() { CI_TRIGGER_SSH_OPTS=(); }
             encode_ssh_command_args() { printf '%s\n' "$*"; }
             ssh() {
@@ -892,8 +1036,9 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             SHA=abcdef0
             CI_TRIGGER_USER=ci
             CI_TRIGGER_HOST=ci-host
-            load_deploy_config_json() { printf '{}'; }
+            load_deploy_config_bundle() { printf '{"config":{},"override":{},"overrideActive":0}'; }
             init_deploy_settings() { :; }
+            resolve_ci_trigger_connection() { :; }
             configure_ci_trigger_ssh_opts() { CI_TRIGGER_SSH_OPTS=(); }
             encode_ssh_command_args() { printf '%s\n' "$*"; }
             ssh() {
@@ -1577,12 +1722,14 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
                 "deploy": "optional",
                 "wait": 7
               },
-              "db": {"target": "10.0.0.11"},
+              "db": {"target": "10.0.0.11", "proxyJump": "parent"},
+              "tunnel": {"target": "tunnel.example", "proxyCommand": "tunnel --credential DO-NOT-DISPLAY"},
               "skipped": {"skip": true}
             }'
             filter_runnable_hosts_json '["parent","app","skipped","db"]'
             bash_args_to_json_array "${FULLY_SKIPPED_HOSTS[@]}"
-            emit_annotated_selected_hosts '["parent","app","skipped","db"]'
+            emit_annotated_selected_hosts '["parent","app","skipped","db","tunnel"]'
+            print_selected_hosts_block '["parent","app","skipped","db","tunnel"]'
             """,
         )
 
@@ -1593,10 +1740,16 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
             [
                 "parent (target: parent)",
                 "app (target: 10.0.0.10, deploy: optional, wait: 7s, parent: parent)",
-                "db (target: 10.0.0.11)",
+                "db (target: 10.0.0.11) via parent",
+                "tunnel (target: tunnel.example) via proxy-command",
             ],
             lines[2:],
         )
+        self.assertEqual(
+            "Hosts:\n" + "".join(f"  - {line}\n" for line in lines[2:]),
+            result.stderr,
+        )
+        self.assertNotIn("DO-NOT-DISPLAY", result.stdout + result.stderr)
 
     def test_control_plane_unit_is_last_by_default_and_first_when_requested(self):
         result = self.run_script(
@@ -7654,7 +7807,7 @@ EOF_SCRIPT
                 }}
               }}
             }}'
-            init_deploy_settings "$config_json"
+            init_deploy_settings "$config_json" "" 0
             resolve_deploy_target app
             resolve_deploy_target via
             resolve_proxy_chain hop
@@ -7697,7 +7850,7 @@ EOF_SCRIPT
                 }}
               }}
             }}'
-            init_deploy_settings "$config_json"
+            init_deploy_settings "$config_json" "" 0
             resolve_deploy_target app
             """
         )
@@ -7723,7 +7876,7 @@ EOF_SCRIPT
                 }}
               }}
             }}'
-            init_deploy_settings "$config_json"
+            init_deploy_settings "$config_json" "" 0
             resolve_deploy_target app
             """
         )
@@ -7742,7 +7895,7 @@ EOF_SCRIPT
             DRY_RUN=0
             NIXBOT_CONFIG_PATH={self.work_dir / "nixbot.nix"}
             config_json='{{"hosts": {{"app": {{"target": "10.0.0.5"}}}}, "config": {{"hostDefaults": {{"user": "nixbot"}}}}}}'
-            init_deploy_settings "$config_json"
+            init_deploy_settings "$config_json" "" 0
             build_deploy_ssh_contexts() {{ return 0; }}
             ensure_primary_deploy_connectivity() {{
               PRIMARY_PROBE_LAST_OUTPUT='permission denied'
@@ -7770,7 +7923,7 @@ EOF_SCRIPT
             FORCE_BOOTSTRAP_PATH=1
             NIXBOT_CONFIG_PATH={self.work_dir / "nixbot.nix"}
             config_json='{{"hosts": {{"app": {{"target": "10.0.0.5"}}}}, "config": {{"hostDefaults": {{"user": "nixbot"}}}}}}'
-            init_deploy_settings "$config_json"
+            init_deploy_settings "$config_json" "" 0
             build_deploy_ssh_contexts() {{ return 0; }}
             set +e
             prepare_deploy_context app
@@ -9630,6 +9783,1013 @@ EOF_SCRIPT
         self.assertNotEqual(green, red)
         self.assertNotEqual(green, gray)
         self.assertNotEqual(red, gray)
+
+class TestNamedRouteSelection(NixbotScriptMixin, unittest.TestCase):
+    CF_PROXY = "cloudflared access ssh --hostname %h"
+
+    @staticmethod
+    def _merge(base, override):
+        if isinstance(base, dict) and isinstance(override, dict):
+            merged = dict(base)
+            for key, value in override.items():
+                merged[key] = TestNamedRouteSelection._merge(merged.get(key), value)
+            return merged
+        return override
+
+    def _config(self):
+        return {
+            "hosts": {
+                "controller": {
+                    "target": "10.0.0.20",
+                    "resourceId": "managed-controller",
+                    "proxyJump": "edge",
+                },
+                "edge": {
+                    "target": "10.0.0.10",
+                    "routes": {
+                        "cf": {
+                            "target": "edge.example",
+                            "port": 2222,
+                            "proxyCommand": self.CF_PROXY,
+                        },
+                        "ts": "edge",
+                    },
+                },
+            },
+            "config": {},
+        }
+
+    def _normalize(
+        self,
+        base,
+        *,
+        request="auto",
+        kind="developer",
+        aliases=(),
+        override=None,
+        override_active=None,
+        check=True,
+    ):
+        override = override or {}
+        if override_active is None:
+            override_active = int(bool(override))
+        merged = self._merge(base, override) if override_active else base
+        return self.run_script(
+            r"""
+            NIXBOT_EXECUTOR_KIND="${TEST_KIND}"
+            NIXBOT_ROUTE_REQUEST="${TEST_ROUTE}"
+            if [ "${TEST_ROUTE}" = auto ]; then
+              NIXBOT_ROUTE_EXPLICIT=0
+            else
+              NIXBOT_ROUTE_EXPLICIT=1
+            fi
+            NIXBOT_ROUTE_SOURCE_HINT=cli
+            read -r -a CURRENT_HOST_IDENTITY_ALIASES <<<"${TEST_ALIASES}"
+            CURRENT_HOST_ALIASES=(spoofed.example)
+            CURRENT_HOST_ADDRESSES=(10.0.0.20)
+            configure_deploy_hosts \
+              "${TEST_CONFIG}" "${TEST_BASE}" "${TEST_OVERRIDE}" "${TEST_OVERRIDE_ACTIVE}"
+            """,
+            env={
+                "TEST_KIND": kind,
+                "TEST_ROUTE": request,
+                "TEST_ALIASES": " ".join(aliases),
+                "TEST_CONFIG": json.dumps(merged),
+                "TEST_BASE": json.dumps(base),
+                "TEST_OVERRIDE": json.dumps(override),
+                "TEST_OVERRIDE_ACTIVE": str(override_active),
+            },
+            check=check,
+        )
+
+    def test_auto_route_matrix_is_exhaustive(self):
+        base = self._config()
+        cases = []
+        for kind in ("developer", "managed"):
+            for request in ("auto", "default", "cf", "ts"):
+                for override_route in (None, "auto", "default", "cf", "ts"):
+                    if kind == "managed" and override_route is not None:
+                        continue
+                    override = (
+                        {"config": {"route": override_route}}
+                        if override_route is not None
+                        else {}
+                    )
+                    result = self._normalize(
+                        base,
+                        request=request,
+                        kind=kind,
+                        aliases=("managed-controller",) if kind == "managed" else (),
+                        override=override,
+                    )
+                    hosts = json.loads(result.stdout)
+                    edge = hosts["edge"]
+                    if request != "auto":
+                        active = request
+                        source = "cli"
+                    elif override_route in ("default", "cf", "ts"):
+                        active = override_route
+                        source = "override"
+                    elif kind == "managed":
+                        active = "default"
+                        source = "managed-self"
+                    else:
+                        active = "cf"
+                        source = "developer"
+                    cases.append((kind, request, override_route, active, source))
+                    self.assertEqual(active, edge["routing"]["active"])
+                    self.assertEqual(source, edge["routing"]["source"])
+                    expected_target = {
+                        "default": "10.0.0.10",
+                        "cf": "edge.example",
+                        "ts": "edge",
+                    }[active]
+                    self.assertEqual(expected_target, edge["target"])
+        self.assertEqual(24, len(cases))
+
+    def test_no_override_is_file_scoped_only(self):
+        result = self.run_script(
+            r"""
+            init_vars
+            ACTION=deploy
+            NIXBOT_CONFIG_OVERRIDE_PATH=/tmp/operator.override.nix
+            parse_args --no-override --route=cf
+            printf '%s|%s|%s\n' \
+              "${NIXBOT_CONFIG_OVERRIDE_PATH}" \
+              "${SKIP_CONFIG_OVERRIDE}" \
+              "${NIXBOT_ROUTE_REQUEST}"
+            """
+        )
+        self.assertEqual("|1|cf", result.stdout.strip())
+
+        normalized = json.loads(
+            self._normalize(
+                self._config(),
+                request="auto",
+                override={
+                    "config": {"route": "default"},
+                    "hosts": {
+                        "edge": {
+                            "routes": {"cf": {"target": "ignored.example"}}
+                        }
+                    },
+                },
+                override_active=0,
+            ).stdout
+        )
+        self.assertEqual("cf", normalized["edge"]["routing"]["active"])
+        self.assertEqual("developer", normalized["edge"]["routing"]["source"])
+
+    def test_overlay_paths_bind_to_the_invocation_cwd(self):
+        invocation = self.work_dir / "invocation"
+        invocation.mkdir()
+        config = invocation / "hosts.nix"
+        config.write_text("{}\n", encoding="utf-8")
+        first = invocation / "first.override.nix"
+        second = invocation / "second.override.nix"
+        env_override = invocation / "env.override.nix"
+        for path in (first, second, env_override):
+            path.write_text("{}\n", encoding="utf-8")
+
+        result = self.run_script(
+            r"""
+            cd "${TEST_INVOCATION}"
+            init_vars
+            ACTION=deploy
+            parse_args --config-override first.override.nix \
+              --config "${TEST_CONFIG}" --config-override=second.override.nix \
+              --repo-path mirror
+            printf '%s\n%s\n' "${NIXBOT_CONFIG_OVERRIDE_PATH}" "${REPO_ROOT}"
+            """,
+            env={
+                "TEST_INVOCATION": str(invocation),
+                "TEST_CONFIG": str(config),
+                "ABIRD_HOST_MANAGER_CONFIG_OVERRIDE": "env.override.nix",
+            },
+        )
+        self.assertEqual([str(second), str(invocation / "mirror")], result.stdout.splitlines())
+
+    def test_reexec_pins_implicit_sibling_and_absence(self):
+        invocation = self.work_dir / "invocation"
+        other = self.work_dir / "other"
+        invocation.mkdir()
+        other.mkdir()
+        config = invocation / "hosts.nix"
+        sibling = invocation / "hosts.override.nix"
+        config.write_text("{}\n", encoding="utf-8")
+        sibling.write_text("{}\n", encoding="utf-8")
+        repo_script = self.work_dir / "repo-script.sh"
+        repo_script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+        present = self.run_script(
+            r"""
+            cd "${TEST_INVOCATION}"
+            repo_worktree_script_path() { printf '%s\n' "${TEST_REPO_SCRIPT}"; }
+            exec() { printf 'exec %s\n' "$*"; }
+            init_vars
+            ACTION=deploy
+            REEXEC_FROM_REPO=1
+            parse_args --config "${TEST_CONFIG}"
+            pin_selected_config_override
+            cd "${TEST_OTHER}"
+            printf 'selected=%s\n' "$(selected_config_override_path "${NIXBOT_CONFIG_PATH}")"
+            reexec_repo_script_if_needed deploy --config "${TEST_CONFIG}"
+            """,
+            env={
+                "TEST_INVOCATION": str(invocation),
+                "TEST_OTHER": str(other),
+                "TEST_CONFIG": str(config),
+                "TEST_REPO_SCRIPT": str(repo_script),
+            },
+        )
+        lines = present.stdout.splitlines()
+        self.assertEqual(f"selected={sibling}", lines[0])
+        self.assertTrue(lines[1].endswith(f"--config-override {sibling}"), lines[1])
+
+        sibling.unlink()
+        absent = self.run_script(
+            r"""
+            cd "${TEST_INVOCATION}"
+            repo_worktree_script_path() { printf '%s\n' "${TEST_REPO_SCRIPT}"; }
+            exec() { printf 'exec %s\n' "$*"; }
+            init_vars
+            ACTION=deploy
+            REEXEC_FROM_REPO=1
+            parse_args --config "${TEST_CONFIG}"
+            pin_selected_config_override
+            printf '{}\n' >"${TEST_SIBLING}"
+            cd "${TEST_OTHER}"
+            printf 'selected=%s\n' "$(selected_config_override_path "${NIXBOT_CONFIG_PATH}")"
+            reexec_repo_script_if_needed deploy --config "${TEST_CONFIG}"
+            """,
+            env={
+                "TEST_INVOCATION": str(invocation),
+                "TEST_OTHER": str(other),
+                "TEST_CONFIG": str(config),
+                "TEST_SIBLING": str(sibling),
+                "TEST_REPO_SCRIPT": str(repo_script),
+            },
+        )
+        lines = absent.stdout.splitlines()
+        self.assertEqual("selected=", lines[0])
+        self.assertTrue(lines[1].endswith("--no-override"), lines[1])
+
+    def test_route_flag_and_environment_are_validated(self):
+        result = self.run_script(
+            r"""
+            NIXBOT_ROUTE=default
+            init_vars
+            ACTION=deploy
+            parse_args --route cf
+            printf '%s|%s\n' "${NIXBOT_ROUTE_REQUEST}" "${NIXBOT_ROUTE_SOURCE_HINT}"
+            """
+        )
+        self.assertEqual("cf|cli", result.stdout.strip())
+
+        dependencies = self.run_script(
+            r"""
+            printf '%s\n' "${NIXBOT_RUNTIME_COMMANDS[@]}"
+            """
+        )
+        self.assertTrue(
+            {"awk", "getent", "hostname", "ip"}.issubset(
+                set(dependencies.stdout.splitlines())
+            )
+        )
+
+        repo_path = self.run_script(
+            'NIXBOT_REPO_PATH=/tmp/repo\ninit_vars\nprintf "%s\\n" "$NIXBOT_EXECUTOR_KIND"\n'
+        )
+        self.assertEqual("developer", repo_path.stdout.strip())
+        controller = self.run_script(
+            'ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION=1\ninit_vars\nprintf "%s\\n" "$NIXBOT_EXECUTOR_KIND"\n'
+        )
+        self.assertEqual("managed", controller.stdout.strip())
+
+        for body, message in (
+            ("NIXBOT_ROUTE=sideways\ninit_vars\nACTION=deploy\nparse_args\n", "auto|default|cf|ts"),
+            ("init_vars\nACTION=deploy\nparse_args --route=sideways\n", "auto|default|cf|ts"),
+        ):
+            invalid = self.run_script(body, check=False)
+            self.assertNotEqual(0, invalid.returncode)
+            self.assertIn(message, invalid.stderr)
+
+    def test_routes_cf_requires_complete_target(self):
+        cases = (
+            ({"routes": {"cf": {}}}, "target is required"),
+            ({"routes": {"cf": {"target": ""}}}, "non-empty string"),
+            ({"routes": {"cf": False}}, "must be a string or attrset"),
+        )
+        for host_fragment, message in cases:
+            with self.subTest(host_fragment=host_fragment):
+                config = {"hosts": {"edge": {"target": "10.0.0.1", **host_fragment}}, "config": {}}
+                result = self._normalize(config, request="cf", check=False)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("edge", result.stderr)
+                self.assertIn(message, result.stderr)
+
+    def test_routes_ts_string_is_a_complete_target_only_route(self):
+        hosts = json.loads(self._normalize(self._config(), request="ts").stdout)
+        self.assertEqual("edge", hosts["edge"]["target"])
+        self.assertNotIn("port", hosts["edge"])
+        self.assertNotIn("proxyCommand", hosts["edge"])
+        self.assertEqual("edge", hosts["controller"]["routing"]["routeHop"])
+        self.assertEqual("ts", hosts["controller"]["routing"]["hops"][0]["selected"])
+
+        for value in ("", False, None):
+            with self.subTest(value=value):
+                invalid = {
+                    "hosts": {
+                        "edge": {
+                            "target": "10.0.0.1",
+                            "routes": {"ts": value},
+                        }
+                    },
+                    "config": {},
+                }
+                result = self._normalize(invalid, request="ts", check=False)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("routes.ts", result.stderr)
+
+    def test_route_shapes_ports_false_values_and_ownership_are_validated(self):
+        cases = (
+            ({"hosts": False, "config": {}}, "hosts must be an attrset"),
+            ({"hosts": None, "config": {}}, "hosts must be an attrset"),
+            ({"hosts": {}, "config": False}, "config must be an attrset"),
+            ({"hosts": {}, "config": None}, "config must be an attrset"),
+            ({"hosts": {"edge": {}}, "config": {"hostDefaults": False}}, "config.hostDefaults must be an attrset"),
+            ({"hosts": {"edge": {}}, "config": {"hostDefaults": None}}, "config.hostDefaults must be an attrset"),
+            ({"hosts": {"edge": {"resourceId": False}}, "config": {}}, "resourceId must be a non-empty string"),
+            ({"hosts": {"edge": {"groups": False}}, "config": {}}, "groups must be a list"),
+            ({"hosts": {"edge": {"groups": None}}, "config": {}}, "groups must be a list"),
+            ({"hosts": {"edge": {"target": False}}, "config": {}}, "target must be a non-empty string"),
+            ({"hosts": {"edge": {"port": 0}}, "config": {}}, "integer from 1 to 65535"),
+            ({"hosts": {"edge": {"routes": {"default": {"target": "x"}}}}, "config": {}}, "implicit default route"),
+            ({"hosts": {"edge": {"routes": {"vpn": {"target": "x"}}}}, "config": {}}, "supports only cf and ts"),
+            ({"hosts": {"edge": {"nixbotConfig": False}}, "config": {}}, "nixbotConfig must be an attrset"),
+            ({"hosts": {"edge": {"route": {"selected": "default"}}}, "config": {}}, "normalized routing state"),
+            ({"hosts": {"edge": {}}, "config": {"route": "default"}}, "tracked config.route is forbidden"),
+        )
+        for config, message in cases:
+            with self.subTest(message=message):
+                result = self._normalize(config, request="default", check=False)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(message, result.stderr)
+
+        managed_override = self._normalize(
+            self._config(),
+            kind="managed",
+            aliases=("managed-controller",),
+            override={"config": {"route": "cf"}},
+            check=False,
+        )
+        self.assertNotEqual(0, managed_override.returncode)
+        self.assertIn("direct developer", managed_override.stderr)
+
+        managed_credentials = self._normalize(
+            self._config(),
+            kind="managed",
+            aliases=("managed-controller",),
+            override={"config": {"hostDefaults": {"operatorUser": "pvl"}}},
+            check=False,
+        )
+        self.assertNotEqual(0, managed_credentials.returncode)
+        self.assertIn("direct developer", managed_credentials.stderr)
+
+    def test_managed_auto_identity_uses_exact_tracked_names_only(self):
+        base = self._config()
+        false_self = self._normalize(base, kind="managed", aliases=("not-managed",), check=False)
+        self.assertNotEqual(0, false_self.returncode)
+        self.assertIn("does not match any tracked host", false_self.stderr)
+
+        fqdn_collision = self._normalize(
+            {"hosts": {"node.site-b": {}}, "config": {}},
+            kind="managed",
+            aliases=("node.site-a",),
+            check=False,
+        )
+        self.assertNotEqual(0, fqdn_collision.returncode)
+        self.assertIn("does not match any tracked host", fqdn_collision.stderr)
+
+        matched = json.loads(
+            self._normalize(
+                base,
+                kind="managed",
+                aliases=("managed-controller",),
+            ).stdout
+        )
+        self.assertEqual("default", matched["controller"]["routing"]["active"])
+        self.assertEqual("controller", matched["controller"]["routing"]["self"])
+
+        key_wins = self._config()
+        key_wins["hosts"]["managed-controller"] = {"target": "10.0.0.21"}
+        resolved = json.loads(
+            self._normalize(
+                key_wins,
+                kind="managed",
+                aliases=("managed-controller",),
+            ).stdout
+        )
+        self.assertEqual(
+            "managed-controller",
+            resolved["controller"]["routing"]["self"],
+        )
+
+        colliding_developer = json.loads(
+            self._normalize(
+                base,
+                kind="developer",
+                aliases=("managed-controller",),
+            ).stdout
+        )
+        self.assertEqual("cf", colliding_developer["controller"]["routing"]["active"])
+        self.assertEqual("developer", colliding_developer["controller"]["routing"]["source"])
+
+        ambiguous_base = {
+            "hosts": {
+                "a": {"resourceId": "same"},
+                "b": {"resourceId": "same"},
+            },
+            "config": {},
+        }
+        ambiguous = self._normalize(
+            ambiguous_base,
+            kind="managed",
+            aliases=("same",),
+            check=False,
+        )
+        self.assertNotEqual(0, ambiguous.returncode)
+        self.assertIn("a, b", ambiguous.stderr)
+
+    def test_explicit_route_bypasses_managed_identity(self):
+        for route in ("default", "cf", "ts"):
+            with self.subTest(route=route):
+                result = self._normalize(
+                    self._config(),
+                    request=route,
+                    kind="managed",
+                    aliases=(),
+                )
+                hosts = json.loads(result.stdout)
+                self.assertEqual(route, hosts["edge"]["routing"]["active"])
+                self.assertEqual("cli", hosts["edge"]["routing"]["source"])
+
+        ineffective = self._normalize(
+            {"hosts": {"internal": {"target": "10.0.0.1"}}, "config": {}},
+            request="cf",
+            check=False,
+        )
+        self.assertNotEqual(0, ineffective.returncode)
+        self.assertIn("does not affect any host path", ineffective.stderr)
+
+        unrelated = {
+            "hosts": {
+                "internal": {"target": "10.0.0.1"},
+                "public": {
+                    "target": "10.0.0.2",
+                    "routes": {"cf": {"target": "public.example"}},
+                },
+            },
+            "config": {},
+        }
+        normalized = self._normalize(unrelated, request="cf").stdout
+        selected = self.run_script(
+            r'''
+            NIXBOT_ROUTE_REQUEST=cf
+            NIXBOT_HOSTS_JSON="${TEST_HOSTS}"
+            validate_explicit_named_route_selection '["internal"]'
+            ''',
+            env={"TEST_HOSTS": normalized},
+            check=False,
+        )
+        self.assertNotEqual(0, selected.returncode)
+        self.assertIn("selected host path", selected.stderr)
+
+    def test_recursive_route_fallback_uses_route_specific_transport(self):
+        hosts = json.loads(self._normalize(self._config(), request="cf").stdout)
+        self.assertEqual("default", hosts["controller"]["routing"]["selected"])
+        self.assertTrue(hosts["controller"]["routing"]["fallback"])
+        self.assertEqual("edge", hosts["controller"]["routing"]["routeHop"])
+        self.assertEqual("cf", hosts["edge"]["routing"]["selected"])
+        self.assertEqual("2222", hosts["edge"]["port"])
+        self.assertNotIn("proxyJump", hosts["edge"])
+        self.assertEqual(self.CF_PROXY, hosts["edge"]["proxyCommand"])
+
+        route_specific_jump = {
+            "hosts": {
+                "app": {
+                    "target": "10.0.0.3",
+                    "proxyJump": "internal",
+                    "routes": {
+                        "cf": {
+                            "target": "app.cf",
+                            "proxyJump": "edge",
+                        }
+                    },
+                },
+                "internal": {"target": "10.0.0.2"},
+                "edge": {
+                    "target": "10.0.0.1",
+                    "routes": {"cf": {"target": "edge.cf"}},
+                },
+            },
+            "config": {},
+        }
+        routed = json.loads(self._normalize(route_specific_jump, request="cf").stdout)
+        self.assertEqual("edge", routed["app"]["proxyJump"])
+        self.assertEqual("app.cf", routed["app"]["target"])
+
+        atomic = json.loads(
+            self._normalize(
+                self._config(),
+                request="cf",
+                override={
+                    "hosts": {
+                        "edge": {
+                            "routes": {
+                                "cf": {"target": "override.example"}
+                            }
+                        }
+                    }
+                },
+            ).stdout
+        )
+        self.assertEqual("override.example", atomic["edge"]["target"])
+        self.assertNotIn("proxyCommand", atomic["edge"])
+        self.assertNotIn("port", atomic["edge"])
+
+        switched = json.loads(
+            self._normalize(
+                self._config(),
+                request="cf",
+                override={
+                    "hosts": {
+                        "edge": {
+                            "routes": {
+                                "cf": {
+                                    "target": "override.example",
+                                    "proxyJump": "jump",
+                                }
+                            }
+                        },
+                        "jump": {},
+                    }
+                },
+            ).stdout
+        )
+        self.assertEqual("jump", switched["edge"]["proxyJump"])
+        self.assertNotIn("proxyCommand", switched["edge"])
+
+        masked_invalid = self._normalize(
+            {
+                "hosts": {
+                    "edge": {
+                        "routes": {
+                            "cf": {
+                                "target": "tracked.example",
+                                "proxyJump": "missing",
+                            }
+                        }
+                    }
+                },
+                "config": {},
+            },
+            request="cf",
+            override={
+                "hosts": {
+                    "edge": {
+                        "routes": {
+                            "cf": {"target": "override.example"}
+                        }
+                    }
+                }
+            },
+            check=False,
+        )
+        self.assertNotEqual(0, masked_invalid.returncode)
+        self.assertIn("unknown host missing", masked_invalid.stderr)
+
+        for config, message in (
+            (
+                {"hosts": {"a": {"routes": {"cf": {"target": "x", "proxyJump": "missing"}}}}, "config": {}},
+                "unknown host missing",
+            ),
+            (
+                {
+                    "hosts": {
+                        "a": {"routes": {"cf": {"target": "a", "proxyJump": "b"}}},
+                        "b": {"routes": {"cf": {"target": "b", "proxyJump": "a"}}},
+                    },
+                    "config": {},
+                },
+                "a -> b -> a",
+            ),
+        ):
+            failed = self._normalize(config, request="default", check=False)
+            self.assertNotEqual(0, failed.returncode)
+            self.assertIn(message, failed.stderr)
+
+        fixture = json.loads(
+            (self.repo_root / "pkgs/tools/abird-host-manager/tests/fixtures/named-routes.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(2, fixture["schemaVersion"])
+        for case in fixture["cases"]:
+            with self.subTest(shared_route_fixture=case["name"]):
+                routed = json.loads(
+                    self._normalize(case["inventory"], request=case["request"]).stdout
+                )
+                for host, expected in case["expected"].items():
+                    self.assertEqual(expected["target"], routed[host]["target"])
+                    self.assertEqual(
+                        expected["selected"], routed[host]["routing"]["selected"]
+                    )
+                    self.assertEqual(
+                        expected["fallback"], routed[host]["routing"]["fallback"]
+                    )
+                    for field in ("proxyJump", "proxyCommand"):
+                        if field in expected:
+                            self.assertEqual(expected[field], routed[host].get(field))
+
+    def test_routing_failure_hints_name_route_fixes(self):
+        cf = self.run_script(
+            r"""
+            NIXBOT_EXECUTOR_KIND=developer
+            NIXBOT_HOSTS_JSON='{"edge":{"target":"edge.example","routing":{"active":"cf","selected":"cf","source":"cli","fallback":false,"effective":true,"routeHop":"edge"}}}'
+            host_routing_failure_hint edge
+            """
+        )
+        self.assertIn("cf via edge.example (--route)", cf.stderr)
+        self.assertIn("--route=default", cf.stderr)
+        self.assertIn('config.route = "default"', cf.stderr)
+
+        unavailable = self.run_script(
+            r"""
+            NIXBOT_HOSTS_JSON='{"edge":{"target":"10.0.0.1","routing":{"active":"cf","selected":"default","source":"cli","fallback":true,"effective":false}}}'
+            host_routing_failure_hint edge
+            """
+        )
+        self.assertIn("route cf is unavailable", unavailable.stderr)
+
+        classifier = self.run_script(
+            r"""
+            for text in \
+              "ssh: connect to host x port 22: Connection refused" \
+              "Connection closed by remote host" \
+              "Host key verification failed." \
+              "error: No space left on device"; do
+              host_probe_output_suggests_routing "${text}" && printf 'hint\n' || printf 'silent\n'
+            done
+            """
+        )
+        self.assertEqual(["hint", "hint", "silent", "silent"], classifier.stdout.splitlines())
+
+    def test_list_hosts_keeps_target_and_appends_only_proxy(self):
+        config_path = self.work_dir / "hosts.nix"
+        config_path.write_text("{}\n", encoding="utf-8")
+        config = self._config()
+        result = self.run_script(
+            r"""
+            init_vars
+            NIXBOT_EXECUTOR_KIND=developer
+            NIXBOT_ROUTE_REQUEST=cf
+            NIXBOT_ROUTE_EXPLICIT=1
+            NIXBOT_ROUTE_SOURCE_HINT=cli
+            NIXBOT_CONFIG_PATH="${TEST_CONFIG_PATH}"
+            load_deploy_config_bundle() {
+              jq -cn --argjson config "${TEST_CONFIG}" \
+                '{config:$config,base:$config,override:{},overrideActive:0}'
+            }
+            load_all_hosts_json() { printf '%s\n' '["controller"]'; }
+            run_list_hosts_action
+            """,
+            env={
+                "TEST_CONFIG_PATH": str(config_path),
+                "TEST_CONFIG": json.dumps(config),
+            },
+        )
+        self.assertEqual(
+            "  - controller (target: 10.0.0.20) via edge\n",
+            result.stderr.split("Hosts:\n", 1)[1],
+        )
+
+    def test_named_hop_renders_effective_cloudflared_egress(self):
+        hosts = json.loads(self._normalize(self._config(), request="cf").stdout)
+        result = self.run_script(
+            r"""
+            NIXBOT_HOSTS_JSON="${TEST_HOSTS}"
+            host_routing_line controller
+            host_routing_line edge
+            """,
+            env={"TEST_HOSTS": json.dumps(hosts)},
+        )
+        self.assertEqual(
+            [
+                "  routing: cf via 10.0.0.20 through edge + cloudflared (fallback to default; --route)",
+                "  routing: cf via edge.example + cloudflared (--route)",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_route_jump_and_command_conflict_fails(self):
+        for host in (
+            {"target": "x", "proxyJump": "jump", "proxyCommand": "proxy"},
+            {
+                "target": "x",
+                "routes": {
+                    "cf": {
+                        "target": "y",
+                        "proxyJump": "jump",
+                        "proxyCommand": "proxy",
+                    }
+                },
+            },
+        ):
+            config = {"hosts": {"app": host, "jump": {}}, "config": {}}
+            failed = self._normalize(config, request="default", check=False)
+            self.assertNotEqual(0, failed.returncode)
+            self.assertIn("cannot define both proxyJump and proxyCommand", failed.stderr)
+
+        valid = {
+            "hosts": {
+                "app": {
+                    "target": "10.0.0.2",
+                    "proxyJump": "jump",
+                    "routes": {
+                        "cf": {
+                            "target": "app.example",
+                            "proxyCommand": self.CF_PROXY,
+                        }
+                    },
+                },
+                "jump": {},
+            },
+            "config": {},
+        }
+        routed = json.loads(self._normalize(valid, request="cf").stdout)
+        self.assertNotIn("proxyJump", routed["app"])
+        self.assertIn("proxyCommand", routed["app"])
+
+    def test_route_identity_uses_tracked_base_only(self):
+        base = {"hosts": {}, "config": {}}
+        override = {
+            "hosts": {"local": {"resourceId": "managed-controller"}},
+            "config": {},
+        }
+        failed = self._normalize(
+            base,
+            kind="managed",
+            aliases=("managed-controller",),
+            override=override,
+            check=False,
+        )
+        self.assertNotEqual(0, failed.returncode)
+        self.assertIn("direct developer execution", failed.stderr)
+
+        tracked = self._config()
+        rejected = self._normalize(
+            tracked,
+            kind="managed",
+            aliases=("managed-controller",),
+            override={"hosts": {"local": {"resourceId": "managed-controller"}}},
+            check=False,
+        )
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn("direct developer execution", rejected.stderr)
+
+    def test_run_banner_reports_named_route_decision(self):
+        result = self.run_script(
+            r"""
+            NIXBOT_ROUTE_REQUEST=auto
+            NIXBOT_ROUTE_ACTIVE=default
+            NIXBOT_ROUTE_SOURCE=managed-self
+            NIXBOT_ROUTE_SELF=controller
+            log_routing_context
+            NIXBOT_ROUTE_ACTIVE=cf
+            NIXBOT_ROUTE_SOURCE=developer
+            NIXBOT_ROUTE_SELF=
+            log_routing_context
+            NIXBOT_ROUTE_REQUEST=cf
+            NIXBOT_ROUTE_SOURCE=cli
+            log_routing_context
+            NIXBOT_ROUTE_ACTIVE=
+            log_routing_context
+            """
+        )
+        self.assertEqual(
+            [
+                "Route: default (auto: managed self=controller)",
+                "Route: cf (auto: developer)",
+                "Route: cf (--route)",
+            ],
+            result.stderr.splitlines(),
+        )
+
+    def test_no_cf_route_falls_back_without_changing_global_route(self):
+        config = {"hosts": {"plain": {"target": "10.0.0.1"}}, "config": {}}
+        hosts = json.loads(self._normalize(config, request="auto").stdout)
+        routing = hosts["plain"]["routing"]
+        self.assertEqual("cf", routing["active"])
+        self.assertEqual("default", routing["selected"])
+        self.assertTrue(routing["fallback"])
+        self.assertFalse(routing["effective"])
+        self.assertNotIn("routeHop", routing)
+
+    def test_copy_routing_hint_requires_transport_loss(self):
+        body = r"""
+        init_vars
+        PREP_DEPLOY_LOCAL_EXEC=0
+        PREP_DEPLOY_SSH_TARGET="ssh://nixbot@10.0.0.10"
+        PREP_DEPLOY_NIX_SSHOPTS=""
+        PREP_USING_BOOTSTRAP_FALLBACK=0
+        DRY_RUN=0
+        NIXBOT_HOSTS_JSON='{"guest":{"target":"10.0.0.10","routing":{"active":"cf","selected":"default","source":"developer","fallback":true,"effective":false}}}'
+        NIXBOT_TRANSPORT_RETRY_ATTEMPTS=1
+        format_ssh_store_uri() { printf '%s\n' "$1"; }
+        stop_remote_build_heartbeat() { :; }
+        start_remote_build_heartbeat() { :; }
+        ensure_remote_build_output_available() { return 0; }
+        run_nix_with_optional_sshopts() {
+          printf '%s\n' "${TEST_COPY_STDERR}" >&2
+          return 255
+        }
+        set +e
+        copy_system_path_from_local_to_prepared_target guest /nix/store/example
+        printf 'local-rc=%s\n' "$?"
+        copy_system_path_from_build_cache_via_local_to_prepared_target guest /nix/store/example http://cache ""
+        printf 'relay-rc=%s\n' "$?"
+        """
+        env = {
+            "TEST_COPY_STDERR": "error: writing to file: No space left on device",
+            "NIXBOT_TMP_DIR": str(self.work_dir / "tmp"),
+            "NIXBOT_DIAG_DIR": str(self.work_dir / "diag"),
+        }
+        (self.work_dir / "tmp").mkdir(exist_ok=True)
+        (self.work_dir / "diag").mkdir(exist_ok=True)
+        disk_full = self.run_script(body, env=env)
+        self.assertNotIn("cannot reach guest", disk_full.stderr)
+
+        env["TEST_COPY_STDERR"] = "Connection closed by remote host"
+        transport = self.run_script(body, env=env)
+        self.assertEqual(2, transport.stderr.count("cannot reach guest"))
+
+    def test_config_override_flag_and_env_survive_config_selection(self):
+        explicit = self.work_dir / "operator.override.nix"
+        explicit.write_text("{}\n", encoding="utf-8")
+        other = self.work_dir / "other.nix"
+        other.write_text("{}\n", encoding="utf-8")
+
+        flagged = self.run_script(
+            r"""
+            init_vars
+            ACTION=deploy
+            parse_args --config-override "${TEST_EXPLICIT}" --config "${TEST_OTHER}"
+            printf '%s\n' "${NIXBOT_CONFIG_OVERRIDE_PATH}"
+            """,
+            env={"TEST_EXPLICIT": str(explicit), "TEST_OTHER": str(other)},
+        )
+        self.assertEqual(str(explicit), flagged.stdout.strip())
+
+        from_env = self.run_script(
+            r"""
+            init_vars
+            ACTION=deploy
+            parse_args --config "${TEST_OTHER}"
+            printf '%s\n' "${NIXBOT_CONFIG_OVERRIDE_PATH}"
+            """,
+            env={
+                "TEST_OTHER": str(other),
+                "NIXBOT_CONFIG_OVERRIDE_PATH": str(explicit),
+            },
+        )
+        self.assertEqual(str(explicit), from_env.stdout.strip())
+
+        managed = self.run_script(
+            r'''
+            init_vars
+            NIXBOT_EXECUTOR_KIND=managed
+            CONFIG_OVERRIDE_EXPLICIT=1
+            NIXBOT_CONFIG_OVERRIDE_PATH="${TEST_EXPLICIT}"
+            reject_managed_config_override
+            ''',
+            env={"TEST_EXPLICIT": str(explicit)},
+            check=False,
+        )
+        self.assertNotEqual(0, managed.returncode)
+        self.assertIn("direct developer execution", managed.stderr)
+
+        conflict = self.run_script(
+            f'init_vars\nACTION=deploy\nparse_args --ci-trigger --config-override "{explicit}"\n',
+            check=False,
+        )
+        self.assertNotEqual(0, conflict.returncode)
+        self.assertIn("tracked inventory only", conflict.stderr)
+
+    def test_ci_and_completion_keep_route_context_process_local(self):
+        config = {
+            "hosts": {
+                "controller": {
+                    "target": "10.0.0.20",
+                    "resourceId": "ci",
+                    "proxyJump": "edge",
+                },
+                "edge": {
+                    "target": "10.0.0.10",
+                    "routes": {
+                        "cf": {
+                            "target": "edge.example",
+                            "proxyCommand": self.CF_PROXY,
+                        }
+                    },
+                },
+            },
+            "config": {"ci": {"host": "ci"}},
+        }
+        config_path = self.work_dir / "hosts.nix"
+        config_path.write_text("{}\n", encoding="utf-8")
+        ci = self.run_script(
+            r"""
+            init_vars
+            NIXBOT_CONFIG_PATH="${TEST_CONFIG_PATH}"
+            ACTION=deploy
+            normalize_host_action
+            parse_args --ci-trigger --route=cf --hosts controller
+            SHA=abcdef0
+            CI_TRIGGER_USER=ci-user
+            load_deploy_config_bundle() {
+              jq -cn --argjson config "${TEST_CONFIG}" \
+                '{config:$config,base:$config,override:{},overrideActive:0}'
+            }
+            configure_ci_trigger_ssh_opts() {
+              printf 'connection=%s|%s|%s\n' \
+                "${CI_TRIGGER_INVENTORY_HOST}" "${CI_TRIGGER_HOST}" \
+                "$(jq -r '.node' <<<"${CI_TRIGGER_PROXY_CHAIN}")"
+              CI_TRIGGER_SSH_OPTS=()
+            }
+            encode_ssh_command_args() { printf '%s\n' "$*"; }
+            ssh() { printf 'ssh=%s\n' "$*"; }
+            run_ci_trigger
+            """,
+            env={
+                "TEST_CONFIG": json.dumps(config),
+                "TEST_CONFIG_PATH": str(config_path),
+            },
+        )
+        self.assertIn("connection=controller|10.0.0.20|edge", ci.stdout)
+        remote = next(line for line in ci.stdout.splitlines() if line.startswith("ssh="))
+        self.assertIn("--no-override", remote)
+        self.assertNotIn("--route", remote)
+        self.assertNotIn("config-override", remote)
+
+        completion = self.repo_root / "pkgs/tools/nixbot/nixbot.bash"
+        completed = self.run_script(
+            f"""
+            source <(sed '$d' {completion})
+            COMP_WORDS=(nixbot deploy --config first.nix --config-override one.nix --config=second.nix --route cf --no-override '')
+            COMP_CWORD=10
+            context=()
+            _nixbot_inventory_context_args context
+            printf 'context:'
+            printf '<%s>' "${{context[@]}}"
+            printf '\n'
+            COMP_WORDS=(nixbot deploy --config = split.nix --route = cf '')
+            COMP_CWORD=8
+            context=()
+            _nixbot_inventory_context_args context
+            printf 'split-context:'
+            printf '<%s>' "${{context[@]}}"
+            printf '\n'
+            COMP_WORDS=(nixbot deploy --known-hosts --config-override=literal --route ts '')
+            COMP_CWORD=6
+            context=()
+            _nixbot_inventory_context_args context
+            printf 'shielded-context:'
+            printf '<%s>' "${{context[@]}}"
+            printf '\n'
+            COMP_WORDS=(nixbot deploy --config-override one.nix --ci-trigger '')
+            COMP_CWORD=5
+            context=()
+            _nixbot_inventory_context_args context
+            printf 'ci-context:'
+            printf '<%s>' "${{context[@]}}"
+            printf '\n'
+            _nixbot_compgen_words() {{ printf '%s|%s|%s\n' "$1" "$2" "${{3:-}}"; }}
+            COMP_WORDS=(nixbot deploy --route=t)
+            COMP_CWORD=2
+            _nixbot
+            """
+        )
+        self.assertIn(
+            "context:<--config><second.nix><--no-override><--route><cf>",
+            completed.stdout,
+        )
+        self.assertIn(
+            "split-context:<--config><split.nix><--route><cf>",
+            completed.stdout,
+        )
+        self.assertIn("shielded-context:<--route><ts>", completed.stdout)
+        self.assertIn("ci-context:<--no-override>", completed.stdout)
+        self.assertIn("t|auto default cf ts|--route=", completed.stdout)
 
 
 if __name__ == "__main__":

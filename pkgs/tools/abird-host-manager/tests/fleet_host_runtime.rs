@@ -38,8 +38,14 @@ mod host_runtime;
 #[path = "../src/fleet/inventory.rs"]
 mod inventory;
 #[allow(clippy::all)]
+#[path = "../src/fleet/inventory_routing.rs"]
+mod inventory_routing;
+#[allow(clippy::all)]
 #[path = "../src/fleet/system.rs"]
 mod system;
+#[allow(clippy::all)]
+#[path = "../src/fleet/system_identity.rs"]
+mod system_identity;
 #[allow(clippy::all)]
 #[path = "../src/fleet/task.rs"]
 mod task;

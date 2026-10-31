@@ -1,5 +1,6 @@
 use std::fs::{self, OpenOptions};
 use std::os::fd::AsRawFd;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -161,6 +162,287 @@ esac
 }
 
 #[test]
+fn override_environment_is_honored_and_no_override_wins() {
+    let temporary = tempfile::tempdir().unwrap();
+    fixture_repository(temporary.path());
+    let nix = temporary.path().join("nix");
+    executable(
+        &nix,
+        r#"#!/bin/sh
+set -eu
+case "$*" in
+  *"deployDependencies"*) printf '{}\n' ;;
+  *"operator.override.nix"*)
+    printf '%s\n' '{"hosts":{"operator":{"target":"10.0.0.9","groups":["prod"]}},"config":{}}'
+    ;;
+  *"abird.override.nix"*)
+    printf '%s\n' '{"hosts":{"abird":{"target":"10.0.0.7","groups":["prod"]}},"config":{}}'
+    ;;
+  *"hosts.override.nix"*)
+    printf '%s\n' '{"hosts":{"sibling":{"target":"10.0.0.8","groups":["prod"]}},"config":{}}'
+    ;;
+  *"--file"*)
+    printf '%s\n' '{"hosts":{"tracked":{"target":"10.0.0.2","groups":["prod"]}},"config":{}}'
+    ;;
+  *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
+esac
+"#,
+    );
+    let config = temporary.path().join("hosts.nix");
+    fs::write(&config, "{}\n").unwrap();
+    fs::write(temporary.path().join("hosts.override.nix"), "{}\n").unwrap();
+    let operator = temporary.path().join("operator.override.nix");
+    fs::write(&operator, "{}\n").unwrap();
+    let abird = temporary.path().join("abird.override.nix");
+    fs::write(&abird, "{}\n").unwrap();
+    let missing_env = temporary.path().join("env-gone.override.nix");
+
+    let list = |env_override: Option<&Path>, no_override: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_nixbot"));
+        command
+            .args([
+                "--list-hosts".to_owned(),
+                format!("--config={}", config.display()),
+            ])
+            .env("ABIRD_HOST_MANAGER_NIX", &nix)
+            .env_remove("ABIRD_HOST_MANAGER_CONFIG_OVERRIDE")
+            .env_remove("NIXBOT_CONFIG_OVERRIDE_PATH");
+        if no_override {
+            command.arg("--no-override");
+        }
+        if let Some(path) = env_override {
+            command.env("NIXBOT_CONFIG_OVERRIDE_PATH", path);
+        }
+        command.output().unwrap()
+    };
+    let hosts =
+        |output: &std::process::Output| String::from_utf8_lossy(&output.stderr).into_owned();
+
+    // Sibling overlay: the historical default.
+    let sibling = list(None, false);
+    assert!(sibling.status.success(), "{}", hosts(&sibling));
+    assert!(
+        hosts(&sibling).contains("- sibling ("),
+        "{}",
+        hosts(&sibling)
+    );
+
+    // A named overlay outranks the sibling, matching `nixbot.sh`.
+    let named = list(Some(&operator), false);
+    assert!(named.status.success(), "{}", hosts(&named));
+    assert!(hosts(&named).contains("- operator ("), "{}", hosts(&named));
+    assert!(!hosts(&named).contains("- sibling ("), "{}", hosts(&named));
+
+    // An explicit `--config-override` outranks the environment.
+    let named_flag = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .args([
+            "--list-hosts".to_owned(),
+            format!("--config={}", config.display()),
+            format!("--config-override={}", operator.display()),
+        ])
+        .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .env("NIXBOT_CONFIG_OVERRIDE_PATH", &missing_env)
+        .output()
+        .unwrap();
+    assert!(
+        named_flag.status.success(),
+        "{}",
+        String::from_utf8_lossy(&named_flag.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&named_flag.stderr).contains("- operator ("),
+        "{}",
+        String::from_utf8_lossy(&named_flag.stderr)
+    );
+
+    // Relative named overlays bind to the original working directory, and
+    // ABIRD outranks NIXBOT. An empty ABIRD value is unset.
+    let run_relative = |extra: &[&str], abird_value: &str, nixbot_value: &str| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_nixbot"));
+        command
+            .current_dir(temporary.path())
+            .args(["--list-hosts".to_owned(), "--config=hosts.nix".to_owned()])
+            .args(extra.iter().map(|value| (*value).to_owned()))
+            .env("ABIRD_HOST_MANAGER_NIX", &nix)
+            .env("ABIRD_HOST_MANAGER_CONFIG_OVERRIDE", abird_value)
+            .env("NIXBOT_CONFIG_OVERRIDE_PATH", nixbot_value);
+        command.output().unwrap()
+    };
+    let relative = run_relative(&[], "abird.override.nix", "operator.override.nix");
+    assert!(relative.status.success(), "{}", hosts(&relative));
+    assert!(
+        hosts(&relative).contains("- abird ("),
+        "{}",
+        hosts(&relative)
+    );
+
+    let empty_abird = run_relative(&[], "", "operator.override.nix");
+    assert!(empty_abird.status.success(), "{}", hosts(&empty_abird));
+    assert!(
+        hosts(&empty_abird).contains("- operator ("),
+        "{}",
+        hosts(&empty_abird)
+    );
+
+    let relative_flag = run_relative(
+        &["--config-override=operator.override.nix"],
+        "abird.override.nix",
+        "hosts.override.nix",
+    );
+    assert!(relative_flag.status.success(), "{}", hosts(&relative_flag));
+    assert!(
+        hosts(&relative_flag).contains("- operator ("),
+        "{}",
+        hosts(&relative_flag)
+    );
+
+    let last_flag_wins = run_relative(
+        &[
+            "--config-override=abird.override.nix",
+            "--config-override=operator.override.nix",
+        ],
+        "",
+        "",
+    );
+    assert!(
+        last_flag_wins.status.success(),
+        "{}",
+        hosts(&last_flag_wins)
+    );
+    assert!(
+        hosts(&last_flag_wins).contains("- operator ("),
+        "{}",
+        hosts(&last_flag_wins)
+    );
+
+    // `--no-override` is file-scoped and wins over the environment.
+    let pinned = list(Some(&operator), true);
+    assert!(pinned.status.success(), "{}", hosts(&pinned));
+    assert!(hosts(&pinned).contains("- tracked ("), "{}", hosts(&pinned));
+    assert!(
+        !hosts(&pinned).contains("- operator ("),
+        "{}",
+        hosts(&pinned)
+    );
+
+    // A named overlay that is not a file fails instead of silently falling back.
+    let missing = temporary.path().join("gone.override.nix");
+    let failed = list(Some(&missing), false);
+    assert!(!failed.status.success());
+    assert!(
+        hosts(&failed).contains("NIXBOT_CONFIG_OVERRIDE_PATH does not name a file"),
+        "{}",
+        hosts(&failed)
+    );
+    // ... unless the flag skips it.
+    let recovered = list(Some(&missing), true);
+    assert!(recovered.status.success(), "{}", hosts(&recovered));
+}
+
+#[test]
+fn managed_auxiliary_action_rejects_operator_override_before_dispatch() {
+    let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .args([
+            "clean",
+            "--dry",
+            "--config-override",
+            "missing-operator.nix",
+        ])
+        .env("NIXBOT_EXECUTOR_KIND", "managed")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("direct developer execution"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn ci_trigger_rejects_named_override_environment() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut git = Command::new("git");
+    abird_host_manager::programs::clear_git_repository_environment(&mut git);
+    let initialized = git
+        .args(["init", "--quiet"])
+        .arg(temporary.path())
+        .output()
+        .unwrap();
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let config = temporary.path().join("nixbot.nix");
+    fs::write(&config, "{}\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .current_dir(temporary.path())
+        .env(
+            "ABIRD_HOST_MANAGER_NIX",
+            temporary.path().join("unexpected-nix"),
+        )
+        .args([
+            "deploy".to_owned(),
+            "--ci-trigger".to_owned(),
+            "--no-override".to_owned(),
+            format!("--config={}", config.display()),
+        ])
+        .env(
+            "ABIRD_HOST_MANAGER_CONFIG_OVERRIDE",
+            temporary.path().join("operator.nix"),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("CI inventory forbids ABIRD_HOST_MANAGER_CONFIG_OVERRIDE"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn list_groups_validates_route_schema_without_selecting_a_route() {
+    let temporary = tempfile::tempdir().unwrap();
+    fixture_repository(temporary.path());
+    let nix = temporary.path().join("nix");
+    executable(
+        &nix,
+        r#"#!/bin/sh
+set -eu
+case "$*" in
+  'eval --json --file '*'/hosts.nix --apply inventory: if builtins.isFunction inventory then inventory {} else inventory')
+    printf '%s
+' '{"hosts":{"app":{"target":"10.0.0.2","groups":["prod"],"routes":false}},"config":{}}'
+    ;;
+  'eval --json .#nixbot.deployDependencies --no-update-lock-file --no-write-lock-file') printf '{}\n' ;;
+  *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
+esac
+"#,
+    );
+    let config = temporary.path().join("hosts.nix");
+    fs::write(&config, "{}\n").unwrap();
+
+    let groups = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .args([
+            "--list-groups".to_owned(),
+            format!("--config={}", config.display()),
+            "--no-override".to_owned(),
+        ])
+        .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .output()
+        .unwrap();
+    assert!(!groups.status.success());
+    assert!(
+        String::from_utf8_lossy(&groups.stderr).contains("routes must be an attrset"),
+        "{}",
+        String::from_utf8_lossy(&groups.stderr)
+    );
+}
+
+#[test]
 fn list_groups_keeps_empty_group_and_ungrouped_markers() {
     let temporary = tempfile::tempdir().unwrap();
     fixture_repository(temporary.path());
@@ -229,6 +511,7 @@ esac
             "--list-hosts".to_owned(),
             format!("--config={}", config.display()),
             "--no-override".to_owned(),
+            "--route=default".to_owned(),
         ])
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .output()
@@ -242,6 +525,80 @@ esac
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
         "Hosts:\n  - parent (target: 10.0.0.1)\n  - app (target: 10.0.0.2, parent: parent)\n"
+    );
+}
+
+#[test]
+fn list_hosts_applies_named_route_selection() {
+    let temporary = tempfile::tempdir().unwrap();
+    fixture_repository(temporary.path());
+    let nix = temporary.path().join("nix");
+    executable(
+        &nix,
+        r#"#!/bin/sh
+set -eu
+case "$*" in
+  'eval --json --file '*'/hosts.nix --apply inventory: if builtins.isFunction inventory then inventory {} else inventory')
+    printf '%s\n' '{"hosts":{"edge":{"target":"10.9.9.9","routes":{"cf":{"target":"edge.example","proxyCommand":"cloudflared access ssh --hostname %h"},"ts":"edge"},"groups":["prod"]},"guest":{"target":"10.0.0.20","proxyJump":"edge","groups":["prod"]}},"config":{}}'
+    ;;
+  'eval --json .#nixbot.deployDependencies --no-update-lock-file --no-write-lock-file') printf '{}\n' ;;
+  *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
+esac
+"#,
+    );
+    let config = temporary.path().join("hosts.nix");
+    fs::write(&config, "{}\n").unwrap();
+
+    let list = |mode: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+            .args([
+                "--list-hosts".to_owned(),
+                format!("--config={}", config.display()),
+                "--no-override".to_owned(),
+                format!("--route={mode}"),
+            ])
+            .env("ABIRD_HOST_MANAGER_NIX", &nix)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stderr).unwrap()
+    };
+
+    assert_eq!(
+        list("default"),
+        "Hosts:\n  - edge (target: 10.9.9.9)\n  - guest (target: 10.0.0.20) via edge\n"
+    );
+    assert_eq!(
+        list("cf"),
+        "Hosts:\n  - edge (target: edge.example) via proxy-command\n  - guest (target: 10.0.0.20) via edge\n"
+    );
+    assert_eq!(
+        list("ts"),
+        "Hosts:\n  - edge (target: edge)\n  - guest (target: 10.0.0.20) via edge\n"
+    );
+
+    let inherited = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .args([
+            "--list-hosts".to_owned(),
+            format!("--config={}", config.display()),
+            "--no-override".to_owned(),
+        ])
+        .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .env("NIXBOT_ROUTE", "cf")
+        .output()
+        .unwrap();
+    assert!(
+        inherited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inherited.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(inherited.stderr).unwrap(),
+        "Hosts:\n  - edge (target: edge.example) via proxy-command\n  - guest (target: 10.0.0.20) via edge\n"
     );
 }
 

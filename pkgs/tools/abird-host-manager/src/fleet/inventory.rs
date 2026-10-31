@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+use super::inventory_routing::{HostRouteResolution, RouteDecision};
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DeployMode {
@@ -38,6 +40,8 @@ pub struct Host {
     pub proxy_jump: Option<String>,
     #[serde(default)]
     pub proxy_command: Option<String>,
+    #[serde(default)]
+    pub routing: Option<HostRouteResolution>,
     #[serde(default)]
     pub port: Option<u16>,
     #[serde(default)]
@@ -150,6 +154,8 @@ pub struct Inventory {
     pub hosts: BTreeMap<String, Host>,
     #[serde(default)]
     pub config: DeployConfig,
+    #[serde(skip)]
+    pub route_decision: Option<RouteDecision>,
 }
 
 impl Inventory {
@@ -193,19 +199,18 @@ impl Inventory {
     }
 
     pub fn host_for_resource(&self, name: &str) -> Result<&str> {
+        if let Some((host, _)) = self.hosts.get_key_value(name) {
+            return Ok(host);
+        }
         let matching = self
             .hosts
             .iter()
-            .filter_map(|(host_name, host)| (host.resource(host_name) == name).then_some(host_name))
+            .filter_map(|(host_name, host)| {
+                (host.resource_id.as_deref() == Some(name)).then_some(host_name)
+            })
             .collect::<Vec<_>>();
         match matching.as_slice() {
             [host] => Ok(host.as_str()),
-            [] if self.hosts.contains_key(name) => Ok(self
-                .hosts
-                .get_key_value(name)
-                .expect("checked inventory host exists")
-                .0
-                .as_str()),
             [] => bail!("unknown inventory host or resource {name}"),
             _ => bail!("resource {name} maps to multiple inventory hosts"),
         }

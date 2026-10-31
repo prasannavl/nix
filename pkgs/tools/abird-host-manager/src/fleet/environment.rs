@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 
 use super::cli::{ActivationGoal, BuildHostDeployMode, DiscoverKeys, JobCount, LogFormat, Options};
+use super::inventory_routing::{RouteRequest, RouteSource};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GithubNixAccess {
@@ -287,6 +288,12 @@ impl Environment {
         options.dirty_staged = self.boolean("NIXBOT_DIRTY_STAGED", false)?;
         options.dirty |= options.dirty_staged;
         options.dry_run = self.boolean("NIXBOT_DRY", false)?;
+        if let Some(route) = self.value("NIXBOT_ROUTE") {
+            options.route = RouteRequest::parse(route)?;
+            options.route_source = RouteSource::Env;
+        } else {
+            options.route = RouteRequest::Auto;
+        }
         options.no_rollback = self.boolean("NIXBOT_NO_ROLLBACK", false)?;
         options.no_verify = self.boolean("NIXBOT_NO_VERIFY", false)?;
         options.prefix_host_logs = self.boolean("NIXBOT_PREFIX_HOST_LOGS", false)?;

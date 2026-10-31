@@ -437,6 +437,13 @@ fn ci_trigger_plans_only_the_remote_contract_and_exact_patch_stdin() {
     );
     assert!(!group_only.argv.iter().any(|arg| arg == "--hosts"));
     assert!(!group_only.argv.iter().any(|arg| arg == "--build-host"));
+    assert!(!group_only.argv.iter().any(|arg| arg == "--route"));
+    assert!(
+        !group_only
+            .argv
+            .iter()
+            .any(|arg| arg.starts_with("--route="))
+    );
     assert!(
         group_only
             .argv

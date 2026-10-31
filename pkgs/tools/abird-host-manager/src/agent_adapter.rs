@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 
 use crate::fleet::host_runtime::ProcessStream;
 use crate::fleet::interactive::InteractiveVerbose;
+use crate::fleet::inventory_routing::{self, RouteDecision, RouteRequest, SelfIdentity};
 use crate::fleet::presentation::report_verbose_line;
 use crate::programs::{clear_git_repository_environment, nix::Nix};
 use crate::progress::{ProgressReporter, StepProgress, command_reporter};
@@ -58,6 +59,10 @@ pub struct HostManagerConfig {
     pub transfer_broker: Option<String>,
     #[serde(default)]
     pub operation_routes: BTreeMap<String, OperationRoute>,
+    #[serde(skip)]
+    pub route_decision: Option<RouteDecision>,
+    #[serde(skip)]
+    route_effective_hosts: BTreeSet<String>,
     #[serde(skip)]
     ssh_runtime: Option<Arc<SshRuntime>>,
 }
@@ -268,26 +273,81 @@ impl HostManagerConfig {
     }
 
     fn load_nixbot_with_program(path: &Path, nix_program: PathBuf) -> Result<Self> {
+        let route = inventory_routing::route_request_from_env()?;
+        Self::load_nixbot_with_program_route_source(
+            path,
+            nix_program,
+            route,
+            inventory_routing::RouteSource::Env,
+        )
+    }
+
+    #[cfg(test)]
+    fn load_nixbot_with_program_and_route(
+        path: &Path,
+        nix_program: PathBuf,
+        route: RouteRequest,
+    ) -> Result<Self> {
+        Self::load_nixbot_with_program_route_source(
+            path,
+            nix_program,
+            route,
+            inventory_routing::RouteSource::Cli,
+        )
+    }
+
+    fn load_nixbot_with_program_route_source(
+        path: &Path,
+        nix_program: PathBuf,
+        route: RouteRequest,
+        route_source: inventory_routing::RouteSource,
+    ) -> Result<Self> {
         let path = path
             .canonicalize()
             .with_context(|| format!("resolve Nixbot config {}", path.display()))?;
         let ssh_program = std::env::var_os("ABIRD_HOST_MANAGER_SSH")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/run/current-system/sw/bin/ssh"));
-        let overlay = nixbot_overlay_path(&path)?;
+        let managed = inventory_routing::managed_execution_context()?;
+        crate::fleet::inventory_overlay::reject_managed_explicit_input(None, managed)?;
+        let overlay = crate::fleet::inventory_overlay::resolve(&path, None, false)?;
+        if managed && overlay.is_some() {
+            bail!("Nixbot config overrides are allowed only for direct developer execution");
+        }
         let repository_config = repository_for_config(&path)?
             .map(|repository| repository.root().join("config"))
             .filter(|config| config.join("default.nix").is_file());
-        let value = Nix::new(nix_program)?.eval_inventory_file_with_overlay_json(
-            &path,
-            overlay.as_deref(),
-            repository_config.as_deref(),
+        let (mut value, base, override_value) = Nix::new(nix_program)?
+            .eval_inventory_file_with_overlay_layers_json(
+                &path,
+                overlay.as_deref(),
+                repository_config.as_deref(),
+            )?;
+        let identity = (route == RouteRequest::Auto)
+            .then(SelfIdentity::detect)
+            .transpose()?;
+        let route_decision = inventory_routing::apply_named_routes_with_source(
+            &mut value,
+            &base,
+            override_value.as_ref(),
+            route,
+            route_source,
+            identity.as_ref(),
         )?;
         let ssh_runtime = Arc::new(SshRuntime::from_environment()?);
         let hosts = value
             .get("hosts")
             .and_then(Value::as_object)
             .context("Nixbot inventory has no hosts attribute set")?;
+        let route_effective_hosts = hosts
+            .iter()
+            .filter(|(_, host)| {
+                host.pointer("/routing/effective")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
         let defaults = value.pointer("/config/hostDefaults");
         let default_user = defaults
             .and_then(|value| value.get("user"))
@@ -447,6 +507,8 @@ impl HostManagerConfig {
             controller: None,
             transfer_broker: None,
             operation_routes: BTreeMap::new(),
+            route_decision: Some(route_decision),
+            route_effective_hosts,
             ssh_runtime: Some(ssh_runtime),
         };
         config.derive_repository_defaults(&value)?;
@@ -539,12 +601,8 @@ impl HostManagerConfig {
                 (host.host_resource.as_deref() == Some(canonical.as_str())).then_some(name.clone())
             })
             .collect::<BTreeSet<_>>();
-        let matches = if resource_matches.is_empty() && !selector.starts_with("host:") {
-            if self.hosts.contains_key(selector) {
-                BTreeSet::from([selector.to_owned()])
-            } else {
-                BTreeSet::new()
-            }
+        let matches = if !selector.starts_with("host:") && self.hosts.contains_key(selector) {
+            BTreeSet::from([selector.to_owned()])
         } else {
             resource_matches
         };
@@ -807,6 +865,11 @@ impl HostManagerConfig {
             .with_context(|| format!("host {name:?} is not present in manager inventory"))
     }
 
+    fn operated_host(&self, name: &str) -> Result<&Host> {
+        self.ensure_explicit_named_route_effective(name)?;
+        self.host(name)
+    }
+
     pub fn host_name_for_address(&self, address: &str) -> Result<&str> {
         let mut matches = self
             .hosts
@@ -982,7 +1045,7 @@ impl HostManagerConfig {
     }
 
     pub fn remote_source(&self, name: &str) -> Result<RemoteSource> {
-        let host = self.host(name)?;
+        let host = self.operated_host(name)?;
         let ssh_args = self.ssh_transport_args(name, host, TransportRole::Primary)?;
         Ok(RemoteSource {
             host: host.address.clone(),
@@ -1004,7 +1067,7 @@ impl HostManagerConfig {
     }
 
     pub fn broker_endpoint(&self, name: &str, preserve_agent: bool) -> Result<RemoteSource> {
-        let host = self.host(name)?;
+        let host = self.operated_host(name)?;
         if host.local {
             bail!("local inventory host {name:?} cannot be a transfer endpoint");
         }
@@ -1073,7 +1136,7 @@ impl HostManagerConfig {
     }
 
     pub fn run_agent(&self, host_name: &str, agent_args: &[String]) -> Result<Value> {
-        let host = self.host(host_name)?;
+        let host = self.operated_host(host_name)?;
         let remote_argv = agent_argv(host, agent_args);
         let output = if host.local {
             Command::new(
@@ -1096,7 +1159,7 @@ impl HostManagerConfig {
         agent_args: &[String],
         input: &[u8],
     ) -> Result<Value> {
-        let host = self.host(host_name)?;
+        let host = self.operated_host(host_name)?;
         let remote_argv = agent_argv(host, agent_args);
         let mut command = if host.local {
             let mut command = Command::new(
@@ -1131,7 +1194,7 @@ impl HostManagerConfig {
     }
 
     pub fn run_agent_interactive(&self, host_name: &str, agent_args: &[String]) -> Result<()> {
-        let host = self.host(host_name)?;
+        let host = self.operated_host(host_name)?;
         let remote_argv = agent_argv(host, agent_args);
         let status = if host.local {
             Command::new(
@@ -1166,7 +1229,7 @@ impl HostManagerConfig {
             bail!("remote host command argv cannot be empty");
         }
         validate_argv("remote host command", argv)?;
-        if self.host(host_name)?.local {
+        if self.operated_host(host_name)?.local {
             Command::new(&argv[0])
                 .args(&argv[1..])
                 .output()
@@ -1181,7 +1244,7 @@ impl HostManagerConfig {
             bail!("remote host command argv cannot be empty");
         }
         validate_argv("remote host command", argv)?;
-        let host = self.host(host_name)?;
+        let host = self.operated_host(host_name)?;
         if host.local {
             let status = Command::new(&argv[0])
                 .args(&argv[1..])
@@ -1223,7 +1286,7 @@ impl HostManagerConfig {
             bail!("remote inventory command argv cannot be empty");
         }
         validate_argv("remote inventory command", argv)?;
-        let host = self.host(host_name)?;
+        let host = self.operated_host(host_name)?;
         if host.local {
             let status = Command::new(&argv[0])
                 .args(&argv[1..])
@@ -1265,7 +1328,7 @@ impl HostManagerConfig {
             bail!("remote inventory command argv cannot be empty");
         }
         validate_argv("remote inventory command", argv)?;
-        let host = self.host(host_name)?;
+        let host = self.operated_host(host_name)?;
         if host.local {
             return Command::new(&argv[0])
                 .args(&argv[1..])
@@ -1306,7 +1369,7 @@ impl HostManagerConfig {
     }
 
     pub fn open_ssh(&self, host_name: &str, extra_args: &[String]) -> Result<()> {
-        let host = self.host(host_name)?;
+        let host = self.operated_host(host_name)?;
         if host.local {
             bail!("local inventory host {host_name:?} has no interactive SSH session");
         }
@@ -1360,6 +1423,7 @@ impl HostManagerConfig {
         host: &Host,
         role: TransportRole,
     ) -> Result<Command> {
+        self.ensure_explicit_named_route_effective(host_name)?;
         let mut command = Command::new(&self.ssh.program);
         command.args(self.ssh_transport_args(host_name, host, role)?);
         if let Some(port) = ssh_port(host, role) {
@@ -1373,6 +1437,19 @@ impl HostManagerConfig {
                 .arg("IdentitiesOnly=yes");
         }
         Ok(command)
+    }
+
+    fn ensure_explicit_named_route_effective(&self, host_name: &str) -> Result<()> {
+        let Some(route) = self.route_decision.as_ref().and_then(|decision| {
+            matches!(decision.request, RouteRequest::Cf | RouteRequest::Ts)
+                .then(|| decision.request.as_str())
+        }) else {
+            return Ok(());
+        };
+        if self.route_effective_hosts.contains(host_name) {
+            return Ok(());
+        }
+        bail!("explicit route {route} does not affect host path {host_name:?}")
     }
 
     fn ssh_transport_args(
@@ -1501,33 +1578,6 @@ fn agent_argv(host: &Host, agent_args: &[String]) -> Vec<String> {
     argv
 }
 
-fn nixbot_overlay_path(config: &Path) -> Result<Option<PathBuf>> {
-    for environment in [
-        "ABIRD_HOST_MANAGER_CONFIG_OVERRIDE",
-        "NIXBOT_CONFIG_OVERRIDE_PATH",
-    ] {
-        if let Some(path) = std::env::var_os(environment).map(PathBuf::from) {
-            let path = if path.is_absolute() {
-                path
-            } else {
-                std::env::current_dir()
-                    .with_context(|| format!("resolve {environment} from current directory"))?
-                    .join(path)
-            };
-            if !path.is_file() {
-                bail!("{environment} does not name a file: {}", path.display());
-            }
-            return Ok(Some(path));
-        }
-    }
-    let stem = config
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .context("Nixbot config filename is not valid UTF-8")?;
-    let overlay = config.with_file_name(format!("{stem}.override.nix"));
-    Ok(overlay.is_file().then_some(overlay))
-}
-
 fn manager_nix_program() -> PathBuf {
     std::env::var_os("ABIRD_HOST_MANAGER_NIX")
         .map(PathBuf::from)
@@ -1642,6 +1692,7 @@ pub fn run_local_nixbot_deploy(
 fn local_nixbot_command(nix_program: &Path) -> Command {
     let mut command = Command::new(nix_program);
     clear_git_repository_environment(&mut command);
+    command.env_remove("NIXBOT_ROUTE");
     command
 }
 
@@ -1663,7 +1714,13 @@ fn local_nixbot_deploy_arguments(request: &NixbotDeployRequest) -> Result<Vec<St
         .revision
         .as_deref()
         .context("local Nixbot deploy request has no committed revision")?;
-    let mut arguments = vec!["deploy".to_owned(), "--sha".to_owned(), revision.to_owned()];
+    let mut arguments = vec![
+        "deploy".to_owned(),
+        "--sha".to_owned(),
+        revision.to_owned(),
+        "--route".to_owned(),
+        "auto".to_owned(),
+    ];
     let host_selectors = request.host_selectors();
     if host_selectors.len() == 1 {
         arguments.extend(["--host".to_owned(), request.host.clone()]);
@@ -4800,13 +4857,87 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = HostManagerConfig::load_nixbot_with_program(&inventory, nix).unwrap();
+        let loaded = HostManagerConfig::load_nixbot_with_program_and_route(
+            &inventory,
+            nix,
+            RouteRequest::Default,
+        )
+        .unwrap();
 
         assert!(loaded.hosts.contains_key("node"));
         let arguments = fs::read_to_string(arguments).unwrap();
         assert!(arguments.contains("--apply\n"));
         assert!(arguments.contains("builtins.isFunction inventory"));
         assert!(arguments.contains(config.parent().unwrap().to_str().unwrap()));
+    }
+
+    #[test]
+    fn nixbot_inventory_applies_named_routes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path().join("repository");
+        let inventory = repository.join("hosts/nixbot.nix");
+        let config = repository.join("config/default.nix");
+        let nix = temporary.path().join("nix");
+        for directory in [
+            repository.join("hosts"),
+            repository.join("config"),
+            repository.join("pkgs"),
+            repository.join("data/secrets"),
+        ] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        for file in [
+            repository.join("flake.nix"),
+            repository.join("pkgs/manifest.nix"),
+            repository.join("data/secrets/default.nix"),
+            repository.join("hosts/default.nix"),
+            inventory.clone(),
+            config.clone(),
+        ] {
+            fs::write(file, "{}\n").unwrap();
+        }
+        write_executable(
+            &nix,
+            "#!/bin/sh\nprintf '%s\n' '{\"hosts\":{\"node\":{\"target\":\"10.9.9.9\",\"routes\":{\"cf\":{\"target\":\"node.example\",\"proxyCommand\":\"cloudflared access ssh --hostname %h\"},\"ts\":\"node\"}},\"plain\":{\"target\":\"10.9.9.10\"}},\"config\":{}}'\n",
+        )
+        .unwrap();
+
+        let cf = HostManagerConfig::load_nixbot_with_program_and_route(
+            &inventory,
+            nix.clone(),
+            RouteRequest::Cf,
+        )
+        .unwrap();
+        assert_eq!(cf.hosts["node"].address, "node.example");
+        assert_eq!(
+            cf.hosts["node"].proxy_command.as_deref(),
+            Some("cloudflared access ssh --hostname %h")
+        );
+        cf.remote_source("node").unwrap();
+        assert!(
+            cf.remote_source("plain")
+                .unwrap_err()
+                .to_string()
+                .contains("does not affect host path")
+        );
+
+        let ts = HostManagerConfig::load_nixbot_with_program_and_route(
+            &inventory,
+            nix.clone(),
+            RouteRequest::Ts,
+        )
+        .unwrap();
+        assert_eq!(ts.hosts["node"].address, "node");
+        assert_eq!(ts.hosts["node"].proxy_command, None);
+
+        let internal = HostManagerConfig::load_nixbot_with_program_and_route(
+            &inventory,
+            nix,
+            RouteRequest::Default,
+        )
+        .unwrap();
+        assert_eq!(internal.hosts["node"].address, "10.9.9.9");
+        assert_eq!(internal.hosts["node"].proxy_command, None);
     }
 
     #[test]
@@ -5146,7 +5277,7 @@ mod tests {
             .unwrap();
         config.validate().unwrap();
 
-        assert_eq!(config.controller.as_deref(), Some("abird-gondor-ci"));
+        assert_eq!(config.controller.as_deref(), Some("abird-ci"));
         assert_eq!(config.transfer_broker.as_deref(), Some("abird-gondor-corp"));
         let transaction = Transaction::new_service(
             "abird-zulip".to_owned(),
@@ -5538,6 +5669,7 @@ mod tests {
             ("NIXBOT_BUILD_JOBS".to_owned(), "8".to_owned()),
             ("NIXBOT_VERIFY_JOBS".to_owned(), "8".to_owned()),
             ("NIXBOT_HOSTS".to_owned(), "wrong-system".to_owned()),
+            ("NIXBOT_ROUTE".to_owned(), "cf".to_owned()),
         ]));
         let invocation = local_nixbot_deploy_invocation(&request, &environment).unwrap();
         assert_eq!(invocation.action, crate::fleet::cli::Action::Deploy);
@@ -5563,6 +5695,10 @@ mod tests {
         assert_eq!(invocation.options.deploy_jobs, 1);
         assert_eq!(invocation.options.verify_jobs, 1);
         assert!(invocation.options.no_rollback);
+        assert_eq!(
+            invocation.options.route,
+            crate::fleet::inventory_routing::RouteRequest::Auto
+        );
 
         let mut single = request.clone();
         single.required_hosts = vec![single.host.clone()];
@@ -5610,11 +5746,15 @@ mod tests {
     #[test]
     fn local_nixbot_command_removes_git_checkout_selectors() {
         let command = local_nixbot_command(Path::new("nix"));
-        for selector in crate::programs::GIT_REPOSITORY_ENVIRONMENT {
+        for selector in crate::programs::GIT_REPOSITORY_ENVIRONMENT
+            .iter()
+            .copied()
+            .chain(["NIXBOT_ROUTE"])
+        {
             assert_eq!(
                 command
                     .get_envs()
-                    .find(|(name, _)| name == selector)
+                    .find(|(name, _)| *name == selector)
                     .map(|(_, value)| value),
                 Some(None),
                 "{selector} was not removed"

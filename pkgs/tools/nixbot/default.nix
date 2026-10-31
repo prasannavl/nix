@@ -18,6 +18,8 @@
       git
       jq
       getent
+      gnugrep
+      gnused
       inetutils
       iproute2
       nix

@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 
 use super::environment::Environment;
 use super::inventory::validate_host_name;
+use super::inventory_routing::{RouteRequest, RouteSource};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
@@ -107,6 +108,9 @@ pub struct Options {
     pub dirty_staged_base: Option<String>,
     pub dry_run: bool,
     pub no_override: bool,
+    pub config_override: Option<PathBuf>,
+    pub route: RouteRequest,
+    pub route_source: RouteSource,
     pub no_rollback: bool,
     pub no_verify: bool,
     pub prefix_host_logs: bool,
@@ -166,6 +170,9 @@ impl Default for Options {
             dirty_staged_base: None,
             dry_run: false,
             no_override: false,
+            config_override: None,
+            route: RouteRequest::Auto,
+            route_source: RouteSource::Cli,
             no_rollback: false,
             no_verify: false,
             prefix_host_logs: false,
@@ -605,7 +612,22 @@ fn parse_options(
             }
             "--dirty-staged-patch-stdin" => options.dirty_staged_patch_stdin = true,
             "--dry" => options.dry_run = true,
-            "--no-override" => options.no_override = true,
+            "--no-override" => {
+                if options.config_override.is_some() {
+                    bail!("--no-override cannot be combined with --config-override");
+                }
+                options.no_override = true;
+            }
+            "--config-override" => {
+                if options.no_override {
+                    bail!("--no-override cannot be combined with --config-override");
+                }
+                options.config_override = Some(PathBuf::from(value()?));
+            }
+            "--route" => {
+                options.route = RouteRequest::parse(&value()?)?;
+                options.route_source = RouteSource::Cli;
+            }
             "--no-rollback" => options.no_rollback = true,
             "--no-verify" => options.no_verify = true,
             "--prefix-host-logs" => {
@@ -683,6 +705,9 @@ fn validate(action: &Action, options: &Options) -> Result<()> {
         )
     {
         bail!("selected action is local-only and cannot run through --ci-trigger");
+    }
+    if options.ci_trigger && options.config_override.is_some() {
+        bail!("--ci-trigger forbids --config-override");
     }
     Ok(())
 }
@@ -767,4 +792,74 @@ fn split_values(raw: &str) -> Vec<String> {
 
 fn contains_glob(value: &str) -> bool {
     value.bytes().any(|byte| matches!(byte, b'*' | b'?' | b'['))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_flag_is_parsed_exactly() {
+        for (value, expected) in [
+            ("auto", RouteRequest::Auto),
+            ("default", RouteRequest::Default),
+            ("cf", RouteRequest::Cf),
+            ("ts", RouteRequest::Ts),
+        ] {
+            let flagged =
+                Invocation::parse_canonical(["fleet", "deploy", &format!("--route={value}")])
+                    .unwrap();
+            assert_eq!(flagged.options.route, expected);
+        }
+        for value in ["", "on", "off", " cf", "cf ", "maybe"] {
+            assert!(
+                Invocation::parse_canonical(["fleet", "deploy", &format!("--route={value}")])
+                    .is_err(),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_override_flag_conflicts_with_no_override() {
+        let named = Invocation::parse_canonical([
+            "fleet",
+            "deploy",
+            "--config-override=/tmp/operator.override.nix",
+        ])
+        .unwrap();
+        assert_eq!(
+            named.options.config_override,
+            Some(std::path::PathBuf::from("/tmp/operator.override.nix"))
+        );
+
+        for arguments in [
+            [
+                "fleet",
+                "deploy",
+                "--no-override",
+                "--config-override=/tmp/x.nix",
+            ],
+            [
+                "fleet",
+                "deploy",
+                "--config-override=/tmp/x.nix",
+                "--no-override",
+            ],
+        ] {
+            assert!(
+                Invocation::parse_canonical(arguments).is_err(),
+                "{arguments:?} must be rejected"
+            );
+        }
+        assert!(
+            Invocation::parse_canonical([
+                "fleet",
+                "deploy",
+                "--ci-trigger",
+                "--config-override=/tmp/x.nix",
+            ])
+            .is_err()
+        );
+    }
 }

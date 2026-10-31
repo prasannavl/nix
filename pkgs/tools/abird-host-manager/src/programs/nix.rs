@@ -191,12 +191,29 @@ impl Nix {
         overlay: Option<&Path>,
         repository_config: Option<&Path>,
     ) -> Result<Value> {
-        let apply = inventory_apply_expression(repository_config)?;
-        let mut value = self.eval_file_apply_json(file, &apply)?;
-        if let Some(overlay) = overlay {
-            merge_json(&mut value, self.eval_file_apply_json(overlay, &apply)?);
-        }
+        let (value, _, _) =
+            self.eval_inventory_file_with_overlay_layers_json(file, overlay, repository_config)?;
         Ok(value)
+    }
+
+    /// Return the merged inventory plus the unmerged base and override layers so
+    /// callers can distinguish tracked values from operator overrides.
+    pub fn eval_inventory_file_with_overlay_layers_json(
+        &self,
+        file: &Path,
+        overlay: Option<&Path>,
+        repository_config: Option<&Path>,
+    ) -> Result<(Value, Value, Option<Value>)> {
+        let apply = inventory_apply_expression(repository_config)?;
+        let base = self.eval_file_apply_json(file, &apply)?;
+        let overlay_value = overlay
+            .map(|path| self.eval_file_apply_json(path, &apply))
+            .transpose()?;
+        let mut merged = base.clone();
+        if let Some(overlay) = &overlay_value {
+            merge_inventory_json(&mut merged, overlay.clone());
+        }
+        Ok((merged, base, overlay_value))
     }
 
     pub fn build_link(&self, repository: &Path, installable: &str, out_link: &Path) -> Result<()> {
@@ -295,6 +312,37 @@ fn merge_json(base: &mut Value, overlay: Value) {
     }
 }
 
+fn merge_inventory_json(base: &mut Value, overlay: Value) {
+    let route_replacements = overlay
+        .get("hosts")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|hosts| hosts.iter())
+        .filter_map(|(host, value)| {
+            value
+                .get("routes")
+                .and_then(Value::as_object)
+                .map(|routes| (host.clone(), routes.clone()))
+        })
+        .collect::<Vec<_>>();
+    merge_json(base, overlay);
+    for (host, routes) in route_replacements {
+        let Some(merged_routes) = base
+            .pointer_mut(&format!("/hosts/{}/routes", escape_json_pointer(&host)))
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        for (name, route) in routes {
+            merged_routes.insert(name, route);
+        }
+    }
+}
+
+fn escape_json_pointer(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -334,6 +382,30 @@ mod tests {
                 "hosts": {"parent": {"target": "10.0.0.1", "proxyCommand": null}}
             })
         );
+    }
+
+    #[test]
+    fn inventory_overlay_replaces_complete_named_routes() {
+        let mut base = json!({
+            "hosts": {"edge/name": {"routes": {
+                "cf": {
+                    "target": "edge.example",
+                    "proxyCommand": "cloudflared %h"
+                },
+                "ts": "edge"
+            }}}
+        });
+        merge_inventory_json(
+            &mut base,
+            json!({"hosts": {"edge/name": {"routes": {"cf": {
+                "target": "127.0.0.1"
+            }}}}}),
+        );
+        assert_eq!(
+            base["hosts"]["edge/name"]["routes"]["cf"],
+            json!({"target": "127.0.0.1"})
+        );
+        assert_eq!(base["hosts"]["edge/name"]["routes"]["ts"], "edge");
     }
 
     #[test]

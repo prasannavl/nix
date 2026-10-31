@@ -15,21 +15,48 @@ readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
 	nixpkgs#age
 	nixpkgs#cloudflared
 	nixpkgs#coreutils
+	nixpkgs#findutils
+	nixpkgs#gawk
+	nixpkgs#getent
+	nixpkgs#gnugrep
+	nixpkgs#gnused
 	nixpkgs#git
+	nixpkgs#inetutils
+	nixpkgs#iproute2
 	nixpkgs#jq
 	nixpkgs#nix
 	nixpkgs#openssh
 	nixpkgs#opentofu
 	nixpkgs#procps
+	nixpkgs#util-linux
 )
 readonly -a NIXBOT_RUNTIME_COMMANDS=(
 	nix
 	age
+	awk
+	base64
 	cloudflared
+	cut
+	date
+	find
+	flock
+	getent
 	git
+	grep
+	hostname
+	id
+	ip
 	jq
+	mkdir
+	mktemp
 	nproc
 	pgrep
+	ps
+	readlink
+	rm
+	sed
+	sha256sum
+	sort
 	ssh
 	scp
 	ssh-keyscan
@@ -37,6 +64,7 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 	stty
 	timeout
 	tofu
+	tr
 )
 readonly NIXBOT_SSH_ARGV_PREFIX="__nixbot_argv64"
 
@@ -46,9 +74,9 @@ Usage:
   nixbot
   nixbot <deps|check-deps|version>
   nixbot repo sync
-  nixbot --list-hosts [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--control-plane-first]
-  nixbot --list-groups [--config <path>] [--no-override]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--require-hosts "host1,host2"] [--nix-config <name>] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--restart-managed] [--bootstrap] [--control-plane-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot --list-hosts [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--config <path>] [--config-override <path>] [--no-override] [--route <auto|default|cf|ts>] [--control-plane-first]
+  nixbot --list-groups [--config <path>] [--config-override <path>] [--no-override]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--require-hosts "host1,host2"] [--nix-config <name>] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--restart-managed] [--bootstrap] [--control-plane-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--config-override <path>] [--route <auto|default|cf|ts>] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot --clean[=auto|all] [--dry] [--ci-trigger] [ci/auth/config options]
   nixbot tofu <tofu-args...>
 
@@ -77,7 +105,7 @@ Local Wrapper Action:
   tofu            Run local OpenTofu in the nixbot runtime shell.
 
 Workflow Selection Options:
-  --list-hosts     List selected hosts using the same host block as the info banner
+  --list-hosts     List selected hosts and routing provenance
   --list-groups    List configured nixbot groups
   --group          Deployment workflow group(s); repeatable and comma/space-separated.
                    Groups select hooks/tools and provide the base host set.
@@ -142,7 +170,18 @@ Workflow Behavior Options:
                    Skip the operator-machine action mutex for manual parallel
                    nixbot runs. Deploy and rollback activation locks still
                    apply on target hosts.
-  --no-override    Skip the sibling *.override.nix config overlay
+  --no-override    Skip the operator override file only. Tracked route data and
+                   --route still apply.
+  --config-override <path>
+                   Name the operator override file explicitly. Outranks
+                   ABIRD_HOST_MANAGER_CONFIG_OVERRIDE, then
+                   NIXBOT_CONFIG_OVERRIDE_PATH, then the sibling *.override.nix.
+                   Rejected together with --no-override.
+  --route auto|default|cf|ts
+                   Named route for transports executed by this process
+                   (default: auto). auto uses a direct local config.route when
+                   allowed, otherwise default on a tracked managed executor and
+                   cf on an unmanaged developer machine.
   --log-format     auto|gh|plain (default: auto)
 
 Auth / Config Options:
@@ -154,8 +193,9 @@ Auth / Config Options:
                    Deploy key material to install through the operator path
   --known-hosts    known_hosts override for all hosts
   --config         Nix deploy config path (default: hosts/nixbot.nix)
-                   Per-host config supports proxyCommand for explicit SSH
-                   transports such as Cloudflare Access.
+                   Top-level target/port/proxyJump/proxyCommand define the
+                   implicit default route. routes.cf/routes.ts accept a target
+                   string or complete transport attrset.
   --age-key-file   Age/SSH identity used to decrypt `*.age` secrets
   --discover-keys  Fallback decrypt identity discovery (auto|on|off; default: auto)
 
@@ -163,7 +203,8 @@ Bootstrap/Forced-Command Options:
   --ci-check-ssh-key-path .age key override for bootstrap checks
 
 Remote Trigger Options:
-  --ci-trigger Run remotely on the CI host via SSH and exit
+  --ci-trigger Run remotely on the CI host via SSH and exit. The caller's route
+               reaches the controller only; it is never forwarded.
   --ci-host   CI host hostname/IP
   --ci-user   CI host user (default: nixbot)
   --ci-ssh-key Optional SSH private key content for CI trigger
@@ -207,6 +248,8 @@ Environment (Host Workflow Ordering):
   NIXBOT_CONTROL_PLANE_FIRST Same as --control-plane-first (bool)
   NIXBOT_LOCAL_SELF_TARGET    Self-target transport policy: auto|on|off
                               (default: auto)
+  NIXBOT_ROUTE               Same as --route (auto|default|cf|ts;
+                             default: auto)
 
 Environment (Workflow Behavior):
   NIXBOT_FORCE                Same as --force (bool: 1/0, true/false, yes/no)
@@ -455,6 +498,16 @@ format_summary_host_line() {
 
 ##### Init Vars #####
 
+absolute_invocation_path() {
+	local path="$1" base="${NIXBOT_INVOCATION_CWD:-}"
+
+	[ -n "${base}" ] || base="$(pwd -P)"
+	case "${path}" in
+	/*) printf '%s\n' "${path}" ;;
+	*) printf '%s/%s\n' "${base%/}" "${path}" ;;
+	esac
+}
+
 override_config_path_for() {
 	local config_path="$1" repo_root="" resolved_config="" override_config=""
 
@@ -535,6 +588,20 @@ configure_github_nix_access_token() {
 }
 
 init_vars() {
+	if [ -z "${NIXBOT_EXECUTOR_KIND:-}" ]; then
+		if [ -n "${SSH_ORIGINAL_COMMAND:-}" ] ||
+			[ "${ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION:-}" = 1 ]; then
+			NIXBOT_EXECUTOR_KIND="managed"
+		else
+			NIXBOT_EXECUTOR_KIND="developer"
+		fi
+	fi
+	case "${NIXBOT_EXECUTOR_KIND}" in
+	managed | developer) ;;
+	*) die "Unsupported NIXBOT_EXECUTOR_KIND: ${NIXBOT_EXECUTOR_KIND}" ;;
+	esac
+	export NIXBOT_EXECUTOR_KIND
+
 	# Repository-sensitive commands must resolve the checkout selected by Nixbot,
 	# not an inherited Git plumbing context. Keep this list aligned with the
 	# native manager's GIT_REPOSITORY_ENVIRONMENT.
@@ -616,6 +683,10 @@ init_vars() {
 	PREFIX_HOST_LOGS_EXPLICIT=0
 	LOG_FORMAT="${NIXBOT_LOG_FORMAT:-auto}"
 	NIXBOT_LOCAL_SELF_TARGET_MODE="${NIXBOT_LOCAL_SELF_TARGET:-auto}"
+	NIXBOT_ROUTE_REQUEST="${NIXBOT_ROUTE:-auto}"
+	NIXBOT_ROUTE_EXPLICIT=0
+	[ -z "${NIXBOT_ROUTE+x}" ] || NIXBOT_ROUTE_EXPLICIT=1
+	NIXBOT_ROUTE_SOURCE_HINT="env"
 	NIXBOT_PARENT_SETTLE_TIMEOUT="${NIXBOT_PARENT_SETTLE_TIMEOUT:-180}"
 	NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT="${NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT:-45}"
 	NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS="${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS:-5}"
@@ -654,14 +725,43 @@ init_vars() {
 	if [ -z "${NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE}" ]; then
 		NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE="${NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK}"
 	fi
+	NIXBOT_INVOCATION_CWD="$(pwd -P)"
 	NIXBOT_CONFIG_PATH="${NIXBOT_CONFIG:-${NIXBOT_DEFAULT_CONFIG_PATH}}"
-	NIXBOT_CONFIG_OVERRIDE_PATH="${NIXBOT_CONFIG_OVERRIDE_PATH:-}"
-	if [ -z "${NIXBOT_CONFIG_OVERRIDE_PATH}" ]; then
-		NIXBOT_CONFIG_OVERRIDE_PATH="$(override_config_path_for "${NIXBOT_CONFIG_PATH}")"
+	local override_abird="${ABIRD_HOST_MANAGER_CONFIG_OVERRIDE:-}"
+	local override_nixbot="${NIXBOT_CONFIG_OVERRIDE_PATH:-}"
+	NIXBOT_CONFIG_OVERRIDE_PATH=""
+	CONFIG_OVERRIDE_EXPLICIT=0
+	CONFIG_OVERRIDE_FLAG=0
+	CONFIG_OVERRIDE_ENV_NAME=""
+	CONFIG_OVERRIDE_PINNED=0
+	CONFIG_OVERRIDE_PINNED_PATH=""
+	local override_env_name="" override_env_value=""
+	for override_env_name in ABIRD_HOST_MANAGER_CONFIG_OVERRIDE NIXBOT_CONFIG_OVERRIDE_PATH; do
+		case "${override_env_name}" in
+		ABIRD_HOST_MANAGER_CONFIG_OVERRIDE) override_env_value="${override_abird}" ;;
+		NIXBOT_CONFIG_OVERRIDE_PATH) override_env_value="${override_nixbot}" ;;
+		esac
+		[ -n "${override_env_value}" ] || continue
+		CONFIG_OVERRIDE_ENV_NAME="${override_env_name}"
+		CONFIG_OVERRIDE_EXPLICIT=1
+		NIXBOT_CONFIG_OVERRIDE_PATH="$(absolute_invocation_path "${override_env_value}")"
+		break
+	done
+	if [ -n "${CONFIG_OVERRIDE_ENV_NAME}" ]; then
+		export "${CONFIG_OVERRIDE_ENV_NAME}=${NIXBOT_CONFIG_OVERRIDE_PATH}"
 	fi
+	NIXBOT_ROUTE_ACTIVE=""
+	NIXBOT_ROUTE_SOURCE=""
+	NIXBOT_ROUTE_SELF=""
 	SHA="${NIXBOT_SHA:-}"
 	CI_TRIGGER=0
 	CI_TRIGGER_HOST="${NIXBOT_CI_HOST:-}"
+	CI_TRIGGER_HOST_EXPLICIT=0
+	[ -z "${NIXBOT_CI_HOST+x}" ] || CI_TRIGGER_HOST_EXPLICIT=1
+	CI_TRIGGER_INVENTORY_HOST=""
+	CI_TRIGGER_PORT="22"
+	CI_TRIGGER_PROXY_COMMAND=""
+	CI_TRIGGER_PROXY_CHAIN=""
 	CI_TRIGGER_USER="${NIXBOT_CI_USER:-nixbot}"
 	CI_TRIGGER_SSH_KEY="${NIXBOT_CI_SSH_KEY:-}"
 	CI_TRIGGER_KNOWN_HOSTS="${NIXBOT_CI_KNOWN_HOSTS:-}"
@@ -784,6 +884,8 @@ init_vars() {
 	PREP_DEPLOY_SELF_TARGET=0
 	PREP_DEPLOY_SSH_OPTS=()
 	PRIMARY_PROBE_LAST_OUTPUT=""
+	REMOTE_STORE_FAILURE_TRANSPORT_LOSS=0
+	CURRENT_HOST_IDENTITY_ALIASES=()
 	CURRENT_HOST_ALIASES=()
 	CURRENT_HOST_ADDRESSES=()
 	# shellcheck disable=SC2034
@@ -863,8 +965,11 @@ init_vars() {
 	# `REPO_ROOT` is the long-lived source mirror. Runs never execute from it
 	# directly; they materialize `REPO_WORKTREE_ROOT` and switch into that tree.
 	REPO_BASE="${REMOTE_NIXBOT_BASE}"
-	REPO_ROOT="${NIXBOT_REPO_ROOT:-${NIXBOT_REPO_PATH:-${REPO_BASE}/nix}}"
+	REPO_ROOT="$(absolute_invocation_path "${NIXBOT_REPO_ROOT:-${NIXBOT_REPO_PATH:-${REPO_BASE}/nix}}")"
 	REPO_WORKTREE_ROOT="${NIXBOT_REPO_WORKTREE_ROOT:-}"
+	if [ -n "${REPO_WORKTREE_ROOT}" ]; then
+		REPO_WORKTREE_ROOT="$(absolute_invocation_path "${REPO_WORKTREE_ROOT}")"
+	fi
 	REPO_ROOT_LOCK_DIR=""
 	REPO_ROOT_MANAGED=1
 	REPO_URL="${NIXBOT_REPO_URL:-}"
@@ -880,8 +985,13 @@ init_vars() {
 init_current_host_aliases() {
 	local alias="" addr=""
 
+	CURRENT_HOST_IDENTITY_ALIASES=()
 	CURRENT_HOST_ALIASES=()
 	CURRENT_HOST_ADDRESSES=()
+	while IFS= read -r alias; do
+		[ -n "${alias}" ] || continue
+		append_unique_array_item CURRENT_HOST_IDENTITY_ALIASES "${alias}"
+	done < <(hostname 2>/dev/null | awk 'NF' || true)
 	while IFS= read -r alias; do
 		[ -n "${alias}" ] || continue
 		append_unique_array_item CURRENT_HOST_ALIASES "${alias}"
@@ -1298,6 +1408,40 @@ json_array_to_bash_array() {
 	mapfile -t jatba_array_out_ref < <(jq -r '.[]' <<<"${json}")
 }
 
+# Flat JSON scalars → Bash map; preserve whitespace, reject unrepresentable NULs.
+# shellcheck disable=SC2034
+json_object_to_bash_map() {
+	local jotbm_json="$1" jotbm_fd="" jotbm_pid="" jotbm_key="" jotbm_value=""
+	# shellcheck disable=SC2178
+	local -n jotbm_map_out_ref="$2"
+
+	jotbm_map_out_ref=()
+	exec {jotbm_fd}< <(jq -sj '
+    if length != 1 or (.[0] | type) != "object" then
+      error("expected one JSON object of scalar fields")
+    else .[0] end
+    | to_entries as $entries
+    | if any($entries[];
+        .key == "" or (.key | contains("\u0000"))
+        or (.value | type == "array" or type == "object")
+        or (.value | tostring | contains("\u0000")))
+      then error("Bash fields require non-empty keys, scalar values, and no NULs")
+      else $entries[]
+        | .key, "\u0000", (if .value == null then "" else (.value | tostring) end), "\u0000"
+      end
+  ' <<<"${jotbm_json}")
+	jotbm_pid=$!
+	while IFS= read -r -d '' jotbm_key && IFS= read -r -d '' jotbm_value; do
+		jotbm_map_out_ref["${jotbm_key}"]="${jotbm_value}"
+	done <&"${jotbm_fd}"
+	exec {jotbm_fd}<&-
+	# Process substitution otherwise hides decoder failures.
+	if ! wait "${jotbm_pid}"; then
+		jotbm_map_out_ref=()
+		return 1
+	fi
+}
+
 json_array_to_bash_set() {
 	local json="$1"
 	# shellcheck disable=SC2178
@@ -1506,9 +1650,33 @@ parse_args() {
 			shift "${OPTSHIFT}"
 			;;
 		--no-override)
+			# File-scoped only: skip the operator *.override.nix overlay. Tracked
+			# route data and --route still apply.
+			[ "${CONFIG_OVERRIDE_FLAG}" -eq 0 ] ||
+				die "--no-override cannot be combined with --config-override"
 			SKIP_CONFIG_OVERRIDE=1
 			NIXBOT_CONFIG_OVERRIDE_PATH=""
 			shift
+			;;
+		--config-override | --config-override=*)
+			take_optval "$@"
+			[ -n "${OPTVAL}" ] || die "--config-override requires a non-empty path"
+			[ "${SKIP_CONFIG_OVERRIDE}" -eq 0 ] ||
+				die "--no-override cannot be combined with --config-override"
+			CONFIG_OVERRIDE_FLAG=1
+			CONFIG_OVERRIDE_EXPLICIT=1
+			NIXBOT_CONFIG_OVERRIDE_PATH="$(absolute_invocation_path "${OPTVAL}")"
+			shift "${OPTSHIFT}"
+			;;
+		--route | --route=*)
+			take_optval "$@"
+			case "${OPTVAL}" in
+			auto | default | cf | ts) NIXBOT_ROUTE_REQUEST="${OPTVAL}" ;;
+			*) die "Unsupported --route value: ${OPTVAL} (expected auto|default|cf|ts)" ;;
+			esac
+			NIXBOT_ROUTE_EXPLICIT=1
+			NIXBOT_ROUTE_SOURCE_HINT="cli"
+			shift "${OPTSHIFT}"
 			;;
 		--bootstrap)
 			FORCE_BOOTSTRAP_PATH=1
@@ -1572,9 +1740,7 @@ parse_args() {
 		--config | --config=*)
 			take_optval "$@"
 			NIXBOT_CONFIG_PATH="${OPTVAL}"
-			if [ "${SKIP_CONFIG_OVERRIDE}" -eq 0 ]; then
-				NIXBOT_CONFIG_OVERRIDE_PATH="$(override_config_path_for "${NIXBOT_CONFIG_PATH}")"
-			else
+			if [ "${SKIP_CONFIG_OVERRIDE}" -eq 1 ]; then
 				NIXBOT_CONFIG_OVERRIDE_PATH=""
 			fi
 			shift "${OPTSHIFT}"
@@ -1605,7 +1771,7 @@ parse_args() {
 			;;
 		--repo-path | --repo-path=*)
 			take_optval "$@"
-			REPO_ROOT="${OPTVAL}"
+			REPO_ROOT="$(absolute_invocation_path "${OPTVAL}")"
 			REPO_PATH_EXPLICIT=1
 			shift "${OPTSHIFT}"
 			;;
@@ -1625,6 +1791,7 @@ parse_args() {
 		--ci-host | --ci-host=*)
 			take_optval "$@"
 			CI_TRIGGER_HOST="${OPTVAL}"
+			CI_TRIGGER_HOST_EXPLICIT=1
 			shift "${OPTSHIFT}"
 			;;
 		--ci-user | --ci-user=*)
@@ -1727,6 +1894,10 @@ parse_args() {
 	auto | gh | github-actions | plain) ;;
 	*) die "Unsupported --log-format: ${LOG_FORMAT}" ;;
 	esac
+	case "${NIXBOT_ROUTE_REQUEST}" in
+	auto | default | cf | ts) ;;
+	*) die "Unsupported NIXBOT_ROUTE value: ${NIXBOT_ROUTE_REQUEST} (expected auto|default|cf|ts)" ;;
+	esac
 	if [ "${PREFIX_HOST_LOGS_EXPLICIT}" -eq 0 ] && { [ "${BUILD_PLAN_JOBS}" -gt 1 ] || [ "${BUILD_JOBS}" -gt 1 ] || [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ] || [ "${NIXBOT_VERIFY_JOBS}" -gt 1 ]; }; then
 		FORCE_PREFIX_HOST_LOGS=1
 	fi
@@ -1739,6 +1910,12 @@ parse_args() {
 
 	if [ "${CI_TRIGGER}" -eq 1 ]; then
 		[ -n "${CI_TRIGGER_USER}" ] || die "--ci-user value is required"
+		[ "${CONFIG_OVERRIDE_EXPLICIT}" -eq 0 ] ||
+			die "--ci-trigger does not accept an explicit config override; CI uses tracked inventory only"
+		SKIP_CONFIG_OVERRIDE=1
+		NIXBOT_CONFIG_OVERRIDE_PATH=""
+		CONFIG_OVERRIDE_PINNED=1
+		CONFIG_OVERRIDE_PINNED_PATH=""
 	fi
 	if [ "${ACTION}" = "dev-build" ] && [ -n "${SHA}" ]; then
 		die "dev-build uses the current local checkout; --sha is unsupported"
@@ -3337,8 +3514,40 @@ overlay_dirty_staged_patch_to_worktree() {
 		die "Failed to overlay staged changes into repo worktree"
 }
 
+resolve_ci_trigger_connection() {
+	local requested_host="${CI_TRIGGER_HOST}" inventory_host="" target_json=""
+	local -A target_fields=()
+
+	[ -n "${requested_host}" ] || die "CI controller host is not configured"
+	inventory_host="$(inventory_host_for_role "${requested_host}")" ||
+		die "Cannot resolve CI controller ${requested_host} to one inventory endpoint"
+	if ! jq -e --arg host "${inventory_host}" 'has($host)' <<<"${NIXBOT_HOSTS_JSON}" >/dev/null; then
+		# Preserve the explicit raw --ci-host escape hatch.
+		[ "${CI_TRIGGER_HOST_EXPLICIT:-0}" -eq 1 ] ||
+			die "CI controller ${requested_host} is not present in tracked inventory"
+		return 0
+	fi
+
+	target_json="$(resolve_deploy_target "${inventory_host}")" || return 1
+	json_object_to_bash_map "${target_json}" target_fields || return 1
+	CI_TRIGGER_INVENTORY_HOST="${inventory_host}"
+	CI_TRIGGER_HOST="${target_fields[target]}"
+	CI_TRIGGER_PORT="${target_fields[port]:-22}"
+	CI_TRIGGER_PROXY_COMMAND="${target_fields[proxyCommand]:-}"
+	CI_TRIGGER_PROXY_CHAIN="$(resolve_proxy_chain "${target_fields[proxyJump]:-}")" || return 1
+	if [ -z "${CI_TRIGGER_KNOWN_HOSTS}" ]; then
+		CI_TRIGGER_KNOWN_HOSTS="${target_fields[knownHosts]:-}"
+	fi
+}
+
 configure_ci_trigger_ssh_opts() {
-	local key_file="" known_hosts_file="" scanned_known_hosts=""
+	local key_file="" known_hosts_file="" scanned_known_hosts="" proxy_script=""
+	# Populated through nameref route helpers.
+	# shellcheck disable=SC2034
+	local safe_node="" proxy_known_hosts_file="" dummy_nix_sshopts="" dummy_bootstrap_nix_sshopts=""
+	# Populated through nameref route helpers.
+	# shellcheck disable=SC2034
+	local -a dummy_bootstrap_opts=()
 
 	CI_TRIGGER_SSH_OPTS=()
 
@@ -3361,8 +3570,14 @@ configure_ci_trigger_ssh_opts() {
 
 	if [ -n "${CI_TRIGGER_KNOWN_HOSTS}" ]; then
 		scanned_known_hosts="${CI_TRIGGER_KNOWN_HOSTS}"
+	elif [ -n "${CI_TRIGGER_PROXY_CHAIN}" ] || [ -n "${CI_TRIGGER_PROXY_COMMAND}" ]; then
+		die "A routed CI controller requires --ci-known-hosts/NIXBOT_CI_KNOWN_HOSTS"
 	else
-		run_supervised_stdout_capture scanned_known_hosts "" run_quiet_ssh_keyscan -H "${CI_TRIGGER_HOST}" || true
+		if [ "${CI_TRIGGER_PORT:-22}" = 22 ]; then
+			run_supervised_stdout_capture scanned_known_hosts "" run_quiet_ssh_keyscan -H "${CI_TRIGGER_HOST}" || true
+		else
+			run_supervised_stdout_capture scanned_known_hosts "" run_quiet_ssh_keyscan -H -p "${CI_TRIGGER_PORT}" "${CI_TRIGGER_HOST}" || true
+		fi
 		[ -n "${scanned_known_hosts}" ] || die "Could not determine CI host key for ${CI_TRIGGER_HOST}. Pass --ci-known-hosts/NIXBOT_CI_KNOWN_HOSTS or ensure ssh-keyscan can reach the CI host."
 	fi
 
@@ -3374,7 +3589,29 @@ configure_ci_trigger_ssh_opts() {
 		-o "GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE}"
 		-o StrictHostKeyChecking=yes
 		-o "UserKnownHostsFile=${known_hosts_file}"
+		-o "Port=${CI_TRIGGER_PORT:-22}"
 	)
+
+	if [ -n "${CI_TRIGGER_PROXY_COMMAND}" ]; then
+		proxy_script="${TMP_SSH_DIR}/proxy-ci-controller-direct.sh"
+		write_static_proxy_command_script \
+			"${proxy_script}" "${CI_TRIGGER_PROXY_COMMAND}" "${CI_TRIGGER_HOST}" "${CI_TRIGGER_PORT:-22}"
+		CI_TRIGGER_SSH_OPTS+=(-o "ProxyCommand=${proxy_script}")
+	elif [ -n "${CI_TRIGGER_PROXY_CHAIN}" ]; then
+		safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${CI_TRIGGER_INVENTORY_HOST:-ci-controller}")"
+		proxy_known_hosts_file="${TMP_SSH_DIR}/${NODE_KNOWN_HOSTS_PREFIX}.${safe_node}"
+		cp "${known_hosts_file}" "${proxy_known_hosts_file}"
+		chmod 600 "${proxy_known_hosts_file}"
+		apply_proxy_chain_to_ssh_contexts \
+			"${CI_TRIGGER_INVENTORY_HOST:-ci-controller}" \
+			"${CI_TRIGGER_HOST}" \
+			"${CI_TRIGGER_PORT:-22}" \
+			"${CI_TRIGGER_PROXY_CHAIN}" \
+			CI_TRIGGER_SSH_OPTS \
+			dummy_nix_sshopts \
+			dummy_bootstrap_opts \
+			dummy_bootstrap_nix_sshopts
+	fi
 }
 
 prepare_ci_trigger_dirty_staged_patch() {
@@ -3412,7 +3649,7 @@ prepare_ci_trigger_dirty_staged_patch() {
 }
 
 run_ci_trigger() {
-	local trigger_sha="${SHA}" trigger_groups="" trigger_hosts="" encoded_request="" config_json="" patch_bytes=""
+	local trigger_sha="${SHA}" trigger_groups="" trigger_hosts="" encoded_request="" config_json="" config_bundle="" patch_bytes=""
 	local -a remote_args=()
 	if ! is_clean_action && [ -z "${trigger_sha}" ]; then
 		trigger_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
@@ -3424,8 +3661,11 @@ run_ci_trigger() {
 
 	action_is_supported "${ACTION}" || die "Unsupported action for --ci-trigger: ${ACTION}"
 
-	config_json="$(load_deploy_config_json "${NIXBOT_CONFIG_PATH}" "")"
-	init_deploy_settings "${config_json}"
+	config_bundle="$(load_deploy_config_bundle "${NIXBOT_CONFIG_PATH}" "")"
+	config_json="$(jq -c '.config' <<<"${config_bundle}")"
+	# The caller resolves tracked inventory with its own process-local route to
+	# reach the controller. The remote process receives no route or override.
+	init_deploy_settings "${config_json}" "${config_bundle}" 1
 	if ! is_clean_action; then
 		trigger_groups="$(normalize_groups_input "${GROUPS_RAW}")"
 		trigger_hosts="$(normalize_hosts_input "${HOSTS_RAW}")"
@@ -3435,6 +3675,17 @@ run_ci_trigger() {
 	if [ -z "${CI_TRIGGER_HOST}" ]; then
 		apply_config_defaults "${config_json}"
 	fi
+	resolve_ci_trigger_connection
+	case "${NIXBOT_ROUTE_REQUEST:-auto}" in
+	cf | ts)
+		if [ -z "${CI_TRIGGER_INVENTORY_HOST}" ] ||
+			! jq -e --arg host "${CI_TRIGGER_INVENTORY_HOST}" \
+				'.[$host].routing.effective == true' \
+				<<<"${NIXBOT_HOSTS_JSON}" >/dev/null; then
+			die "explicit route ${NIXBOT_ROUTE_REQUEST} does not affect the CI controller path"
+		fi
+		;;
+	esac
 	if is_clean_action && [ "${OVERLAY_STAGED}" -eq 1 ]; then
 		die "--clean --ci-trigger does not accept --dirty-staged"
 	fi
@@ -3446,6 +3697,9 @@ run_ci_trigger() {
 
 	log_section "Phase: Remote Trigger"
 	echo "CI host: ${CI_TRIGGER_USER}@${CI_TRIGGER_HOST}" >&2
+	[ -z "${CI_TRIGGER_INVENTORY_HOST}" ] || echo "CI inventory host: ${CI_TRIGGER_INVENTORY_HOST}" >&2
+	log_routing_context
+	echo "Route scope: caller to controller only; not forwarded" >&2
 	echo "Action: ${ACTION}" >&2
 	if ! is_clean_action; then
 		if [ -n "${trigger_groups}" ]; then
@@ -3734,6 +3988,7 @@ prepare_repo_worktree() {
 
 	resolve_repo_root
 	[ -n "${REPO_WORKTREE_ROOT}" ] && return 0
+	pin_selected_config_override
 	ensure_runtime_work_dir
 	capture_dirty_staged_patch_stdin
 	apply_config_defaults_if_config_available
@@ -3769,7 +4024,7 @@ prepare_repo_worktree() {
 
 reexec_repo_script_if_needed() {
 	local current_script="" repo_script="" current_resolved="" repo_resolved=""
-	local -a request_args=("$@")
+	local -a reexec_args=("$@")
 
 	[ "${REEXEC_FROM_REPO}" -eq 1 ] || return 0
 	[ "${NIXBOT_REEXECED_FROM_REPO:-0}" != "1" ] || return 0
@@ -3786,6 +4041,16 @@ reexec_repo_script_if_needed() {
 		return 0
 	fi
 
+	# Preserve the original argv bytes. Append the frozen overlay decision after
+	# the worktree cd so the child cannot discover a different sibling.
+	[ "${CONFIG_OVERRIDE_PINNED:-0}" -eq 1 ] ||
+		die "Config override selection was not pinned before repo re-exec"
+	if [ -n "${CONFIG_OVERRIDE_PINNED_PATH}" ]; then
+		reexec_args+=(--config-override "${CONFIG_OVERRIDE_PINNED_PATH}")
+	else
+		reexec_args+=(--no-override)
+	fi
+
 	log_section "Phase: Repo Re-exec"
 	echo "Re-executing deploy from worktree repo script:" >&2
 	echo "${repo_script}" >&2
@@ -3795,8 +4060,7 @@ reexec_repo_script_if_needed() {
 		NIXBOT_REPO_WORKTREE_ROOT="${REPO_WORKTREE_ROOT}" \
 		NIXBOT_RUNTIME_WORK_DIR="${RUNTIME_WORK_DIR}" \
 		NIXBOT_RUNTIME_DIAG_DIR="${NIXBOT_DIAG_DIR}" \
-		NIXBOT_CONFIG_OVERRIDE_PATH="${NIXBOT_CONFIG_OVERRIDE_PATH}" \
-		bash "${repo_script}" "${request_args[@]}"
+		bash "${repo_script}" "${reexec_args[@]}"
 }
 
 ##### Config / Secrets #####
@@ -3877,28 +4141,97 @@ deploy_config_function_arguments() {
 	printf '{ stacks = (import (builtins.toPath %s)).stacks; }\n' "${repository_config_literal}"
 }
 
-load_deploy_config_json() {
-	local path="$1" override_path="${2-${NIXBOT_CONFIG_OVERRIDE_PATH:-}}"
-	local resolved_path="" resolved_override_path="" function_arguments="" apply_expr="" expr="" output=""
-	local resolved_path_literal="" resolved_override_path_literal=""
+pin_selected_config_override() {
+	local config_path="${NIXBOT_CONFIG_PATH}" resolved_config="" sibling=""
 
+	[ "${CONFIG_OVERRIDE_PINNED:-0}" -eq 0 ] || return 0
+	CONFIG_OVERRIDE_PINNED=1
+	CONFIG_OVERRIDE_PINNED_PATH=""
+	if [ "${SKIP_CONFIG_OVERRIDE:-0}" -eq 1 ]; then
+		return 0
+	fi
+	if [ "${CONFIG_OVERRIDE_EXPLICIT:-0}" -eq 1 ]; then
+		CONFIG_OVERRIDE_PINNED_PATH="${NIXBOT_CONFIG_OVERRIDE_PATH}"
+		return 0
+	fi
+
+	if [[ "${config_path}" == /* ]]; then
+		resolved_config="${config_path}"
+	elif [ -f "${NIXBOT_INVOCATION_CWD%/}/${config_path}" ]; then
+		resolved_config="${NIXBOT_INVOCATION_CWD%/}/${config_path}"
+	elif [ -n "${REPO_ROOT:-}" ] && [ -f "${REPO_ROOT%/}/${config_path}" ]; then
+		resolved_config="${REPO_ROOT%/}/${config_path}"
+	else
+		resolved_config="${NIXBOT_INVOCATION_CWD%/}/${config_path}"
+	fi
+	case "${resolved_config}" in
+	*.nix) sibling="${resolved_config%.nix}.override.nix" ;;
+	esac
+	if [ -n "${sibling}" ] && [ -f "${sibling}" ]; then
+		CONFIG_OVERRIDE_PINNED_PATH="$(readlink -f "${sibling}" 2>/dev/null || printf '%s\n' "${sibling}")"
+	fi
+}
+
+reject_managed_config_override() {
+	[ "${NIXBOT_EXECUTOR_KIND:-developer}" = managed ] || return 0
+	[ "${CONFIG_OVERRIDE_EXPLICIT:-0}" -eq 0 ] ||
+		die "Nixbot config overrides are allowed only for direct developer execution"
+	[ "${SKIP_CONFIG_OVERRIDE:-0}" -eq 0 ] || return 0
+	pin_selected_config_override
+	[ -z "${CONFIG_OVERRIDE_PINNED_PATH:-}" ] ||
+		die "Nixbot config overrides are allowed only for direct developer execution"
+}
+
+selected_config_override_path() {
+	local config_path="$1"
+
+	if [ "${CONFIG_OVERRIDE_PINNED:-0}" -eq 1 ]; then
+		[ -z "${CONFIG_OVERRIDE_PINNED_PATH}" ] || printf '%s\n' "${CONFIG_OVERRIDE_PINNED_PATH}"
+		return 0
+	fi
+	if [ "${SKIP_CONFIG_OVERRIDE:-0}" -eq 1 ]; then
+		return 0
+	fi
+	if [ "${CONFIG_OVERRIDE_EXPLICIT:-0}" -eq 1 ]; then
+		printf '%s\n' "${NIXBOT_CONFIG_OVERRIDE_PATH}"
+		return 0
+	fi
+	override_config_path_for "${config_path}"
+}
+
+load_deploy_config_bundle() {
+	local path="$1" override_path=""
+	local resolved_path="" resolved_override_path="" function_arguments="" apply_expr="" expr="" output="" base_json="" bundle=""
+	local resolved_path_literal="" resolved_override_path_literal="" override_json='{}' override_active=0
+
+	if [ "$#" -ge 2 ]; then
+		override_path="$2"
+	else
+		override_path="$(selected_config_override_path "${path}")"
+	fi
 	resolved_path="$(resolve_config_path "${path}")"
 	[ -f "${resolved_path}" ] || die "Deploy config not found: ${path} (resolved: ${resolved_path})"
+	if [ -n "${override_path}" ] &&
+		{ [ "${NIXBOT_EXECUTOR_KIND:-developer}" != developer ] || [ "${CI_TRIGGER:-0}" -eq 1 ]; }; then
+		die "Nixbot config overrides are allowed only for direct developer execution"
+	fi
+	if [ -n "${override_path}" ] && [ ! -f "${override_path}" ]; then
+		die "Deploy config override not found: ${override_path}"
+	fi
 	function_arguments="$(deploy_config_function_arguments "${resolved_path}")"
 	apply_expr="inventory: if builtins.isFunction inventory then inventory ${function_arguments} else inventory"
 	if [ -z "${override_path}" ] || [ ! -f "${override_path}" ]; then
 		run_supervised_stdout_capture output "" nix eval --json --file "${resolved_path}" --apply "${apply_expr}" || return "$?"
-		apply_configured_deploy_dependencies_json "${output}" "${resolved_path}"
-		return
-	fi
-
-	resolved_override_path="$(resolve_config_path "${override_path}")"
-	resolved_path_literal="$(nix_string_literal "${resolved_path}")"
-	resolved_override_path_literal="$(nix_string_literal "${resolved_override_path}")"
-	# The sibling override is a partial attrset layered over the selected config:
-	# nested attrsets merge recursively, while scalar/list values replace the
-	# base value.
-	expr="
+		base_json="${output}"
+		output="$(apply_configured_deploy_dependencies_json "${output}" "${resolved_path}")" || return "$?"
+	else
+		resolved_override_path="$(resolve_config_path "${override_path}")"
+		resolved_path_literal="$(nix_string_literal "${resolved_path}")"
+		resolved_override_path_literal="$(nix_string_literal "${resolved_override_path}")"
+		# Evaluate base, override and their recursive merge in one Nix process.
+		# Nix thunk sharing keeps base/override evaluated once while the returned
+		# object preserves layer provenance for the routing ladder.
+		expr="
 let
 	resolveInventory = inventory:
 	  if builtins.isFunction inventory
@@ -3916,13 +4249,47 @@ let
           then recursiveUpdate lhsValue rhsValue
           else rhsValue
     ) rhs;
+	base = resolveInventory (import (builtins.toPath ${resolved_path_literal}));
+	override = resolveInventory (import (builtins.toPath ${resolved_override_path_literal}));
 in
-	  recursiveUpdate
-	    (resolveInventory (import (builtins.toPath ${resolved_path_literal})))
-	    (resolveInventory (import (builtins.toPath ${resolved_override_path_literal})))
+	{
+	  config = recursiveUpdate base override;
+	  inherit base override;
+	}
 "
-	run_supervised_stdout_capture output "" nix eval --impure --json --expr "${expr}" || return "$?"
-	apply_configured_deploy_dependencies_json "${output}" "${resolved_path}"
+		run_supervised_stdout_capture bundle "" nix eval --impure --json --expr "${expr}" || return "$?"
+		base_json="$(jq -c '.base' <<<"${bundle}")" || return "$?"
+		override_json="$(jq -c '.override' <<<"${bundle}")" || return "$?"
+		output="$(jq -c '.config' <<<"${bundle}")" || return "$?"
+		output="$(apply_configured_deploy_dependencies_json "${output}" "${resolved_path}")" || return "$?"
+		override_active=1
+	fi
+
+	# Operator overlays are developer-local. Managed and CI processes must use
+	# tracked inventory only, including config-only actions.
+	if [ "${override_active}" -eq 1 ] &&
+		{ [ "${NIXBOT_EXECUTOR_KIND:-developer}" != developer ] || [ "${CI_TRIGGER:-0}" -eq 1 ]; }; then
+		die "Nixbot config overrides are allowed only for direct developer execution"
+	fi
+	normalize_deploy_hosts \
+		"${base_json}" "${base_json}" '{}' 0 \
+		default validation "" default >/dev/null || return 1
+	normalize_deploy_hosts \
+		"${output}" "${base_json}" "${override_json}" "${override_active}" \
+		default validation "" default >/dev/null || return 1
+
+	# Return the merged config and the operator layer together so callers never
+	# need process-wide override state. --no-override only clears the file path.
+	jq -cn \
+		--argjson config "${output}" \
+		--argjson base "${base_json}" \
+		--argjson override "${override_json}" \
+		--argjson overrideActive "${override_active}" \
+		'{config:$config, base:$base, override:$override, overrideActive:$overrideActive}'
+}
+
+load_deploy_config_json() {
+	load_deploy_config_bundle "$@" | jq -c '.config'
 }
 
 apply_config_defaults_if_config_available() {
@@ -3936,7 +4303,7 @@ apply_config_defaults_if_config_available() {
 		return 0
 	fi
 
-	config_json="$(load_deploy_config_json "${config_path}")" || return 0
+	config_json="$(load_deploy_config_json "${config_path}")" || return "$?"
 	apply_config_defaults "${config_json}"
 }
 
@@ -4030,43 +4397,543 @@ validate_host_health_check_config() {
 		die "Nixbot hosts[].healthCheck.ignore must be a unique list of non-empty unit names without whitespace"
 }
 
+resolve_tracked_self_host() {
+	local base_json="$1" aliases_json="" matches_json="" count=0
+
+	aliases_json="$(bash_args_to_json_array "${CURRENT_HOST_IDENTITY_ALIASES[@]}")"
+	matches_json="$(jq -c --argjson aliases "${aliases_json}" '
+    def alias_matches($value):
+      ($aliases | index($value)) != null;
+    def resource_id($entry):
+      if ($entry.value | has("resourceId")) and $entry.value.resourceId != null then
+        if ($entry.value.resourceId | type) == "string" and ($entry.value.resourceId | length) > 0
+        then $entry.value.resourceId
+        else error("tracked host \($entry.key) resourceId must be a non-empty string")
+        end
+      else $entry.key
+      end;
+    if type != "object" then
+      error("tracked inventory must be an attrset")
+    elif has("hosts") and .hosts != null and (.hosts | type) != "object" then
+      error("tracked inventory hosts must be an attrset")
+    else
+      ((.hosts // {}) | to_entries | map(
+        if (.value | type) != "object"
+        then error("tracked host \(.key) must be an attrset")
+        else .
+        end
+      )) as $entries
+      | ([$entries[] | select(alias_matches(.key)) | .key] | unique) as $keys
+      | if ($keys | length) > 0 then $keys
+        else ([$entries[] | (resource_id(.) as $resource | select(alias_matches($resource)) | .key)] | unique)
+        end
+    end
+  ' <<<"${base_json}")" || return 1
+	count="$(jq 'length' <<<"${matches_json}")"
+	case "${count}" in
+	0)
+		return 0
+		;;
+	1)
+		jq -r '.[0]' <<<"${matches_json}"
+		;;
+	*)
+		die "Managed nixbot executor identity is ambiguous: $(jq -r 'join(", ")' <<<"${matches_json}"); pass an explicit --route to bypass auto"
+		;;
+	esac
+}
+
+resolve_route_state() {
+	local base_json="$1" override_json="${2:-{\}}" override_active="${3:-0}"
+	local requested="${NIXBOT_ROUTE_REQUEST:-auto}" active="" source="" self_host=""
+	local override_route="absent"
+
+	override_route="$(jq -r '
+    (.config // {}) as $config
+    | if ($config | type) != "object" then
+        error("override config must be an attrset")
+      elif ($config | has("route")) then
+        if ($config.route | type) != "string"
+          or (["auto", "default", "cf", "ts"] | index($config.route)) == null
+        then error("override config.route must be auto, default, cf, or ts")
+        else $config.route
+        end
+      else "absent"
+      end
+  ' <<<"${override_json}")" || return 1
+
+	case "${requested}" in
+	default | cf | ts)
+		active="${requested}"
+		if [ "${NIXBOT_ROUTE_EXPLICIT:-0}" -eq 1 ]; then
+			source="${NIXBOT_ROUTE_SOURCE_HINT:-cli}"
+		else
+			source="env"
+		fi
+		;;
+	auto)
+		if [ "${override_active}" -eq 1 ] && [ "${override_route}" != absent ]; then
+			if [ "${NIXBOT_EXECUTOR_KIND:-developer}" != developer ] || [ "${CI_TRIGGER:-0}" -eq 1 ]; then
+				die "override config.route is allowed only for direct developer execution"
+			fi
+			if [ "${override_route}" != auto ]; then
+				active="${override_route}"
+				source="override"
+			fi
+		fi
+		if [ -z "${active}" ]; then
+			if [ "${NIXBOT_EXECUTOR_KIND:-developer}" = managed ]; then
+				self_host="$(resolve_tracked_self_host "${base_json}")" || return 1
+				[ -n "${self_host}" ] ||
+					die "Managed nixbot executor does not match any tracked host by exact host/resource identity; pass an explicit --route to bypass auto"
+				active="default"
+				source="managed-self"
+			else
+				# Developer hostnames are not routing authority: an unrelated
+				# workstation may legitimately share a short name with inventory.
+				active="cf"
+				source="developer"
+			fi
+		fi
+		;;
+	*)
+		die "Unsupported route request: ${requested} (expected auto|default|cf|ts)"
+		;;
+	esac
+
+	printf '%s\t%s\t%s\t%s\n' "${active}" "${source}" "${requested}" "${self_host}"
+}
+
+normalize_deploy_hosts() {
+	local config_json="$1" base_json="$2" override_json="${3:-{\}}" override_active="${4:-0}"
+	local active_route="$5" source="$6" self_host="$7" requested_route="$8"
+
+	if [ "${override_active}" -eq 1 ] && [ "${NIXBOT_EXECUTOR_KIND:-developer}" != developer ]; then
+		die "Nixbot config overrides are allowed only for direct developer execution"
+	fi
+
+	jq -ecn \
+		--argjson config "${config_json}" \
+		--argjson base "${base_json}" \
+		--argjson override "${override_json}" \
+		--argjson overrideActive "${override_active}" \
+		--arg active "${active_route}" \
+		--arg source "${source}" \
+		--arg self "${self_host}" \
+		--arg requested "${requested_route}" '
+    def inventory_hosts($inventory; $label):
+      if ($inventory | type) != "object" then
+        error("\($label) inventory must be an attrset")
+      elif ($inventory | has("hosts")) and ($inventory.hosts | type) != "object"
+      then error("\($label) hosts must be an attrset")
+      else ($inventory.hosts // {})
+      end;
+    def inventory_config($inventory; $label):
+      if ($inventory | type) != "object" then
+        error("\($label) inventory must be an attrset")
+      elif ($inventory | has("config")) and ($inventory.config | type) != "object"
+      then error("\($label) config must be an attrset")
+      else ($inventory.config // {})
+      end;
+    def normalized_port($value; $label):
+      if $value == null then null
+      elif ($value | type) == "number"
+        and ($value | floor) == $value and $value >= 1 and $value <= 65535
+      then ($value | tostring)
+      elif ($value | type) == "string"
+        and ($value | test("^[0-9]+$"))
+        and ($value | tonumber) >= 1 and ($value | tonumber) <= 65535
+      then (($value | tonumber) | tostring)
+      else error("\($label) must be an integer from 1 to 65535")
+      end;
+    def optional_string($route; $key; $label):
+      if ($route | has($key)) and $route[$key] != null then
+        if ($route[$key] | type) != "string" or ($route[$key] | length) == 0
+        then error("\($label).\($key) must be a non-empty string")
+        else $route[$key]
+        end
+      else null
+      end;
+    def decode_route($route; $label; $fallbackTarget; $targetRequired):
+      if ($route | type) == "string" then
+        if ($route | length) == 0
+        then error("\($label) must be a non-empty string")
+        else {target: $route}
+        end
+      elif ($route | type) != "object" then
+        error("\($label) must be a string or attrset")
+      elif (($route | keys) - ["target", "port", "proxyJump", "proxyCommand"] | length) != 0 then
+        error("\($label) supports only target, port, proxyJump, and proxyCommand")
+      else
+        (if ($route | has("target")) and $route.target != null then
+           if ($route.target | type) != "string" or ($route.target | length) == 0
+           then error("\($label).target must be a non-empty string")
+           else $route.target
+           end
+         elif $targetRequired then
+           error("\($label).target is required and must be a non-empty string")
+         else $fallbackTarget
+         end) as $target
+        | (normalized_port(
+            if ($route | has("port")) then $route.port else null end;
+            "\($label).port"
+          )) as $port
+        | (optional_string($route; "proxyJump"; $label)) as $jump
+        | (optional_string($route; "proxyCommand"; $label)) as $command
+        | if $jump != null and $command != null then
+            error("\($label) cannot define both proxyJump and proxyCommand")
+          else
+            {target: $target}
+            + (if $port == null then {} else {port: $port} end)
+            + (if $jump == null then {} else {proxyJump: $jump} end)
+            + (if $command == null then {} else {proxyCommand: $command} end)
+          end
+      end;
+    def default_route($name; $host; $label):
+      reduce ["target", "port", "proxyJump", "proxyCommand"][] as $key
+        ({};
+          if ($host | has($key)) then .[$key] = $host[$key] else . end
+        )
+      | decode_route(.; "\($label) host \($name) default route"; $name; false);
+    def named_routes($name; $host; $label):
+      if ($host | has("routes") | not) then {}
+      elif $host.routes == null or ($host.routes | type) != "object" then
+        error("\($label) host \($name).routes must be an attrset")
+      elif ($host.routes | has("default")) then
+        error("\($label) host \($name) must use top-level transport keys for the implicit default route")
+      elif (($host.routes | keys) - ["cf", "ts"] | length) != 0 then
+        error("\($label) host \($name).routes supports only cf and ts")
+      else
+        $host.routes
+        | with_entries(
+            .value = decode_route(
+              .value;
+              "\($label) host \($name) routes.\(.key)";
+              "";
+              true
+            )
+          )
+      end;
+    def validate_host($name; $host; $label):
+      if ($host | type) != "object" then
+        error("\($label) host \($name) must be an attrset")
+      elif ($host | has("route")) or ($host | has("routing")) then
+        error("\($label) host \($name) already contains normalized routing state")
+      elif ($host | has("nixbotConfig")) and $host.nixbotConfig != null
+        and ($host.nixbotConfig | type) != "object"
+      then error("\($label) host \($name).nixbotConfig must be an attrset")
+      elif (($host.nixbotConfig // {}) | has("route")) then
+        error("\($label) host \($name).nixbotConfig.route is unsupported; route selection is process-local")
+      elif ($host | has("resourceId")) and $host.resourceId != null
+        and (($host.resourceId | type) != "string" or ($host.resourceId | length) == 0)
+      then error("\($label) host \($name).resourceId must be a non-empty string")
+      elif ($host | has("groups"))
+        and (($host.groups | type) != "array"
+          or any($host.groups[]; (type != "string") or length == 0))
+      then error("\($label) host \($name).groups must be a list of non-empty strings")
+      else
+        default_route($name; $host; $label)
+        | named_routes($name; $host; $label)
+        | true
+      end;
+    def replace_override_routes($merged; $overlay):
+      reduce ((($overlay.hosts // {}) | to_entries[])) as $host
+        ($merged;
+          if ($host.value | type) == "object"
+            and ($host.value.routes? | type) == "object"
+          then reduce ($host.value.routes | to_entries[]) as $route
+            (.; .hosts[$host.key].routes[$route.key] = $route.value)
+          else .
+          end
+        );
+    def validate_layer($inventory; $label):
+      (inventory_config($inventory; $label)) as $layerConfig
+      | if ($layerConfig | has("hostDefaults"))
+          and ($layerConfig.hostDefaults | type) != "object"
+        then error("\($label) config.hostDefaults must be an attrset")
+        else . end
+      | (inventory_hosts($inventory; $label)) as $hosts
+      | reduce ($hosts | to_entries[]) as $entry
+          (true; validate_host($entry.key; $entry.value; $label));
+    def selected_route($hosts; $name; $route):
+      ($hosts[$name].routes) as $routes
+      | if $route != "default" and ($routes | has($route))
+        then {name: $route, route: $routes[$route]}
+        else {name: "default", route: $routes.default}
+        end;
+    def validate_path($hosts; $name; $route; $seen):
+      if ($seen | index($name)) != null then
+        error("route \($route) proxyJump cycle: \($seen + [$name] | join(" -> "))")
+      elif ($hosts | has($name) | not) then
+        error("route \($route) names unknown host \($name)")
+      else
+        (selected_route($hosts; $name; $route)) as $selected
+        | ($selected.route.proxyJump // "") as $jump
+        | if $jump == "" then true
+          elif ($hosts | has($jump) | not) then
+            error("host \($name) route \($selected.name) proxyJump names unknown host \($jump)")
+          else validate_path($hosts; $jump; $route; $seen + [$name])
+          end
+      end;
+    def first_route_hop($hosts; $name; $route; $seen):
+      if $route == "default"
+        or ($seen | index($name)) != null
+        or ($hosts | has($name) | not)
+      then null
+      else
+        (selected_route($hosts; $name; $route)) as $selected
+        | if $selected.name == $route then $name
+          else
+            ($selected.route.proxyJump // "") as $jump
+            | if $jump == "" then null
+              else first_route_hop($hosts; $jump; $route; $seen + [$name])
+              end
+          end
+      end;
+    def route_hops($hosts; $name; $route; $seen):
+      if ($seen | index($name)) != null or ($hosts | has($name) | not) then []
+      else
+        (selected_route($hosts; $name; $route)) as $selected
+        | ($selected.route.proxyJump // "") as $jump
+        | if $jump == "" then []
+          else
+            (selected_route($hosts; $jump; $route)) as $next
+            | ([{
+                host: $jump,
+                selected: $next.name,
+                target: $next.route.target,
+                proxyCommand: ($next.route.proxyCommand != null)
+              }
+              + (if $next.route.port == null
+                 then {} else {port: ($next.route.port | tonumber)} end)]
+              + route_hops($hosts; $jump; $route; $seen + [$name]))
+          end
+      end;
+
+    (inventory_config($base; "tracked")) as $baseConfig
+    | (inventory_config($override; "override")) as $overrideConfig
+    | if ($baseConfig | has("route")) then
+        error("tracked config.route is forbidden; put config.route in the local override")
+      elif ($overrideConfig | has("route"))
+        and (
+          ($overrideConfig.route | type) != "string"
+          or (["auto", "default", "cf", "ts"] | index($overrideConfig.route)) == null
+        )
+      then error("override config.route must be auto, default, cf, or ts")
+      else . end
+    | validate_layer($base; "tracked")
+    | validate_layer($override; "override")
+    | (replace_override_routes(
+        $config;
+        if $overrideActive == 1 then $override else {} end
+      )) as $effectiveConfig
+    | validate_layer($effectiveConfig; "merged")
+    | (inventory_hosts($effectiveConfig; "merged")) as $mergedHosts
+    | reduce ($mergedHosts | to_entries[]) as $entry
+        ({};
+          $entry.key as $name
+          | $entry.value as $mergedHost
+          | (default_route($name; $mergedHost; "merged")) as $default
+          | (named_routes($name; $mergedHost; "merged")) as $named
+          | .[$name] = {
+              meta: ($mergedHost
+                | del(.target, .port, .proxyJump, .proxyCommand, .routes, .routing)),
+              routes: ({default: $default} + $named)
+            }
+        ) as $hosts
+    | reduce ($hosts | keys[]) as $name
+        (true;
+          reduce ["default", "cf", "ts"][] as $route
+            (.; validate_path($hosts; $name; $route; []))
+        )
+    | $hosts
+    | with_entries(
+        .key as $name
+        | (selected_route($hosts; $name; $active)) as $selected
+        | (first_route_hop($hosts; $name; $active; [])) as $routeHop
+        | (route_hops($hosts; $name; $active; [])) as $hops
+        | .value = (
+            .value.meta
+            + $selected.route
+            + {
+                routing: (
+                  {
+                    requested: $requested,
+                    active: $active,
+                    selected: $selected.name,
+                    source: $source,
+                    fallback: ($selected.name != $active),
+                    effective: ($active == "default" or $routeHop != null),
+                    proxyCommand: ($selected.route.proxyCommand != null)
+                  }
+                  + (if $self == "" then {} else {self: $self} end)
+                  + (if $routeHop == null then {} else {routeHop: $routeHop} end)
+                  + (if ($hops | length) == 0 then {} else {hops: $hops} end)
+                )
+              }
+          )
+      )
+    | if ($requested == "cf" or $requested == "ts")
+        and all(.[]; .routing.effective != true)
+      then error("explicit route \($requested) does not affect any host path")
+      else .
+      end
+  '
+}
+
+configure_deploy_hosts() {
+	local config_json="$1" base_json="${2:-}" override_json="${3:-{\}}" override_active="${4:-0}"
+	local route_state="" active="" source="" self_host="" requested=""
+
+	[ -n "${base_json}" ] || die "configure_deploy_hosts requires the tracked base layer"
+	if [ "${override_active}" -eq 1 ] && [ "${NIXBOT_EXECUTOR_KIND:-developer}" != developer ]; then
+		die "Nixbot config overrides are allowed only for direct developer execution"
+	fi
+	# An operator route replacement must not hide a broken tracked route graph.
+	normalize_deploy_hosts \
+		"${base_json}" "${base_json}" '{}' 0 \
+		default validation "" default >/dev/null || return 1
+	route_state="$(resolve_route_state "${base_json}" "${override_json}" "${override_active}")" || return 1
+	IFS=$'\t' read -r active source requested self_host <<<"${route_state}"
+	normalize_deploy_hosts \
+		"${config_json}" "${base_json}" "${override_json}" "${override_active}" \
+		"${active}" "${source}" "${self_host}" "${requested}"
+}
+
+routing_provenance() {
+	local source="$1" self="$2"
+
+	case "${source}" in
+	override) printf 'override\n' ;;
+	cli) printf '%s\n' '--route' ;;
+	env) printf 'NIXBOT_ROUTE\n' ;;
+	managed-self) printf 'managed self=%s\n' "${self}" ;;
+	developer) printf 'developer\n' ;;
+	*) printf '%s\n' "${source}" ;;
+	esac
+}
+
+host_routing_line() {
+	local node="$1" hosts_json="${NIXBOT_HOSTS_JSON:-}"
+	local target="" proxy_command="" active="" selected="" source="" self=""
+	local fallback=false route_hop="" suffix="" via="" provenance=""
+	local fields=""
+
+	[ -n "${hosts_json}" ] || return 0
+	fields="$(jq -r --arg host "${node}" '
+    (.[$host] // {}) as $cfg
+    | ($cfg.routing // null) as $routing
+    | if $routing == null then empty
+      else
+        [($cfg.target // $host), ($cfg.proxyCommand // ""), ($routing.active // ""),
+         ($routing.selected // ""), ($routing.source // ""), ($routing.self // ""),
+         (($routing.fallback // false) | tostring), ($routing.routeHop // "")]
+        | join("\u001f")
+      end
+  ' <<<"${hosts_json}")" || die "Nixbot host routing state is invalid"
+	[ -n "${fields}" ] || return 0
+	IFS=$'\x1f' read -r target proxy_command active selected source self fallback route_hop <<<"${fields}" || return 0
+	[ -n "${active}" ] || return 0
+
+	if [[ "${proxy_command}" == *cloudflared* ]] || jq -e --arg host "${node}" '
+      def uses_cloudflared($name; $seen):
+        if ($seen | index($name)) != null or (has($name) | not) then false
+        else
+          .[$name] as $cfg
+          | (($cfg.proxyCommand // "") | contains("cloudflared"))
+            or (if ($cfg.proxyJump // "") == "" then false
+                else uses_cloudflared($cfg.proxyJump; $seen + [$name])
+                end)
+        end;
+      uses_cloudflared($host; [])
+    ' <<<"${hosts_json}" >/dev/null; then
+		suffix=" + cloudflared"
+	fi
+	if [ -n "${route_hop}" ] && [ "${route_hop}" != "${node}" ] && [ "${active}" != default ]; then
+		via=" through ${route_hop}"
+	fi
+	provenance="$(routing_provenance "${source}" "${self}")"
+	if [ "${fallback}" = true ]; then
+		provenance="fallback to ${selected}; ${provenance}"
+	fi
+
+	printf '  routing: %s via %s%s%s (%s)\n' \
+		"${active}" "${target}" "${via}" "${suffix}" "${provenance}"
+}
+
+host_routing_failure_hint() {
+	local node="$1" hosts_json="${NIXBOT_HOSTS_JSON:-}" routing=""
+	local active="" effective=false
+
+	routing="$(host_routing_line "${node}")"
+	[ -n "${routing}" ] || return 0
+	if [ -n "${hosts_json}" ]; then
+		read -r active effective < <(jq -r --arg host "${node}" \
+			'.[$host].routing | "\(.active // "") \(.effective // false)"' <<<"${hosts_json}")
+	fi
+	printf 'cannot reach %s; %s\n' "${node}" "${routing#  routing: }" >&2
+	[ "${active}" != default ] || return 0
+	if [ "${effective}" != true ]; then
+		printf 'route %s is unavailable in this host path\n' "${active}" >&2
+	elif [ "${SKIP_CONFIG_OVERRIDE:-0}" -eq 0 ] &&
+		[ "${NIXBOT_EXECUTOR_KIND:-developer}" = developer ] &&
+		[ "${CI_TRIGGER:-0}" -eq 0 ]; then
+		printf 'try --route=default, or set config.route = "default" in your nixbot override\n' >&2
+	else
+		printf 'try --route=default\n' >&2
+	fi
+}
+
 init_deploy_settings() {
-	local config_json="$1"
-	local resolved_config_path=""
+	local config_json="$1" config_bundle="${2:-}" resolve_routing="${3:-1}"
+	local base_json="" override_json='{}' override_active=0 resolved_config_path=""
+	local route_state="" requested_route="" defaults_json=""
+	local -A defaults=()
+
+	if [ -n "${config_bundle}" ]; then
+		config_json="$(jq -c '.config' <<<"${config_bundle}")" || die "Nixbot config bundle is invalid"
+		base_json="$(jq -c '.base' <<<"${config_bundle}")" || die "Nixbot config bundle base is invalid"
+		[ -n "${base_json}" ] && [ "${base_json}" != null ] || die "Nixbot config bundle is missing the tracked base layer"
+		override_json="$(jq -c '.override // {}' <<<"${config_bundle}")" || die "Nixbot config bundle override is invalid"
+		override_active="$(jq -r '.overrideActive // 0' <<<"${config_bundle}")" || die "Nixbot config bundle override state is invalid"
+	fi
 
 	validate_host_health_check_config "${config_json}"
+	if [ "${resolve_routing}" -eq 1 ] && [ -z "${config_bundle}" ]; then
+		die "Nixbot host routing requires the tracked config bundle from load_deploy_config_bundle"
+	fi
 
 	resolved_config_path="$(resolve_config_path "${NIXBOT_CONFIG_PATH}")"
 	NIXBOT_CONFIG_DIR="$(cd "$(dirname "${resolved_config_path}")" && pwd -P)"
 
-	{
-		read -r NIXBOT_DEFAULT_USER
-		read -r NIXBOT_DEFAULT_KEY_PATH
-		read -r NIXBOT_DEFAULT_KNOWN_HOSTS
-		read -r NIXBOT_DEFAULT_BOOTSTRAP_KEY
-		read -r NIXBOT_DEFAULT_BOOTSTRAP_USER
-		read -r NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH
-		read -r NIXBOT_DEFAULT_AGE_IDENTITY_KEY
-	} < <(jq -r '
-    def pick($values):
-      $values
-      | map((. // "") | tostring)
-      | map(select(. != ""))
-      | .[0] // "";
-    (.config.hostDefaults // {}) as $hostDefaults
-    | (pick([$hostDefaults.key])) as $key
-    | [
-      pick([$hostDefaults.user, "root"]),
-      $key,
-      ($hostDefaults.knownHosts // ""),
-      pick([$hostDefaults.bootstrapKey, $key]),
-      pick([$hostDefaults.operatorUser]),
-      pick([$hostDefaults.operatorKey]),
-      ($hostDefaults.ageIdentityKey // "")
-    ]
-    | .[]
-	' <<<"${config_json}")
-	NIXBOT_HOSTS_JSON="$(jq -c '.hosts // {}' <<<"${config_json}")"
+	defaults_json="$(jq -c '
+    .config.hostDefaults // {}
+    | {user, key, knownHosts, bootstrapKey, operatorUser, operatorKey, ageIdentityKey}
+  ' <<<"${config_json}")" || return 1
+	json_object_to_bash_map "${defaults_json}" defaults || return 1
+	NIXBOT_DEFAULT_USER="${defaults[user]:-root}"
+	NIXBOT_DEFAULT_KEY_PATH="${defaults[key]:-}"
+	NIXBOT_DEFAULT_KNOWN_HOSTS="${defaults[knownHosts]:-}"
+	NIXBOT_DEFAULT_BOOTSTRAP_KEY="${defaults[bootstrapKey]:-${NIXBOT_DEFAULT_KEY_PATH}}"
+	NIXBOT_DEFAULT_BOOTSTRAP_USER="${defaults[operatorUser]:-}"
+	NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH="${defaults[operatorKey]:-}"
+	NIXBOT_DEFAULT_AGE_IDENTITY_KEY="${defaults[ageIdentityKey]:-}"
+	if [ "${resolve_routing}" -eq 1 ]; then
+		# Normalization runs in command substitution, so capture the process-wide
+		# route decision here before rewriting each host transport.
+		route_state="$(resolve_route_state "${base_json}" "${override_json}" "${override_active}")" ||
+			exit $?
+		IFS=$'\t' read -r NIXBOT_ROUTE_ACTIVE NIXBOT_ROUTE_SOURCE requested_route NIXBOT_ROUTE_SELF <<<"${route_state}"
+		NIXBOT_HOSTS_JSON="$(normalize_deploy_hosts \
+			"${config_json}" "${base_json}" "${override_json}" "${override_active}" \
+			"${NIXBOT_ROUTE_ACTIVE}" "${NIXBOT_ROUTE_SOURCE}" "${NIXBOT_ROUTE_SELF}" "${requested_route}")" ||
+			exit $?
+	else
+		NIXBOT_ROUTE_ACTIVE=""
+		NIXBOT_ROUTE_SOURCE=""
+		NIXBOT_ROUTE_SELF=""
+		NIXBOT_HOSTS_JSON="$(jq -c '.hosts // {}' <<<"${config_json}")" || die "Nixbot host map is invalid"
+	fi
 	NIXBOT_GROUPS_JSON="$(derive_groups_json "${config_json}")" || die "Nixbot host groups must be lists of non-empty strings"
 	NIXBOT_GROUP_DEPENDENCY_EXCLUSIONS_JSON="$(derive_group_dependency_exclusions_json "${config_json}")" || die "Nixbot host groups must be lists of non-empty strings"
 	apply_config_defaults "${config_json}"
@@ -4112,11 +4979,11 @@ apply_config_defaults() {
       def known_host($name):
         ([($inventory.hosts // {})
           | to_entries[]
-          | select((.value.resourceId // .key) == $name)
+          | select(.value.resourceId? == $name)
           | .key] | unique) as $resources
-        | if ($resources | length) > 0
-          then ($resources | length) == 1
-          else (($inventory.hosts // {}) | has($name))
+        | if (($inventory.hosts // {}) | has($name)) then true
+          elif ($resources | length) > 0 then ($resources | length) == 1
+          else false
           end;
       if ($config | has("controller") or has("transferBroker") or has("builders") or has("registries")) then
         ($config.controller | nonempty)
@@ -5086,9 +5953,19 @@ filter_runnable_hosts_json() {
 	bash_args_to_json_array "${runnable_hosts[@]}"
 }
 
+validate_explicit_named_route_selection() {
+	local selected_json="$1" route="${NIXBOT_ROUTE_REQUEST:-auto}"
+
+	case "${route}" in cf | ts) ;; *) return 0 ;; esac
+	jq -e --argjson selected "${selected_json}" '
+    . as $hosts | any($selected[]; $hosts[.].routing.effective == true)
+  ' <<<"${NIXBOT_HOSTS_JSON}" >/dev/null ||
+		die "explicit route ${route} does not affect any selected host path"
+}
+
 resolve_selected_hosts_json() {
 	local all_hosts_json="$1" group_selection_json="" host_scope_json="" host_selection_json=""
-	local direct_selected_json="" selected_json="" excluded_json="" dependency_excluded_json="[]"
+	local direct_selected_json="" selected_json="" excluded_json="" dependency_excluded_json="[]" ordered_json=""
 
 	host_scope_json="${all_hosts_json}"
 	if [ -n "${GROUPS_RAW}" ]; then
@@ -5113,7 +5990,9 @@ resolve_selected_hosts_json() {
 	selected_json="$(apply_host_exclusions_json "${selected_json}" "${excluded_json}")"
 	validate_selected_hosts "${selected_json}" "${all_hosts_json}"
 	validate_selected_host_execution_policies "${selected_json}"
-	order_selected_hosts_json "${selected_json}" "${all_hosts_json}"
+	ordered_json="$(order_selected_hosts_json "${selected_json}" "${all_hosts_json}")" || return "$?"
+	validate_explicit_named_route_selection "${ordered_json}"
+	printf '%s\n' "${ordered_json}"
 }
 
 validate_required_host_coverage() {
@@ -5145,11 +6024,12 @@ validate_required_host_coverage() {
 
 prepare_run_context() {
 	local -n prc_selected_json_out_ref="$1"
-	local config_json="" all_hosts_json=""
+	local config_json="" config_bundle="" all_hosts_json=""
 
 	if [ -n "${NIXBOT_CONFIG_PATH}" ]; then
-		config_json="$(load_deploy_config_json "${NIXBOT_CONFIG_PATH}")"
-		init_deploy_settings "${config_json}"
+		config_bundle="$(load_deploy_config_bundle "${NIXBOT_CONFIG_PATH}")"
+		config_json="$(jq -c '.config' <<<"${config_bundle}")"
+		init_deploy_settings "${config_json}" "${config_bundle}"
 	fi
 
 	all_hosts_json="$(load_all_hosts_json)"
@@ -5162,45 +6042,69 @@ prepare_run_context() {
 	validate_required_host_coverage "${prc_selected_json_out_ref}" "${all_hosts_json}" || exit 1
 }
 
-emit_annotated_selected_hosts() {
-	local selected_json="$1" node="" mode="" wait_secs="" parent_host="" target="" annotation=""
+renderable_selected_hosts() {
+	local selected_json="$1" node=""
 	local -a selected_hosts=()
 
 	json_array_to_bash_array "${selected_json}" selected_hosts
-
 	for node in "${selected_hosts[@]}"; do
 		[ -n "${node}" ] || continue
-		if host_skip_enabled "${node}"; then
-			continue
-		fi
-		target="$(host_target_for "${node}")"
-		annotation="target: ${target}"
-		mode="$(host_deploy_mode "${node}")"
-		if [ "${mode}" != "strict" ]; then
-			annotation="${annotation}, deploy: ${mode}"
-		fi
-		wait_secs="$(host_wait_seconds "${node}")"
-		if [ "${wait_secs}" -gt 0 ] 2>/dev/null; then
-			annotation="${annotation:+${annotation}, }wait: ${wait_secs}s"
-		fi
-		parent_host="$(host_parent_for "${node}")"
-		if [ -n "${parent_host}" ]; then
-			annotation="${annotation:+${annotation}, }parent: ${parent_host}"
-		fi
-		if [ -n "${annotation}" ]; then
-			printf '%s (%s)\n' "${node}" "${annotation}"
-		else
-			printf '%s\n' "${node}"
-		fi
+		host_skip_enabled "${node}" && continue
+		printf '%s\n' "${node}"
+	done
+}
+
+annotate_selected_host() {
+	local node="$1" mode="" wait_secs="" parent_host="" target="" annotation="" via=""
+
+	target="$(host_target_for "${node}")"
+	annotation="target: ${target}"
+	mode="$(host_deploy_mode "${node}")"
+	if [ "${mode}" != "strict" ]; then
+		annotation="${annotation}, deploy: ${mode}"
+	fi
+	wait_secs="$(host_wait_seconds "${node}")"
+	if [ "${wait_secs}" -gt 0 ] 2>/dev/null; then
+		annotation="${annotation:+${annotation}, }wait: ${wait_secs}s"
+	fi
+	parent_host="$(host_parent_for "${node}")"
+	if [ -n "${parent_host}" ]; then
+		annotation="${annotation:+${annotation}, }parent: ${parent_host}"
+	fi
+	via="$(jq -r --arg h "${node}" '
+    .[$h]
+    | if (.proxyJump // "") != "" then " via " + .proxyJump
+      elif (.proxyCommand // "") != "" then " via proxy-command"
+      else ""
+      end
+  ' <<<"${NIXBOT_HOSTS_JSON}")" || return 1
+	printf '%s (%s)%s\n' "${node}" "${annotation}" "${via}"
+}
+
+emit_annotated_selected_hosts() {
+	local selected_json="$1" node=""
+	local -a selected_hosts=()
+
+	mapfile -t selected_hosts < <(renderable_selected_hosts "${selected_json}")
+	for node in "${selected_hosts[@]}"; do
+		annotate_selected_host "${node}"
 	done
 }
 
 print_selected_hosts_block() {
-	local selected_json="$1"
-	local -a annotated_hosts=()
+	local selected_json="$1" node=""
+	local -a selected_hosts=()
 
-	mapfile -t annotated_hosts < <(emit_annotated_selected_hosts "${selected_json}")
-	print_host_block "Hosts" "${annotated_hosts[@]}"
+	mapfile -t selected_hosts < <(renderable_selected_hosts "${selected_json}")
+	echo "Hosts:" >&2
+	if [ "${#selected_hosts[@]}" -eq 0 ]; then
+		echo "  - (none)" >&2
+		return
+	fi
+
+	for node in "${selected_hosts[@]}"; do
+		printf '  - %s\n' "$(annotate_selected_host "${node}")" >&2
+	done
 }
 
 print_selected_groups_block() {
@@ -5249,8 +6153,24 @@ print_groups_block() {
 }
 
 print_config_override_line() {
-	if [ -n "${NIXBOT_CONFIG_OVERRIDE_PATH:-}" ] && [ -f "${NIXBOT_CONFIG_OVERRIDE_PATH}" ]; then
-		echo "Config override: ${NIXBOT_CONFIG_OVERRIDE_PATH}" >&2
+	local override_path=""
+
+	override_path="$(selected_config_override_path "${NIXBOT_CONFIG_PATH}")"
+	if [ -n "${override_path}" ] && [ -f "${override_path}" ]; then
+		echo "Config override: ${override_path}" >&2
+	fi
+}
+
+log_routing_context() {
+	local active="${NIXBOT_ROUTE_ACTIVE:-}" source="${NIXBOT_ROUTE_SOURCE:-}" self="${NIXBOT_ROUTE_SELF:-}"
+	local requested="${NIXBOT_ROUTE_REQUEST:-auto}" provenance=""
+
+	[ -n "${active}" ] || return 0
+	provenance="$(routing_provenance "${source}" "${self}")"
+	if [ "${requested}" = auto ]; then
+		printf 'Route: %s (auto: %s)\n' "${active}" "${provenance}" >&2
+	else
+		printf 'Route: %s (%s)\n' "${active}" "${provenance}" >&2
 	fi
 }
 
@@ -5262,6 +6182,7 @@ log_run_context() {
 	echo "Action: ${ACTION}" >&2
 	echo "Started: ${NIXBOT_RUN_STARTED_AT}" >&2
 	print_config_override_line
+	log_routing_context
 	print_selected_groups_block
 	print_selected_hosts_block "${selected_json}"
 	if is_deploy_style_action; then
@@ -5287,12 +6208,12 @@ inventory_host_for_role() {
 
 	jq -r --arg role "${role}" '
     ([to_entries[]
-      | select((.value.resourceId // .key) == $role)
+      | select(.value.resourceId? == $role)
       | .key] | unique) as $resources
-    | if ($resources | length) == 1 then $resources[0]
+    | if has($role) then $role
+      elif ($resources | length) == 1 then $resources[0]
       elif ($resources | length) > 1
       then error("host resource maps to multiple inventory endpoints: \($role)")
-      elif has($role) then $role
       else $role
       end
   ' <<<"${NIXBOT_HOSTS_JSON}"
@@ -5384,7 +6305,10 @@ resolve_proxy_chain() {
 		--arg start "${start_host}" \
 		--arg defUser "${NIXBOT_DEFAULT_USER}" \
 		--arg defPort "${NIXBOT_DEFAULT_PORT}" \
-		--arg defKey "${NIXBOT_DEFAULT_KEY_PATH}" '
+		--arg defKey "${NIXBOT_DEFAULT_KEY_PATH}" \
+		--arg defBUser "${NIXBOT_DEFAULT_BOOTSTRAP_USER}" \
+		--arg defBPort "${NIXBOT_DEFAULT_BOOTSTRAP_PORT}" \
+		--arg defBKey "${NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH}" '
 	    def pick($values):
 	      $values
 	      | map((. // "") | tostring)
@@ -5398,9 +6322,16 @@ resolve_proxy_chain() {
 	      else
 	        (.[$h] // {}) as $cfg |
 	        ($cfg.target // $h) as $target |
-	        (pick([$cfg.operatorUser, $cfg.user, $defUser])) as $user |
-	        (portfb($cfg.port; $defPort)) as $port |
-	        (pick([$cfg.operatorKey, $cfg.key, $defKey])) as $keyPath |
+	        (pick([$cfg.operatorUser, $defBUser])) as $operatorUser |
+	        (if $operatorUser == "" then pick([$cfg.user, $defUser]) else $operatorUser end) as $user |
+	        (if $operatorUser == ""
+	          then portfb($cfg.port; $defPort)
+	          else portfb($cfg.bootstrapPort; portfb($cfg.port; $defBPort))
+	          end) as $port |
+	        (if $operatorUser == ""
+	          then pick([$cfg.key, $defKey])
+	          else pick([$cfg.operatorKey, $defBKey])
+	          end) as $keyPath |
 	        ($cfg.proxyJump // "") as $next |
 	        ($cfg.proxyCommand // "") as $proxyCommand |
         resolve_chain($next; $visited + [$h]) + [{
@@ -6940,6 +7871,16 @@ primary_probe_failure_is_temporary_transport() {
 		<<<"${probe_output}"
 }
 
+host_probe_output_suggests_routing() {
+	local probe_output="$1"
+
+	[ -n "${probe_output}" ] || return 1
+	command_output_is_host_key_verification "${probe_output}" && return 1
+	primary_probe_failure_is_temporary_transport "${probe_output}" ||
+		command_output_is_transport_loss "${probe_output}" ||
+		command_output_is_pre_admission_ssh_failure "${probe_output}"
+}
+
 ensure_primary_deploy_connectivity() {
 	local node="$1" host="$2" port="$3" bootstrap_port="$4" known_hosts="$5" ssh_target="$6"
 	local full_proxy_chain="$7" effective_proxy_chain="$8" proxy_command="$9"
@@ -6958,6 +7899,9 @@ ensure_primary_deploy_connectivity() {
 
 	if [ -z "${full_proxy_chain}" ] || [ "${full_proxy_chain}" = "${effective_proxy_chain}" ]; then
 		log_primary_probe_failure "Primary deploy target ${ssh_target}" "${direct_probe_output}"
+		if host_probe_output_suggests_routing "${direct_probe_output}"; then
+			host_routing_failure_hint "${node}"
+		fi
 		return 1
 	fi
 
@@ -6993,6 +7937,9 @@ ensure_primary_deploy_connectivity() {
 	log_primary_probe_failure \
 		"Primary deploy target ${ssh_target} via configured proxy chain" \
 		"${proxied_probe_output}"
+	if host_probe_output_suggests_routing "${proxied_probe_output}"; then
+		host_routing_failure_hint "${node}"
+	fi
 
 	return 1
 }
@@ -7129,25 +8076,24 @@ prepare_deploy_context() {
 	local local_exec=0 primary_target_ready=1 self_target_match=0
 	local -a ssh_opts=() bootstrap_ssh_opts=()
 	local nix_sshopts="" bootstrap_nix_sshopts=""
+	local -A target_fields=()
 
 	clear_prepared_deploy_context
 
-	target_info="$(resolve_deploy_target "${node}")"
-
-	{
-		read -r user
-		read -r host
-		read -r port
-		read -r key_path
-		read -r known_hosts
-		read -r bootstrap_key
-		read -r bootstrap_user
-		read -r bootstrap_port
-		read -r bootstrap_key_path
-		read -r age_identity_key
-		read -r proxy_jump
-		read -r proxy_command
-	} < <(jq -r '[.user, .target, (.port // "22"), (.keyPath // ""), (.knownHosts // ""), (.bootstrapKey // ""), (.bootstrapUser // ""), (.bootstrapPort // .port // "22"), (.bootstrapKeyPath // ""), (.ageIdentityKey // ""), (.proxyJump // ""), (.proxyCommand // "")] | .[]' <<<"${target_info}")
+	target_info="$(resolve_deploy_target "${node}")" || return 1
+	json_object_to_bash_map "${target_info}" target_fields || return 1
+	user="${target_fields[user]:-}"
+	host="${target_fields[target]:-}"
+	port="${target_fields[port]:-22}"
+	key_path="${target_fields[keyPath]:-}"
+	known_hosts="${target_fields[knownHosts]:-}"
+	bootstrap_key="${target_fields[bootstrapKey]:-}"
+	bootstrap_user="${target_fields[bootstrapUser]:-}"
+	bootstrap_port="${target_fields[bootstrapPort]:-${port}}"
+	bootstrap_key_path="${target_fields[bootstrapKeyPath]:-}"
+	age_identity_key="${target_fields[ageIdentityKey]:-}"
+	proxy_jump="${target_fields[proxyJump]:-}"
+	proxy_command="${target_fields[proxyCommand]:-}"
 
 	ssh_target="${user}@${host}"
 	if [ -n "${bootstrap_user}" ]; then
@@ -10465,6 +11411,7 @@ run_remote_store_command_with_retry() {
 	local attempt=1 rc=0 retry_sleep_secs=0 output_path="" captured="" heartbeat_pid=""
 	[ "${1:-}" = -- ] || return 2
 	shift
+	REMOTE_STORE_FAILURE_TRANSPORT_LOSS=0
 
 	ensure_tmp_dir
 	output_path="$(tmp_runtime_mktemp stderr "remote-store.stderr.XXXXXX")"
@@ -10506,6 +11453,11 @@ run_remote_store_command_with_retry() {
 
 		if [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ] ||
 			{ [ -z "${recovery_path}" ] && ! remote_store_failure_is_transport_loss "${output_path}"; }; then
+			# Callers cannot see ssh stderr (it lands in output_path, not the
+			# captured stdout), so they read this verdict for the routing hint.
+			if command_failure_is_transport_loss "${output_path}"; then
+				REMOTE_STORE_FAILURE_TRANSPORT_LOSS=1
+			fi
 			rm -f "${output_path}"
 			return "${rc}"
 		fi
@@ -10816,7 +11768,7 @@ copy_system_path_from_build_cache_via_local_to_prepared_target() {
 	# shellcheck disable=SC2034
 	local node="$1" system_path="$2" cache_url="$3" trusted_public_keys="$4"
 	# shellcheck disable=SC2034
-	local target_store_uri="" copy_nix_sshopts="" remote_copy_output=""
+	local target_store_uri="" copy_nix_sshopts="" remote_copy_output="" copy_rc=0
 	local -a copy_cmd=()
 
 	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
@@ -10847,7 +11799,13 @@ copy_system_path_from_build_cache_via_local_to_prepared_target() {
 		"${node}" \
 		"${system_path}" \
 		-- \
-		"${copy_cmd[@]}"
+		"${copy_cmd[@]}" || {
+		copy_rc="$?"
+		if [ "${REMOTE_STORE_FAILURE_TRANSPORT_LOSS}" -eq 1 ]; then
+			host_routing_failure_hint "${node}"
+		fi
+		return "${copy_rc}"
+	}
 }
 
 validate_build_host_closure_on_prepared_target() {
@@ -10926,7 +11884,7 @@ prepare_remote_build_system_path_on_prepared_target() {
 }
 
 copy_system_path_from_local_to_prepared_target() {
-	local node="$1" system_path="$2" target_store_uri="" copy_nix_sshopts="" copy_output=""
+	local node="$1" system_path="$2" target_store_uri="" copy_nix_sshopts="" copy_output="" copy_rc=0
 	local -a copy_cmd=()
 
 	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
@@ -10957,7 +11915,13 @@ copy_system_path_from_local_to_prepared_target() {
 		"" \
 		"" \
 		-- \
-		"${copy_cmd[@]}" || return "$?"
+		"${copy_cmd[@]}" || {
+		copy_rc="$?"
+		if [ "${REMOTE_STORE_FAILURE_TRANSPORT_LOSS}" -eq 1 ]; then
+			host_routing_failure_hint "${node}"
+		fi
+		return "${copy_rc}"
+	}
 	: "${copy_output}"
 }
 
@@ -12172,49 +13136,34 @@ prepare_role_host_ssh_context() {
 	local role_host="$1"
 	# shellcheck disable=SC2178,SC2034
 	local -n prhsc_ssh_target_out_ref="$2" prhsc_ssh_opts_out_ref="$3" prhsc_nix_sshopts_out_ref="$4"
-	local target_info="" user="" host="" port="" key_path="" known_hosts=""
-	local bootstrap_key="" bootstrap_user="" bootstrap_port="" bootstrap_key_path=""
-	local _age_identity_key="" proxy_jump="" proxy_command="" effective_proxy_chain=""
+	local target_info="" port="" effective_proxy_chain="" bootstrap_nix_sshopts=""
 	local -a bootstrap_ssh_opts=()
-	local bootstrap_nix_sshopts=""
+	local -A target_fields=()
 
-	target_info="$(resolve_deploy_target "${role_host}")"
-	{
-		read -r user
-		read -r host
-		read -r port
-		read -r key_path
-		read -r known_hosts
-		read -r bootstrap_key
-		read -r bootstrap_user
-		read -r bootstrap_port
-		read -r bootstrap_key_path
-		read -r _age_identity_key
-		read -r proxy_jump
-		read -r proxy_command
-	} < <(jq -r '[.user, .target, (.port // "22"), (.keyPath // ""), (.knownHosts // ""), (.bootstrapKey // ""), (.bootstrapUser // ""), (.bootstrapPort // .port // "22"), (.bootstrapKeyPath // ""), (.ageIdentityKey // ""), (.proxyJump // ""), (.proxyCommand // "")] | .[]' <<<"${target_info}")
-
-	if [ -n "${proxy_jump}" ]; then
-		effective_proxy_chain="$(resolve_effective_proxy_chain "${proxy_jump}")"
+	target_info="$(resolve_deploy_target "${role_host}")" || return 1
+	json_object_to_bash_map "${target_info}" target_fields || return 1
+	port="${target_fields[port]:-22}"
+	if [ -n "${target_fields[proxyJump]:-}" ]; then
+		effective_proxy_chain="$(resolve_effective_proxy_chain "${target_fields[proxyJump]}")" || return 1
 	fi
 
 	build_deploy_ssh_contexts \
 		"${role_host}" \
-		"${host}" \
+		"${target_fields[target]}" \
 		"${port}" \
-		"${bootstrap_port}" \
-		"${known_hosts}" \
+		"${target_fields[bootstrapPort]:-${port}}" \
+		"${target_fields[knownHosts]:-}" \
 		"${effective_proxy_chain}" \
-		"${proxy_command}" \
-		"${key_path}" \
-		"${bootstrap_key_path}" \
+		"${target_fields[proxyCommand]:-}" \
+		"${target_fields[keyPath]:-}" \
+		"${target_fields[bootstrapKeyPath]:-}" \
 		prhsc_ssh_opts_out_ref \
 		prhsc_nix_sshopts_out_ref \
 		bootstrap_ssh_opts \
 		bootstrap_nix_sshopts || return 1
 
 	# shellcheck disable=SC2034
-	prhsc_ssh_target_out_ref="${user}@${host}"
+	prhsc_ssh_target_out_ref="${target_fields[user]}@${target_fields[target]}"
 }
 
 prepare_build_host_store_context() {
@@ -16038,10 +16987,11 @@ run_list_hosts_action() {
 }
 
 run_list_groups_action() {
-	local config_json=""
+	local config_json="" config_bundle=""
 
-	config_json="$(load_deploy_config_json "${NIXBOT_CONFIG_PATH}")"
-	init_deploy_settings "${config_json}"
+	config_bundle="$(load_deploy_config_bundle "${NIXBOT_CONFIG_PATH}")"
+	config_json="$(jq -c '.config' <<<"${config_bundle}")"
+	init_deploy_settings "${config_json}" "${config_bundle}" 0
 	print_config_override_line
 	print_groups_block
 }
@@ -16187,6 +17137,7 @@ main() {
 	repo)
 		[ "${#request_args[@]}" -eq 2 ] || die "Usage: nixbot repo sync"
 		[ "${request_args[1]}" = "sync" ] || die "Unknown repo action: ${request_args[1]}"
+		reject_managed_config_override
 		run_repo_sync_action
 		return
 		;;
@@ -16219,6 +17170,7 @@ main() {
 			return 0
 		fi
 		require_no_extra_action_args "deps" "${request_args[@]:1}"
+		reject_managed_config_override
 		run_deps_action "$@"
 		return
 		;;
@@ -16228,6 +17180,7 @@ main() {
 			return 0
 		fi
 		require_no_extra_action_args "check-deps" "${request_args[@]:1}"
+		reject_managed_config_override
 		run_check_deps_action
 		return
 		;;
@@ -16237,6 +17190,7 @@ main() {
 			return 0
 		fi
 		require_no_extra_action_args "version" "${request_args[@]:1}"
+		reject_managed_config_override
 		run_version_action
 		return
 		;;
@@ -16245,11 +17199,13 @@ main() {
 		request_args=("${request_args[@]:1}")
 		;;
 	tofu)
+		reject_managed_config_override
 		ensure_runtime_ready "$@"
 		run_tofu_wrapper "${request_args[@]:1}"
 		return
 		;;
 	help | -h | --help)
+		reject_managed_config_override
 		usage
 		return 0
 		;;
@@ -16261,6 +17217,7 @@ main() {
 
 	ensure_runtime_ready "$@"
 	parse_args "${request_args[@]}"
+	reject_managed_config_override
 	if [ "${ACTION}" != "clean" ]; then
 		cleanup_stale_runtime_dirs
 	fi

@@ -20,6 +20,8 @@ pub mod host_runtime;
 pub mod host_tasks;
 pub mod interactive;
 pub mod inventory;
+pub mod inventory_overlay;
+pub mod inventory_routing;
 pub mod maintenance;
 pub mod native;
 pub mod orchestration;

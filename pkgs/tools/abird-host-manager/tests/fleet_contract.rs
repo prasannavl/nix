@@ -70,6 +70,7 @@ fn inventory() -> Inventory {
             ),
         ]),
         config: DeployConfig::default(),
+        route_decision: None,
     }
 }
 
@@ -109,7 +110,29 @@ fn control_plane_inventory() -> Inventory {
             )]),
             ..DeployConfig::default()
         },
+        route_decision: None,
     }
+}
+
+#[test]
+fn exact_inventory_name_outranks_another_hosts_resource_id() {
+    let inventory = Inventory {
+        hosts: BTreeMap::from([
+            ("controller".to_owned(), Host::default()),
+            (
+                "legacy-controller".to_owned(),
+                Host {
+                    resource_id: Some("controller".to_owned()),
+                    ..Host::default()
+                },
+            ),
+        ]),
+        ..Inventory::default()
+    };
+    assert_eq!(
+        inventory.host_for_resource("controller").unwrap(),
+        "controller"
+    );
 }
 
 #[test]

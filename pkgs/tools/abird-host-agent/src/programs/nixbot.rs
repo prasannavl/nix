@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::cmd;
 use crate::command::{CommandResult, CommandStream};
@@ -28,6 +28,8 @@ pub fn deploy_with_lines(
         format!("HOME={}", policy.home.display()),
         format!("NIXBOT_REPO_URL={}", policy.repository_url),
         format!("NIXBOT_REPO_PATH={}", policy.repository_path.display()),
+        "ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION=1",
+        "NIXBOT_EXECUTOR_KIND=managed",
     );
     if !policy.repository_ssh_key_paths.is_empty() {
         command = command.arg(format!(
@@ -40,25 +42,10 @@ pub fn deploy_with_lines(
                 .join(":")
         ));
     }
-    if let Some(config_override_path) = &policy.config_override_path {
-        config_override_path
-            .is_file()
-            .then_some(())
-            .with_context(|| {
-                format!(
-                    "Nixbot configuration override is not a file: {}",
-                    config_override_path.display()
-                )
-            })?;
-        command = command.arg(format!(
-            "NIXBOT_CONFIG_OVERRIDE_PATH={}",
-            config_override_path.display()
-        ));
-    }
     let revision = request.revision.as_deref().unwrap_or(&policy.revision);
     command = command
         .arg(&policy.program)
-        .args(["deploy", "--sha", revision]);
+        .args(["deploy", "--no-override", "--sha", revision]);
     let host_selectors = request.host_selectors();
     if host_selectors.len() == 1 {
         command = command.args(["--host", request.host.as_str()]);
@@ -100,13 +87,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let capture = temp.path().join("capture");
         let fake = temp.path().join("runuser");
-        let config_override = temp.path().join("controller.override.nix");
         write_executable(
             &fake,
             format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >{}\n", capture.display()),
         )
         .unwrap();
-        fs::write(&config_override, "{}\n").unwrap();
         let mut policy = NixbotDeployPolicy {
             program: PathBuf::from("/nix/store/nixbot/bin/nixbot"),
             runuser_program: fake,
@@ -116,7 +101,6 @@ mod tests {
             repository_url: "ssh://git@example.test/repo".to_owned(),
             repository_path: PathBuf::from("/var/lib/nixbot/repo"),
             repository_ssh_key_paths: vec![PathBuf::from("/var/lib/nixbot/.ssh/repo-example")],
-            config_override_path: Some(config_override),
             revision: "0123456789abcdef".to_owned(),
         };
         let request = NixbotDeployRequest {
@@ -129,7 +113,10 @@ mod tests {
         deploy(&policy, &request).unwrap();
         let argv = fs::read_to_string(&capture).unwrap();
         assert!(argv.contains("NIXBOT_REPO_SSH_KEY_PATHS=/var/lib/nixbot/.ssh/repo-example"));
-        assert!(argv.contains("NIXBOT_CONFIG_OVERRIDE_PATH="));
+        assert!(argv.contains("ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION=1"));
+        assert!(argv.contains("NIXBOT_EXECUTOR_KIND=managed"));
+        assert!(!argv.contains("NIXBOT_CONFIG_OVERRIDE_PATH="));
+        assert!(argv.contains("deploy\n--no-override\n--sha\n"));
         assert!(argv.contains("abird-gondor-proxy,-gap3-gondor"));
         assert!(argv.contains("abird-gondor-proxy-zulip-target"));
         assert!(argv.contains("--require-hosts\nabird-gondor-proxy"));
@@ -140,7 +127,6 @@ mod tests {
         assert!(argv.contains("--verify-jobs\n1\n"));
 
         policy.repository_ssh_key_paths.clear();
-        policy.config_override_path = None;
         deploy(&policy, &request).unwrap();
         let argv = fs::read_to_string(&capture).unwrap();
         assert!(!argv.contains("NIXBOT_REPO_SSH_KEY_PATHS="));

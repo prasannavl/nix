@@ -5,69 +5,102 @@ _nixbot_repo_root() {
 	printf '%s\n' "$root"
 }
 
-_nixbot_explicit_config_path() {
-	local i word
+_nixbot_inventory_context_args() {
+	local output_name="$1" i word value
+	local config="" override="" route="" override_mode="unset" ci_trigger=0
+	local -n output_ref="$output_name"
 
+	output_ref=()
 	for ((i = 1; i < COMP_CWORD; i++)); do
 		word="${COMP_WORDS[i]}"
 		case "$word" in
-		--config=*)
-			printf '%s\n' "${word#--config=}"
-			return 0
+		--config | --config-override | --route)
+			if ((i + 1 >= COMP_CWORD)); then
+				continue
+			fi
+			if [[ "${COMP_WORDS[i + 1]}" == "=" ]]; then
+				if ((i + 2 >= COMP_CWORD)); then
+					continue
+				fi
+				value="${COMP_WORDS[i + 2]}"
+				((i += 2))
+			else
+				value="${COMP_WORDS[i + 1]}"
+				((i++))
+			fi
+			case "$word" in
+			--config) config="$value" ;;
+			--config-override)
+				override="$value"
+				override_mode="file"
+				;;
+			--route) route="$value" ;;
+			esac
 			;;
-		--config)
+		--config=*) config="${word#*=}" ;;
+		--config-override=*)
+			override="${word#*=}"
+			override_mode="file"
+			;;
+		--route=*) route="${word#*=}" ;;
+		--no-override)
+			override=""
+			override_mode="disabled"
+			;;
+		--ci-trigger)
+			ci_trigger=1
+			;;
+		--sha | --group | --host | --hosts | --require-hosts | --nix-config | --goal | --build-host | --build-host-deploy-mode | --build-cache-url | --build-cache-host | --build-plan-jobs | --build-jobs | --deploy-jobs | --deploy-jobs-per-domain | --verify-jobs | --log-format | --user | --ssh-key | --operator-user | --operator-key | --bootstrap-key | --known-hosts | --age-key-file | --repo-url | --repo-path | --ci-check-ssh-key-path | --ci-host | --ci-user | --ci-ssh-key | --ci-known-hosts | --dirty-staged-base)
 			if ((i + 1 < COMP_CWORD)); then
-				printf '%s\n' "${COMP_WORDS[i + 1]}"
-				return 0
+				if [[ "${COMP_WORDS[i + 1]}" == "=" ]] && ((i + 2 < COMP_CWORD)); then
+					((i += 2))
+				else
+					((i++))
+				fi
+			fi
+			;;
+		--clean)
+			if ((i + 1 < COMP_CWORD)); then
+				if [[ "${COMP_WORDS[i + 1]}" == "=" ]] && ((i + 2 < COMP_CWORD)); then
+					((i += 2))
+				elif [[ "${COMP_WORDS[i + 1]}" != --* ]]; then
+					((i++))
+				fi
 			fi
 			;;
 		esac
 	done
-}
 
-_nixbot_no_override_requested() {
-	local i word
-
-	for ((i = 1; i < COMP_CWORD; i++)); do
-		word="${COMP_WORDS[i]}"
-		if [ "$word" = "--no-override" ]; then
-			return 0
-		fi
-	done
-
-	return 1
+	if [ "$ci_trigger" -eq 1 ]; then
+		override=""
+		override_mode="disabled"
+	fi
+	[ -z "$config" ] || output_ref+=(--config "$config")
+	case "$override_mode" in
+	file) output_ref+=(--config-override "$override") ;;
+	disabled) output_ref+=(--no-override) ;;
+	esac
+	[ -z "$route" ] || output_ref+=(--route "$route")
 }
 
 _nixbot_hosts() {
-	local root config=""
-	local -a cmd=()
+	local root
+	local -a cmd=() context=()
 
 	root="$(_nixbot_repo_root)" || return 0
-	config="$(_nixbot_explicit_config_path)"
-	cmd=("${root}/scripts/nixbot.sh" --list-hosts --hosts all --log-format plain)
-	if [ -n "$config" ]; then
-		cmd+=(--config "$config")
-	fi
-	if _nixbot_no_override_requested; then
-		cmd+=(--no-override)
-	fi
+	_nixbot_inventory_context_args context
+	cmd=("${root}/scripts/nixbot.sh" --list-hosts --hosts all --log-format plain "${context[@]}")
 
 	"${cmd[@]}" 2>&1 | sed -n 's/^[[:space:]]*-[[:space:]]*\([^[:space:]()]*\).*/\1/p'
 }
 
 _nixbot_groups() {
-	local root config=""
-	local -a cmd=()
+	local root
+	local -a cmd=() context=()
 
 	root="$(_nixbot_repo_root)" || return 0
-	config="$(_nixbot_explicit_config_path)"
-	cmd=("${root}/scripts/nixbot.sh" --list-groups --log-format plain)
-	if [ -n "$config" ]; then
-		cmd+=(--config "$config")
-	fi
-	if _nixbot_no_override_requested; then
-		cmd+=(--no-override)
-	fi
+	_nixbot_inventory_context_args context
+	cmd=("${root}/scripts/nixbot.sh" --list-groups --log-format plain "${context[@]}")
 
 	"${cmd[@]}" 2>&1 | sed -n 's/^  - \([^[:space:]()]*\).*/\1/p'
 }
@@ -183,19 +216,19 @@ _nixbot() {
 
 	commands=(
 		deps check-deps version repo run deploy build dev-build tf tf-dns
-		tf-platform tf-apps check-bootstrap clean tofu help --list-hosts
+		tf-platform tf-apps check-bootstrap clean tofu help --list-hosts --list-groups
 	)
 	mapfile -t tf_projects < <(_nixbot_tf_projects)
 	commands+=("${tf_projects[@]}")
 
 	options=(
-		--list-hosts --sha --group --host --hosts --nix-config --goal --build-host --build-host-deploy-mode
+		--list-hosts --list-groups --sha --group --host --hosts --nix-config --goal --build-host --build-host-deploy-mode
 		--build-cache-url --build-cache-host --build-jobs --build-logs --no-build-logs
 		--deploy-jobs --deploy-jobs-per-domain --verify-jobs --clean --force --restart-managed --bootstrap --control-plane-first
 		--skip-global-lock
-		--dirty --dirty-staged --dry --no-override --no-rollback
+		--dirty --dirty-staged --dry --no-override --route --no-rollback
 		--prefix-host-logs --log-format --user --ssh-key
-		--operator-user --operator-key --bootstrap-key --known-hosts --config
+		--operator-user --operator-key --bootstrap-key --known-hosts --config --config-override
 		--age-key-file --discover-keys --no-discover-keys --repo-url
 		--repo-path --use-repo-script --ci-check-ssh-key-path --ci-trigger
 		--ci-host --ci-user --ci-ssh-key --ci-known-hosts --help
@@ -238,11 +271,15 @@ _nixbot() {
 		_nixbot_compgen_words "$cur" "auto on off"
 		return 0
 		;;
+	--route)
+		_nixbot_compgen_words "$cur" "auto default cf ts"
+		return 0
+		;;
 	--clean)
 		_nixbot_compgen_words "$cur" "auto all"
 		return 0
 		;;
-		--config | --ssh-key | --operator-key | --bootstrap-key | --age-key-file | --ci-check-ssh-key-path | --repo-path)
+		--config | --config-override | --ssh-key | --operator-key | --bootstrap-key | --age-key-file | --ci-check-ssh-key-path | --repo-path)
 			_nixbot_compgen_files "$cur"
 			return 0
 			;;
@@ -281,11 +318,15 @@ _nixbot() {
 		_nixbot_compgen_words "$cur" "auto on off"
 		return 0
 		;;
+	--route)
+		_nixbot_compgen_words "$cur" "auto default cf ts"
+		return 0
+		;;
 	--clean)
 		_nixbot_compgen_words "$cur" "auto all"
 		return 0
 		;;
-		--config | --ssh-key | --operator-key | --bootstrap-key | --age-key-file | --ci-check-ssh-key-path | --repo-path)
+		--config | --config-override | --ssh-key | --operator-key | --bootstrap-key | --age-key-file | --ci-check-ssh-key-path | --repo-path)
 			_nixbot_compgen_files "$cur"
 			return 0
 			;;
@@ -319,10 +360,13 @@ _nixbot() {
 	--discover-keys=*)
 		_nixbot_compgen_words "${cur#--discover-keys=}" "auto on off" "--discover-keys="
 		;;
+	--route=*)
+		_nixbot_compgen_words "${cur#--route=}" "auto default cf ts" "--route="
+		;;
 	--clean=*)
 		_nixbot_compgen_words "${cur#--clean=}" "auto all" "--clean="
 		;;
-		--config=* | --ssh-key=* | --operator-key=* | --bootstrap-key=* | --age-key-file=* | --ci-check-ssh-key-path=* | --repo-path=*)
+		--config=* | --config-override=* | --ssh-key=* | --operator-key=* | --bootstrap-key=* | --age-key-file=* | --ci-check-ssh-key-path=* | --repo-path=*)
 			_nixbot_compgen_files "${cur#*=}" "${cur%%=*}="
 			;;
 	-*)

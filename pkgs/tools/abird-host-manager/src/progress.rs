@@ -6,6 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::Action;
+use crate::terminal_mode::{HIDE_CURSOR, SHOW_CURSOR};
 use crate::terminal_style::{TerminalStyle, Tone};
 
 static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
@@ -40,6 +41,8 @@ enum ProgressDestination {
     /// and a resize can all be exercised without a real tty.
     #[cfg(test)]
     BufferWithViewport(Arc<Mutex<Vec<u8>>>, Arc<Mutex<Option<(usize, usize)>>>),
+    #[cfg(test)]
+    Frames(Arc<Mutex<Vec<String>>>, Arc<Mutex<Option<(usize, usize)>>>),
 }
 
 impl ProgressDestination {
@@ -56,6 +59,8 @@ impl ProgressDestination {
                     buffer.extend_from_slice(text.as_bytes());
                 }
             }
+            #[cfg(test)]
+            Self::Frames(frames, _) => frames.lock().unwrap().push(text.to_owned()),
         }
     }
 
@@ -65,21 +70,75 @@ impl ProgressDestination {
             #[cfg(test)]
             Self::Buffer(_) => None,
             #[cfg(test)]
-            Self::BufferWithViewport(_, viewport) => {
+            Self::BufferWithViewport(_, viewport) | Self::Frames(_, viewport) => {
                 viewport.lock().ok().and_then(|viewport| *viewport)
             }
         }
     }
 }
 
-/// What the live region currently on screen is. `InPlace` counts its rows so a
-/// normal clear can erase them; `Snapshot` is an append-only frame taller than
-/// the screen that only a screen wipe can remove.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+const BEGIN_SYNCHRONIZED_UPDATE: &str = "\x1b[?2026h";
+const END_SYNCHRONIZED_UPDATE: &str = "\x1b[?2026l";
+
+/// One logical update, flushed before its caller releases the output lock.
+/// Redirected output stays streaming; terminals get one synchronized frame.
+struct ProgressFrame<'a> {
+    destination: &'a ProgressDestination,
+    interactive: bool,
+    buffer: String,
+    keep_cursor_hidden: bool,
+}
+
+impl<'a> ProgressFrame<'a> {
+    fn new(destination: &'a ProgressDestination, interactive: bool) -> Self {
+        Self {
+            destination,
+            interactive,
+            buffer: String::new(),
+            keep_cursor_hidden: false,
+        }
+    }
+
+    fn write(&mut self, text: &str) {
+        if !self.interactive {
+            self.destination.write(text);
+        } else if !text.is_empty() {
+            if self.buffer.is_empty() {
+                self.buffer.push_str(BEGIN_SYNCHRONIZED_UPDATE);
+                self.buffer.push_str(HIDE_CURSOR);
+            }
+            self.buffer.push_str(text);
+        }
+    }
+}
+
+impl Drop for ProgressFrame<'_> {
+    fn drop(&mut self) {
+        if !self.buffer.is_empty() && !thread::panicking() {
+            if !self.keep_cursor_hidden {
+                self.buffer.push_str(SHOW_CURSOR);
+            }
+            self.buffer.push_str(END_SYNCHRONIZED_UPDATE);
+            let stderr = matches!(self.destination, ProgressDestination::Stderr);
+            // Publish before writing: a forced exit may interrupt the frame.
+            if stderr {
+                crate::terminal_mode::publish_cursor_hidden(true);
+            }
+            self.destination.write(&self.buffer);
+            if stderr && !self.keep_cursor_hidden {
+                crate::terminal_mode::publish_cursor_hidden(false);
+            }
+        }
+    }
+}
+
+/// Last painted region. Retain in-place rows to rewrite only changed lines;
+/// an oversized append-only snapshot can only be replaced by a screen wipe.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 enum Painted {
     #[default]
     None,
-    InPlace(usize),
+    InPlace(Vec<String>),
     Snapshot,
 }
 
@@ -101,6 +160,12 @@ struct FrameSize {
 enum RosterPolicy {
     Full,
     Windowed,
+}
+
+#[derive(Clone, Copy)]
+enum Redraw {
+    Immediate,
+    Stream,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -134,8 +199,8 @@ struct ProgressState {
     /// Bounded live tail of verbose lines rendered above the dashboard through
     /// the same clear/redraw path as progress, newest last.
     verbose_tail: VecDeque<VerboseLine>,
-    /// Last live-verbose redraw, throttling high-volume streams.
-    verbose_redraw_at: Option<Instant>,
+    /// Shared redraw budget for host tails, phase tails, and verbose streams.
+    stream_redraw_at: Option<Instant>,
     /// Monotonic sequence over every recorded verbose line, so the retained
     /// digest can tell consecutive lines from elided ones.
     verbose_seq: u64,
@@ -164,8 +229,7 @@ impl ProgressState {
     /// Take the painted state, clearing it so a region that has been released
     /// for exit is not cleared or re-terminated a second time.
     fn take_painted(&mut self) -> Painted {
-        let painted = self.painted;
-        self.painted = Painted::None;
+        let painted = std::mem::take(&mut self.painted);
         self.scrolling_snapshot_at = None;
         painted
     }
@@ -395,7 +459,7 @@ const VERBOSE_ELISION: &str = "...";
 const DEFAULT_VIEWPORT_ROWS: usize = 24;
 /// Minimum interval between live verbose redraws, capping flicker and I/O on
 /// high-volume streams; the heartbeat still renders the tail afterwards.
-const VERBOSE_REDRAW_INTERVAL: Duration = Duration::from_millis(50);
+const STREAM_REDRAW_INTERVAL: Duration = Duration::from_millis(50);
 /// Shown in the `Logs` header when a timestamp cannot be resolved, so the header
 /// keeps its shape instead of dropping the segment.
 const UNKNOWN_CLOCK_TIME: &str = "--:--:--";
@@ -475,6 +539,7 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         if let Ok(mut state) = self.state.lock()
             && let Some(active) = state.stack.last_mut()
         {
@@ -487,7 +552,7 @@ impl ProgressReporter {
                 ..HostDashboard::default()
             });
         }
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn host_schedule(
@@ -500,6 +565,7 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         if let Ok(mut state) = self.state.lock()
             && let Some(dashboard) = state
                 .stack
@@ -510,7 +576,7 @@ impl ProgressReporter {
             dashboard.wave = wave;
             dashboard.concurrency = concurrency;
         }
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn host_task_started(
@@ -525,7 +591,7 @@ impl ProgressReporter {
             self.detail(format!("{host} · {label} · running"));
             return;
         }
-        self.update_host_row(host, |row| {
+        self.update_host_row(host, Redraw::Immediate, |row| {
             row.state = HostRowState::Running;
             row.task_key = Some(key.to_owned());
             row.task = Some(label.to_owned());
@@ -543,7 +609,7 @@ impl ProgressReporter {
         if !self.shows_recent_updates() {
             return;
         }
-        self.update_host_row(host, |row| {
+        self.update_host_row(host, Redraw::Immediate, |row| {
             if row.task_key.as_deref() == Some(key) {
                 row.task = Some(label.to_owned());
                 row.last_heartbeat = Some(Instant::now());
@@ -555,7 +621,7 @@ impl ProgressReporter {
         if !self.shows_recent_updates() || line.is_empty() {
             return;
         }
-        self.update_host_row(host, |row| {
+        self.update_host_row(host, Redraw::Stream, |row| {
             if row.task_key.as_deref() != Some(key) {
                 return;
             }
@@ -651,7 +717,7 @@ impl ProgressReporter {
             }
             return;
         }
-        self.update_host_row(host, |row| {
+        self.update_host_row(host, Redraw::Immediate, |row| {
             if row.task_key.as_deref() != Some(key) {
                 return;
             }
@@ -694,7 +760,7 @@ impl ProgressReporter {
         summary: impl Into<String>,
     ) {
         let summary = summary.into();
-        self.update_host_row(host, |row| {
+        self.update_host_row(host, Redraw::Immediate, |row| {
             if row.keep_interrupted(elapsed) {
                 return;
             }
@@ -722,7 +788,7 @@ impl ProgressReporter {
 
     pub fn host_skipped(&self, host: &str, summary: impl Into<String>) {
         let summary = summary.into();
-        self.update_host_row(host, |row| {
+        self.update_host_row(host, Redraw::Immediate, |row| {
             if row.keep_interrupted(None) {
                 return;
             }
@@ -734,8 +800,9 @@ impl ProgressReporter {
         });
     }
 
-    fn update_host_row(&self, host: &str, update: impl FnOnce(&mut HostRow)) {
+    fn update_host_row(&self, host: &str, redraw: Redraw, update: impl FnOnce(&mut HostRow)) {
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         if let Ok(mut state) = self.state.lock()
             && let Some(dashboard) = state
                 .stack
@@ -745,7 +812,10 @@ impl ProgressReporter {
         {
             update(row);
         }
-        self.redraw_current();
+        match redraw {
+            Redraw::Immediate => self.redraw_current(&mut output_frame),
+            Redraw::Stream => self.redraw_stream(&mut output_frame),
+        }
     }
 
     pub fn end_task_scope(&self) {
@@ -757,18 +827,19 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
-        self.clear_line();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.clear_line(&mut output_frame);
         let item_count = if items == 1 {
             String::new()
         } else {
             format!(" · {items} items")
         };
         let heading = format!("{} {transaction}{item_count}", action_title(action));
-        self.destination.write(&format!(
+        output_frame.write(&format!(
             "\n{}\n\n",
             self.style.paint(Tone::Emphasis, heading)
         ));
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn phase_completed(&self, _transaction: &str, action: Action, elapsed: Duration) {
@@ -776,7 +847,8 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
-        self.clear_line();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.clear_line(&mut output_frame);
         let line = styled_outcome_line(
             self.style,
             "✓",
@@ -787,8 +859,8 @@ impl ProgressReporter {
                 format_duration(elapsed)
             ),
         );
-        self.destination.write(&format!("{line}\n\n"));
-        self.redraw_current();
+        output_frame.write(&format!("{line}\n\n"));
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn step_started(&self, step: &StepProgress) {
@@ -801,6 +873,7 @@ impl ProgressReporter {
         }
         let detail = detail.into();
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         if self.shows_recent_updates() {
             let mut state = match self.state.lock() {
                 Ok(state) => state,
@@ -818,7 +891,7 @@ impl ProgressReporter {
                 );
             }
             drop(state);
-            self.redraw_current();
+            self.redraw_current(&mut output_frame);
             return;
         }
         let mut active = None;
@@ -847,10 +920,10 @@ impl ProgressReporter {
         }
         if self.interactive {
             if let Some(active) = active {
-                redraw_active(&self.destination, self.style, &active, Some(&detail));
+                redraw_active(&mut output_frame, self.style, &active, Some(&detail));
             }
         } else {
-            self.destination.write(&format!("  {detail}\n"));
+            output_frame.write(&format!("  {detail}\n"));
         }
     }
 
@@ -863,16 +936,16 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
-        self.finish_current();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.finish_current(&mut output_frame);
         let failure = format!("✗ {} · {}", step_label(step), format_duration(elapsed));
-        self.destination
-            .write(&format!("{}\n", self.style.paint(Tone::Failure, failure)));
-        self.destination.write(&format!(
+        output_frame.write(&format!("{}\n", self.style.paint(Tone::Failure, failure)));
+        output_frame.write(&format!(
             "{}\n",
             self.style
                 .paint(Tone::FailureDetail, format!("  {error:#}"))
         ));
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn task_started(&self, key: impl Into<String>, label: impl Into<String>) {
@@ -1036,6 +1109,7 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         if let Ok(mut state) = self.state.lock()
             && let Some(current) = state.stack.last_mut()
         {
@@ -1059,7 +1133,7 @@ impl ProgressReporter {
             current.recent_updates.push_back(update);
             trim_recent_updates(&mut current.recent_updates, self.recent_update_limit);
         }
-        self.redraw_current();
+        self.redraw_stream(&mut output_frame);
     }
 
     fn start_task_tail(&self, key: &str) {
@@ -1116,6 +1190,7 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         if let Ok(mut state) = self.state.lock()
             && let Some(current) = state.stack.last_mut()
         {
@@ -1127,7 +1202,7 @@ impl ProgressReporter {
                 tone,
             );
         }
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn started(&self, label: impl Into<String>) {
@@ -1136,6 +1211,7 @@ impl ProgressReporter {
         }
         let label = label.into();
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         let mut active_id = None;
         if let Ok(mut state) = self.state.lock() {
             state.next_id = state.next_id.wrapping_add(1);
@@ -1153,12 +1229,12 @@ impl ProgressReporter {
             active_id = Some(id);
         }
         if self.interactive {
-            self.redraw_current();
+            self.redraw_current(&mut output_frame);
             if let Some(active_id) = active_id {
                 self.start_heartbeat(active_id);
             }
         } else {
-            self.destination.write(&format!(
+            output_frame.write(&format!(
                 "{}\n",
                 self.style.paint(Tone::Active, format!("● {label}"))
             ));
@@ -1170,7 +1246,8 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
-        self.finish_current();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.finish_current(&mut output_frame);
         let label = label.into();
         let label = if self.shows_recent_updates() {
             format!("{label} · elapsed {}", format_duration(elapsed))
@@ -1178,8 +1255,8 @@ impl ProgressReporter {
             format!("{label}  {}", format_duration(elapsed))
         };
         let line = styled_outcome_line(self.style, "✓", Tone::Success, &label);
-        self.destination.write(&format!("{line}\n"));
-        self.redraw_current();
+        output_frame.write(&format!("{line}\n"));
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn complete_active(&self, label: impl Into<String>) {
@@ -1197,43 +1274,44 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         let recent_failures = self.recent_failure_output();
         let host_failures = self.host_failure_output();
-        self.finish_current();
+        self.finish_current(&mut output_frame);
         let label = label.into();
-        self.destination.write(&format!(
+        output_frame.write(&format!(
             "{}\n",
             styled_outcome_line(self.style, "✗", Tone::Failure, &label)
         ));
         for line in failure.lines() {
-            self.destination.write(&format!(
+            output_frame.write(&format!(
                 "{}\n",
                 self.style.paint(Tone::FailureDetail, format!("  {line}"))
             ));
         }
         if host_failures.is_empty() && !recent_failures.is_empty() {
-            self.destination.write("  Recent command output:\n");
+            output_frame.write("  Recent command output:\n");
             for (task, output) in recent_failures {
-                self.destination.write(&format!("    {task}\n"));
+                output_frame.write(&format!("    {task}\n"));
                 for line in output {
-                    self.destination.write(&format!("      {line}\n"));
+                    output_frame.write(&format!("      {line}\n"));
                 }
             }
         }
         for (host, summary, output) in host_failures {
-            self.destination.write(&format!(
+            output_frame.write(&format!(
                 "  {}  {}\n",
                 self.style.paint_host(&host),
                 self.style.paint(Tone::Failure, format!("✗ {summary}"))
             ));
             for line in output {
-                self.destination.write(&format!(
+                output_frame.write(&format!(
                     "    {}\n",
                     self.style.paint(Tone::FailureDetail, line)
                 ));
             }
         }
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn warning_active(&self, label: impl Into<String>, warning: &str) {
@@ -1241,33 +1319,34 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         let host_failures = self.host_failure_output();
-        self.finish_current();
+        self.finish_current(&mut output_frame);
         let label = label.into();
-        self.destination.write(&format!(
+        output_frame.write(&format!(
             "{}\n",
             styled_outcome_line(self.style, "◇", Tone::Warning, &label)
         ));
         for line in warning.lines() {
-            self.destination.write(&format!(
+            output_frame.write(&format!(
                 "{}\n",
                 self.style.paint(Tone::Warning, format!("  {line}"))
             ));
         }
         for (host, summary, output) in host_failures {
-            self.destination.write(&format!(
+            output_frame.write(&format!(
                 "  {}  {}\n",
                 self.style.paint_host(&host),
                 self.style.paint(Tone::Failure, format!("✗ {summary}"))
             ));
             for line in output {
-                self.destination.write(&format!(
+                output_frame.write(&format!(
                     "    {}\n",
                     self.style.paint(Tone::FailureDetail, line)
                 ));
             }
         }
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn report_failure_output(&self) {
@@ -1275,13 +1354,14 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         let recent_failures = self.recent_failure_output();
         if !recent_failures.is_empty() {
-            self.destination.write("  Recent command output:\n");
+            output_frame.write("  Recent command output:\n");
             for (task, output) in recent_failures {
-                self.destination.write(&format!("    {task}\n"));
+                output_frame.write(&format!("    {task}\n"));
                 for line in output {
-                    self.destination.write(&format!("      {line}\n"));
+                    output_frame.write(&format!("      {line}\n"));
                 }
             }
         }
@@ -1342,13 +1422,14 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
-        self.finish_current();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.finish_current(&mut output_frame);
         let label = label.into();
-        self.destination.write(&format!(
+        output_frame.write(&format!(
             "{}\n",
             styled_outcome_line(self.style, "◇", Tone::Warning, &label)
         ));
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn message(&self, message: impl std::fmt::Display) {
@@ -1356,12 +1437,13 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
-        self.clear_line();
-        self.destination.write(&format!(
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.clear_line(&mut output_frame);
+        output_frame.write(&format!(
             "{}\n",
             self.style.semantic_text(&message.to_string())
         ));
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn message_tone(&self, tone: Tone, message: impl std::fmt::Display) {
@@ -1369,12 +1451,13 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
-        self.clear_line();
-        self.destination.write(&format!(
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.clear_line(&mut output_frame);
+        output_frame.write(&format!(
             "{}\n",
             self.style.paint(tone, message.to_string())
         ));
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
     /// Record one streamed verbose child-process line in the live tail, opening
@@ -1393,12 +1476,12 @@ impl ProgressReporter {
         // other while the painted region tracks only one; hiding then clears
         // one copy and leaves the rest on screen.
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         if !self.interactive {
-            self.destination
-                .write(&format!("{}\n", self.style.paint(tone, message)));
+            output_frame.write(&format!("{}\n", self.style.paint(tone, message)));
             return;
         }
-        let due = if let Ok(mut state) = self.state.lock() {
+        if let Ok(mut state) = self.state.lock() {
             state.open_verbose();
             let line = record_verbose_line(&mut state, tone, message, SystemTime::now());
             state.verbose_tail.push_back(line);
@@ -1408,20 +1491,8 @@ impl ProgressReporter {
             if state.verbose_view == VerboseView::Run {
                 hold_scrolled_window(&mut state, 1);
             }
-            let now = Instant::now();
-            let due = state
-                .verbose_redraw_at
-                .is_none_or(|last| now.duration_since(last) >= VERBOSE_REDRAW_INTERVAL);
-            if due {
-                state.verbose_redraw_at = Some(now);
-            }
-            due
-        } else {
-            false
-        };
-        if due {
-            self.redraw_current();
         }
+        self.redraw_stream(&mut output_frame);
     }
 
     /// Record a line seen while the verbose tail is hidden so revealing it
@@ -1453,17 +1524,18 @@ impl ProgressReporter {
     /// returning the window to the newest content.
     pub fn set_verbose_view(&self, view: VerboseView) {
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         let changed = self.state.lock().ok().is_some_and(|mut state| {
             let changed =
                 !state.verbose_active || state.verbose_view != view || state.verbose_scroll != 0;
             state.open_verbose();
             state.verbose_view = view;
             state.verbose_scroll = 0;
-            state.verbose_redraw_at = None;
+            state.stream_redraw_at = None;
             changed
         });
         if changed {
-            self.redraw_current();
+            self.redraw_current(&mut output_frame);
         }
     }
 
@@ -1485,6 +1557,7 @@ impl ProgressReporter {
 
     fn scroll_verbose(&self, delta: isize, step: usize) {
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         let changed = self.state.lock().ok().is_some_and(|mut state| {
             if !state.verbose_active {
                 return false;
@@ -1496,7 +1569,7 @@ impl ProgressReporter {
             changed
         });
         if changed {
-            self.redraw_current();
+            self.redraw_current(&mut output_frame);
         }
     }
 
@@ -1504,14 +1577,15 @@ impl ProgressReporter {
     /// can jump back with `esc` instead of scrolling line by line.
     pub fn scroll_verbose_newest(&self) {
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         let changed = self.state.lock().ok().is_some_and(|mut state| {
             let changed = state.verbose_active && state.verbose_scroll != 0;
             state.verbose_scroll = 0;
-            state.verbose_redraw_at = None;
+            state.stream_redraw_at = None;
             changed
         });
         if changed {
-            self.redraw_current();
+            self.redraw_current(&mut output_frame);
         }
     }
 
@@ -1520,15 +1594,16 @@ impl ProgressReporter {
     /// never been shown.
     pub fn clear_verbose_output(&self) {
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         let changed = self.state.lock().ok().is_some_and(|mut state| {
             let changed = state.verbose_active || !state.verbose_tail.is_empty();
             state.close_verbose();
             state.verbose_tail.clear();
-            state.verbose_redraw_at = None;
+            state.stream_redraw_at = None;
             changed
         });
         if changed {
-            self.redraw_current();
+            self.redraw_current(&mut output_frame);
         }
     }
 
@@ -1547,7 +1622,7 @@ impl ProgressReporter {
                 state.close_verbose();
             }
             state.verbose_scroll = 0;
-            state.verbose_redraw_at = None;
+            state.stream_redraw_at = None;
         }
     }
 
@@ -1563,7 +1638,7 @@ impl ProgressReporter {
             state.verbose_seq = 0;
             state.after_context_remaining = 0;
             state.verbose_scroll = 0;
-            state.verbose_redraw_at = None;
+            state.stream_redraw_at = None;
             state.verbose_view = VerboseView::default();
         }
     }
@@ -1583,17 +1658,18 @@ impl ProgressReporter {
     /// active view and retained digest persist across a hide.
     pub fn show_verbose_output(&self) {
         let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         let changed = self.state.lock().ok().is_some_and(|mut state| {
             if state.verbose_active {
                 return false;
             }
             state.open_verbose();
-            state.verbose_redraw_at = None;
+            state.stream_redraw_at = None;
             state.verbose_scroll = 0;
             true
         });
         if changed {
-            self.redraw_current();
+            self.redraw_current(&mut output_frame);
         }
     }
 
@@ -1601,15 +1677,16 @@ impl ProgressReporter {
     /// armed interrupt, so the footer reflects it immediately.
     pub fn refresh(&self) {
         let _output = self.output.lock().ok();
-        self.redraw_current();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.redraw_current(&mut output_frame);
     }
 
     /// Release the interactive live region so the cursor ends on a fresh line.
     ///
     /// An in-place frame ends at the last painted row with no trailing newline,
     /// so a carriage return plus newline moves below it; an append-only snapshot
-    /// frame already ends with a newline and needs nothing. The painted state is
-    /// cleared either way, so a second call is a no-op. `blocking` is false on
+    /// frame already ends with a newline. Both restore cursor visibility. The
+    /// painted state is cleared, so a second call is a no-op. `blocking` is false on
     /// the panic path so a reporter lock the panicking thread still holds cannot
     /// deadlock the hook; an unavailable lock there is treated as a possibly
     /// stranded region, and the extra newline is harmless when none was drawn.
@@ -1630,13 +1707,19 @@ impl ProgressReporter {
                 .ok()
                 .map(|mut state| state.take_painted())
         };
-        let terminate = match painted {
+        let terminate = match &painted {
             Some(Painted::InPlace(_)) => true,
             Some(Painted::None | Painted::Snapshot) => false,
             None => true,
         };
         if terminate {
             self.destination.write("\r\n");
+        }
+        if !matches!(painted, Some(Painted::None)) {
+            self.destination.write(SHOW_CURSOR);
+            if matches!(self.destination, ProgressDestination::Stderr) {
+                crate::terminal_mode::publish_cursor_hidden(false);
+            }
         }
         terminate
     }
@@ -1652,14 +1735,15 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
-        self.clear_line();
-        self.destination.write(&format!(
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.clear_line(&mut output_frame);
+        output_frame.write(&format!(
             "{}{}{}\n",
             prefix,
             self.style.paint(tone, primary.to_string()),
             paint_if_nonempty(self.style, Tone::Neutral, &metadata.to_string())
         ));
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn heading(&self, heading: impl std::fmt::Display) {
@@ -1667,12 +1751,13 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
-        self.clear_line();
-        self.destination.write(&format!(
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.clear_line(&mut output_frame);
+        output_frame.write(&format!(
             "{}\n",
             self.style.paint(Tone::Emphasis, heading.to_string())
         ));
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
     pub fn document(&self, document: impl std::fmt::Display) {
@@ -1680,16 +1765,17 @@ impl ProgressReporter {
             return;
         }
         let _output = self.output.lock().ok();
-        self.clear_line();
-        self.destination.write(&format!(
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.clear_line(&mut output_frame);
+        output_frame.write(&format!(
             "{}\n",
             self.style.semantic_document(&document.to_string())
         ));
-        self.redraw_current();
+        self.redraw_current(&mut output_frame);
     }
 
-    fn finish_current(&self) {
-        self.clear_line();
+    fn finish_current(&self, output_frame: &mut ProgressFrame<'_>) {
+        self.clear_line(output_frame);
         if let Ok(mut state) = self.state.lock() {
             state.stack.pop();
         }
@@ -1727,7 +1813,12 @@ impl ProgressReporter {
     /// A snapshot draws no counted rows, so any frame that replaces it (rather
     /// than appending another) must wipe it, not clear zero rows and leave it
     /// stranded.
-    fn clear_region(&self, frame: FrameSize, appending: bool) {
+    fn clear_region(
+        &self,
+        frame: FrameSize,
+        appending: bool,
+        output_frame: &mut ProgressFrame<'_>,
+    ) {
         if !self.interactive {
             return;
         }
@@ -1737,8 +1828,8 @@ impl ProgressReporter {
                 state.region_viewport = frame.live;
             }
             let snapshot = state.painted == Painted::Snapshot;
-            let rows = match state.painted {
-                Painted::InPlace(rows) => rows,
+            let rows = match &state.painted {
+                Painted::InPlace(lines) => lines.len(),
                 Painted::None | Painted::Snapshot => 0,
             };
             let wipe = resized || (!appending && snapshot);
@@ -1756,19 +1847,38 @@ impl ProgressReporter {
             (rows, wipe)
         });
         if wipe {
-            clear_screen(&self.destination);
+            clear_screen(output_frame);
         } else {
-            clear_rendered_lines(&self.destination, rows);
+            clear_rendered_lines(output_frame, rows);
         }
     }
 
     /// Clear the region for callers that write a permanent line before the next
     /// redraw. Uses the same frame size as a redraw so a resize is seen once.
-    fn clear_line(&self) {
-        self.clear_region(self.frame_size(), false);
+    fn clear_line(&self, output_frame: &mut ProgressFrame<'_>) {
+        self.clear_region(self.frame_size(), false, output_frame);
     }
 
-    fn redraw_current(&self) {
+    /// Coalesce high-volume data, not lifecycle transitions or operator input.
+    /// The existing heartbeat flushes the newest tail if a burst goes quiet.
+    fn redraw_stream(&self, output_frame: &mut ProgressFrame<'_>) {
+        let due = self.state.lock().is_ok_and(|mut state| {
+            let now = Instant::now();
+            if state
+                .stream_redraw_at
+                .is_some_and(|last| now.duration_since(last) < STREAM_REDRAW_INTERVAL)
+            {
+                return false;
+            }
+            state.stream_redraw_at = Some(now);
+            true
+        });
+        if due {
+            self.redraw_current(output_frame);
+        }
+    }
+
+    fn redraw_current(&self, output_frame: &mut ProgressFrame<'_>) {
         if !self.interactive {
             return;
         }
@@ -1799,14 +1909,21 @@ impl ProgressReporter {
                 dashboard,
             )
         });
+        output_frame.keep_cursor_hidden = lines.is_some();
         let Some(lines) = lines else {
             // Nothing left to draw: erase the previous region so an empty frame
             // never strands stale output.
-            self.clear_region(frame, false);
+            self.clear_region(frame, false, output_frame);
             return;
         };
         let appending = viewport.is_some_and(|(rows, _)| lines.len() >= rows);
-        self.clear_region(frame, appending);
+        let reset = self
+            .state
+            .lock()
+            .is_ok_and(|state| state.reflowed(frame.live) || state.painted == Painted::Snapshot);
+        if appending || reset {
+            self.clear_region(frame, appending, output_frame);
+        }
         if appending {
             // A resize dropped the throttle in `clear_region`, so a wiped screen
             // repaints here rather than waiting out the snapshot interval.
@@ -1815,17 +1932,23 @@ impl ProgressReporter {
                 .lock()
                 .is_ok_and(|mut state| claim_scrolling_snapshot(&mut state, Instant::now()));
             if should_render {
-                self.destination.write(&format!("{}\n", lines.join("\n")));
+                redraw_lines(output_frame, &lines);
+                output_frame.write("\n");
                 if let Ok(mut state) = self.state.lock() {
                     state.painted = Painted::Snapshot;
                 }
             }
-        } else {
-            redraw_lines(&self.destination, &lines);
-            if let Ok(mut state) = self.state.lock() {
-                state.painted = Painted::InPlace(lines.len());
-                state.scrolling_snapshot_at = None;
+        } else if let Ok(mut state) = self.state.lock() {
+            if let Painted::InPlace(previous) = &state.painted {
+                rewrite_lines(output_frame, previous, &lines);
+            } else {
+                redraw_lines(output_frame, &lines);
             }
+            if frame.live.is_some() {
+                state.region_viewport = frame.live;
+            }
+            state.painted = Painted::InPlace(lines);
+            state.scrolling_snapshot_at = None;
         }
     }
 
@@ -1913,7 +2036,9 @@ impl ProgressReporter {
                     Err(_) => return,
                 };
                 if render {
-                    reporter.redraw_current();
+                    let mut output_frame =
+                        ProgressFrame::new(&reporter.destination, reporter.interactive);
+                    reporter.redraw_current(&mut output_frame);
                 }
             }
         });
@@ -2708,28 +2833,63 @@ fn terminal_viewport() -> Option<(usize, usize)> {
     }
 }
 
-fn clear_rendered_lines(destination: &ProgressDestination, lines: usize) {
+fn clear_rendered_lines(output_frame: &mut ProgressFrame<'_>, lines: usize) {
     if lines == 0 {
         return;
     }
-    let mut sequence = String::from("\r\x1b[2K");
+    output_frame.write("\r\x1b[2K");
     for _ in 1..lines {
-        sequence.push_str("\x1b[1A\r\x1b[2K");
+        output_frame.write("\x1b[1A\r\x1b[2K");
     }
-    destination.write(&sequence);
 }
 
 /// Wipe the visible screen and home the cursor, leaving scrollback intact. Used
 /// when the terminal was resized: the reflow means the previous row count no
 /// longer locates the live region, so the only reliable reset is to clear the
 /// screen and redraw the region from the top-left.
-fn clear_screen(destination: &ProgressDestination) {
-    destination.write("\x1b[2J\x1b[H");
+fn clear_screen(output_frame: &mut ProgressFrame<'_>) {
+    output_frame.write("\x1b[2J\x1b[H");
 }
 
 /// Terminal rows one streamed line occupies, so a later hide can erase it.
-fn redraw_lines(destination: &ProgressDestination, lines: &[String]) {
-    destination.write(&lines.join("\n"));
+fn redraw_lines(output_frame: &mut ProgressFrame<'_>, lines: &[String]) {
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            output_frame.write("\n");
+        }
+        output_frame.write(line);
+    }
+}
+
+/// Rewrite in place without exposing an empty region. Unchanged rows emit no
+/// text; shortened rows erase only the old suffix, after their replacement.
+fn rewrite_lines(output_frame: &mut ProgressFrame<'_>, previous: &[String], lines: &[String]) {
+    let mut cursor = previous.len().saturating_sub(1);
+    // Reserve only added rows. Newlines let a growing inline region scroll
+    // naturally at the bottom; cursor-down alone cannot create that space.
+    for _ in previous.len()..lines.len() {
+        output_frame.write("\n");
+        cursor += 1;
+    }
+    let move_to = |output_frame: &mut ProgressFrame<'_>, cursor: &mut usize, row: usize| {
+        if row != *cursor {
+            let direction = if row < *cursor { 'A' } else { 'B' };
+            output_frame.write(&format!("\x1b[{}{direction}", row.abs_diff(*cursor)));
+            *cursor = row;
+        }
+    };
+    for row in 0..previous.len().max(lines.len()) {
+        if previous.get(row) == lines.get(row) {
+            continue;
+        }
+        move_to(output_frame, &mut cursor, row);
+        output_frame.write("\r");
+        if let Some(line) = lines.get(row) {
+            output_frame.write(line);
+        }
+        output_frame.write("\x1b[K");
+    }
+    move_to(output_frame, &mut cursor, lines.len().saturating_sub(1));
 }
 
 /// Detail with the live elapsed appended, so a quiet step still visibly ticks
@@ -2834,12 +2994,13 @@ fn sentence_case(value: &str) -> String {
 }
 
 fn redraw_active(
-    destination: &ProgressDestination,
+    output_frame: &mut ProgressFrame<'_>,
     style: TerminalStyle,
     label: &str,
     detail: Option<&str>,
 ) {
-    destination.write(&format!("\r\x1b[2K{}", active_line(style, label, detail)));
+    output_frame.write("\r\x1b[2K");
+    output_frame.write(&active_line(style, label, detail));
 }
 
 fn active_line(style: TerminalStyle, label: &str, detail: Option<&str>) -> String {
@@ -3667,10 +3828,11 @@ mod tests {
         assert!(!reporter.state.lock().unwrap().verbose_active);
         assert!(reporter.state.lock().unwrap().verbose_tail.is_empty());
 
-        // The hide clears the old region and redraws only the dashboard.
+        // Hiding replaces the header with the dashboard and erases the tail.
         let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
-        assert!(rendered.contains("\r\x1b[2K"), "{rendered:?}");
-        let final_frame = rendered.rsplit("\r\x1b[2K").next().unwrap_or("");
+        let final_frame = rendered.rsplit(BEGIN_SYNCHRONIZED_UPDATE).next().unwrap();
+        assert!(final_frame.contains("● Build systems"), "{rendered:?}");
+        assert!(final_frame.contains("\r\x1b[K"), "{rendered:?}");
         assert!(!final_frame.contains("  │ second"), "{rendered:?}");
         // A second hide changes nothing.
         let before = buffer.lock().unwrap().len();
@@ -3876,7 +4038,7 @@ mod tests {
         });
         for index in 0..40 {
             // Bypass the redraw throttle so the tail is actually rendered.
-            reporter.state.lock().unwrap().verbose_redraw_at = None;
+            reporter.state.lock().unwrap().stream_redraw_at = None;
             reporter.verbose_line(Tone::Neutral, format!("  │ log {index}"));
         }
         let region = painted_rows(&reporter);
@@ -3891,8 +4053,15 @@ mod tests {
             !rendered.contains("log 39"),
             "tail not cleared: {rendered:?}"
         );
-        let ups = rendered.matches("\x1b[1A").count();
-        assert_eq!(ups, region - 1, "clear must cover the whole old region");
+        assert_eq!(
+            rendered.matches("\x1b[K").count(),
+            region,
+            "replace the first row and erase every obsolete tail row"
+        );
+        assert!(
+            rendered.ends_with(&format!("\x1b[{}A{END_SYNCHRONIZED_UPDATE}", region - 1)),
+            "cursor must return to the remaining dashboard row: {rendered:?}"
+        );
         assert!(!reporter.state.lock().unwrap().verbose_active);
     }
 
@@ -3950,8 +4119,8 @@ mod tests {
 
     /// Rows of the in-place region on screen: 0 for a snapshot or nothing.
     fn painted_rows(reporter: &ProgressReporter) -> usize {
-        match reporter.state.lock().unwrap().painted {
-            Painted::InPlace(rows) => rows,
+        match &reporter.state.lock().unwrap().painted {
+            Painted::InPlace(lines) => lines.len(),
             Painted::None | Painted::Snapshot => 0,
         }
     }
@@ -3998,7 +4167,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unchanged_viewport_still_clears_only_the_drawn_rows() {
+    fn an_unchanged_viewport_preserves_the_drawn_rows() {
         let buffer = Arc::new(Mutex::new(Vec::new()));
         let viewport = Arc::new(Mutex::new(Some((24usize, 100usize))));
         let reporter = reporter_with_viewport(&buffer, &viewport);
@@ -4030,8 +4199,8 @@ mod tests {
             "an unchanged viewport must not wipe the screen: {rendered:?}"
         );
         assert!(
-            rendered.contains("\x1b[1A"),
-            "an unchanged viewport clears the drawn rows: {rendered:?}"
+            rendered.is_empty(),
+            "unchanged content must remain painted: {rendered:?}"
         );
     }
 
@@ -4131,7 +4300,10 @@ mod tests {
         }
         buffer.lock().unwrap().clear();
 
-        reporter.clear_line();
+        {
+            let mut frame = ProgressFrame::new(&reporter.destination, reporter.interactive);
+            reporter.clear_line(&mut frame);
+        }
 
         let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
         assert!(
@@ -4238,11 +4410,10 @@ mod tests {
         reporter.scroll_verbose_lines(5);
         assert!(reporter.state.lock().unwrap().verbose_scroll > 0);
 
+        buffer.lock().unwrap().clear();
         reporter.scroll_verbose_newest();
 
         assert_eq!(reporter.state.lock().unwrap().verbose_scroll, 0);
-        buffer.lock().unwrap().clear();
-        reporter.refresh();
         let rendered = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
         assert!(
             rendered.contains("log 29"),
@@ -5537,7 +5708,7 @@ mod tests {
     }
 
     #[test]
-    fn interactive_sequence_clears_and_redraws_the_whole_dashboard() {
+    fn interactive_sequence_clears_only_for_permanent_output() {
         set_json_output(false);
         let buffer = Arc::new(Mutex::new(Vec::new()));
         let reporter = ProgressReporter {
@@ -5563,7 +5734,11 @@ mod tests {
 
         let output = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
         let clear_two_lines = "\r\x1b[2K\x1b[1A\r\x1b[2K";
-        assert!(output.matches(clear_two_lines).count() >= 3, "{output:?}");
+        assert_eq!(
+            output.matches(clear_two_lines).count(),
+            2,
+            "only the permanent message and completion clear the live region: {output:?}"
+        );
         assert!(
             output.contains("\n  ✓ build plan gap3-gondor · task elapsed 1m 04s"),
             "{output:?}"
@@ -5581,7 +5756,9 @@ mod tests {
             "{output:?}"
         );
         assert!(
-            output.ends_with("✓ Build systems · 11 hosts · elapsed 1m 51s\n"),
+            output.ends_with(&format!(
+                "✓ Build systems · 11 hosts · elapsed 1m 51s\n{SHOW_CURSOR}{END_SYNCHRONIZED_UPDATE}"
+            )),
             "{output:?}"
         );
         assert!(
@@ -5649,6 +5826,407 @@ mod tests {
         reporter
     }
 
+    /// Minimal VT rows for the rewrite primitives; synchronized output is not
+    /// needed for correctness. LF includes the tty's ordinary ONLCR behavior.
+    struct RewriteScreen {
+        rows: Vec<Vec<char>>,
+        row: usize,
+        column: usize,
+    }
+
+    impl RewriteScreen {
+        fn feed(&mut self, text: &str) {
+            let mut chars = text.chars();
+            while let Some(ch) = chars.next() {
+                match ch {
+                    '\x1b' => {
+                        assert_eq!(chars.next(), Some('['));
+                        let mut parameter = String::new();
+                        loop {
+                            let ch = chars.next().expect("complete CSI");
+                            if ch.is_ascii_digit() {
+                                parameter.push(ch);
+                                continue;
+                            }
+                            let n = parameter.parse::<usize>().unwrap_or(1);
+                            match ch {
+                                'A' => {
+                                    self.row = self.row.checked_sub(n).expect("cursor above screen")
+                                }
+                                'B' => {
+                                    self.row += n;
+                                    assert!(self.row < self.rows.len());
+                                }
+                                'K' => {
+                                    assert!(parameter.is_empty());
+                                    self.rows[self.row].truncate(self.column);
+                                }
+                                _ => panic!("unexpected rewrite CSI {parameter}{ch}"),
+                            }
+                            break;
+                        }
+                    }
+                    '\r' => self.column = 0,
+                    '\n' => {
+                        self.column = 0;
+                        if self.row + 1 == self.rows.len() {
+                            self.rows.remove(0);
+                            self.rows.push(Vec::new());
+                        } else {
+                            self.row += 1;
+                        }
+                    }
+                    ch => {
+                        let row = &mut self.rows[self.row];
+                        if row.len() <= self.column {
+                            row.resize(self.column + 1, ' ');
+                        }
+                        row[self.column] = ch;
+                        self.column += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn changed_rows_match_full_frames_across_growth_shrink_and_bottom_scroll() {
+        for origin in [1, 18] {
+            for old_len in 1..8 {
+                for new_len in 1..8 {
+                    for pattern in 0..4 {
+                        let previous = (0..old_len)
+                            .map(|i| format!("row-{i}-long-label"))
+                            .collect::<Vec<_>>();
+                        let lines = (0..new_len)
+                            .map(|i| match pattern {
+                                1 if i % 2 == 0 => "short".to_owned(),
+                                2 => format!("row-{}-long-label", i + 1),
+                                3 if i % 2 == 0 => String::new(),
+                                _ => format!("row-{i}-long-label"),
+                            })
+                            .collect::<Vec<_>>();
+                        let mut screen = RewriteScreen {
+                            rows: vec![Vec::new(); 20],
+                            row: origin,
+                            column: 0,
+                        };
+                        screen.rows[0] = "committed output".chars().collect();
+                        screen.feed(&previous.join("\n"));
+                        let buffer = Arc::new(Mutex::new(Vec::new()));
+                        let destination = ProgressDestination::Buffer(Arc::clone(&buffer));
+                        rewrite_lines(
+                            &mut ProgressFrame::new(&destination, false),
+                            &previous,
+                            &lines,
+                        );
+                        let delta = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+                        screen.feed(&delta);
+                        let top = origin.min(20 - old_len.max(new_len));
+                        assert_eq!(screen.row, top + new_len - 1, "cursor: {delta:?}");
+                        for (i, line) in lines.iter().enumerate() {
+                            assert_eq!(
+                                screen.rows[top + i].iter().collect::<String>(),
+                                *line,
+                                "row {i}: {delta:?}"
+                            );
+                        }
+                        for row in &screen.rows[top + new_len..] {
+                            assert!(row.is_empty(), "stale rows: {delta:?}");
+                        }
+                        if origin == 1 {
+                            assert_eq!(
+                                screen.rows[0].iter().collect::<String>(),
+                                "committed output"
+                            );
+                        }
+                        if previous == lines {
+                            assert!(delta.is_empty());
+                        }
+                        assert!(!delta.contains("\x1b[2K"));
+                        assert!(!delta.contains("\x1b[2J"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn phase_and_verbose_streams_share_the_host_tail_budget() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let reporter = reporter_over(
+            ProgressDestination::Frames(Arc::clone(&frames), Arc::new(Mutex::new(Some((56, 149))))),
+            true,
+        )
+        .with_recent_updates(12);
+        reporter.refresh();
+        frames.lock().unwrap().clear();
+        reporter.state.lock().unwrap().stream_redraw_at =
+            Some(Instant::now() + Duration::from_secs(60));
+        for i in 0..1000 {
+            reporter.task_live_output("build-plan", "build plan", format!("phase-line-{i}"));
+            reporter.verbose_line(Tone::Neutral, format!("verbose-line-{i}"));
+        }
+        assert!(frames.lock().unwrap().is_empty());
+        // Lifecycle and operator updates bypass the stream budget and flush it.
+        reporter.message("lifecycle transition");
+        let frames = frames.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].contains("phase-line-999"));
+        assert!(frames[0].contains("verbose-line-999"));
+        assert!(frames[0].contains("lifecycle transition"));
+    }
+
+    #[test]
+    fn unchanged_dashboard_refresh_writes_nothing() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let reporter = reporter_over(
+            ProgressDestination::Frames(Arc::clone(&frames), Arc::new(Mutex::new(Some((56, 149))))),
+            true,
+        );
+        reporter
+            .state
+            .lock()
+            .unwrap()
+            .stack
+            .last_mut()
+            .unwrap()
+            .started = Instant::now() + Duration::from_secs(60);
+        reporter.refresh();
+        frames.lock().unwrap().clear();
+        reporter.refresh();
+        assert!(
+            frames.lock().unwrap().is_empty(),
+            "identical frames must not repaint"
+        );
+    }
+
+    #[test]
+    fn host_update_rewrites_only_the_changed_row_without_blank_clear() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let reporter = reporter_over(
+            ProgressDestination::Frames(Arc::clone(&frames), Arc::new(Mutex::new(Some((56, 149))))),
+            true,
+        )
+        .with_recent_updates(12);
+        reporter.begin_host_dashboard(&["active-host".to_owned(), "untouched-host".to_owned()]);
+        reporter.host_task_started("active-host", "build-active", "build", None);
+        reporter.host_task_started("untouched-host", "build-other", "build", None);
+        {
+            let mut state = reporter.state.lock().unwrap();
+            let active = state.stack.last_mut().unwrap();
+            active.started = Instant::now() + Duration::from_secs(60);
+            for row in active.host_dashboard.as_mut().unwrap().rows.values_mut() {
+                row.task_started = Some(active.started);
+            }
+        }
+        reporter.refresh();
+        frames.lock().unwrap().clear();
+        reporter.host_task_heartbeat("active-host", "build-active", "build newer derivation");
+        let frames = frames.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].contains("newer derivation"));
+        assert!(
+            !frames[0].contains("untouched-host"),
+            "unchanged rows must stay on screen"
+        );
+        assert!(
+            !frames[0].contains("\x1b[2K"),
+            "overwrite before erasing stale suffixes"
+        );
+    }
+
+    #[test]
+    fn build_output_burst_shares_the_verbose_redraw_budget() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let reporter = reporter_over(
+            ProgressDestination::Frames(Arc::clone(&frames), Arc::new(Mutex::new(Some((56, 149))))),
+            true,
+        )
+        .with_recent_updates(12);
+        let hosts = (0..12).map(|i| format!("host-{i}")).collect::<Vec<_>>();
+        reporter.begin_host_dashboard(&hosts);
+        reporter.host_task_started("host-0", "build-0", "build", None);
+        frames.lock().unwrap().clear();
+        // Pin a claimed interval: burst size, not machine speed, determines this test.
+        reporter.state.lock().unwrap().stream_redraw_at =
+            Some(Instant::now() + Duration::from_secs(60));
+        for i in 0..1000 {
+            reporter.host_task_output("host-0", "build-0", format!("building derivation-{i}"));
+        }
+        let writes = frames.lock().unwrap();
+        eprintln!(
+            "burst: {} writes, {} bytes",
+            writes.len(),
+            writes.iter().map(String::len).sum::<usize>()
+        );
+        assert!(
+            writes.is_empty(),
+            "host output bypassed the stream redraw budget: {} writes",
+            writes.len()
+        );
+        drop(writes);
+        reporter.refresh();
+        let writes = frames.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        assert!(
+            writes[0].contains("derivation-999"),
+            "coalescing must retain the newest output"
+        );
+    }
+
+    #[test]
+    fn live_cursor_is_hidden_until_the_region_finishes() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let reporter = reporter_over(
+            ProgressDestination::Frames(Arc::clone(&frames), Arc::new(Mutex::new(Some((56, 149))))),
+            true,
+        );
+        reporter.refresh();
+        let initial = frames.lock().unwrap().pop().unwrap();
+        assert!(
+            initial.contains("\x1b[?25l"),
+            "the live cursor must be hidden"
+        );
+        assert!(!initial.contains("\x1b[?25h"));
+
+        reporter.message("permanent message above the active region");
+        let message = frames.lock().unwrap().pop().unwrap();
+        assert!(
+            !message.contains("\x1b[?25h"),
+            "a message does not release the live region"
+        );
+
+        reporter.completed("Deploy systems", Duration::from_secs(1));
+        let complete = frames.lock().unwrap().pop().unwrap();
+        assert!(
+            complete.contains("\x1b[?25h"),
+            "completion must restore the cursor"
+        );
+        assert!(complete.rfind("\x1b[?25h") > complete.rfind("\x1b[?25l"));
+        reporter.refresh();
+        assert!(
+            frames.lock().unwrap().is_empty(),
+            "empty refresh must not hide it again"
+        );
+    }
+
+    #[test]
+    fn changed_dashboard_row_is_one_synchronized_frame() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((60, 120))));
+        let reporter = reporter_over(
+            ProgressDestination::Frames(Arc::clone(&frames), viewport),
+            true,
+        );
+        reporter.refresh();
+        frames.lock().unwrap().clear();
+        reporter
+            .state
+            .lock()
+            .unwrap()
+            .stack
+            .last_mut()
+            .unwrap()
+            .detail = Some("new status".to_owned());
+        reporter.refresh();
+        let frames = frames.lock().unwrap();
+        assert_eq!(frames.len(), 1, "one changed frame: {frames:?}");
+        assert!(!frames[0].contains("\x1b[2K"));
+        assert!(frames[0].contains("new status"));
+        assert!(frames[0].contains("Deploy systems"));
+        assert!(frames[0].starts_with(BEGIN_SYNCHRONIZED_UPDATE));
+        assert!(frames[0].ends_with(END_SYNCHRONIZED_UPDATE));
+    }
+
+    #[test]
+    fn permanent_messages_and_live_tails_share_one_synchronized_frame() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((60, 120))));
+        let reporter = reporter_over(
+            ProgressDestination::Frames(Arc::clone(&frames), viewport),
+            true,
+        )
+        .with_recent_updates(12);
+        let hosts = (0..12)
+            .map(|index| format!("host-{index}"))
+            .collect::<Vec<_>>();
+        reporter.begin_host_dashboard(&hosts);
+        reporter.host_task_started("host-0", "build-0", "build", None);
+        reporter.host_task_output("host-0", "build-0", "building a closure".to_owned());
+        frames.lock().unwrap().clear();
+
+        reporter.message("Checking builder routes");
+        let frames = frames.lock().unwrap();
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        let frame = &frames[0];
+        assert_eq!(frame.matches(BEGIN_SYNCHRONIZED_UPDATE).count(), 1);
+        assert_eq!(frame.matches(END_SYNCHRONIZED_UPDATE).count(), 1);
+        assert!(frame.starts_with(BEGIN_SYNCHRONIZED_UPDATE));
+        assert!(frame.ends_with(END_SYNCHRONIZED_UPDATE));
+        assert!(frame.contains("Checking builder routes\n"));
+        assert!(frame.contains("building a closure"));
+        for host in hosts {
+            assert!(frame.contains(&host), "{frame:?}");
+        }
+    }
+
+    #[test]
+    fn resize_and_snapshot_redraws_are_batched_without_empty_frames() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let viewport = Arc::new(Mutex::new(Some((1, 40))));
+        let reporter = reporter_over(
+            ProgressDestination::Frames(Arc::clone(&frames), Arc::clone(&viewport)),
+            true,
+        );
+        reporter.refresh();
+        let initial = frames.lock().unwrap().pop().unwrap();
+        assert!(initial.starts_with(BEGIN_SYNCHRONIZED_UPDATE));
+        assert!(initial.ends_with(&format!("\n{END_SYNCHRONIZED_UPDATE}")));
+        reporter.refresh();
+        assert!(
+            frames.lock().unwrap().is_empty(),
+            "throttled snapshot must not write"
+        );
+
+        *viewport.lock().unwrap() = Some((30, 80));
+        reporter.refresh();
+        let frames = frames.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].starts_with(&format!(
+            "{BEGIN_SYNCHRONIZED_UPDATE}{HIDE_CURSOR}\x1b[2J\x1b[H"
+        )));
+        assert!(frames[0].contains("Deploy systems"));
+        assert!(frames[0].ends_with(END_SYNCHRONIZED_UPDATE));
+    }
+
+    #[test]
+    fn redirected_output_is_immediate_and_unframed() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let destination =
+            ProgressDestination::Frames(Arc::clone(&frames), Arc::new(Mutex::new(None)));
+        let mut frame = ProgressFrame::new(&destination, false);
+        frame.write("first\n");
+        assert_eq!(*frames.lock().unwrap(), ["first\n"]);
+        frame.write("second\n");
+        drop(frame);
+        assert_eq!(*frames.lock().unwrap(), ["first\n", "second\n"]);
+    }
+
+    #[test]
+    fn unwinding_does_not_publish_a_partial_frame() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let destination =
+            ProgressDestination::Frames(Arc::clone(&frames), Arc::new(Mutex::new(None)));
+        let result = std::panic::catch_unwind(|| {
+            let mut frame = ProgressFrame::new(&destination, true);
+            frame.write("\r\x1b[2K");
+            panic!("interrupted frame construction");
+        });
+        assert!(result.is_err());
+        assert!(frames.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn releasing_an_in_place_live_region_ends_the_line_once() {
         let buffer = Arc::new(Mutex::new(Vec::new()));
@@ -5664,7 +6242,7 @@ mod tests {
         assert!(reporter.release_live_region(true));
         let released = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
         assert!(
-            released.ends_with("\r\n"),
+            released.ends_with(&format!("\r\n{SHOW_CURSOR}")),
             "release must move the cursor to a fresh line: {released:?}"
         );
 
@@ -5690,15 +6268,24 @@ mod tests {
 
         let painted = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
         assert!(
-            painted.ends_with('\n') && !painted.ends_with("\r\n"),
+            painted
+                .strip_suffix(END_SYNCHRONIZED_UPDATE)
+                .is_some_and(|frame| frame.ends_with('\n') && !frame.ends_with("\r\n")),
             "a snapshot frame already ends the line: {painted:?}"
         );
 
         assert!(!reporter.release_live_region(true));
+        let released = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            released,
+            format!("{painted}{SHOW_CURSOR}"),
+            "a snapshot release restores the cursor without adding a newline"
+        );
+        assert!(!reporter.release_live_region(true));
         assert_eq!(
             String::from_utf8(buffer.lock().unwrap().clone()).unwrap(),
-            painted,
-            "a snapshot release writes nothing"
+            released,
+            "a second snapshot release writes nothing"
         );
     }
 

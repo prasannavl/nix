@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 2,
+  "cases": [
+    {
+      "name": "cf-gateway-with-destination-fallback",
+      "request": "cf",
+      "inventory": {
+        "hosts": {
+          "app": {
+            "target": "10.0.0.20",
+            "proxyJump": "edge"
+          },
+          "edge": {
+            "target": "10.0.0.10",
+            "routes": {
+              "cf": {
+                "target": "edge.example",
+                "proxyCommand": "cloudflared access ssh --hostname %h"
+              }
+            }
+          }
+        },
+        "config": {}
+      },
+      "expected": {
+        "app": {
+          "target": "10.0.0.20",
+          "proxyJump": "edge",
+          "selected": "default",
+          "fallback": true
+        },
+        "edge": {
+          "target": "edge.example",
+          "proxyCommand": "cloudflared access ssh --hostname %h",
+          "selected": "cf",
+          "fallback": false
+        }
+      }
+    },
+    {
+      "name": "route-specific-jump-recursion",
+      "request": "cf",
+      "inventory": {
+        "hosts": {
+          "app": {
+            "target": "10.0.0.20",
+            "routes": {
+              "cf": {
+                "target": "app.example",
+                "proxyJump": "edge-cf"
+              }
+            }
+          },
+          "edge-cf": {
+            "target": "10.0.0.11",
+            "routes": {
+              "cf": {
+                "target": "edge.example",
+                "proxyCommand": "cloudflared access ssh --hostname %h"
+              }
+            }
+          }
+        },
+        "config": {}
+      },
+      "expected": {
+        "app": {
+          "target": "app.example",
+          "proxyJump": "edge-cf",
+          "selected": "cf",
+          "fallback": false
+        },
+        "edge-cf": {
+          "target": "edge.example",
+          "proxyCommand": "cloudflared access ssh --hostname %h",
+          "selected": "cf",
+          "fallback": false
+        }
+      }
+    },
+    {
+      "name": "tailscale-string-route-with-destination-fallback",
+      "request": "ts",
+      "inventory": {
+        "hosts": {
+          "app": {
+            "target": "10.0.0.20",
+            "proxyJump": "edge"
+          },
+          "edge": {
+            "target": "10.0.0.10",
+            "routes": {
+              "ts": "edge"
+            }
+          }
+        },
+        "config": {}
+      },
+      "expected": {
+        "app": {
+          "target": "10.0.0.20",
+          "proxyJump": "edge",
+          "selected": "default",
+          "fallback": true
+        },
+        "edge": {
+          "target": "edge",
+          "selected": "ts",
+          "fallback": false
+        }
+      }
+    }
+  ]
+}

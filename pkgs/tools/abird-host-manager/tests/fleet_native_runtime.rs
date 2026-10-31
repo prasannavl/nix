@@ -81,6 +81,133 @@ fn control_paths(log: &str) -> Vec<String> {
 }
 
 #[test]
+fn managed_workflow_clones_before_loading_inventory_and_pins_overlay_absence() {
+    let temporary = tempdir();
+    let seed = temporary.path().join("seed");
+    fs::create_dir_all(seed.join("hosts")).unwrap();
+    fs::write(seed.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    fs::write(seed.join("hosts/nixbot.nix"), "{ hosts.app = {}; }\n").unwrap();
+    // A sibling appearing only after clone must not become operator input.
+    fs::write(
+        seed.join("hosts/nixbot.override.nix"),
+        "throw \"not local\"\n",
+    )
+    .unwrap();
+    run(git_command().args(["init", "-q"]).arg(&seed));
+    git(&seed, &["config", "user.name", "Fleet Test"]);
+    git(&seed, &["config", "user.email", "fleet@example.invalid"]);
+    git(&seed, &["config", "commit.gpgsign", "false"]);
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-qm", "fixture"]);
+    let revision = git(&seed, &["rev-parse", "HEAD"]);
+
+    let nix = temporary.path().join("nix");
+    write_executable(
+        &nix,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$NATIVE_FLEET_NIX_LOG"
+case "$*" in
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts/nixbot.nix'*) printf '%s\n' '{"hosts":{"app":{}}}' ;;
+  *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
+  *'.#nixbot.plans.app.drvPath') printf '%s\n' '/nix/store/aaaaaaaa-system.drv' ;;
+  'build '*) printf '%s\n' '/nix/store/aaaaaaaa-system' ;;
+  *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
+esac
+"#,
+    )
+    .unwrap();
+
+    for (name, program, prefix) in [
+        ("compat", env!("CARGO_BIN_EXE_nixbot"), [].as_slice()),
+        (
+            "canonical",
+            env!("CARGO_BIN_EXE_abird-host-manager"),
+            ["fleet"].as_slice(),
+        ),
+    ] {
+        for (case, extra, error) in [
+            ("implicit", [].as_slice(), None),
+            ("managed", [].as_slice(), None),
+            ("disabled", ["--no-override"].as_slice(), None),
+            (
+                "missing-inventory",
+                ["--config", "missing.nix", "--no-override"].as_slice(),
+                Some("deploy config not found:"),
+            ),
+            (
+                "missing-overlay",
+                ["--config-override", "missing.override.nix"].as_slice(),
+                Some("--config-override does not name a file:"),
+            ),
+        ] {
+            let root = temporary.path().join(format!("{name}-{case}"));
+            fs::create_dir(&root).unwrap();
+            let mirror = root.join("mirror");
+            let log = root.join("nix.log");
+            let output = Command::new(program)
+                .args(prefix)
+                .args([
+                    "build",
+                    "--host",
+                    "app",
+                    "--build-host",
+                    "local",
+                    "--route=default",
+                ])
+                .arg("--repo-path")
+                .arg(&mirror)
+                .arg("--repo-url")
+                .arg(&seed)
+                .args(extra)
+                .current_dir(&root)
+                .env(
+                    "NIXBOT_EXECUTOR_KIND",
+                    if case == "managed" {
+                        "managed"
+                    } else {
+                        "developer"
+                    },
+                )
+                .env("ABIRD_HOST_MANAGER_NIX", &nix)
+                .env("NATIVE_FLEET_NIX_LOG", &log)
+                .env("NIXBOT_HOST_LOCAL_LOCK_PATH", root.join("lock.d"))
+                .env("NIXBOT_RUNTIME_WORK_ROOT", root.join("runtime"))
+                .env("NIXBOT_RUNTIME_FALLBACK_ROOT", root.join("fallback"))
+                .env("NIXBOT_DIAG_KEEP_ROOT", root.join("diagnostics"))
+                .env_remove("NIXBOT_REPO_ROOT")
+                .env_remove("NIXBOT_REPO_WORKTREE_ROOT")
+                .env_remove("ABIRD_HOST_MANAGER_CONFIG_OVERRIDE")
+                .env_remove("NIXBOT_CONFIG_OVERRIDE_PATH")
+                .env_remove("SSH_ORIGINAL_COMMAND")
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if let Some(error) = error {
+                assert!(!output.status.success(), "{name}/{case}: {stderr}");
+                assert!(stderr.contains(error), "{name}/{case}: {stderr}");
+                assert!(!log.exists(), "invalid inputs must not reach Nix");
+            } else {
+                assert!(output.status.success(), "{name}/{case}: {stderr}");
+                let commands = fs::read_to_string(&log).unwrap();
+                assert!(commands.contains("/repo/hosts/nixbot.nix"), "{commands}");
+                assert!(!commands.contains("override.nix"), "{commands}");
+                assert!(commands.contains("build --print-out-paths"), "{commands}");
+            }
+            if case == "missing-overlay" {
+                assert!(!mirror.exists(), "invalid overlay must fail before clone");
+            } else {
+                assert_eq!(git(&mirror, &["rev-parse", "HEAD"]), revision);
+                assert_eq!(git(&mirror, &["status", "--porcelain=v1"]), "");
+                let worktrees = git(&mirror, &["worktree", "list", "--porcelain"]);
+                assert_eq!(worktrees.matches("worktree ").count(), 1, "{worktrees}");
+            }
+        }
+    }
+}
+
+#[test]
 fn compatibility_build_runs_the_native_evaluate_and_build_pipeline() {
     let temporary = tempdir();
     let repository = temporary.path().join("repository");
@@ -142,6 +269,8 @@ esac
         )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
         .env("NATIVE_FLEET_NIX_LOG", &log)
+        .env_remove("ABIRD_HOST_MANAGER_CONFIG_OVERRIDE")
+        .env_remove("NIXBOT_CONFIG_OVERRIDE_PATH")
         .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
         .env(
             "NIXBOT_RUNTIME_FALLBACK_ROOT",
@@ -365,7 +494,7 @@ esac
         progress.contains("Verify deployment health · ok"),
         "{progress}"
     );
-    let commands = fs::read_to_string(log).unwrap();
+    let commands = fs::read_to_string(&log).unwrap();
     assert!(
         commands.contains(".#nixbot.plans.app.drvPath"),
         "{commands}"
@@ -383,6 +512,7 @@ fn use_repo_script_reexecutes_the_rust_app_from_the_exact_worktree() {
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts.app = {}; }\n").unwrap();
     fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    fs::write(repository.join(".gitignore"), "*.override.nix\n").unwrap();
     run(git_command().args(["init", "-q"]).arg(&repository));
     git(&repository, &["config", "user.name", "Fleet Test"]);
     git(
@@ -398,10 +528,14 @@ fn use_repo_script_reexecutes_the_rust_app_from_the_exact_worktree() {
         &nix,
         r#"#!/bin/sh
 set -eu
-printf 'cwd=%s argv=%s\n' "$PWD" "$*" >> "$NATIVE_FLEET_NIX_LOG"
+printf 'cwd=%s abird=%s nixbot=%s executor=%s argv=%s\n' "$PWD" \
+  "${ABIRD_HOST_MANAGER_CONFIG_OVERRIDE-<unset>}" \
+  "${NIXBOT_CONFIG_OVERRIDE_PATH-<unset>}" \
+  "${NIXBOT_EXECUTOR_KIND-<unset>}" "$*" >> "$NATIVE_FLEET_NIX_LOG"
 case "$*" in
   *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
   *'--file '*'hosts.nix'*) printf '%s\n' '{"hosts":{"app":{"groups":["all"]}},"config":{}}' ;;
+  *'--file '*'override.nix'*) printf '{}\n' ;;
   'run .#nixbot -- build '*) exit 0 ;;
   *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
 esac
@@ -441,13 +575,122 @@ esac
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let commands = fs::read_to_string(log).unwrap();
+    let commands = fs::read_to_string(&log).unwrap();
     let reexec = commands
         .lines()
         .find(|line| line.contains("argv=run .#nixbot -- build"))
         .unwrap();
     assert!(reexec.contains("/repo"), "{reexec}");
     assert!(reexec.contains("--use-repo-script"), "{reexec}");
+    assert!(reexec.contains("abird=<unset>"), "{reexec}");
+    assert!(reexec.contains("nixbot=<unset>"), "{reexec}");
+    assert!(reexec.contains("executor=developer"), "{reexec}");
+
+    // Relative explicit overlays are pinned before the worktree becomes the
+    // child cwd; inherited overlay variables cannot be re-resolved there.
+    fs::write(repository.join("operator.override.nix"), "{}\n").unwrap();
+    let relative = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .current_dir(&repository)
+        .args([
+            "build",
+            "--host",
+            "app",
+            "--config",
+            "hosts.nix",
+            "--known-hosts",
+            "--config-override=literal",
+            "--use-repo-script",
+            "--config-override",
+            "operator.override.nix",
+        ])
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
+        .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .env("NATIVE_FLEET_NIX_LOG", &log)
+        .env("ABIRD_HOST_MANAGER_CONFIG_OVERRIDE", "abird.override.nix")
+        .env("NIXBOT_CONFIG_OVERRIDE_PATH", "nixbot.override.nix")
+        .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
+        .env(
+            "NIXBOT_RUNTIME_FALLBACK_ROOT",
+            temporary.path().join("fallback"),
+        )
+        .env(
+            "NIXBOT_DIAG_KEEP_ROOT",
+            temporary.path().join("diagnostics"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        relative.status.success(),
+        "{}",
+        String::from_utf8_lossy(&relative.stderr)
+    );
+    let commands = fs::read_to_string(&log).unwrap();
+    let reexec = commands
+        .lines()
+        .rfind(|line| line.contains("argv=run .#nixbot -- build"))
+        .unwrap();
+    assert!(
+        reexec.contains(&format!(
+            "--known-hosts --config-override=literal --use-repo-script --config-override operator.override.nix --config-override {}/operator.override.nix",
+            repository.display()
+        )),
+        "{reexec}"
+    );
+    assert!(reexec.contains("abird=<unset>"), "{reexec}");
+    assert!(reexec.contains("nixbot=<unset>"), "{reexec}");
+
+    // The implicit sibling is frozen from the source checkout too; it is not
+    // rediscovered in the detached worktree.
+    fs::write(repository.join("hosts.override.nix"), "{}\n").unwrap();
+    let implicit = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .current_dir(&repository)
+        .args([
+            "build",
+            "--host",
+            "app",
+            "--config",
+            "hosts.nix",
+            "--use-repo-script",
+        ])
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            temporary.path().join("host-local.lock.d"),
+        )
+        .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .env("NATIVE_FLEET_NIX_LOG", &log)
+        .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
+        .env(
+            "NIXBOT_RUNTIME_FALLBACK_ROOT",
+            temporary.path().join("fallback"),
+        )
+        .env(
+            "NIXBOT_DIAG_KEEP_ROOT",
+            temporary.path().join("diagnostics"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        implicit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&implicit.stderr)
+    );
+    let commands = fs::read_to_string(&log).unwrap();
+    let reexec = commands
+        .lines()
+        .rfind(|line| line.contains("argv=run .#nixbot -- build"))
+        .unwrap();
+    assert!(
+        reexec.contains(&format!(
+            "--config-override {}/hosts.override.nix",
+            repository.display()
+        )),
+        "{reexec}"
+    );
+    assert!(reexec.contains("abird=<unset>"), "{reexec}");
+    assert!(reexec.contains("nixbot=<unset>"), "{reexec}");
 }
 
 #[test]
@@ -1545,7 +1788,7 @@ exit 1
         "a direct route must not launch ssh-keyscan"
     );
     assert!(operational[1].contains("ProxyCommand="), "{commands}");
-    assert!(operational[1].contains(&current_host), "{commands}");
+    assert!(operational[1].contains(current_host), "{commands}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Logs kept at:"), "{stderr}");
     let retained = fs::read_dir(temporary.path().join("diagnostics"))

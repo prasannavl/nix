@@ -43,6 +43,7 @@ fn inventory() -> Inventory {
             },
             ..DeployConfig::default()
         },
+        route_decision: None,
     }
 }
 
