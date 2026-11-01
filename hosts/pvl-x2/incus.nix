@@ -444,50 +444,45 @@ in {
               // amdGpuDevices;
           };
 
-          # Temporary: keep the gondor controller out of host boot/target start.
-          gap3-gondor =
-            (mkLxc {
-              name = "gap3-gondor";
-              recreateTag = "1";
-              image = inputs.self.nixosImages.incus-lxc-base;
-              network = staticNetwork (defaultAddress 20) {
-                ipv4 = [gondorPrefixes.ipv4];
-                ipv6 = [gondorPrefixes.ipv6];
+          gap3-gondor = mkLxc {
+            name = "gap3-gondor";
+            recreateTag = "1";
+            image = inputs.self.nixosImages.incus-lxc-base;
+            network = staticNetwork (defaultAddress 20) {
+              ipv4 = [gondorPrefixes.ipv4];
+              ipv6 = [gondorPrefixes.ipv6];
+            };
+            startPriority = 10;
+            removalPolicy = "delete-all";
+            privileged = true;
+            nestedContainers = true;
+            limits = {
+              cpu = {
+                count = 22;
+                priority = 7;
               };
-              startPriority = 10;
-              removalPolicy = "delete-all";
-              privileged = true;
-              nestedContainers = true;
-              limits = {
-                cpu = {
-                  count = 22;
-                  priority = 7;
-                };
-                memory = {
-                  max = "28GiB";
-                  # Neutral: the host OOM killer stays free to pick this one.
-                  oomScoreAdjustment = 0;
-                };
-                disk = {
-                  priority = 7;
-                  devices = {
-                    root = {
-                      read = "1GiB";
-                      write = "500MiB";
-                    };
-                    state = {
-                      read = "1GiB";
-                      write = "500MiB";
-                    };
+              memory = {
+                max = "28GiB";
+                # Neutral: the host OOM killer stays free to pick this one.
+                oomScoreAdjustment = 0;
+              };
+              disk = {
+                priority = 7;
+                devices = {
+                  root = {
+                    read = "1GiB";
+                    write = "500MiB";
+                  };
+                  state = {
+                    read = "1GiB";
+                    write = "500MiB";
                   };
                 };
-                network.devices.eth0.rxtx = "600Mbit";
               };
-              extraDevices = amdGpuDevices;
-            })
-            // {
-              autoStart = false;
+              network.devices.eth0.rxtx = "600Mbit";
             };
+            extraDevices = amdGpuDevices;
+          };
         };
       };
 
