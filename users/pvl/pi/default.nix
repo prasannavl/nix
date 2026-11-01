@@ -2,6 +2,7 @@
   nixos = {...}: {};
 
   home = {
+    config,
     pkgs,
     osConfig,
     ...
@@ -33,6 +34,11 @@
     piAnthropicAuth = pkgs.callPackage ../../../lib/ext/pi/pi-anthropic-auth {};
     piToolManager = pkgs.callPackage ../../../lib/ext/pi/pi-tool-manager {};
     bladebro = pkgs.bladebro;
+    computerUseLinux = pkgs.computer-use-linux;
+    gimpMcp = pkgs.gimp-mcp;
+    mcpForBlender = pkgs.mcp-for-blender;
+    mcpvault = pkgs.mcpvault;
+    officePowerpoint = pkgs.office-powerpoint-mcp-server;
     piModelsDiscoveryRoot = "${piModelsDiscovery}/share/pi/packages/pi-models-discovery";
     piSessionManagerRoot = "${piSessionManager}/share/pi/packages/pi-session-manager";
     piSubagentsRoot = "${piSubagents}/lib/node_modules/@gotgenes/pi-subagents";
@@ -58,23 +64,61 @@
     piMcpAdapterRoot = "${piMcpAdapter}/lib/node_modules/pi-mcp-adapter";
     bladebroRoot = "${bladebro}/share/pi/packages/bladebro";
     piDiffConfig = {disabledTools = ["apply_patch"];};
-    # Playwright's browser closure is ~2 GiB, so keep the MCP server on the
-    # graphical hosts and off the headless container profiles. The adapter
-    # reads the standard shared MCP file as its user-global server source and
-    # keeps its own writable overrides in mcp-adapter.json.
-    playwrightEnabled = !osConfig.boot.isContainer;
+    # The desktop MCP servers drive a live Blender/GIMP/session, so they stay on
+    # the graphical hosts and off the headless container profiles. Playwright
+    # runs `--headless`, so it needs no session and is declared everywhere; its
+    # ~2.3 GiB browser closure is accepted on the container profiles too. The
+    # adapter reads the standard shared MCP file as its user-global server
+    # source and keeps its own writable overrides in mcp-adapter.json.
+    graphicalHost = !osConfig.boot.isContainer;
+    # Obsidian vault read/written by mcpvault; Obsidian itself need not run.
+    obsidianVault = "${config.home.homeDirectory}/notes";
     mcpConfig = {
-      mcpServers = pkgs.lib.optionalAttrs playwrightEnabled {
-        playwright = {
-          command = "${pkgs.playwright-mcp}/bin/playwright-mcp";
-          args = ["--headless" "--isolated"];
+      mcpServers =
+        {
+          obsidian = {
+            command = "${mcpvault}/bin/mcpvault";
+            args = [obsidianVault];
+          };
+          playwright = {
+            command = "${pkgs.playwright-mcp}/bin/playwright-mcp";
+            args = ["--headless" "--isolated"];
+          };
+          powerpoint = {
+            command = "${officePowerpoint}/bin/ppt_mcp_server";
+          };
+        }
+        // pkgs.lib.optionalAttrs graphicalHost {
+          blender = {
+            command = "${mcpForBlender}/bin/mcp-for-blender";
+          };
+          gimp = {
+            command = "${gimpMcp}/bin/gimp-mcp-server";
+          };
+          computer-use-linux = {
+            command = "${computerUseLinux}/bin/computer-use-linux";
+            args = ["mcp"];
+            # One process per session: AT-SPI element indices stay valid across
+            # calls, so keep the server alive instead of idling it out.
+            lifecycle = "lazy-keep-alive";
+          };
         };
-      };
     };
   in {
     home.packages =
-      [pkgs.unstable.pi-coding-agent piWeb bladebro]
-      ++ pkgs.lib.optional playwrightEnabled pkgs.playwright-mcp;
+      [
+        pkgs.unstable.pi-coding-agent
+        piWeb
+        bladebro
+        mcpvault
+        officePowerpoint
+        pkgs.playwright-mcp
+      ]
+      ++ pkgs.lib.optionals graphicalHost [
+        computerUseLinux
+        gimpMcp
+        mcpForBlender
+      ];
 
     home.file = {
       ".pi/agent/extensions/bladebro".source = bladebroRoot;
@@ -115,9 +159,7 @@
       ".pi/agent/pi-diff.json".text = builtins.toJSON piDiffConfig;
 
       # Shared MCP server declarations for Pi's MCP adapter (and other hosts).
-      ".config/mcp/mcp.json" = pkgs.lib.mkIf playwrightEnabled {
-        text = builtins.toJSON mcpConfig;
-      };
+      ".config/mcp/mcp.json".text = builtins.toJSON mcpConfig;
 
       ".pi/agent/skills/pi-models-discovery/SKILL.md".source = "${piModelsDiscoveryRoot}/SKILL.md";
       # pi-total-recall's manifest points its skill at the bundled

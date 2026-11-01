@@ -60,11 +60,15 @@ invocation. The shared MCP file is the adapter's documented user-global server
 source; adapter-specific overrides such as `disabled` remain writable in
 `~/.pi/agent/mcp-adapter.json`, which Home Manager does not manage.
 
-The Playwright browser closure is about 2 GiB. The server declaration and the
-`playwright-mcp` package are therefore gated on `!osConfig.boot.isContainer`, so
-the graphical hosts (pvl-a1, pvl-l5, pvl-x2) get Playwright while the headless
-Incus LXC profiles do not. Enable it on a container by removing that gate only
-with a demonstrated need.
+The Playwright browser closure is about 2.3 GiB (`nix path-info -Sh` on
+`pkgs.playwright-mcp`). It was originally gated on `!osConfig.boot.isContainer`
+for that size alone; the gate is lifted (2026-11-01) because the server runs
+`--headless`, which needs no display, so it is declared and installed on every
+Pvl profile including the Incus LXC ones. Size is now accepted everywhere.
+
+Container caveat: Chromium's sandbox needs unprivileged user namespaces. Where
+an LXC disables them, the browser fails to start until the args gain
+`--no-sandbox`; the nixpkgs wrapper adds no flags of its own.
 
 The module also links the adapter's `skills/mcp-scripting/SKILL.md` as
 `~/.pi/agent/skills/mcp-scripting`. The skill is

@@ -1,0 +1,14 @@
+mcp 1.26 replaced the FastMCP `description` keyword with `instructions`.
+Upstream is written against an older mcp SDK.
+
+--- a/gimp_mcp_server.py
++++ b/gimp_mcp_server.py
+@@ -85,7 +85,7 @@
+     _gimp_connection = None
+ 
+ # MCP server
+-mcp = FastMCP("GimpMCP", description="GIMP integration through MCP — with new_canvas, check_server, restart_server")
++mcp = FastMCP("GimpMCP", instructions="GIMP integration through MCP — with new_canvas, check_server, restart_server")
+ 
+ @mcp.tool()
+ def check_server(ctx: Context) -> dict:
