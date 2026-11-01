@@ -358,6 +358,13 @@ enum ResourceCommand {
 
 #[derive(Debug, Subcommand)]
 enum ReconcileCommand {
+    /// Prove a generation boundary has no retained state, without creating it.
+    PristineDirectory {
+        #[arg(long)]
+        path: PathBuf,
+        #[arg(long)]
+        allow_state_lock: bool,
+    },
     Hold {
         #[command(subcommand)]
         command: ReconcileHoldCommand,
@@ -854,6 +861,16 @@ pub fn execute(cli: Cli) -> Result<CommandOutput> {
             execute_data(command, &resource_manifest, &ssh_host_ed25519_public_key)
         }
         Command::Reconcile { command } => match command {
+            ReconcileCommand::PristineDirectory {
+                path,
+                allow_state_lock,
+            } => {
+                crate::state::require_pristine_directory(&path, allow_state_lock)?;
+                Ok(CommandOutput {
+                    human: "Host-agent directory is pristine".to_owned(),
+                    value: json!({"schema_version": 1, "pristine": true}),
+                })
+            }
             ReconcileCommand::Hold { command } => execute_hold(
                 match command {
                     ReconcileHoldCommand::Declare(args) => HoldCommand::Declare(args),

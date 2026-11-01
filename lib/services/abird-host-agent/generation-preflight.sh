@@ -91,6 +91,14 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# Directories, special files and dangling links are retained evidence, not absence.
+for registry in "$incoming_registry" "$current_registry"; do
+	if { [ -e "$registry" ] || [ -L "$registry" ]; } && [ ! -f "$registry" ]; then
+		echo "invalid projection admission registry file: $registry" >&2
+		exit 1
+	fi
+done
+
 if [ ! -e "$incoming_registry" ]; then
 	if [ "$mode" != rollback ]; then
 		echo "incoming generation is missing the projection admission registry" >&2
@@ -133,6 +141,48 @@ if [ "$action" = boot ] && @JQ@ -e '.domains | length > 0' >/dev/null <"$incomin
 	echo "boot activation cannot guarantee projection admission at the later reboot; use switch, test, or dry-activate" >&2
 	exit 1
 fi
+# Framework absence is stricter than registry absence. An unregistered agent
+# still owns its predecessor documents; an agent-free OS never had that contract.
+agent_free_generation() {
+	local generation="$1" evidence
+	[ -d "$generation" ] || return 1
+	for evidence in \
+		"$generation/etc/abird-host-agent"* \
+		"$generation/sw/bin/abird-host-agent" \
+		"$generation/sw/bin/abird-host-agent-"* \
+		"$generation/sw/bin/.abird-host-agent"* \
+		"$generation/etc/systemd/system/abird-host-agent"*; do
+		if [ -e "$evidence" ] || [ -L "$evidence" ]; then
+			return 1
+		fi
+	done
+}
+
+# Native metadata checks distinguish absence from inaccessible/broken paths.
+require_pristine_directory() {
+	local directory="$1" allow_lock="${2:-false}"
+	local -a arguments=()
+	if [ "$allow_lock" = true ]; then
+		arguments+=(--allow-state-lock)
+	fi
+	@HOST_AGENT@ --json _reconcile pristine-directory --path "$directory" "${arguments[@]}" >/dev/null
+}
+
+require_pristine_runtime() {
+	local directory
+	local -a state_directories=(@STATE_DIRECTORIES@) data_directories=(@DATA_DIRECTORIES@)
+	for directory in "${state_directories[@]}"; do
+		require_pristine_directory "$directory" true || return
+	done
+	for directory in "${data_directories[@]}"; do
+		require_pristine_directory "$directory" || return
+	done
+}
+
+if { [ -e "$current_system" ] || [ -L "$current_system" ]; } && [ ! -d "$current_system" ]; then
+	echo "current generation is unavailable" >&2
+	exit 1
+fi
 current_generation_exists=false
 if [ -e "$current_system" ] || [ -L "$current_system" ]; then
 	for current_generation_entry in \
@@ -154,9 +204,41 @@ elif [ "$mode" = rollback ]; then
 	exit 1
 fi
 
-# Model a genuinely absent current generation as an empty authority set.  Do
-# not reuse the incoming registry here: doing so makes first deployment look
-# like an established domain whose current authority files have disappeared.
+# Producer-owned declarations must be neutral even with an empty domain registry.
+# This is compiled from Nix intent, not an operator override or inferred JSON.
+require_agent_free_boundary() {
+	if [ "$action" = boot ]; then
+		echo "boot activation cannot guarantee agent-free admission at the later reboot; use switch, test, or dry-activate" >&2
+		return 1
+	fi
+	if @HAS_DECLARED_STATE@; then
+		echo "agent-free transition refuses declared holds or desired resource states" >&2
+		return 1
+	fi
+	require_pristine_runtime
+}
+
+current_agent_free=false
+incoming_agent_free=false
+if [ "$has_current" = false ] && [ "$mode" = normal ]; then
+	if agent_free_generation "$current_system" || [ "$current_generation_exists" = false ]; then
+		require_pristine_directory @CONFIGURATION_DIRECTORY@
+		if [ "$current_generation_exists" = true ]; then
+			require_agent_free_boundary
+		else
+			require_pristine_runtime
+		fi
+		current_agent_free=true
+	fi
+fi
+if [ "$mode" = rollback ] && [ ! -e "$incoming/$registry_name" ] &&
+	agent_free_generation "$incoming"; then
+	require_agent_free_boundary
+	incoming_agent_free=true
+fi
+
+# Absence is explicit evidence, never a copy of the incoming authority. Existing
+# agent-free generations must still pass each adapter's reverse admission.
 printf '%s\n' '{"schema_version":1,"domains":[]}' >"$absent_current_registry"
 
 if [ "$has_current" = true ]; then
@@ -238,7 +320,7 @@ validate_adapter_result() {
 # validator for its authority history. Rollback additionally
 # executes current-only adapters so a newly registered domain cannot vanish
 # merely because the older generation predates the registry. A first
-# registration requires complete predecessor authority and asks the incoming
+# registration on an existing agent requires complete authority and asks the incoming
 # adapter to validate both the forward transition and its rollback before any
 # host mutation. Domain-specific schema normalization stays in that adapter;
 # the dispatcher neither compares opaque documents nor guesses compatibility.
@@ -275,32 +357,29 @@ EOF_AUTHORITY_PATHS
 	while IFS= read -r authority_path; do
 		incoming_authority="$incoming/etc/abird-host-agent/$authority_path"
 		current_authority="$current_system/etc/abird-host-agent/$authority_path"
-		if [ ! -f "$incoming_authority" ]; then
+		incoming_sha256=""
+		current_sha256=""
+		if [ -f "$incoming_authority" ]; then
+			incoming_sha256="$(@SHA256SUM@ "$incoming_authority" | cut -d ' ' -f 1)"
+		elif [ "$incoming_agent_free" != true ] || [ "$transition" != removed ]; then
 			missing_authority="$authority_path"
 			break
 		fi
-		incoming_sha256="$(@SHA256SUM@ "$incoming_authority" | cut -d ' ' -f 1)"
 		if [ -f "$current_authority" ]; then
 			current_sha256="$(@SHA256SUM@ "$current_authority" | cut -d ' ' -f 1)"
-			# shellcheck disable=SC2016 # jq variables must remain literal.
-			@JQ@ -cn \
-				--arg path "$authority_path" \
-				--arg incoming_sha256 "$incoming_sha256" \
-				--arg current_sha256 "$current_sha256" \
-				'{path: $path, incoming_sha256: $incoming_sha256, current_sha256: $current_sha256}' \
-				>>"$authority_records"
-		else
-			if [ "$current_domain" = present ] || [ "$current_generation_exists" = true ]; then
-				missing_current_authority="$authority_path"
-				break
-			fi
-			# shellcheck disable=SC2016 # jq variables must remain literal.
-			@JQ@ -cn \
-				--arg path "$authority_path" \
-				--arg incoming_sha256 "$incoming_sha256" \
-				'{path: $path, incoming_sha256: $incoming_sha256, current_sha256: null}' \
-				>>"$authority_records"
+		elif [ "$current_domain" = present ] || [ "$current_agent_free" != true ]; then
+			missing_current_authority="$authority_path"
+			break
 		fi
+		# shellcheck disable=SC2016 # jq variables must remain literal.
+		@JQ@ -cn \
+			--arg path "$authority_path" \
+			--arg incoming_sha256 "$incoming_sha256" \
+			--arg current_sha256 "$current_sha256" \
+			'{path: $path,
+			  incoming_sha256: (if $incoming_sha256 == "" then null else $incoming_sha256 end),
+			  current_sha256: (if $current_sha256 == "" then null else $current_sha256 end)}' \
+			>>"$authority_records"
 	done <"$authority_list"
 	if [ -n "$missing_authority" ]; then
 		echo "projection domain $domain is missing incoming authority: $missing_authority" >&2

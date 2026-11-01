@@ -291,16 +291,39 @@ but may not remove one or replace its named adapter. Rollback executes the
 incoming adapter for retained domains and the current adapter for a domain that
 exists only in the failed generation. This lets the adapter prove an older
 generation's authority even when that generation predates the common registry.
-First registration requires the predecessor to contain the complete authority
-path set. The incoming dispatcher then runs the incoming adapter twice before
-mutation: once for the forward transition and once against reversed evidence in
-rollback mode. This admits a one-generation registry introduction only when the
-domain itself can normalize the predecessor schema and prove both transitions.
-The lower schema defines the semantic comparison surface for both directions:
-newer-only domain entities are allowed only outside that surface, while every
-entity represented by the predecessor remains protected. Equal-schema
-transitions compare the complete domain. The dispatcher neither requires
-byte-identical opaque documents nor infers their semantics.
+First registration on an existing agent requires the predecessor's complete
+authority path set. The incoming dispatcher runs the incoming adapter twice
+before mutation: once for the forward transition and once against reversed
+evidence in rollback mode. This admits a one-generation registry introduction
+only when the domain can normalize the predecessor schema and prove both
+transitions.
+
+An agent-free OS is a separate enrollment boundary, not damaged authority. Its
+generation must contain no agent configuration, binary, helper or unit evidence.
+Live configuration and configured/default state, backup and runtime directories
+must be pristine. Empty scaffolding and the empty, singly linked StateStore
+mutex are harmless; other files, links, special files and unknown future state
+fail closed without being parsed or removed. Native filesystem checks
+distinguish absence from lookup/enumeration errors and unavailable ancestors.
+Nix compiles the presence of declared holds or desired resource states into the
+helper; such declarations forbid this boundary even when no domain is
+registered.
+
+Every incoming domain must still prove its reverse transition to the agent-free
+predecessor. Missing documents are bound as null digests, never invented or
+copied from the candidate. The service-move adapter requires no moves, no
+desired resource transitions and no declared holds before admitting that reverse
+edge; the real agent validates the neutral documents without creating state.
+Existing-OS enrollment and agent-free rollback require switch, test or
+dry-activate; boot-only scheduling cannot bind future runtime state. Actual
+rollback repeats the pristine-state proof. Once ownership state or migration
+work exists, this retirement edge closes. Normal domain removal remains
+forbidden; partial interfaces and ordinary registered transitions retain their
+existing requirements. The lower schema defines the semantic comparison surface
+for both directions: newer-only domain entities are allowed only outside that
+surface, while every entity represented by the predecessor remains protected.
+Equal-schema transitions compare the complete domain. The dispatcher neither
+requires byte-identical opaque documents nor infers their semantics.
 
 Schema-specific normalization metadata is a rollout lease. The first generation
 of a new schema declares the mappings needed for its real predecessor. After the
@@ -311,13 +334,13 @@ preserving strict rollback among retained same-schema generations. The adapter's
 generic lower-schema support remains available for a future transition that
 declares its own mappings.
 
-Retirement leaves a durable registry tombstone: a compatibility generation first
-converges the domain to empty or otherwise stable neutral authority, and later
-generations retain that validator and authority shape. Registry removal is
-unsupported because it would discard the rollback boundary. Adapter name, result
-schema, and authority paths remain immutable while a domain is retained.
-Authority-document evolution remains an adapter-owned, bidirectional
-compatibility protocol.
+Established-domain retirement leaves a durable registry tombstone: a
+compatibility generation first converges the domain to empty or otherwise stable
+neutral authority, and later generations retain that validator and authority
+shape. Registry removal during normal deployment is unsupported; agent-free
+rollback above is not general retirement. Adapter name, result schema, and
+authority paths remain immutable while a domain is retained. Authority-document
+evolution remains an adapter-owned, bidirectional compatibility protocol.
 
 Strict stateful rollback is an orchestrator contract. Nixbot and native
 host-manager explicitly invoke generation admission in `rollback` mode so the

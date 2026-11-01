@@ -40,15 +40,14 @@
   projectionAdmission = specialArgs.projectionAdmission or {};
   serviceMoveAdmission = projectionAdmission.serviceMoves or {};
   servicePlacementAdmission = serviceMoveAdmission.document or null;
-  statefulServicePlacementPreflight = pkgs.writeShellApplication {
-    name = "abird-host-agent-stateful-service-placement-preflight";
-    runtimeInputs = [pkgs.coreutils pkgs.jq];
-    text =
-      builtins.replaceStrings
-      ["@JQ@" "@HOST_AGENT@" "@HOST@"]
-      ["${lib.getExe pkgs.jq}" "${configuredPackage}/bin/abird-host-agent" config.networking.hostName]
-      (builtins.readFile ./stateful-service-placement-preflight.sh);
+  admissionTools = import ./admission-tools.nix {
+    pkgs = pkgs;
+    host = config.networking.hostName;
+    agent = configuredPackage;
+    inherit (cfg) stateDirectory backupRoot;
+    hasDeclaredState = effectiveDeclaredHolds != {} || effectiveDesiredResourceStates != {};
   };
+  statefulServicePlacementPreflight = admissionTools.statefulServicePlacement;
   admissionAdapters = import ./projection-admission-adapters.nix {
     statefulServicePlacementProgram = "${statefulServicePlacementPreflight}/bin/abird-host-agent-stateful-service-placement-preflight";
   };
@@ -232,18 +231,7 @@
         --set ABIRD_HOST_AGENT_SSH_HOST_ED25519_PUBLIC_KEY ${lib.escapeShellArg sshHostEd25519PublicKey}
     '';
   };
-  generationPreflight = pkgs.writeShellApplication {
-    name = "abird-host-agent-generation-preflight";
-    runtimeInputs = [
-      pkgs.coreutils
-      pkgs.jq
-    ];
-    text =
-      builtins.replaceStrings
-      ["@JQ@" "@SHA256SUM@" "@HOST@"]
-      ["${lib.getExe pkgs.jq}" "${lib.getExe' pkgs.coreutils "sha256sum"}" config.networking.hostName]
-      (builtins.readFile ./generation-preflight.sh);
-  };
+  generationPreflight = admissionTools.generation;
   servicePlacementAdmissionManifest =
     if servicePlacementAdmission == null
     then null

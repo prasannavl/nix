@@ -194,6 +194,7 @@ in
     lib-podman-compose-helper = podmanComposeTests.helper;
     lib-podman-compose-module = podmanComposeTests.module;
     lib-abird-host-agent = import ./abird-host-agent.nix {inherit pkgs;};
+    lib-abird-host-agent-generation = import ./abird-host-agent-generation.nix {inherit pkgs;};
     lib-abird-host-manager = import ./abird-host-manager.nix {inherit pkgs;};
     lib-nixbot = import ./nixbot.nix {inherit pkgs;};
     lib-nix-builder-gc-coordination = import ./nix-builder-gc-coordination.nix {inherit pkgs;};

@@ -38,7 +38,8 @@ if ! @JQ@ -e '
     "service-placement-contract.json"
   ]
   and all(.[];
-    (.incoming_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+    ((.incoming_sha256 == null)
+     or (.incoming_sha256 | type == "string" and test("^[0-9a-f]{64}$")))
     and ((.current_sha256 == null)
          or (.current_sha256 | type == "string" and test("^[0-9a-f]{64}$"))))
 ' >/dev/null <<EOF_AUTHORITY; then
@@ -66,9 +67,25 @@ for authority in "$incoming_placement" "$incoming_desired" "$incoming_resources"
 		missing_incoming="${missing_incoming}${missing_incoming:+, }${authority##*/}"
 	fi
 done
+retiring_to_pre_agent=false
 if [ -n "$missing_incoming" ]; then
-	echo "projection domain $domain is missing incoming authority: $missing_incoming" >&2
-	exit 1
+	# The dispatcher proves framework absence and pristine runtime state. Only
+	# complete absence can represent retirement; partial documents never can.
+	if [ "$mode" != rollback ] || [ "$transition" != removed ] ||
+		! @JQ@ -e 'all(.[]; .incoming_sha256 == null and .current_sha256 != null)' \
+			>/dev/null <<EOF_RETIREMENT; then
+$authority_evidence
+EOF_RETIREMENT
+		echo "projection domain $domain is missing incoming authority: $missing_incoming" >&2
+		exit 1
+	fi
+	for authority in "$incoming_placement" "$incoming_desired" "$incoming_resources"; do
+		if [ -e "$authority" ] || [ -L "$authority" ]; then
+			echo "projection domain $domain has partial retirement authority" >&2
+			exit 1
+		fi
+	done
+	retiring_to_pre_agent=true
 fi
 
 current_authority_shape=""
@@ -97,11 +114,38 @@ if [ "$mode" = rollback ] && [ "$has_complete_current" != true ]; then
 	exit 1
 fi
 
+# Retirement validates the current contract's neutrality, not a fabricated
+# predecessor document. The admission evidence retains null incoming digests.
+placement_input="$incoming_placement"
+desired_input="$incoming_desired"
+resources_input="$incoming_resources"
+if [ "$retiring_to_pre_agent" = true ]; then
+	placement_input="$current_placement"
+	desired_input="$current_desired"
+	resources_input="$current_resources"
+	if ! @JQ@ -e '.schema_version == 1 and .resources == []' >/dev/null <"$desired_input"; then
+		echo "pre-agent rollback requires empty desired resource authority" >&2
+		exit 1
+	fi
+	declarations="$current_system/etc/abird-host-agent/declared-holds"
+	if [ -L "$declarations" ] || { [ -e "$declarations" ] && [ ! -d "$declarations" ]; }; then
+		echo "pre-agent rollback refuses declared holds" >&2
+		exit 1
+	fi
+	for declaration in "$declarations"/* "$declarations"/.[!.]* "$declarations"/..?*; do
+		if [ -e "$declaration" ] || [ -L "$declaration" ]; then
+			echo "pre-agent rollback refuses declared holds" >&2
+			exit 1
+		fi
+	done
+fi
+
 # shellcheck disable=SC2016 # jq variables must remain literal in this program.
 placement_violations="$(@JQ@ -cn \
 	--arg mode "$mode" \
 	--argjson has_current "$has_complete_current" \
-	--slurpfile incoming "$incoming_placement" \
+	--argjson retiring "$retiring_to_pre_agent" \
+	--slurpfile incoming "$placement_input" \
 	--slurpfile current "$current_placement_input" '
     def indexed_placements:
       .placements
@@ -175,6 +219,8 @@ placement_violations="$(@JQ@ -cn \
     ($incoming[0]) as $incoming_document
     | if ($incoming_document | valid_document | not)
       then [{reason: "invalid or unsupported incoming service-placement admission contract"}]
+      elif $retiring and $incoming_document.moves != {}
+      then [{reason: "pre-agent rollback refuses service moves"}]
       elif $has_current | not
       then []
       else
@@ -229,21 +275,24 @@ EOF_VIOLATIONS
 	exit 1
 fi
 
-if [ "$mode" = rollback ]; then
+# Pre-agent retirement already proves pristine runtime state and empty desired
+# authority. Validate both real documents without the complete-authority reader,
+# which would create a state lock merely to enumerate an empty hold store.
+if [ "$mode" = rollback ] && [ "$retiring_to_pre_agent" != true ]; then
 	set -- --require-complete-authority
 else
 	set --
 fi
 resource_admission="$(@HOST_AGENT@ \
 	--json \
-	--resource-manifest "$incoming_resources" \
+	--resource-manifest "$resources_input" \
 	_reconcile desired-resource-states \
-	--manifest "$incoming_desired" \
+	--manifest "$desired_input" \
 	--preflight-only \
 	"$@")"
 
 # shellcheck disable=SC2016 # jq variables must remain literal in this program.
-if ! @JQ@ -e --slurpfile desired "$incoming_desired" '
+if ! @JQ@ -e --slurpfile desired "$desired_input" '
   .ok == true
   and .operation == "desired_resource_states_preflight"
   and (.result.count | type == "number")
@@ -275,7 +324,7 @@ fi
 	--arg mode "$mode" \
 	--arg transition "$transition" \
 	--argjson authority_evidence "$authority_evidence" \
-	--slurpfile desired "$incoming_desired" \
+	--slurpfile desired "$desired_input" \
 	--argjson admission "$resource_admission" '
   ($desired[0].resources
    | map({key: .id, value: .})

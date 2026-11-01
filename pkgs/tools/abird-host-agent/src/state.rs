@@ -1,6 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,6 +13,63 @@ use crate::service::ServiceTarget;
 use crate::sha256::digest_bytes;
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Read-only enrollment/retirement proof; never interpret or remove retained state.
+pub fn require_pristine_directory(directory: &Path, allow_state_lock: bool) -> Result<()> {
+    if !directory.is_absolute()
+        || directory.parent().is_none()
+        || directory
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        bail!("host-agent admission requires a non-root absolute directory");
+    }
+    // Inspect ancestors first: a dangling parent or lookup error is not absence.
+    for ancestor in directory.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        let metadata = match fs::symlink_metadata(ancestor) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("inspect host-agent directory {}", ancestor.display())
+                });
+            }
+        };
+        let metadata = if ancestor != directory && metadata.is_symlink() {
+            fs::metadata(ancestor)
+                .with_context(|| format!("inspect host-agent directory {}", ancestor.display()))?
+        } else {
+            metadata
+        };
+        if !metadata.is_dir() {
+            bail!("retained host-agent state: {}", ancestor.display());
+        }
+    }
+    let lock = directory.join("state.lock");
+    let mut pending = vec![directory.to_owned()];
+    while let Some(path) = pending.pop() {
+        for entry in fs::read_dir(&path)
+            .with_context(|| format!("inspect host-agent directory {}", path.display()))?
+        {
+            let entry = entry
+                .with_context(|| format!("inspect host-agent directory {}", path.display()))?;
+            let metadata = entry
+                .metadata()
+                .with_context(|| format!("inspect host-agent state {}", entry.path().display()))?;
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if !(allow_state_lock
+                && entry.path() == lock
+                && metadata.is_file()
+                && metadata.len() == 0
+                && metadata.nlink() == 1)
+            {
+                bail!("retained host-agent state: {}", entry.path().display());
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Timestamp {
@@ -1439,6 +1496,49 @@ fn declaration_owner(declaration_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pristine_directory_is_read_only_and_checks_lock_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("state");
+        require_pristine_directory(&directory, true).unwrap();
+        assert!(!directory.exists());
+        fs::create_dir_all(directory.join("empty/nested")).unwrap();
+        let lock = directory.join("state.lock");
+        fs::write(&lock, b"").unwrap();
+        require_pristine_directory(&directory, true).unwrap();
+        assert!(require_pristine_directory(&directory, false).is_err());
+        let alias = temp.path().join("lock-alias");
+        fs::hard_link(&lock, &alias).unwrap();
+        assert!(require_pristine_directory(&directory, true).is_err());
+        fs::remove_file(alias).unwrap();
+        fs::write(&lock, b"retained").unwrap();
+        assert!(require_pristine_directory(&directory, true).is_err());
+        assert_eq!(fs::read(&lock).unwrap(), b"retained");
+    }
+
+    #[test]
+    fn pristine_directory_rejects_unavailable_ancestors_and_links() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent");
+        fs::write(&parent, b"not a directory").unwrap();
+        assert!(require_pristine_directory(&parent.join("state"), true).is_err());
+        fs::remove_file(&parent).unwrap();
+        symlink(temp.path().join("missing"), &parent).unwrap();
+        assert!(require_pristine_directory(&parent.join("state"), true).is_err());
+        fs::remove_file(&parent).unwrap();
+        let directory = temp.path().join("state");
+        fs::create_dir(&directory).unwrap();
+        symlink(&directory, &parent).unwrap();
+        assert!(require_pristine_directory(&parent, true).is_err());
+        require_pristine_directory(&parent.join("missing"), true).unwrap();
+        symlink("/missing", directory.join("unknown")).unwrap();
+        assert!(require_pristine_directory(&directory, true).is_err());
+        assert!(require_pristine_directory(Path::new("/"), true).is_err());
+        assert!(require_pristine_directory(Path::new("relative"), true).is_err());
+        assert!(require_pristine_directory(&directory.join("../other"), true).is_err());
+    }
 
     #[test]
     fn acquire_is_idempotent_and_release_requires_owner() {
