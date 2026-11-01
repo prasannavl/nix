@@ -1757,7 +1757,8 @@
       version = incusNixosMetaVersion;
       kind = "incus-machine";
       controller = globalCfg.controllerId;
-      configHash = configHash name machine;
+      # v1 remains readable by pre-hotplug helpers on rollback.
+      configHash = legacyConfigHash name machine;
       instanceKind = machine.kind;
       state = machine.state;
       autoStart = machine.autoStart;
@@ -1767,7 +1768,6 @@
       removalPolicy = machine.removalPolicy;
       hostSuspendPolicy = machine.hostSuspendPolicy;
       devices = builtins.fromJSON (diskGcMetadataJson machine);
-      proxyDevices = builtins.attrNames (proxyDeviceProperties machine);
     }
     // limitMetadata machine
     // liveNetworkMetadata machine;

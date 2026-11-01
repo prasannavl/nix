@@ -73,11 +73,11 @@ class IncusHelperTest(unittest.TestCase):
         env.update(overrides)
         return env
 
-    def helper_script(self, body: str) -> str:
+    def helper_script(self, body: str, helper=None) -> str:
         return textwrap.dedent(
             f"""
             set -Eeuo pipefail
-            source {self.helper}
+            source {helper or self.helper}
             init_vars
             PATH={self.fake_bin}:$PATH
             export PATH
@@ -85,9 +85,9 @@ class IncusHelperTest(unittest.TestCase):
             """
         )
 
-    def run_helper(self, body: str, *, check=True, **env_overrides):
+    def run_helper(self, body: str, *, check=True, helper=None, **env_overrides):
         return subprocess.run(
-            ["bash", "-c", self.helper_script(body)],
+            ["bash", "-c", self.helper_script(body, helper)],
             cwd=self.repo_root,
             env=self.helper_env(**env_overrides),
             text=True,
@@ -1130,7 +1130,7 @@ class IncusHelperTest(unittest.TestCase):
             }
         )
         meta = json.loads(state["userMeta"]["user.nixos-meta"])
-        meta.update(configHash=state["configHash"], proxyDevices=sorted(proxies))
+        meta.update(configHash=state["legacyConfigHash"])
         state["userMeta"]["user.nixos-meta"] = json.dumps(meta)
         return state
 
@@ -1140,11 +1140,14 @@ class IncusHelperTest(unittest.TestCase):
         state = self.proxy_state(proxies, immutable_config=immutable_config)
         response = self.instance_response(status=status)
         meta = json.loads(state["userMeta"]["user.nixos-meta"])
-        if legacy:
-            meta.pop("proxyDevices")
-            meta["configHash"] = state["legacyConfigHash"]
-        elif owned is not None:
-            meta["proxyDevices"] = owned
+        if not legacy:
+            response["metadata"]["config"]["user.nixos-proxy-meta"] = json.dumps({
+                "version": 1,
+                "controller": meta.get("controller", ""),
+                "configHash": state["configHash"],
+                "legacyConfigHash": state["legacyConfigHash"],
+                "proxyDevices": sorted(proxies) if owned is None else owned,
+            })
         response["metadata"]["config"]["user.nixos-meta"] = json.dumps(meta)
         response["metadata"]["devices"].update(json.loads(json.dumps(proxies)))
         self.proxy_instance_file = self.work_dir / "instance.json"
@@ -1168,9 +1171,12 @@ class IncusHelperTest(unittest.TestCase):
 
     def proxy_observed(self):
         response = json.loads(self.proxy_instance_file.read_text())
-        return response["metadata"]["devices"], json.loads(
-            response["metadata"]["config"]["user.nixos-meta"]
-        )
+        config = response["metadata"]["config"]
+        meta = json.loads(config["user.nixos-meta"])
+        if "user.nixos-proxy-meta" in config:
+            proxy = json.loads(config["user.nixos-proxy-meta"])
+            meta.update(configHash=proxy["configHash"], proxyDevices=proxy["proxyDevices"])
+        return response["metadata"]["devices"], meta
 
     def assert_no_instance_lifecycle(self):
         self.assertEqual(
@@ -1181,6 +1187,185 @@ class IncusHelperTest(unittest.TestCase):
                 if c[0] in {"create", "delete", "start", "stop"}
             ],
         )
+
+    def run_proxy_gc(self, declared_meta, *, helper=None):
+        response = json.loads(self.proxy_instance_file.read_text())
+        return self.run_helper(
+            "gc_main",
+            helper=helper,
+            INCUS_MACHINES_DECLARED_INSTANCES='["web"]',
+            INCUS_MACHINES_DECLARED_INSTANCE_REFS='{"default/web":true}',
+            INCUS_MACHINES_DECLARED_INSTANCE_META=json.dumps({"default/web": declared_meta}),
+            TEST_INCUS_INSTANCE_FILE=str(self.proxy_instance_file),
+            TEST_INCUS_LIST_ALL_JSON=json.dumps([
+                {"name": "web", "project": "default", **response["metadata"]}
+            ]),
+        )
+
+    def test_proxy_gc_preserves_applied_state_before_and_after_migration(self):
+        for legacy in (True, False):
+            with self.subTest(legacy=legacy):
+                self.clear_incus_log()
+                original = {"api": self.proxy_definition()}
+                response = self.install_proxy_instance(original, legacy=legacy)
+                before = response["metadata"]["config"]
+                applied_meta = json.loads(before["user.nixos-meta"])
+                desired = self.proxy_state(
+                    original,
+                    immutable_config={"security.nesting": "true"},
+                    boot_tag="boot-2",
+                    recreate_tag="recreate-2",
+                )
+                declared_meta = json.loads(desired["userMeta"]["user.nixos-meta"])
+                declared_meta.update(
+                    removalPolicy="keep", hostSuspendPolicy="freeze",
+                    limits={"configKeys": ["limits.memory"]},
+                    network={"deviceProperties": {"eth1": ["ipv4.address"]}},
+                    devices={"new-disk": {"gcDir": "/must-not-claim"}},
+                )
+                self.run_proxy_gc(declared_meta)
+                after = json.loads(self.proxy_instance_file.read_text())["metadata"]["config"]
+                self.assertEqual(
+                    {**applied_meta, "removalPolicy": "keep", "hostSuspendPolicy": "freeze"},
+                    json.loads(after["user.nixos-meta"]),
+                )
+                if legacy:
+                    self.assertNotIn("user.nixos-proxy-meta", after)
+                else:
+                    self.assertEqual(
+                        json.loads(before["user.nixos-proxy-meta"]),
+                        json.loads(after["user.nixos-proxy-meta"]),
+                    )
+                self.run_proxy_state(self.proxy_state(original), mode="machine")
+                pending = self.run_proxy_state(self.proxy_state(
+                    original, immutable_config={"security.nesting": "true"},
+                    reconcile_policy="declarative",
+                ), mode="machine")
+                self.assertIn("pending recreate drift", pending.stderr)
+                self.assert_no_instance_lifecycle()
+
+    def test_proxy_invalid_metadata_fails_before_adoption_or_recreation(self):
+        cases = (
+            "json", "null", "version", "controller", "anchor", "hash",
+            "names", "duplicates", "orphan", "preview",
+        )
+        for mode in ("live", "machine"):
+            for case in cases:
+                with self.subTest(mode=mode, case=case):
+                    self.clear_incus_log()
+                    proxies = {"cache": self.proxy_definition()}
+                    response = self.install_proxy_instance(proxies)
+                    config = response["metadata"]["config"]
+                    proxy = json.loads(config["user.nixos-proxy-meta"])
+                    if case == "version":
+                        proxy["version"] = 2
+                    elif case == "controller":
+                        proxy["controller"] = "someone-else"
+                    elif case == "anchor":
+                        proxy["legacyConfigHash"] = "0" * 64
+                    elif case == "hash":
+                        proxy["configHash"] = ""
+                    elif case == "names":
+                        proxy["proxyDevices"] = [3]
+                    elif case == "duplicates":
+                        proxy["proxyDevices"] = ["cache", "cache"]
+                    config["user.nixos-proxy-meta"] = json.dumps(proxy)
+                    if case == "json":
+                        config["user.nixos-proxy-meta"] = "{"
+                    elif case == "null":
+                        config["user.nixos-proxy-meta"] = "null"
+                    elif case == "orphan":
+                        del config["user.nixos-meta"]
+                    elif case == "preview":
+                        del config["user.nixos-proxy-meta"]
+                        meta = json.loads(config["user.nixos-meta"])
+                        meta.update(configHash=self.proxy_state(proxies)["configHash"], proxyDevices=["cache"])
+                        config["user.nixos-meta"] = json.dumps(meta)
+                    self.proxy_instance_file.write_text(json.dumps(response))
+                    before = self.proxy_instance_file.read_bytes()
+                    state = self.proxy_state(proxies, recreate_tag="recreate-2")
+                    state["adopt"] = True
+                    result = self.run_proxy_state(state, mode=mode, check=False)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertEqual(before, self.proxy_instance_file.read_bytes())
+                    self.assertEqual([], self.mutation_commands())
+
+    def test_proxy_takeover_releases_both_metadata_keys_not_devices(self):
+        response = self.install_proxy_instance({"cache": self.proxy_definition()})
+        response["metadata"]["config"]["user.manual"] = "keep"
+        self.proxy_instance_file.write_text(json.dumps(response))
+        self.run_helper(
+            'unmanage_instance_for_takeover web "$TEST_CONFIG"',
+            TEST_CONFIG=json.dumps(response["metadata"]["config"]),
+            TEST_INCUS_INSTANCE_FILE=str(self.proxy_instance_file),
+        )
+        after = json.loads(self.proxy_instance_file.read_text())["metadata"]
+        self.assertEqual({"user.manual": "keep"}, after["config"])
+        self.assertEqual(response["metadata"]["devices"], after["devices"])
+        self.assert_no_instance_lifecycle()
+
+    def test_proxy_upgrade_downgrade_and_reupgrade_preserve_instance(self):
+        import hashlib
+
+        legacy_helper = self.helper.parent / "tests/fixtures/pre-live-proxies-helper.sh.raw"
+        self.assertEqual(
+            "dd4bd7deb754e3d17907c4147002e76f16b03a381f6795d2ee550ebbe659e157",
+            hashlib.sha256(legacy_helper.read_bytes()).hexdigest(),
+        )
+        for mode in ("live", "machine"):
+            for status in ("Running", "Stopped"):
+                for existing_proxy, fresh in ((False, False), (True, False), (False, True), (True, True)):
+                    with self.subTest(mode=mode, status=status, existing_proxy=existing_proxy, fresh=fresh):
+                        self.clear_incus_log()
+                        original = (
+                            {"api": self.proxy_definition(
+                                listen="tcp:10.10.0.10:8443",
+                                connect="tcp:127.0.0.1:8443",
+                            )}
+                            if existing_proxy else {}
+                        )
+                        response = self.install_proxy_instance(original, legacy=True, status=status)
+                        if fresh:
+                            self.proxy_instance_file.write_text(json.dumps({"exists": False}))
+                            self.run_proxy_state(self.proxy_state(original, state=status.lower()), mode="machine")
+                            self.clear_incus_log()
+                            response = json.loads(self.proxy_instance_file.read_text())
+                        response["metadata"]["config"]["volatile.uuid"] = "keep-instance-identity"
+                        self.proxy_instance_file.write_text(json.dumps(response))
+                        legacy_state = self.proxy_state(original, state=status.lower())
+                        legacy_state["configHash"] = legacy_state.pop("legacyConfigHash")
+                        legacy_state["createOnlyDevices"] = legacy_state.pop("proxyDevices")
+                        legacy_state.pop("configHashPayload")
+                        legacy_meta = json.loads(legacy_state["userMeta"]["user.nixos-meta"])
+                        legacy_meta.pop("proxyDevices", None)
+                        legacy_meta["configHash"] = legacy_state["configHash"]
+                        legacy_state["userMeta"]["user.nixos-meta"] = json.dumps(legacy_meta)
+
+                        # Actual old lifecycle, new hotplug, actual old rollback.
+                        self.run_proxy_state(legacy_state, mode="machine", helper=legacy_helper)
+                        desired = {**original, "cache": self.proxy_definition()}
+                        desired_state = self.proxy_state(desired, state=status.lower())
+                        self.run_proxy_state(desired_state, mode=mode)
+                        self.run_proxy_gc(json.loads(desired_state["userMeta"]["user.nixos-meta"]))
+                        before_repeat = self.mutation_commands()
+                        self.run_proxy_state(desired_state, mode=mode)
+                        self.assertEqual(before_repeat, self.mutation_commands())
+                        self.run_proxy_state(legacy_state, mode="machine", helper=legacy_helper)
+                        self.run_proxy_gc(legacy_meta, helper=legacy_helper)
+                        self.assert_no_instance_lifecycle()
+                        current = json.loads(self.proxy_instance_file.read_text())["metadata"]
+                        self.assertEqual("keep-instance-identity", current["config"]["volatile.uuid"])
+                        self.assertEqual(status, current["status"])
+                        self.assertEqual(
+                            legacy_state["configHash"],
+                            json.loads(current["config"]["user.nixos-meta"])["configHash"],
+                        )
+                        # Old code does not converge live proxies. Ownership must
+                        # survive its metadata rewrite for the next new reconcile.
+                        self.assertEqual(desired["cache"], current["devices"]["cache"])
+                        self.run_proxy_state(self.proxy_state(original, state=status.lower()), mode=mode)
+                        self.assertNotIn("cache", self.proxy_observed()[0])
+                        self.assert_no_instance_lifecycle()
 
     def test_proxy_live_add_update_clear_rename_remove_and_idempotency(self):
         for policy in ("auto", "declarative"):
@@ -1287,6 +1472,9 @@ class IncusHelperTest(unittest.TestCase):
                     meta = json.loads(response["metadata"]["config"]["user.nixos-meta"])
                     meta["controller"] = "other"
                     response["metadata"]["config"]["user.nixos-meta"] = json.dumps(meta)
+                    proxy_meta = json.loads(response["metadata"]["config"]["user.nixos-proxy-meta"])
+                    proxy_meta["controller"] = "other"
+                    response["metadata"]["config"]["user.nixos-proxy-meta"] = json.dumps(proxy_meta)
                 self.proxy_instance_file.write_text(json.dumps(response))
                 before = self.proxy_instance_file.read_bytes()
                 result = self.run_proxy_state(

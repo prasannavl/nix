@@ -58,7 +58,10 @@ def stateful_command(args):
     if command[:1] == ["create"]:
         state = {
             "exists": True,
-            "metadata": {"status": "Stopped", "type": "container", "config": {}, "devices": {}},
+            "metadata": {
+                "status": "Stopped", "type": "container", "config": {}, "devices": {},
+                "expanded_devices": {"eth0": {"type": "nic"}},
+            },
         }
     elif command[:1] == ["delete"]:
         state["exists"] = False
@@ -74,6 +77,12 @@ def stateful_command(args):
                     return 1
                 devices[name] = {"type": command[5]}
                 devices[name].update(arg.split("=", 1) for arg in command[6:])
+            elif operation == "override":
+                inherited = state["metadata"].get("expanded_devices", {}).get(name)
+                if name in devices or inherited is None:
+                    print("Device is not available for override", file=sys.stderr)
+                    return 1
+                devices[name] = {**inherited, **dict(arg.split("=", 1) for arg in command[5:])}
             elif operation == "set":
                 candidate = dict(devices[name])
                 candidate.update(arg.split("=", 1) for arg in command[5:])

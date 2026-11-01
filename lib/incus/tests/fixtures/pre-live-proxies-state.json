@@ -1,0 +1,88 @@
+{
+  "adopt": false,
+  "autoStart": true,
+  "bootTag": "boot-global:boot-local",
+  "config": {
+    "security.nesting": "true",
+    "user.hash-fixture": "café \"quoted\"\nline"
+  },
+  "configHash": "24e1c04647bae19fff6d00193a2ea4f1374bdf86cc0420dde2686eca634365ac",
+  "cpuCapacity": null,
+  "createOnlyDevices": {
+    "cache": {
+      "bind": "instance",
+      "connect": "tcp:127.0.0.1:5000",
+      "listen": "tcp:127.0.0.1:5000",
+      "type": "proxy"
+    }
+  },
+  "desiredDiskGcMetadata": {
+    "data": {
+      "removalPolicy": "delete",
+      "source": "/var/lib/incus-machines/managed-dirs/web-data"
+    },
+    "delegated": {
+      "certificateDelegation": true,
+      "fileName": "certs.json",
+      "removalPolicy": "keep",
+      "source": "/var/lib/incus-delegations/tenant"
+    }
+  },
+  "desiredDisks": {
+    "data": {
+      "limits.max": "1000iops",
+      "path": "/data",
+      "source": "/var/lib/incus-machines/managed-dirs/web-data",
+      "type": "disk"
+    },
+    "delegated": {
+      "path": "/var/lib/incus-delegation/tenant",
+      "source": "/var/lib/incus-delegations/tenant",
+      "type": "disk"
+    }
+  },
+  "imageAlias": "debian-12",
+  "imageTag": "image-1",
+  "instanceImage": {
+    "alias": "debian-12",
+    "imageIdentity": "remote:lxc:images:debian/12",
+    "instanceKind": "lxc",
+    "kind": "remote",
+    "remoteRef": "images:debian/12"
+  },
+  "ipv4Address": "10.10.30.20",
+  "kind": "lxc",
+  "limitConfig": {
+    "limits.cpu": "2",
+    "limits.cpu.priority": "4",
+    "limits.disk.priority": "4",
+    "limits.memory": "2GiB",
+    "limits.memory.enforce": "hard",
+    "limits.memory.oom_priority": "250",
+    "limits.memory.swap": "false"
+  },
+  "limitDevices": {
+    "data": { "limits.max": "1000iops" },
+    "eth0": { "limits.max": "250Mbit" },
+    "root": { "limits.read": "100MiB" }
+  },
+  "name": "web",
+  "networkDevices": {
+    "eth0": {
+      "ipv4.address": "10.10.30.20",
+      "ipv4.routes": "10.10.31.0/24",
+      "ipv6.address": "fd42:30::20",
+      "ipv6.routes": "fd42:31::/64",
+      "security.ipv4_filtering": "true",
+      "security.ipv6_filtering": "true"
+    }
+  },
+  "project": "default",
+  "reconcilePolicy": "auto",
+  "recreateTag": "recreate-global:recreate-local",
+  "removalPolicy": "delete",
+  "state": "running",
+  "userMeta": {
+    "user.nixos-meta": "{\"autoStart\":true,\"bootTag\":\"boot-global:boot-local\",\"configHash\":\"24e1c04647bae19fff6d00193a2ea4f1374bdf86cc0420dde2686eca634365ac\",\"controller\":\"controller-a\",\"devices\":{\"data\":{\"removalPolicy\":\"delete\",\"source\":\"/var/lib/incus-machines/managed-dirs/web-data\"},\"delegated\":{\"certificateDelegation\":true,\"fileName\":\"certs.json\",\"removalPolicy\":\"keep\",\"source\":\"/var/lib/incus-delegations/tenant\"}},\"hostSuspendPolicy\":\"stop\",\"instanceKind\":\"lxc\",\"kind\":\"incus-machine\",\"limits\":{\"configKeys\":[\"limits.cpu\",\"limits.cpu.priority\",\"limits.disk.priority\",\"limits.memory\",\"limits.memory.enforce\",\"limits.memory.oom_priority\",\"limits.memory.swap\"],\"deviceProperties\":{\"data\":[\"limits.max\"],\"eth0\":[\"limits.max\"],\"root\":[\"limits.read\"]}},\"network\":{\"deviceProperties\":{\"eth0\":[\"ipv4.address\",\"ipv4.routes\",\"ipv6.address\",\"ipv6.routes\",\"security.ipv4_filtering\",\"security.ipv6_filtering\"]}},\"reconcilePolicy\":\"auto\",\"recreateTag\":\"recreate-global:recreate-local\",\"removalPolicy\":\"delete\",\"state\":\"running\",\"version\":1}"
+  }
+}

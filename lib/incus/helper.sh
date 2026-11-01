@@ -1343,23 +1343,60 @@ obsolete_metadata_present() {
 		' >/dev/null
 }
 
+# Keep the v1 wire hash for old helpers; expose the proxy-free hash internally.
+# The sidecar survives an old helper rewriting user.nixos-meta on rollback.
 nixos_meta_from_config_json() {
 	local current_config_json
 	current_config_json="$1"
 
 	printf '%s' "$current_config_json" |
 		jq -c --arg version "$nixos_meta_version" '
-			(.["user.nixos-meta"] // "" | try fromjson catch null) as $meta
+			(."user.nixos-meta" // "" | try fromjson catch null) as $meta
+			| has("user.nixos-proxy-meta") as $hasProxyMeta
+			| (."user.nixos-proxy-meta" // "" | try fromjson catch null) as $proxy
 			| if (
 				($meta | type) == "object"
 				and (($meta.version // "") | tostring) == $version
 				and ($meta.kind // "") == "incus-machine"
 			) then
-				$meta
-			else
-				{}
-			end
+				if $meta | has("proxyDevices") then
+					error("Unsupported preview Incus proxy metadata; refusing lifecycle changes")
+				elif $hasProxyMeta then
+					if (
+						($proxy | type) == "object"
+						and $proxy.version == 1
+						and $proxy.controller == ($meta.controller // "")
+						and ($proxy.configHash | type == "string" and length > 0)
+						and ($proxy.legacyConfigHash | type == "string" and length > 0)
+						and $proxy.legacyConfigHash == $meta.configHash
+						and ($proxy.proxyDevices | type == "array" and all(.[]; type == "string" and length > 0))
+						and $proxy.proxyDevices == ($proxy.proxyDevices | unique)
+					) then
+						$meta + ($proxy | {configHash, legacyConfigHash, proxyDevices})
+					else error("Invalid Incus proxy metadata; refusing lifecycle changes") end
+				else $meta end
+			elif $hasProxyMeta then
+				error("Orphaned Incus proxy metadata; refusing lifecycle changes")
+			else {} end
 		'
+}
+
+nixos_meta_to_config_json() {
+	printf '%s' "$1" | jq -c '
+		if has("proxyDevices") then
+			if (.legacyConfigHash | type != "string" or length == 0) then
+				error("Missing legacy Incus config hash; refusing metadata write")
+			else
+				{
+					"user.nixos-meta": (.configHash = .legacyConfigHash | del(.legacyConfigHash, .proxyDevices) | tojson),
+					"user.nixos-proxy-meta": ({
+						version: 1, controller: (.controller // ""),
+						configHash, legacyConfigHash, proxyDevices
+					} | tojson)
+				}
+			end
+		else {"user.nixos-meta": tojson} end
+	'
 }
 
 declared_meta_for_ref() {
@@ -1370,16 +1407,9 @@ declared_meta_for_ref() {
 }
 
 set_nixos_meta_if_changed() {
-	local instance_name current_config_json desired_meta_json current_value desired_value
-	instance_name="$1"
-	current_config_json="$2"
-	desired_meta_json="$3"
-
-	desired_value="$(printf '%s' "$desired_meta_json" | jq -c '.')"
-	current_value="$(printf '%s' "$current_config_json" | jq -r '.["user.nixos-meta"] // empty')"
-	if [ "$current_value" != "$desired_value" ]; then
-		incus_project_retry_etag config set "$(instance_ref "$instance_name")" "user.nixos-meta=$desired_value"
-	fi
+	local desired_config_json
+	desired_config_json="$(nixos_meta_to_config_json "$3")" || return
+	set_instance_config_json_if_changed "$1" "$2" "$desired_config_json"
 }
 
 unset_instance_config_key_if_present() {
@@ -1418,6 +1448,7 @@ unmanage_instance_for_takeover() {
 				keys[]
 				| select(
 					. == "user.nixos-meta"
+					or . == "user.nixos-proxy-meta"
 					or . == "user.managed-by"
 					or . == "user.config-hash"
 					or . == "user.boot-tag"
@@ -1587,7 +1618,7 @@ proxy_metadata_for_state() {
 	state="$1"
 	instance="$2"
 	config="$(printf '%s' "$instance" | jq -c '.metadata.config // {}')"
-	meta="$(nixos_meta_from_config_json "$config")"
+	meta="$(nixos_meta_from_config_json "$config")" || return
 	if ! printf '%s' "$state" | jq -e 'has("proxyDevices")' >/dev/null ||
 		printf '%s' "$meta" | jq -e 'has("proxyDevices")' >/dev/null; then
 		printf '%s\n' "$meta"
@@ -1619,7 +1650,7 @@ proxy_metadata_for_state() {
 		current_hash="$desired_hash"
 	fi
 	jq -cn --argjson meta "$meta" --argjson owned "$owned" --arg hash "$current_hash" '
-		$meta | .proxyDevices = $owned | .configHash = $hash
+		$meta | .legacyConfigHash = .configHash | .proxyDevices = $owned | .configHash = $hash
 	'
 }
 
@@ -1685,7 +1716,7 @@ reconcile_instance_proxies() {
 	# Preserve unrelated live metadata after all device operations succeed.
 	instance="$(incus query "$(query_ref "$(instance_query_path "$name")")" --raw)" || return
 	config="$(printf '%s' "$instance" | jq -c '.metadata.config // {}')"
-	meta="$(nixos_meta_from_config_json "$config")"
+	meta="$(nixos_meta_from_config_json "$config")" || return
 	meta="$(jq -cn --argjson meta "$meta" --argjson desired "$desired" '$meta | .proxyDevices = ($desired | keys)')"
 	set_nixos_meta_if_changed "$name" "$config" "$meta"
 }
@@ -1729,7 +1760,7 @@ limits_main() {
 		current_instance="$(incus query "$(query_ref "$(instance_query_path "$name")")" --raw)"
 		current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}')"
 		current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}')"
-		current_meta="$(nixos_meta_from_config_json "$current_config")"
+		current_meta="$(nixos_meta_from_config_json "$current_config")" || return
 		current_managed_by="$(printf '%s' "$current_meta" | jq -r '.kind // empty')"
 		if [ "$current_managed_by" != "incus-machine" ]; then
 			echo "Skipping live properties for unowned Incus instance $current_project/$name until lifecycle adoption"
@@ -1747,7 +1778,7 @@ limits_main() {
 			current_instance="$(incus query "$(query_ref "$(instance_query_path "$name")")" --raw)"
 			current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}')"
 			current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}')"
-			current_meta="$(nixos_meta_from_config_json "$current_config")"
+			current_meta="$(nixos_meta_from_config_json "$current_config")" || return
 		fi
 
 		desired_config="$(
@@ -2937,7 +2968,7 @@ machine_main() {
 		else
 			current_instance="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null || echo '{}')"
 			current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}' 2>/dev/null || echo '{}')"
-			current_meta="$(nixos_meta_from_config_json "$current_config")"
+			current_meta="$(nixos_meta_from_config_json "$current_config")" || return
 			current_incus_type="$(
 				printf '%s' "$current_instance" |
 					jq -r '.metadata.type // empty' 2>/dev/null ||
@@ -3065,14 +3096,14 @@ machine_main() {
 		current_instance="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null || echo '{}')"
 		current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}' 2>/dev/null || echo '{}')"
 		current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}' 2>/dev/null || echo '{}')"
-		current_meta="$(nixos_meta_from_config_json "$current_config")"
+		current_meta="$(nixos_meta_from_config_json "$current_config")" || return
 
 		current_meta="$(proxy_metadata_for_state "$state_json" "$current_instance")" || return
 		reconcile_instance_proxies "$instance_name" "$state_json" "$current_instance" "$current_meta" || return
 		current_instance="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw)"
 		current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}')"
 		current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}')"
-		current_meta="$(nixos_meta_from_config_json "$current_config")"
+		current_meta="$(nixos_meta_from_config_json "$current_config")" || return
 
 		prepare_certificate_delegation_permissions "$current_config" "$desired_disk_gc_metadata"
 
@@ -3152,7 +3183,7 @@ machine_main() {
 		current_instance="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null || echo '{}')"
 		current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}' 2>/dev/null || echo '{}')"
 		current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}' 2>/dev/null || echo '{}')"
-		current_meta="$(nixos_meta_from_config_json "$current_config")"
+		current_meta="$(nixos_meta_from_config_json "$current_config")" || return
 		reconcile_instance_limits "$instance_name" "$current_config" "$current_devices" "$current_meta" "$limit_config" "$limit_devices"
 
 		desired_meta_json="$(
@@ -3160,15 +3191,19 @@ machine_main() {
 				jq -c \
 					--arg configHash "$desired_config_hash" \
 					--arg currentConfigHash "$current_config_hash" \
+					--argjson current "$current_meta" \
 					--argjson applyConfigHash "$([ "$pending_recreate_drift" -eq 1 ] && printf 'false' || printf 'true')" '
 						.configHash = (if $applyConfigHash then $configHash else $currentConfigHash end)
 						| if (.configHash // "") == "" then del(.configHash) else . end
+						| if $current | has("proxyDevices") then
+							.proxyDevices = $current.proxyDevices | .legacyConfigHash = $current.legacyConfigHash
+						else . end
 						'
 		)"
 		desired_user_meta_json="$(
 			printf '%s' "$user_meta_json" |
-				jq -c --arg desiredMeta "$desired_meta_json" '
-					.["user.nixos-meta"] = $desiredMeta
+				jq -c --argjson metadata "$(nixos_meta_to_config_json "$desired_meta_json")" '
+					. + $metadata
 				'
 		)"
 		set_instance_config_json_if_changed "$instance_name" "$current_config" "$desired_user_meta_json"
@@ -3607,7 +3642,7 @@ gc_main() {
 		current_project="$project"
 		ref="$project/$cname"
 		config_json="$(echo "$row" | jq -c '.config // {}')"
-		current_meta="$(nixos_meta_from_config_json "$config_json")"
+		current_meta="$(nixos_meta_from_config_json "$config_json")" || return
 
 		if printf '%s' "$effective_declared_instance_refs" |
 			jq -e --arg ref "$ref" '.[$ref] == true' >/dev/null 2>&1; then
@@ -3618,6 +3653,10 @@ gc_main() {
 			if [ "$(printf '%s' "$current_meta" | jq -r '.kind // empty')" = "incus-machine" ]; then
 				declared_meta="$(declared_meta_for_ref "$ref")"
 				if [ "$declared_meta" != "{}" ]; then
+					# GC updates policy, never acknowledges unapplied lifecycle/device state.
+					declared_meta="$(jq -cn --argjson current "$current_meta" --argjson declared "$declared_meta" '
+						$current + ($declared | with_entries(select(.key == "removalPolicy" or .key == "hostSuspendPolicy")))
+					')"
 					set_nixos_meta_if_changed "$cname" "$config_json" "$declared_meta"
 					cleanup_obsolete_metadata_keys "$cname" "$config_json"
 				fi

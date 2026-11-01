@@ -458,11 +458,12 @@
   delegationUnit = config.systemd.services.incus-cert-delegation-tenant;
   proxyVariants = [changedProxyConfig addedProxyConfig removedProxyConfig];
   changedProxyState = builtins.fromJSON changedProxyConfig.environment.etc."incus-machines/web.json".text;
+  legacyWebState = builtins.fromJSON (builtins.readFile ./fixtures/pre-live-proxies-state.json);
   proxyMigrationState = pkgs.writeText "proxy-migration-state.json" (builtins.toJSON changedProxyState);
   proxyMigrationInstance = pkgs.writeText "proxy-migration-instance.json" (builtins.toJSON {
     metadata = {
-      config."user.nixos-meta" = builtins.toJSON ((builtins.removeAttrs webMeta ["proxyDevices"]) // {configHash = webState.legacyConfigHash;});
-      devices = webState.createOnlyDevices // webState.proxyDevices;
+      config = legacyWebState.userMeta;
+      devices = legacyWebState.createOnlyDevices;
     };
   });
 in
@@ -556,7 +557,11 @@ in
   assert webState.limitDevices.eth0."limits.max" == "250Mbit";
   assert webState.proxyDevices.cache.type == "proxy";
   assert !(webState.createOnlyDevices ? cache);
-  assert webMeta.proxyDevices == ["cache"];
+  assert !(webMeta ? proxyDevices);
+  assert webMeta.configHash == webState.legacyConfigHash;
+  assert webState.legacyConfigHash == legacyWebState.configHash;
+  assert webState.userMeta == legacyWebState.userMeta;
+  assert webState.createOnlyDevices // webState.proxyDevices == legacyWebState.createOnlyDevices;
   assert webState.configHash != webState.legacyConfigHash;
   assert lib.all (
     variant: let
@@ -674,6 +679,13 @@ in
       init_vars
       meta="$(proxy_metadata_for_state "$(<${proxyMigrationState})" "$(<${proxyMigrationInstance})")"
       jq -en --argjson meta "$meta" --arg hash ${lib.escapeShellArg changedProxyState.configHash} \
-        '$meta.configHash == $hash and $meta.proxyDevices == ["cache"]'
+        --arg legacyHash ${lib.escapeShellArg legacyWebState.configHash} \
+        '$meta.configHash == $hash and $meta.proxyDevices == ["cache"] and $meta.legacyConfigHash == $legacyHash'
+      wire="$(nixos_meta_to_config_json "$meta")"
+      roundtrip="$(nixos_meta_from_config_json "$wire")"
+      jq -en --argjson meta "$meta" --argjson roundtrip "$roundtrip" '$meta == $roundtrip'
+      oldMeta="$(source ${./fixtures/pre-live-proxies-helper.sh.raw}; init_vars; nixos_meta_from_config_json "$wire")"
+      jq -en --argjson old "$oldMeta" --argjson expected ${lib.escapeShellArg legacyWebState.userMeta."user.nixos-meta"} \
+        '$old == $expected'
       touch "$out"
     ''
