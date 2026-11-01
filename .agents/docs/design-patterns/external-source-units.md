@@ -7,12 +7,37 @@ derivations under `lib/ext/` and `pkgs/ext/`.
 
 ## Ownership
 
-- `lib/ext/<unit>/` owns internal overrides, overlay inputs, and maintenance
-  derivations.
-- `pkgs/ext/<unit>/` owns independently exported external packages registered
-  through `pkgs/manifest.nix`.
+Management style decides the root, not the other way around. Registration in
+`pkgs/manifest.nix` follows placement; it does not define it.
+
+- `lib/ext/<unit>/` owns units that follow upstream: unpatched sources, pinned
+  versions or release tags, and either a package-local updater or a source kind
+  the generic reporter reads (`github-tags`, `github-branch`, `gitlab-tags`,
+  `registry-tags`). No repo-owned patch, vendored lock, or bespoke build logic
+  is expected to accumulate here.
+- `pkgs/ext/<unit>/` owns units the repository manages itself: patches, vendored
+  dependency closures, repo-owned build or test logic, or repo-owned code. These
+  are registered in `pkgs/manifest.nix` because the repository owns their shape
+  and review cycle.
+- A unit may be promoted from `lib/ext/` to `pkgs/ext/` once it needs a
+  repo-owned patch or lock, and moved back if that ownership goes away.
+- Agent-facing tooling that follows upstream (MCP servers, browser and desktop
+  drivers, agent workspaces) is grouped in `overlays/agent-tools.nix`;
+  repo-managed agent tooling stays manifest-registered.
 - Do not collapse the two roots. Their consumer boundary is intentional; the
   source convention spans both.
+
+## Consumer-local dependencies
+
+A dependency with exactly one consumer is built inside that consumer's unit and
+reached through its `passthru`, not exposed as its own package or overlay
+attribute. `pkgs/ext/z-push` builds AWL (a PHP include-path library used only by
+its CalDAV backend) from a second `sources.nix` record next to the z-push one,
+exposes it as `pkgs.z-push.awl`, and the `activesync` module defaults
+`awlPackage` to `config.services.activesync.package.awl` so it follows the
+selected Z-Push package. The generic reporter covers both records because it
+reads every entry in the file. Promote the dependency to its own unit when a
+second consumer appears.
 
 ## Unit convention
 

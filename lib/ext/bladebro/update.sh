@@ -3,13 +3,13 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: pkgs/ext/bladebro/update.sh [--version VERSION] [--file PATH] [--force] [--report] [--ansi|--color=WHEN]
+Usage: lib/ext/bladebro/update.sh [--version VERSION] [--file PATH] [--force] [--report] [--ansi|--color=WHEN]
 
 Examples:
-  pkgs/ext/bladebro/update.sh
-  pkgs/ext/bladebro/update.sh --version 4.5.0
-  pkgs/ext/bladebro/update.sh --force
-  pkgs/ext/bladebro/update.sh --file pkgs/ext/bladebro/sources.nix
+  lib/ext/bladebro/update.sh
+  lib/ext/bladebro/update.sh --version 4.5.0
+  lib/ext/bladebro/update.sh --force
+  lib/ext/bladebro/update.sh --file lib/ext/bladebro/sources.nix
 EOF
 }
 
@@ -20,7 +20,7 @@ die() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
-	TARGET_FILE="${REPO_ROOT}/pkgs/ext/bladebro/sources.nix"
+	TARGET_FILE="${REPO_ROOT}/lib/ext/bladebro/sources.nix"
 	PACKAGE="bladebro"
 	REGISTRY="https://registry.npmjs.org"
 	REQUESTED_VERSION=""

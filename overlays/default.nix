@@ -10,6 +10,7 @@
   (import ../lib/flake/rust/toolchain.nix {inherit inputs;}).overlay
   (import ./pvl.nix {inherit inputs;})
   (import ./pkgs.nix {inherit inputs;})
+  (import ./agent-tools.nix)
   (
     final: prev: {
       handbrake-wrapped = final.callPackage ../lib/ext/handbrake.nix {};
@@ -26,6 +27,9 @@
       stalwart-cli = final.callPackage ../lib/ext/stalwart-cli {};
       vscode-upstream = final.callPackage ../lib/ext/vscode {};
       zed-wrapped = final.callPackage ../lib/ext/zed.nix {};
+      # Upstream-following external units that are not agent tooling; the
+      # agent-facing ones live in overlays/agent-tools.nix.
+      tuicr = final.callPackage ../lib/ext/tuicr {};
       nvidiaCustomForKernel = kernelPackages:
         final.callPackage ../lib/ext/nvidia {inherit kernelPackages;};
       nvidia-custom = final.nvidiaCustomForKernel final.linuxPackages;

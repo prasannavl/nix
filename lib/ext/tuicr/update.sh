@@ -3,13 +3,13 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: pkgs/ext/tuicr/update.sh [--version VERSION] [--file PATH] [--force] [--report] [--ansi|--color=WHEN]
+Usage: lib/ext/tuicr/update.sh [--version VERSION] [--file PATH] [--force] [--report] [--ansi|--color=WHEN]
 
 Examples:
-  pkgs/ext/tuicr/update.sh
-  pkgs/ext/tuicr/update.sh --version 0.27.0
-  pkgs/ext/tuicr/update.sh --force
-  pkgs/ext/tuicr/update.sh --report
+  lib/ext/tuicr/update.sh
+  lib/ext/tuicr/update.sh --version 0.27.0
+  lib/ext/tuicr/update.sh --force
+  lib/ext/tuicr/update.sh --report
 EOF
 }
 
@@ -20,7 +20,7 @@ die() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
-	UNIT_DIR="${REPO_ROOT}/pkgs/ext/tuicr"
+	UNIT_DIR="${REPO_ROOT}/lib/ext/tuicr"
 	TARGET_FILE="${UNIT_DIR}/sources.nix"
 	OWNER="agavra"
 	REPO="tuicr"

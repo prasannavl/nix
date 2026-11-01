@@ -24,8 +24,9 @@ needed, and the unstable overlay keeps owning the version.
 ## Bladebro package unit
 
 `bladebro` is absent from both nixpkgs channels, so it is a new independently
-exported external package under `pkgs/ext/bladebro/`, registered in
-`pkgs/manifest.nix` (which exposes `pkgs.bladebro`).
+external package under `lib/ext/bladebro/`: it ships its own updater and carries
+no repo-owned patch, so it follows upstream rather than being managed here. It
+is not manifest-registered; the pi module consumes it directly.
 
 The npm package is unusual in three ways that shape the unit:
 
@@ -60,12 +61,12 @@ latest version from the registry, recomputes all three unpacked hashes with
 
 ## Pi wiring
 
-`users/pvl/pi/default.nix` calls `pkgs.callPackage ../../../pkgs/ext/bladebro`,
-adds the CLI to `home.packages`, and links `.pi/agent/extensions/bladebro` to
-the package's `share/pi/packages/bladebro` tree. Both are unconditional members
-of the shared Pvl Pi profile, so every host that imports `users/pvl` (`core`,
-`dev`, and `lxc`) receives them; the headless container profiles carry the
-package but have no Chrome to drive.
+`overlays/default.nix` exposes `pkgs.bladebro`; `users/pvl/pi/default.nix` uses
+that attribute, adds the CLI to `home.packages`, and links
+`.pi/agent/extensions/bladebro` to the package's `share/pi/packages/bladebro`
+tree. Both are unconditional members of the shared Pvl Pi profile, so every host
+that imports `users/pvl` (`core`, `dev`, and `lxc`) receives them; the headless
+container profiles carry the package but have no Chrome to drive.
 
 ## Pi Web on pvl-a1
 
@@ -83,7 +84,7 @@ its `tailcaaad.ts.net` MagicDNS name.
 - `patchelf --print-interpreter` on the payload shows the Nix glibc interpreter.
 - `require.resolve("bladebro-linux-x64/package.json", {paths = [extensionDir]})`
   resolves to the packaged `node_modules` payload.
-- `pkgs/ext/bladebro/update.sh --report` reports `4.5.0 [latest]`; `--force`
+- `lib/ext/bladebro/update.sh --report` reports `4.5.0 [latest]`; `--force`
   leaves `sources.nix` unchanged.
 - `nix eval .#nixosConfigurations.{pvl-a1,pvl-l5,pvl-x2,pvl-vk}.config.system.build.toplevel.drvPath`
   evaluates for the graphical and container hosts alike.

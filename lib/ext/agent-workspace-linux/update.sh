@@ -3,13 +3,13 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: pkgs/ext/agent-workspace-linux/update.sh [--version VERSION] [--file PATH] [--force] [--report] [--ansi|--color=WHEN]
+Usage: lib/ext/agent-workspace-linux/update.sh [--version VERSION] [--file PATH] [--force] [--report] [--ansi|--color=WHEN]
 
 Examples:
-  pkgs/ext/agent-workspace-linux/update.sh
-  pkgs/ext/agent-workspace-linux/update.sh --version 0.3.3
-  pkgs/ext/agent-workspace-linux/update.sh --force
-  pkgs/ext/agent-workspace-linux/update.sh --file pkgs/ext/agent-workspace-linux/sources.nix
+  lib/ext/agent-workspace-linux/update.sh
+  lib/ext/agent-workspace-linux/update.sh --version 0.3.3
+  lib/ext/agent-workspace-linux/update.sh --force
+  lib/ext/agent-workspace-linux/update.sh --file lib/ext/agent-workspace-linux/sources.nix
 EOF
 }
 
@@ -20,7 +20,7 @@ die() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
-	TARGET_FILE="${REPO_ROOT}/pkgs/ext/agent-workspace-linux/sources.nix"
+	TARGET_FILE="${REPO_ROOT}/lib/ext/agent-workspace-linux/sources.nix"
 	OWNER="agent-sh"
 	REPO="agent-workspace-linux"
 	TAG_PREFIX="v"

@@ -187,8 +187,12 @@ in {
 
     awlPackage = lib.mkOption {
       type = types.package;
-      default = pkgs.awl;
-      description = "AWL PHP support library package used by Z-Push CalDAV code.";
+      default = cfg.package.awl;
+      defaultText = lib.literalExpression "config.services.activesync.package.awl";
+      description = ''
+        AWL PHP support library package used by Z-Push CalDAV code. Follows the
+        selected Z-Push package, which builds its own AWL copy.
+      '';
     };
 
     phpPackage = lib.mkOption {

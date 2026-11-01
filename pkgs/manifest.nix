@@ -24,14 +24,10 @@
       toolingPackages."cloudflare-apps/llmug-hello" = ["llmug-hello"];
       apps.cloudflare-apps-deploy = ["deploy"];
     };
-    agent-workspace-linux = ./ext/agent-workspace-linux/default.nix;
-    bladebro = ./ext/bladebro/default.nix;
-    tuicr = ./ext/tuicr/default.nix;
     kanidm-server = ./ext/kanidm-server/default.nix;
     bulwarkmail = ./ext/bulwarkmail/default.nix;
     stalwart-server = ./ext/stalwart-server/default.nix;
     z-push = ./ext/z-push/default.nix;
-    awl = ./ext/awl/default.nix;
     mirofish = ./ext/mirofish/default.nix;
     opendesign = ./ext/opendesign/default.nix;
     example-hello-go = {

@@ -8,7 +8,7 @@ to both hosts' `environment.systemPackages`.
 
 ## Package unit
 
-The upstream unit lives in `pkgs/ext/agent-workspace-linux/`:
+The upstream unit lives in `lib/ext/agent-workspace-linux/`:
 
 - `sources.nix` pins the `v0.3.3` GitHub release and the x86_64/aarch64 asset
   hashes.
@@ -77,7 +77,7 @@ nix build .#agent-workspace-linux --no-link --print-out-paths
 nix eval .#nixosConfigurations.pvl-a1.config.system.build.toplevel.drvPath --raw
 nix eval .#nixosConfigurations.pvl-l5.config.system.build.toplevel.drvPath --raw
 agent-workspace-linux doctor
-pkgs/ext/agent-workspace-linux/update.sh --report
+lib/ext/agent-workspace-linux/update.sh --report
 ```
 
 `doctor` inside a live desktop session reports `ready_for_host_viewer: true` as

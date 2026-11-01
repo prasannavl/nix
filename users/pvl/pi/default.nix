@@ -32,7 +32,7 @@
     piStamp = pkgs.callPackage ../../../lib/ext/pi/pi-stamp {};
     piAnthropicAuth = pkgs.callPackage ../../../lib/ext/pi/pi-anthropic-auth {};
     piToolManager = pkgs.callPackage ../../../lib/ext/pi/pi-tool-manager {};
-    bladebro = pkgs.callPackage ../../../pkgs/ext/bladebro {};
+    bladebro = pkgs.bladebro;
     piModelsDiscoveryRoot = "${piModelsDiscovery}/share/pi/packages/pi-models-discovery";
     piSessionManagerRoot = "${piSessionManager}/share/pi/packages/pi-session-manager";
     piSubagentsRoot = "${piSubagents}/lib/node_modules/@gotgenes/pi-subagents";
