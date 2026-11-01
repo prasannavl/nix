@@ -77,6 +77,27 @@ journald now retains full command history — including any inline credentials a
 caller types. That is the intended audit mode; journal access and retention are
 the mitigations, not a configuration change.
 
+On 2026-10-31 the input moved to `dotlink v0.14.3` (`84cd9b7`) and is now pinned
+to a tag instead of tracking `main`. Upstream had shipped 0.14.0–0.14.3 but
+never pushed their tags (the previous v0.14.1 pin was the untagged release
+commit `70939fb`, five commits past `v0.13.1`), so the missing signed `v0.14.3`
+tag was pushed upstream first, then consumed here. Unlike v0.12–v0.13, this
+release does touch `nix/`: `nix/native.nix` adds `DOTLINK_BUILD_BWRAP`, which
+compiles the exact Bubblewrap launcher path into production launcher trust while
+hermetic test/clippy derivations stay unprivileged, and gives those tests an
+explicit private XDG home. No module option or rendered unit changed. The saved
+profile schema is still v10 (same 9→10 migration, v11 rejected), so existing
+per-host profiles, tunnel ids and runtime keys remain valid.
+
+Operationally relevant changes in 0.14.0–0.14.3: an OpenAI shell call that
+outlives the 120 s request window no longer dies — the same durable execution is
+exposed as an MCP Task/job, and an omitted `timeout_secs` uses the profile
+ceiling; transfer ceilings are explicit at 8 MiB raw/tool, 9 MiB embedded MCP
+message and 10 MiB hosted envelope; `--unrestricted` now supersedes redundant
+saved host/hardware/cache grants; mutation concurrency uses exact per-target
+locks instead of 256 hash shards; and a Linux start now fails loudly if hardened
+kernel policy forbids the `MFD_EXEC` sealed-launcher snapshot.
+
 ## Flake input
 
 `abird-ai/dotlink` is consumed as a root flake input because it ships both the
@@ -84,7 +105,7 @@ package and the `services.dotlink` NixOS module:
 
 ```nix
 dotlink = {
-  url = "github:abird-ai/dotlink";
+  url = "github:abird-ai/dotlink/v0.14.3";
   inputs = {
     nixpkgs.follows = "nixpkgs";
     crane.follows = "crane";
@@ -106,7 +127,13 @@ input moved. The v0.9.0 bump advanced the same node to `dcea9b1` (2026-10-14),
 again with no other input moved. The v0.10.0 bump moved it to `08ca60d`
 (2026-10-27) through `nix flake update dotlink`; the diff touches only those
 three lock lines. The same command moved it to `28bcd5a` (v0.13.0) and then to
-`bb8a917` (v0.13.1) at 2026-10-28, again changing only the `dotlink` node.
+`bb8a917` (v0.13.1) at 2026-10-28, again changing only the `dotlink` node. The
+2026-10-30 v0.14.1 bump (`70939fb`) likewise moved only that node. The
+2026-10-31 bump to `84cd9b7` (v0.14.3) additionally changed the input `url` from
+`github:abird-ai/dotlink` to `github:abird-ai/dotlink/v0.14.3`, so the lock node
+now carries `"ref": "v0.14.3"` and later `nix flake update dotlink` stays on
+that tag instead of following `main`. That is the `crane/v0.24.0` convention:
+tagged inputs are named by tag in `flake.nix`.
 
 ## Host services
 
