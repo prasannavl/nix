@@ -1,0 +1,311 @@
+ordinal	source	sha	parents	subject
+1	nix	20a72bb3d1f8ce2f42341589c6288edf19306d86	e33f9de6fb6f815d4cf9265214fc99b2272986f9	fix(fleet): isolate Nix SSH copies
+2	nix	9848428777a91102163ea5a729a31b35b670075e	20a72bb3d1f8ce2f42341589c6288edf19306d86	feat(flake): add rustWorkspaceDeps seam
+3	nix	ca930662b78b1872cb7d0dbe09643370d7a3abc5	9848428777a91102163ea5a729a31b35b670075e	docs(tooling): record abird post-278a2cba port
+4	nix	6b9aed7e69bbf72cd74c7ff30652059f79da81a9	ca930662b78b1872cb7d0dbe09643370d7a3abc5	docs(rust): consolidate foundation handoff
+5	nix	63342adf36bebb4e60a3ca5894b6e4badfd21a59	6b9aed7e69bbf72cd74c7ff30652059f79da81a9	fix(bash): drop tput from prompt
+6	nix	a0ed95eb26f712baae41157b315895bc1f74d187	63342adf36bebb4e60a3ca5894b6e4badfd21a59	style: fix markdown fence lint
+7	nix	3e4b9e7954bff29169df2a4c5b639359506acec2	a0ed95eb26f712baae41157b315895bc1f74d187	feat(dotlink): bump v0.8.0, grant host access
+8	nix	7ac9ff13e212a82b6e81a76f68a26aaa2cfdddb8	3e4b9e7954bff29169df2a4c5b639359506acec2	docs(rust): sync foundation handoff and VM notes
+9	nix	9c133889fe52cc8d0911c385521080012f0439cd	7ac9ff13e212a82b6e81a76f68a26aaa2cfdddb8	feat(rust): add closure cache composition
+10	nix	beee76544c6796f9e41884593ff5e7255bf08e5c	9c133889fe52cc8d0911c385521080012f0439cd	feat(rust): add immutable mirror tooling
+11	nix	8ba90ee0fdba52effc304447f2c456c5e9c2c563	beee76544c6796f9e41884593ff5e7255bf08e5c	test(rust): add optional VM qualification
+12	nix	d82fa09bed7678484638a3de2cb3f84b5aed2c04	8ba90ee0fdba52effc304447f2c456c5e9c2c563	fix(dotlink): bump v0.8.1 to skip missing caches
+13	nix	a63ce442d012bcfa6430ff524ee67ff0e48e6869	d82fa09bed7678484638a3de2cb3f84b5aed2c04	docs(rust): close validated main integration
+14	nix	7e303975c557c3fdf5321a51abc39a5da59d34a4	a63ce442d012bcfa6430ff524ee67ff0e48e6869	docs(rust): record publication and custody
+15	nix	edf2c27c1f0f8a2af2a059433a5a994d3cbeafa1	7e303975c557c3fdf5321a51abc39a5da59d34a4	fix(rust): reject unsupported lock policies
+16	nix	96a448da51c65e50082e8c5d179752aa1b00df1a	edf2c27c1f0f8a2af2a059433a5a994d3cbeafa1	style(rust): format native test fixtures
+17	nix	8c8617dfda3be3d737dea8a442f0a6aaefa890c9	96a448da51c65e50082e8c5d179752aa1b00df1a	style(rust): satisfy static Nix lint
+18	nix	418d3aa91b9e804734e14cf36945fe09333c0d47	8c8617dfda3be3d737dea8a442f0a6aaefa890c9	style(rust): render archived events for lint
+19	nix	24ec4950cb88301dd259736661d35632c0b682c2	418d3aa91b9e804734e14cf36945fe09333c0d47	docs(rust): close review findings
+20	nix	12e4c0787120fa1c3e19ec77fadfe3db1438f60f	24ec4950cb88301dd259736661d35632c0b682c2	refactor(flake): group language implementations
+21	nix	7c04658e87108e65109c480a5864c88140f38ca0	12e4c0787120fa1c3e19ec77fadfe3db1438f60f	fix(rust): align source and vendor lockfiles
+22	nix	1c8881131e2adb1e1679853a8f1ab7de0d6c3437	7c04658e87108e65109c480a5864c88140f38ca0	chore(flake): bump dotlink to v0.9.0
+23	nix	9bf7463d5d4c1d0111ded7ab473b7b59b5572c14	1c8881131e2adb1e1679853a8f1ab7de0d6c3437	feat(dotlink): grant kvm and amd/nvidia gpu access
+24	nix	d359eae710467608cb324e676400862e63c17161	9bf7463d5d4c1d0111ded7ab473b7b59b5572c14	docs(rust): close side-worktree custody
+25	nix	24ff8a5f4ec5266bd11d2df344c3e98990f0ca6b	d359eae710467608cb324e676400862e63c17161	fix(flake): keep injected pkgs off nixpkgs
+26	nix	ce86088418b42accf41e04898a4b17074bb3ac68	24ff8a5f4ec5266bd11d2df344c3e98990f0ca6b	fix(kanidm): clear EOL notice on pinned CLI
+27	nix	90e7c53c388c9c7abda697895b55676d53c180a4	ce86088418b42accf41e04898a4b17074bb3ac68	fix(test): gate prism check to x86_64
+28	nix	0a0da3c57bfb2a4bf30d683ba4aeffcfaf9d6a94	90e7c53c388c9c7abda697895b55676d53c180a4	docs: record full lint flake-check repairs
+29	nix	5c8e2ae34f58daab08f4ca4e6a5f04786be5732a	0a0da3c57bfb2a4bf30d683ba4aeffcfaf9d6a94	docs: add contributing guide, AI disclosure and license
+30	nix	61d57e2aec939aa9f794c3d8c288e5708aca4416	5c8e2ae34f58daab08f4ca4e6a5f04786be5732a	docs(agents): add shared TODO spec and cross-sync playbook
+31	nix	089c9c31bd413c4072e7697b414761892be2fa42	61d57e2aec939aa9f794c3d8c288e5708aca4416	style: format markdown
+32	nix	1ce02ae1596799360ff86eacb52d2d0ccce2ce0a	089c9c31bd413c4072e7697b414761892be2fa42	docs: drop CLAUDE.md in favor of AGENTS.md
+33	nix	2497cc4b10a3bcc2177f8c1d24b0455d85fa9b0e	1ce02ae1596799360ff86eacb52d2d0ccce2ce0a	chore(gitignore): share one canonical ignore block
+34	nix	fe31453f09cc7615d600cf829859da852733688a	2497cc4b10a3bcc2177f8c1d24b0455d85fa9b0e	docs(agents): unify shared conventions and plan model
+35	nix	f057ebd9a04f164b4330552d2d83f89994f7b79a	fe31453f09cc7615d600cf829859da852733688a	style: deno fmt
+36	nix	6e8717c4e2c2a281021fd25b06d05405406f612c	f057ebd9a04f164b4330552d2d83f89994f7b79a	docs(agents): list docs tree instead of an index file
+37	nix	9c0343f9738376f959c6e1882afa418044b0132e	6e8717c4e2c2a281021fd25b06d05405406f612c	docs(agents): allow 2-3 levels of docs depth
+38	nix	78a219e6c587f8c97f0ffa83db026545677a832b	9c0343f9738376f959c6e1882afa418044b0132e	docs(agents): add terse-writing guidance
+39	nix	72ace363703570a06fc23e79b069f57f973cac16	78a219e6c587f8c97f0ffa83db026545677a832b	docs(agents): strengthen ownership and commit-scope rules
+40	nix	922c3ae2ccda5c6d05b651fd23d45622156c3216	72ace363703570a06fc23e79b069f57f973cac16	fix(incus): disable gap3-gondor autostart
+41	nix	d20d63c727537ae51648896d1be4cfd149ed4cc4	922c3ae2ccda5c6d05b651fd23d45622156c3216	fix(swap-auto): retain provisioning state
+42	nix	8f7719666a19ca0e7ac8226ddd8a5ae3277f0a3a	d20d63c727537ae51648896d1be4cfd149ed4cc4	feat(users): add pvl htop config for pvl and root
+43	nix	21498271cef2db2e1a1c5ecff79fefd68723cbdd	8f7719666a19ca0e7ac8226ddd8a5ae3277f0a3a	chore(flake): refresh nixpkgs and home-manager inputs
+44	nix	d19d3c258a931cc160715a7c59e1169de3657b56	21498271cef2db2e1a1c5ecff79fefd68723cbdd	chore(deps): bump ext package source pins
+45	nix	de9549484ba67fa185878c326b7f900f28ece177	d19d3c258a931cc160715a7c59e1169de3657b56	chore(services): bump podman image tags
+46	nix	21143ae26246a8e667a479c63abd420dbcc9c225	de9549484ba67fa185878c326b7f900f28ece177	fix(tailscale): drop stale Go builder override
+47	nix	4aeaa50eb05b9420beb31f6cb6accbd8b8463094	21143ae26246a8e667a479c63abd420dbcc9c225	fix(solaar): pin 1.1.20 from unstable
+48	nix	888d26b08f54e7c1d70620c0e6960006e9d6773a	4aeaa50eb05b9420beb31f6cb6accbd8b8463094	docs(agents): add terse-output guidance
+49	nix	243579c8b7e73c96c6d527af7048bad5e0479567	888d26b08f54e7c1d70620c0e6960006e9d6773a	fix(incus): cap gap3-gondor memory at 28 GiB
+50	nix	455872a68926d7eaff54735967386a238b29c93c	243579c8b7e73c96c6d527af7048bad5e0479567	style(docs): apply deno fmt to markdown notes
+51	nix	ce82dc69705a43529736e229bce684150ecd3ce4	455872a68926d7eaff54735967386a238b29c93c	feat(pi): resolve runtime deps into sources.nix
+52	nix	ada362ebc4449cb618a25d2db9e573158e3335c0	ce82dc69705a43529736e229bce684150ecd3ce4	feat(pi): add process, usage and memory extensions
+53	nix	f3fbc3cd4655e8677ed83d72a491a3df3220288d	ada362ebc4449cb618a25d2db9e573158e3335c0	feat(pi): add pi-anthropic-auth
+54	nix	589fb990a400a2cb93a2896d2ba69fe2fa1f9970	f3fbc3cd4655e8677ed83d72a491a3df3220288d	refactor(pi): resolve deps from in-memory queue
+55	nix	e174ce21cebbca29dc9e50738e1e122f296e9776	589fb990a400a2cb93a2896d2ba69fe2fa1f9970	fix(nvidia): keep systemd suspend path for open driver
+56	nix	4b257e0a71eca643f06d0ecf02b7e3ce7b16cd16	e174ce21cebbca29dc9e50738e1e122f296e9776	chore(deps): bump dotlink to v0.10.0
+57	nix	4914cde314313a00dfc5dce1d8c6e0f61ba7a5dc	4b257e0a71eca643f06d0ecf02b7e3ce7b16cd16	feat(dotlink): grant all developer caches on a1 and l5
+58	nix	730ec591980bed74cf041077698eaafd5f38f35d	4914cde314313a00dfc5dce1d8c6e0f61ba7a5dc	feat(dotlink): add pvl-x2 instance
+59	nix	721a15a5c10d7a6947a608237b18e62051e149cc	730ec591980bed74cf041077698eaafd5f38f35d	docs(dotlink): record v0.10.0 bump and pvl-x2 instance
+60	nix	bcb4824da729bf3800c44aaa5327889d2fda07aa	721a15a5c10d7a6947a608237b18e62051e149cc	feat(pvl-x2): add claude-code
+61	nix	e6bf13006dba1a76ece098fd633afba5c37bbcc5	bcb4824da729bf3800c44aaa5327889d2fda07aa	chore(pi): drop pi-codex-limit extension
+62	nix	ae0104c7fbc1796964614d8c065a7a42347fca8c	e6bf13006dba1a76ece098fd633afba5c37bbcc5	feat(pi): add usage and workflow extensions
+63	nix	83dc06df153fdcb20eea88d5ce2e67e8141fc062	ae0104c7fbc1796964614d8c065a7a42347fca8c	feat(pi): swap pi-processes for pi-patty-bg-tasks
+64	nix	eac4669733dc6283d885d2a0df2e93b6d5f3215c	83dc06df153fdcb20eea88d5ce2e67e8141fc062	chore(flake): bump dotlink to v0.11.0
+65	nix	8663a016e25ac265b67dd5f4d42cb4233e841b18	eac4669733dc6283d885d2a0df2e93b6d5f3215c	chore(pi): drop pi-usage-mtrojnar
+66	nix	b8e50cb127adb7bca3bda8c9c9019c2e355f8458	8663a016e25ac265b67dd5f4d42cb4233e841b18	chore(flake): bump dotlink to v0.12.0
+67	nix	506eef4e6f100b1626d64d6a296093395beebcf1	b8e50cb127adb7bca3bda8c9c9019c2e355f8458	chore(pi): drop rpiv-ask-user-question
+68	nix	921f3f4a0c22702f72550c381f68d768e1b0e18e	506eef4e6f100b1626d64d6a296093395beebcf1	chore(flake): bump dotlink to v0.13.1
+69	nix	2308082b621d951c1bb68c9ab4892469d8887f00	921f3f4a0c22702f72550c381f68d768e1b0e18e	chore(flake): refresh inputs
+70	nix	e4d8253ca4783da3fad0c58373463f0a601139a2	2308082b621d951c1bb68c9ab4892469d8887f00	docs(dotlink): record v0.13.x input bumps
+71	nix	f6aeddc344ba4ec83a92cb130b7c5f23d8a6430a	e4d8253ca4783da3fad0c58373463f0a601139a2	chore(pi): update extension sources
+72	nix	0584085e984d128a07c5eabce4880b382cd1e705	f6aeddc344ba4ec83a92cb130b7c5f23d8a6430a	chore(pi-web): disable MCP in web service
+73	nix	76d931b1ad959ca819c0c8dbe06f127687c65030	0584085e984d128a07c5eabce4880b382cd1e705	chore(ollama): bump image to 0.40.12
+74	nix	8b7e3bf6c5f4e02ee25f475acc7c3b7362452835	76d931b1ad959ca819c0c8dbe06f127687c65030	chore(pvl-x2): refresh pinned images
+75	nix	6da867b1e31746b5b451866a3a1fdcf70fc66dc0	8b7e3bf6c5f4e02ee25f475acc7c3b7362452835	chore(ext): refresh lib/ext pins
+76	nix	ee25b27cb0fbb1539855940ab6fdd2221583b1fa	6da867b1e31746b5b451866a3a1fdcf70fc66dc0	chore(ext): refresh pkgs/ext pins
+77	nix	b714b723a99a1ebace399487056acd4bd3a851fa	ee25b27cb0fbb1539855940ab6fdd2221583b1fa	chore(ext): bump tailscale to v1.104.4
+78	nix	3a7fcc148b1d22c227562fcab1c6196eb6b2cefd	b714b723a99a1ebace399487056acd4bd3a851fa	feat(pi): package pi-tool-manager
+79	nix	0097ec3614a876dab8b55888c401af4338ff2e4c	3a7fcc148b1d22c227562fcab1c6196eb6b2cefd	feat(fabric): add grouped access selectors
+80	nix	e0b0a9b7b0ac1adfa2c061c6d2fc60f2d873e938	0097ec3614a876dab8b55888c401af4338ff2e4c	feat(cache): add scoped upstream policy
+81	nix	89fb3d66fa1b2dcd00f73927a6f9f424a6ca4230	e0b0a9b7b0ac1adfa2c061c6d2fc60f2d873e938	feat(incus): reconcile owned proxies live
+82	nix	5de75ac5fa70c41104cf5321874c14ec70c67c98	89fb3d66fa1b2dcd00f73927a6f9f424a6ca4230	feat(pvl): delegate private cache to CI
+83	nix	ae477b882e1bcfcbabdfd88b0610ade7b5b15d3f	5de75ac5fa70c41104cf5321874c14ec70c67c98	docs(tooling): assess shared library drift
+84	z	bd288952449db4fd94f04c8a9af0669ff11c8fdd	13dafcdedeb2362ae670b65437a5a26af677f75a	feat(nixbot): end live region on exit
+85	z	75603b24d7c4dd4d7e439f9ec527eb468fe42b70	bd288952449db4fd94f04c8a9af0669ff11c8fdd	build(host-agent): add rsync to check inputs
+86	z	929aa60f14881e7ce97ee72cf473d804243b4a03	75603b24d7c4dd4d7e439f9ec527eb468fe42b70	fix(flake): force Git fetcher for self-references
+87	z	19206c30ee74814dce585d8668da796f2144b6ba	929aa60f14881e7ce97ee72cf473d804243b4a03	fix(ext): build tailscale 1.104.1 with Go 1.27
+88	z	5173e35230ff460b92f00de91e8ae659d2275d3a	19206c30ee74814dce585d8668da796f2144b6ba	feat(pi): refresh extension suite
+89	z	56729d7eeef055e559b31a78d882e45ef7808f4e	5173e35230ff460b92f00de91e8ae659d2275d3a	fix(services): put profile tools on pi-web PATH
+90	z	12123f066f69e5db9536544e5c0780ba1d561825	56729d7eeef055e559b31a78d882e45ef7808f4e	chore(deps): refresh vscode, prism, stalwart pins
+91	z	8ca2ddb28a18a144ed8fcbf6ebbcd5983e64d62d	12123f066f69e5db9536544e5c0780ba1d561825	fix(update): prune gitignored trees in discovery
+92	z	5e61e5d79dd1d00abe8c2ddd04f1a9bd827c6741	8ca2ddb28a18a144ed8fcbf6ebbcd5983e64d62d	fix(images): verify release tags against registry
+93	z	d2e9c8aa6f00cca8919813f53a3cba23723c0297	5e61e5d79dd1d00abe8c2ddd04f1a9bd827c6741	feat(ext): add bladebro package
+94	z	b68119991b7a609e0464897a087ef98c5d3e5f97	d2e9c8aa6f00cca8919813f53a3cba23723c0297	refactor(pi): remove revdiff
+95	z	55bf432f628918c7dff99deefc88735bb2fc851e	b68119991b7a609e0464897a087ef98c5d3e5f97	fix(network): hold transport units across switch
+96	z	3826595b7a07ad7878132bc0702639e1a5d72713	55bf432f628918c7dff99deefc88735bb2fc851e	docs(flake): adopt rust seam review markers
+97	z	3b3544b529183410a641450f06278dd4c7a04931	3826595b7a07ad7878132bc0702639e1a5d72713	docs(tooling): record pvl post-0be0bf94 port
+98	z	db1792d40406b4e4ac459130b68ce86b21beb8d3	3b3544b529183410a641450f06278dd4c7a04931	docs(rust): consolidate foundation handoff
+99	z	a5fb7372c678c12e4468bb80be9fb533366f57a6	db1792d40406b4e4ac459130b68ce86b21beb8d3	build: refresh external inputs and pins
+100	z	98c4567706492d7bc677bd050f8ab54e8de3171b	a5fb7372c678c12e4468bb80be9fb533366f57a6	fix(kanidm): permit pinned EOL 1.10 package
+101	z	a2c69e26e2e5bf2e9587c579f45d76f78fc7daa3	98c4567706492d7bc677bd050f8ab54e8de3171b	fix(bash): drop tput from prompt
+102	z	f18f06136e1fa815f91f3cfe1c14ad57b1fe416a	a2c69e26e2e5bf2e9587c579f45d76f78fc7daa3	style: fix deno fmt drift
+103	z	36bb183ea1a1b5083377ea192717a69fba5002d3	a200d1b1ce7362fbd42df456bf624420c44222e3	docs(agentic): plan phase 4 delivery
+104	z	96397795a40283843e19f6ca8639fe6be9772f03	f18f06136e1fa815f91f3cfe1c14ad57b1fe416a,36bb183ea1a1b5083377ea192717a69fba5002d3	Merge remote-tracking branch 'origin/master'
+105	z	071e6bb1199e55a52753288e0e3ad1d775f0cb8d	96397795a40283843e19f6ca8639fe6be9772f03	style: fix merge fmt drift
+106	z	e1974d32a0727a2fcaa6084c394e37b1248b7434	071e6bb1199e55a52753288e0e3ad1d775f0cb8d	docs(agentic): refresh AW kernel pin
+107	z	e091fa28f5f73fbf3a90d40c8438f2d2beed26f6	e1974d32a0727a2fcaa6084c394e37b1248b7434	fix(excalidash): run migration container as root
+108	z	21fe3af5be76481518771fb0bbfbe9a3fed4da21	e091fa28f5f73fbf3a90d40c8438f2d2beed26f6	chore(images): roll abird and gap3 container pins
+109	z	9dda9ee47300a15262be4e8d353842120b024972	21fe3af5be76481518771fb0bbfbe9a3fed4da21	docs(agentic): update rust foundation handoff and plan
+110	z	bcbdd99c300681cce7a08daa9cae83950f22568a	9dda9ee47300a15262be4e8d353842120b024972	docs(deploy): record fleet rollback and data skew
+111	z	76b1cc65b606cefff1e216b1e1809c77ca4dd195	bcbdd99c300681cce7a08daa9cae83950f22568a	docs(agentic): record NixOS VM qualification result
+112	z	684b9e0a9c37775edaea6818e98074546e32800e	76b1cc65b606cefff1e216b1e1809c77ca4dd195	feat(rust): add closure cache composition
+113	z	8808883b9d4d1958aca1df89c061ac90f2d3b638	684b9e0a9c37775edaea6818e98074546e32800e	feat(rust): add immutable mirror tooling
+114	z	544e18818a3456a8858a04db5ff54bd57183e3c2	8808883b9d4d1958aca1df89c061ac90f2d3b638	test(rust): add optional VM qualification
+115	z	97481dfb95d93382fb3bca8baaf88296d1bc18ab	544e18818a3456a8858a04db5ff54bd57183e3c2	docs(rust): close validated main integration
+116	z	be2a9490cfd472953dedd7810fc79e4a31e9d4b9	76b1cc65b606cefff1e216b1e1809c77ca4dd195	feat(agentic): freeze phase 4 seams
+117	z	f4c3967ae040e2431a65c47153d1b51183f34a1b	be2a9490cfd472953dedd7810fc79e4a31e9d4b9	docs(agentic): close phase 4a
+118	z	9e0c5a5590b8ca2fce2f7ab0ece40f7cd19ab265	f4c3967ae040e2431a65c47153d1b51183f34a1b	docs(agentic): accept phase 4b plan
+119	z	fdc23588e495660159cd33e50d661ec897ef46f2	97481dfb95d93382fb3bca8baaf88296d1bc18ab,9e0c5a5590b8ca2fce2f7ab0ece40f7cd19ab265	merge: integrate upstream agentic work
+120	z	1933dd4a0a27b35c71a8e38ef9a6ab0984e709e5	fdc23588e495660159cd33e50d661ec897ef46f2	docs(rust): record publication and custody
+121	z	7d37ef3cd869a42be299dcea3b1e3400bf7c790a	1933dd4a0a27b35c71a8e38ef9a6ab0984e709e5	fix(rust): reject unsupported lock policies
+122	z	7bba93e2988e7ca30583fae2e564d2fb0efb0134	7d37ef3cd869a42be299dcea3b1e3400bf7c790a	style(rust): format native test fixtures
+123	z	aca6931406408527935e715042c4e500efb6402d	7bba93e2988e7ca30583fae2e564d2fb0efb0134	style(rust): satisfy static Nix lint
+124	z	5ec426d22c76bfa8047ad24eadee4b4ef82a3caf	aca6931406408527935e715042c4e500efb6402d	docs(rust): clarify retained event bytes
+125	z	d93812391ab66df37c937fe58e0f663e10f3dba8	5ec426d22c76bfa8047ad24eadee4b4ef82a3caf	fix(abird-agent): preserve source defaults
+126	z	210e8550b29d5845b27d2b168b3df81527bff871	d93812391ab66df37c937fe58e0f663e10f3dba8	refactor(flake): group language implementations
+127	z	94cba1c655212f18391f2289f61d4ba4fdb6fc25	5ec426d22c76bfa8047ad24eadee4b4ef82a3caf	feat(agent): add ChatGPT plan connections
+128	z	46e1bb17c5d131161690f7550193a3ebb2b82d2c	94cba1c655212f18391f2289f61d4ba4fdb6fc25	docs(agent): record Phase 4b deploy
+129	z	3b46c197bab71ab05b1b7179043cdd780d586755	46e1bb17c5d131161690f7550193a3ebb2b82d2c	style(docs): format Phase 4b records
+130	z	ee205ebfa1a0092b8edd1923e9bcf65b47c53fa8	3b46c197bab71ab05b1b7179043cdd780d586755	fix(app): accept ChatGPT callback scopes
+131	z	9e5700078b96b437e0c0c35b6b481f470a472110	ee205ebfa1a0092b8edd1923e9bcf65b47c53fa8	docs(agent): record callback repair deploy
+132	z	96bad37017e3e9e09d1d0d20ad360d5a4836cc1e	210e8550b29d5845b27d2b168b3df81527bff871,9e5700078b96b437e0c0c35b6b481f470a472110	Merge remote-tracking branch 'origin/master'
+133	z	5cca73ca5d9c02087704d43fdc3221ee8821f686	96bad37017e3e9e09d1d0d20ad360d5a4836cc1e	fix(rust): align source and vendor lockfiles
+134	z	dd9ec9c9dd75b6acbc6d17691946829be3a6b2b3	5cca73ca5d9c02087704d43fdc3221ee8821f686	fix(app): accept OAuth callback extensions
+135	z	0591b44043150dd59a5c776f84b32ae7bbe723e7	dd9ec9c9dd75b6acbc6d17691946829be3a6b2b3	docs(agent): record callback candidate deploy
+136	z	57f28f5b6e2465e33b903f442be3529303565b22	0591b44043150dd59a5c776f84b32ae7bbe723e7	fix(app): follow ChatGPT callback contract
+137	z	dfcf017eb13dc54307d8e897422a4d79dabecb32	57f28f5b6e2465e33b903f442be3529303565b22	docs(agent): record contract callback deploy
+138	z	9dc38b08f4d45929dac5ebe8188e0a167f4a2a8c	dfcf017eb13dc54307d8e897422a4d79dabecb32	fix(app): recover ChatGPT sign-in
+139	z	ca53d76456f3fc2ddacb712bfa87b196ca1dabd8	9dc38b08f4d45929dac5ebe8188e0a167f4a2a8c	fix(app): refresh ChatGPT session
+140	z	c45820e8e34a063412edd11b3da689ad3a82d34f	ca53d76456f3fc2ddacb712bfa87b196ca1dabd8	style(docs): fix formatting
+141	z	de3b0f6e7578fb40b06708d627e434c79d276d8d	c45820e8e34a063412edd11b3da689ad3a82d34f	docs(rust): close side-worktree custody
+142	z	f47922be7ff36da718b276a47e44fa884a5b3257	c45820e8e34a063412edd11b3da689ad3a82d34f	fix(agent): accept bounded model catalogue
+143	z	43235e818eabf6fb5ff5365caedbe3b8c54e644a	de3b0f6e7578fb40b06708d627e434c79d276d8d,f47922be7ff36da718b276a47e44fa884a5b3257	Merge remote-tracking branch 'origin/master'
+144	z	d00812b5aa3ffa223599a6817179a33b9bdbfe29	43235e818eabf6fb5ff5365caedbe3b8c54e644a	docs(agent): close Phase 4b
+145	z	d45c03d5efe0e7e96a65fbce8acc3f67b6976a1e	d00812b5aa3ffa223599a6817179a33b9bdbfe29	fix(test): refresh full-lint assertions
+146	z	bf86f03e196597db74c12c1049088e16b9349706	d45c03d5efe0e7e96a65fbce8acc3f67b6976a1e	fix(test): gate prism check to x86_64
+147	z	9e2da3fbc36d675c0ce905bd1f88167262284e58	bf86f03e196597db74c12c1049088e16b9349706	docs(tooling): record full-lint assertion drift
+148	z	2f3c5bfdf32c2b11e888895c2dc12c532adf8dfe	9e2da3fbc36d675c0ce905bd1f88167262284e58	docs(agent): accept Phase 4c plan
+149	z	6dbd59e1a0439fd956c795e5db07beb4e4e7a9c8	2f3c5bfdf32c2b11e888895c2dc12c532adf8dfe	feat(agent)!: add pinned Codex harness
+150	z	4d7f3b493c379439a7a80b0e129451e33bec3b94	6dbd59e1a0439fd956c795e5db07beb4e4e7a9c8	fix(agent): avoid provider auth deadlock
+151	z	2ca24b14d7287ff06ab8e39189f36971412916ad	4d7f3b493c379439a7a80b0e129451e33bec3b94	docs(agent): record Phase 4c rollout
+152	z	3cb91e9989dc8a9023747df06439c70c31653b5d	2ca24b14d7287ff06ab8e39189f36971412916ad	style(docs): format Phase 4c records
+153	z	2fe239a40e7496eb73ad98247b37d7f1eab027c3	3cb91e9989dc8a9023747df06439c70c31653b5d	fix(agent): suppress config warnings
+154	z	56c27589a0b0d163231b90310f702a6929cacc2e	2fe239a40e7496eb73ad98247b37d7f1eab027c3	docs(agent): record warning fix rollout
+155	z	936ff7d5c641bbb8e29b34f8a95fbc5ad29d0b54	56c27589a0b0d163231b90310f702a6929cacc2e	docs: add contributing guide, AI disclosure and license
+156	z	75308cd7da45a00b1f1698b3ef55d0ae24b3727c	936ff7d5c641bbb8e29b34f8a95fbc5ad29d0b54	docs(agents): add shared TODO spec
+157	z	bbd7c2f5cb162a4b0c6afc6acb4f906cfe858873	75308cd7da45a00b1f1698b3ef55d0ae24b3727c	style: format markdown
+158	z	62c49e98e1d0ba7104f03c2d4135583e2ba7a572	bbd7c2f5cb162a4b0c6afc6acb4f906cfe858873	fix(agent): bind ChatGPT dispatch atomically
+159	z	552312721bbd0332f6640d2ff4fc79af5c43a8ea	62c49e98e1d0ba7104f03c2d4135583e2ba7a572	docs(agent): record dispatch rollout
+160	z	51edbaf0173ddf8b74534decda177b01b7fa2b7d	552312721bbd0332f6640d2ff4fc79af5c43a8ea	fix(agent): accept notification timestamps
+161	z	3f2339b62df71358876cfa2b981d9f8f0a21565b	51edbaf0173ddf8b74534decda177b01b7fa2b7d	docs(agent): record notification rollout
+162	z	a3b42becb736c9a104132a57f5a87f746ce7b04c	3f2339b62df71358876cfa2b981d9f8f0a21565b	fix(agent): adapt Codex output schemas
+163	z	a1eeb4d4b5e864db58b77fc211be02eb864a1693	a3b42becb736c9a104132a57f5a87f746ce7b04c	docs(agent): record schema rollout
+164	z	e5f10cffe129d0471bc931f228273238c31fcfa9	a1eeb4d4b5e864db58b77fc211be02eb864a1693	docs(agent): format schema rollout
+165	z	ccdee63cfb8139a03c14a0e66c13b87fe5d3d1d6	e5f10cffe129d0471bc931f228273238c31fcfa9	fix(agent): suppress moderation metadata
+166	z	5cc38df8f7701fb20375c23c0949bed4cdbff68a	ccdee63cfb8139a03c14a0e66c13b87fe5d3d1d6	docs(agent): record moderation rollout
+167	z	863d96de8ad6e10e1e2e5710938d566bf639eaf9	5cc38df8f7701fb20375c23c0949bed4cdbff68a	fix(agent): align pinned Codex contract
+168	z	e75cce6ddb1fbb98d9e739646b80d76218e311f2	863d96de8ad6e10e1e2e5710938d566bf639eaf9	docs(agent): record Codex contract rollout
+169	z	41aec5c32c2a664813b4b85deee34e00081b3f76	e75cce6ddb1fbb98d9e739646b80d76218e311f2	style(docs): format Codex rollout records
+170	z	aa5053e6ee542fb9938071633f0a2b708b467da7	41aec5c32c2a664813b4b85deee34e00081b3f76	docs: drop CLAUDE.md in favor of AGENTS.md
+171	z	d192448f2adffc229de58e7f40ef91aeb700e865	aa5053e6ee542fb9938071633f0a2b708b467da7	chore(gitignore): share one canonical ignore block
+172	z	6fd27dd6f6621926bdd80b05a79a04ec3e5424a2	d192448f2adffc229de58e7f40ef91aeb700e865	docs(agents): unify shared conventions and plan model
+173	z	12b1a842984d04289c6da2679f75c825e3945f45	6fd27dd6f6621926bdd80b05a79a04ec3e5424a2	docs(plans): migrate historical plans to the unified model
+174	z	e1dd54f1aff31994e5d9863fa1dc7f9654dc79ad	12b1a842984d04289c6da2679f75c825e3945f45	style: deno fmt
+175	z	8940957250dcfd6b2ddb7159eac7b262c822d065	e1dd54f1aff31994e5d9863fa1dc7f9654dc79ad	fix(plans): make migrated HISTORY headings lint-safe
+176	z	cac030ce746641543d09d00abc90bd4d72fd42ec	8940957250dcfd6b2ddb7159eac7b262c822d065	docs(plans): migrate Phase 4c tracking
+177	z	90af4903363d6ff0758c1b4bba6911aec27813f1	cac030ce746641543d09d00abc90bd4d72fd42ec	docs(agents): list docs tree instead of an index file
+178	z	189d1f3a32814ea1cca5487e7160caf72e9e55a6	90af4903363d6ff0758c1b4bba6911aec27813f1	docs(agents): allow 2-3 levels of docs depth
+179	z	901c42f78d51ddd142ca193b5f2eb08b9f73b190	189d1f3a32814ea1cca5487e7160caf72e9e55a6	docs(agents): add terse-writing guidance
+180	z	5feb5219e4443e629247c6059d07286e508707c7	901c42f78d51ddd142ca193b5f2eb08b9f73b190	docs(agents): strengthen ownership and commit-scope rules
+181	z	2c2c2299004cef01d9f9c52448f39bc3de5cd5c5	5feb5219e4443e629247c6059d07286e508707c7	docs(agents): add terse-output guidance
+182	z	f7a76eed38529202248160f5b1267d83979d40ff	2c2c2299004cef01d9f9c52448f39bc3de5cd5c5	chore(deps): refresh pins and image tags
+183	z	34185bdcb75f7372ef8ff2bd5646d35870eab07c	f7a76eed38529202248160f5b1267d83979d40ff	chore(gondor): drop unused app stacks for the 28GiB cap
+184	z	f66a529d6c725d8e883002e2d3294f93a10aca02	34185bdcb75f7372ef8ff2bd5646d35870eab07c	chore(gondor): stop unused incus guests
+185	z	ddd4c7e5123165e8eda06d4c4b9a95a8ae8dd852	f66a529d6c725d8e883002e2d3294f93a10aca02	feat(gondor): rank guest oom priorities
+186	z	690fe81018cf8c3597672b832b4c3c7af3ad49be	ddd4c7e5123165e8eda06d4c4b9a95a8ae8dd852	fix(forgejo): hold 16.0.6 on the 17.0.0 advisory
+187	z	a58318134b4d4e9e21c2180e035df29fd864787e	690fe81018cf8c3597672b832b4c3c7af3ad49be	fix(agent): report ChatGPT usage limits
+188	z	adb4a645f89b683a1eba879c9a7bcc235fe6939e	a58318134b4d4e9e21c2180e035df29fd864787e	fix(agent): restore after authority fencing
+189	z	83952cc18fcd68948760b75dbcfaf46c3a460c36	adb4a645f89b683a1eba879c9a7bcc235fe6939e	fix(agent): pin Codex protocol contract
+190	z	02e66c1d51d4320627f15ab9a1cbaa69a50496d7	83952cc18fcd68948760b75dbcfaf46c3a460c36	test(nixbot): keep parity ledger with tests
+191	z	29949116714d2532343b8666829e1607c755129c	02e66c1d51d4320627f15ab9a1cbaa69a50496d7	fix(agent): drop removed repository root
+192	z	e08044002579061e053bb5f08d202f1b1ccdec78	29949116714d2532343b8666829e1607c755129c	docs(agent): record correction rollout
+193	z	5e38420290c121caddcd7b66601752ca2eb19ef4	e08044002579061e053bb5f08d202f1b1ccdec78	fix(workflows): preserve admission errors
+194	z	ebd17a5b8c59ebedd217e398143910d67850df07	5e38420290c121caddcd7b66601752ca2eb19ef4	docs(agent): record workflow recovery rollout
+195	z	c39952b387633574ce804f0661dab6dd3c181c67	ebd17a5b8c59ebedd217e398143910d67850df07	fix(agent): settle completed Codex tunnels
+196	z	d4ed5916f8634a5dd1916a2d3bc56bac1aaea157	c39952b387633574ce804f0661dab6dd3c181c67	fix(web): recover sessions after brief outages
+197	z	8018087ec79fcb5cd1157b96b921f6ed355a62d6	d4ed5916f8634a5dd1916a2d3bc56bac1aaea157	docs: record tunnel and session rollout
+198	z	d2f0e606cdff5b11d0095945523337f4d2a03d45	8018087ec79fcb5cd1157b96b921f6ed355a62d6	fix(agent): settle closed Codex sockets
+199	z	4f9af1b4d00e30d0a0ca324f135dd1bf0f895905	d2f0e606cdff5b11d0095945523337f4d2a03d45	docs(agent): record socket cleanup rollout
+200	z	88d85fce9f78bc8fb43a742baa5ad8a6891765a0	4f9af1b4d00e30d0a0ca324f135dd1bf0f895905	fix(agent): align Codex runtime permissions
+201	z	f47e7aa6bb822545b30424b2f9459dd3cb90cfd5	88d85fce9f78bc8fb43a742baa5ad8a6891765a0	docs(agent): record runtime permission rollout
+202	z	f0b4e06bc3853e2df9464a4b850a081761458dc8	f47e7aa6bb822545b30424b2f9459dd3cb90cfd5	fix(agent): settle Codex workflow responses
+203	z	ca8ec298ae416e5990dff6aa16d14a5fdbcd63c6	f0b4e06bc3853e2df9464a4b850a081761458dc8	docs(agent): record Codex response rollout
+204	z	627a6e25bdb751a7b4c2811ffc73472dcd147442	ca8ec298ae416e5990dff6aa16d14a5fdbcd63c6	fix(web): make workflow questions readable
+205	z	cad4e903b4cdb7a5f3b7995a6d6eb1a838493d84	627a6e25bdb751a7b4c2811ffc73472dcd147442	fix(agent): retain provider throttling reason
+206	z	9543c7cfbc483f76b2d8f4b5c8d927201e1d7870	cad4e903b4cdb7a5f3b7995a6d6eb1a838493d84	docs(agent): record throttling rollout
+207	z	c030c19377b6a1f9fc9874e4d5675c4145b8df1c	9543c7cfbc483f76b2d8f4b5c8d927201e1d7870	fix(agent): preserve bounded Codex instructions
+208	z	a11536ce27fc8eb7237769f910f02a804ca3f83a	c030c19377b6a1f9fc9874e4d5675c4145b8df1c	docs(agent): record instruction policy rollout
+209	z	7089dd5b10f42d6dea3f75f2dd1e480d5a136f08	a11536ce27fc8eb7237769f910f02a804ca3f83a	fix(agent): preserve accepted workflow validity
+210	z	172a7c3f41792b05386e3784213ce7b5c9918fd2	7089dd5b10f42d6dea3f75f2dd1e480d5a136f08	docs(agent): record workflow validity rollout
+211	z	9f325666a419ee1cc1a299df3a8aac3811ecfbbe	172a7c3f41792b05386e3784213ce7b5c9918fd2	fix(web): clear submitted workflow requests
+212	z	9f493dfd059783a8c59fa5c2ee77b0d24a7f9e02	9f325666a419ee1cc1a299df3a8aac3811ecfbbe	fix(agent): handle ChatGPT plan limits
+213	z	d64bfc8981501ef686b82b1ee24a74274c8fcbf0	9f493dfd059783a8c59fa5c2ee77b0d24a7f9e02	docs(agent): record ChatGPT limit rollout
+214	z	7c14d604d1f77e4fb1e14636117bdd8d7b182e68	d64bfc8981501ef686b82b1ee24a74274c8fcbf0	style: format rollout docs
+215	z	268c6ec3757104b2dcb457d6ab6a72fb8bfddfe0	7c14d604d1f77e4fb1e14636117bdd8d7b182e68	fix(agent): reserve session loss for controller
+216	z	9c42c10cf2585337c0d708655b21aa8e0c121ad7	268c6ec3757104b2dcb457d6ab6a72fb8bfddfe0	docs(agent): record session-stop rollout
+217	z	f23bd2399cc018f3a08e205c8b02348203c5c316	9c42c10cf2585337c0d708655b21aa8e0c121ad7	fix(agent): keep accepted goals in planning
+218	z	1cfe855e1dc615875769de231a752c3b35e7d137	f23bd2399cc018f3a08e205c8b02348203c5c316	docs(agent): record planning-boundary rollout
+219	z	425ad9adbdbac9832e6642451a500f64259aec98	1cfe855e1dc615875769de231a752c3b35e7d137	fix(web): paginate workflow history by ten
+220	z	7cc74ebbfd56fa8075f655aa1210a206ed3c434c	425ad9adbdbac9832e6642451a500f64259aec98	fix(agent): admit retained ChatGPT runs
+221	z	6464476e77315d567b9581817feb92e7b7dadb7f	7cc74ebbfd56fa8075f655aa1210a206ed3c434c	docs(agent): record ChatGPT admission rollout
+222	z	00188e56bbe15916c332a128e7fb8f4656f2009a	6464476e77315d567b9581817feb92e7b7dadb7f	docs(agent): clarify rollout retest boundary
+223	z	b18ad1d42893fad389f37e401d0fad0e93d9681f	00188e56bbe15916c332a128e7fb8f4656f2009a	fix(agent): validate retained Codex runs
+224	z	f4a49e259c5c05289b3958a448480849f3c0b6bb	b18ad1d42893fad389f37e401d0fad0e93d9681f	docs(agent): record retained-run rollout
+225	z	50cab92567deee394f830b0f5ef79ba934b38eb5	f4a49e259c5c05289b3958a448480849f3c0b6bb	fix(agent): validate restored local environment
+226	z	9ffa6766ad513eaf5a46e4057d268938331319ad	50cab92567deee394f830b0f5ef79ba934b38eb5	docs(agent): record environment resume rollout
+227	z	f6a5540f0b6da6e185e5d4f479748190fecaee0a	9ffa6766ad513eaf5a46e4057d268938331319ad	fix(agent): retain task provider limit reasons
+228	z	6fed71f8d1859d24e800c6de3313924d7f56e577	f6a5540f0b6da6e185e5d4f479748190fecaee0a	docs(agent): record task-limit rollout
+229	z	0b9defed31b22d84608b5aeb7e6db7a24308a6e1	6fed71f8d1859d24e800c6de3313924d7f56e577	perf(agent): plan simple observations in one call
+230	z	86ca9cd6e7eb708a208227324ce7b959dd4f2936	0b9defed31b22d84608b5aeb7e6db7a24308a6e1	perf(agent): send retained Codex input deltas
+231	z	fec99144a1f2e0479288bfb89c971f9a2cb1440a	86ca9cd6e7eb708a208227324ce7b959dd4f2936	fix(codex): retain provider error details
+232	z	b14c6f8ffc6735f9447c135ec7c624285fdcf27e	fec99144a1f2e0479288bfb89c971f9a2cb1440a	docs(agent): record request-flow rollout
+233	z	2cf729a24bcc85a7b453bb438851a4cba62a2bba	b14c6f8ffc6735f9447c135ec7c624285fdcf27e	fix(agent): report and defer Codex capacity
+234	z	0269b5ac4aab01c8b62425de6632b77abfb1a47d	2cf729a24bcc85a7b453bb438851a4cba62a2bba	fix(web): preserve valid desktop sessions
+235	z	7ea3f0ca5937ebf29c6877940a34b0a1d00bcce2	0269b5ac4aab01c8b62425de6632b77abfb1a47d	test(agent): match shared no-swap rejection
+236	z	017b6dde709f799684fd99837b87c6bbbbac134e	7ea3f0ca5937ebf29c6877940a34b0a1d00bcce2	fix(agent): retain legacy backup status
+237	z	91d3fc11681c99819e764c066c9f44f54d98033b	017b6dde709f799684fd99837b87c6bbbbac134e	docs(agent): record capacity session rollout
+238	z	950b08994652350767c94c71748eeb2077487071	91d3fc11681c99819e764c066c9f44f54d98033b	style: format rollout notes
+239	z	7f16e80eac315a88e1c88fb9fc3347691a76d3ff	950b08994652350767c94c71748eeb2077487071	fix(workflow): validate retained retry history
+240	z	5d696c877fb252c6eae5b20fb6451ed07e32a746	7f16e80eac315a88e1c88fb9fc3347691a76d3ff	docs: record retry recovery rollout
+241	z	969e3a3532412f6d44412dc7641a03d2aaa6c794	5d696c877fb252c6eae5b20fb6451ed07e32a746	fix(agent): protect snapshots during admission
+242	z	3d405d2fd6aacf5121a176d2e8e7a6f8ff74db18	969e3a3532412f6d44412dc7641a03d2aaa6c794	docs: record snapshot ownership rollout
+243	z	d5c0b2c4d82ab006b886e41611b1f3a6c28fbb79	3d405d2fd6aacf5121a176d2e8e7a6f8ff74db18	fix(agent): follow discovered plan layouts
+244	z	b64aabd6066c8fd2d401b9abdf7ce0d0731352e4	d5c0b2c4d82ab006b886e41611b1f3a6c28fbb79	docs: record plan navigation rollout
+245	z	598839895d7298299d161becfdf7a11721736f5b	b64aabd6066c8fd2d401b9abdf7ce0d0731352e4	fix(codex): allow answer-only repository turns
+246	z	bfca80a90e60e57723b696bd286a9b83059d2d2d	598839895d7298299d161becfdf7a11721736f5b	docs: record final answer rollout
+247	z	5af66578d9c796e478c138c273db9a7901fb7c70	bfca80a90e60e57723b696bd286a9b83059d2d2d	fix(ui): show completed workflow answers
+248	z	5fc4f63378b20b3dbad5acb0fc0947b6e7230c0b	5af66578d9c796e478c138c273db9a7901fb7c70	feat(codex): qualify GPT-6 models
+249	z	d032380738da7980f82f39fbb733f9ff825b2beb	5fc4f63378b20b3dbad5acb0fc0947b6e7230c0b	feat(chatgpt): refresh available models
+250	z	fa92903dd05a26b45766e6f2dff8b3159dcfaade	d032380738da7980f82f39fbb733f9ff825b2beb	fix(workflow): decouple operator readiness
+251	z	c71208b0ca85f395c0558132cc701ed42b7d18ef	fa92903dd05a26b45766e6f2dff8b3159dcfaade	fix(workflow): preserve scoped answer contracts
+252	z	7a876a3631aa3571396c022341a9db8a94377b22	c71208b0ca85f395c0558132cc701ed42b7d18ef	fix(workflow): verify completion evidence
+253	z	37f9fd084adb919197cffea688e7996bcc99c6d3	7a876a3631aa3571396c022341a9db8a94377b22	fix(workflow): plan unfinished evidence work
+254	z	cb3d4a0cd1a8d9695b28f72859947bf3e898a1ba	37f9fd084adb919197cffea688e7996bcc99c6d3	fix(workflow): retain requested item levels
+255	z	32474d639bdfc34b14a0457254012019fc1c3e24	cb3d4a0cd1a8d9695b28f72859947bf3e898a1ba	fix(search): diversify directory matches
+256	z	7c018d087c00dba4761b5703a3e419d3cc5bbe3b	32474d639bdfc34b14a0457254012019fc1c3e24	fix(provider): fit native token reservations
+257	z	0059a32168dfb78a8688b353ca1cdd44e23aa3bd	7c018d087c00dba4761b5703a3e419d3cc5bbe3b	fix(search): let tasks choose relevant context
+258	z	cf77795ff5abdd841dce9858819dd98cec1e01f5	0059a32168dfb78a8688b353ca1cdd44e23aa3bd	fix(broker): expose inspection budgets
+259	z	f2d522298185cc6007b9f0a65e742427483ce3a6	cf77795ff5abdd841dce9858819dd98cec1e01f5	fix(search): align literal query guidance
+260	z	803b430347f47e84244958fdc4bbcf3ba451717e	f2d522298185cc6007b9f0a65e742427483ce3a6	docs(workflow): record acceptance blockers
+261	z	fd559cf030a54ad3e8678aa88802129801d71349	803b430347f47e84244958fdc4bbcf3ba451717e	fix(provider): separate repair token units
+262	z	f68f29e59cda26e19e1ce1b6349cb7ce0df177c5	fd559cf030a54ad3e8678aa88802129801d71349	fix(workflow): decouple native task budgets
+263	z	17963599f6bcb5e2f91cbe15b9af9e9847b65f10	f68f29e59cda26e19e1ce1b6349cb7ce0df177c5	fix(workflow): reserve final answer capacity
+264	z	79fb97f22ca8d7af6c1b055cf5e36228c6695786	17963599f6bcb5e2f91cbe15b9af9e9847b65f10	fix(workflow): retain precise evidence gaps
+265	z	d2a16c2c33ff1a14e6f871e22d6306e10635c14f	79fb97f22ca8d7af6c1b055cf5e36228c6695786	fix(workflow): reuse verified repair evidence
+266	z	a8e3a2b2328b5551963c9338394d082cc1e7e352	d2a16c2c33ff1a14e6f871e22d6306e10635c14f	test(workflow): align release fixtures
+267	z	a8dfddb3357c62c97064cac3a89be45302d27fa1	a8e3a2b2328b5551963c9338394d082cc1e7e352	chore(workflow): qualify release recovery
+268	z	b498882daa658198f4fcee41e43dba6d1e3912dd	a8dfddb3357c62c97064cac3a89be45302d27fa1	fix(workflow): fit repair observation admission
+269	z	b7e2d3d85ec226e5ad5a8e5d6c0aa74fd51723a0	b498882daa658198f4fcee41e43dba6d1e3912dd	fix(workflow): repair invalid search queries
+270	z	90d8f206f1c707b6595e554fa31da5d5ba902c1d	b7e2d3d85ec226e5ad5a8e5d6c0aa74fd51723a0	fix(workflow): retain repair evidence priority
+271	z	34e3a84e686859a2a9c8d1f8d5941fb8fc2d0938	90d8f206f1c707b6595e554fa31da5d5ba902c1d	fix(workflow): retain cited repair proof
+272	z	b310f31deb35f494e4ac3f77dd64ef7a5539a10d	34e3a84e686859a2a9c8d1f8d5941fb8fc2d0938	fix(auth): retire idle renewal connections
+273	z	ffa9e56ab1f59f10f24c2ff2cef2c0d63a4def9b	b310f31deb35f494e4ac3f77dd64ef7a5539a10d	docs(plan): allow bounded capacity recovery
+274	z	e98c27ef9b8e7a2f3692708ad77bc92f16377940	ffa9e56ab1f59f10f24c2ff2cef2c0d63a4def9b	fix(provider): recover rejected native turns
+275	z	858cb42a1bce94a6337b2f555220c42082a40964	e98c27ef9b8e7a2f3692708ad77bc92f16377940	fix(workflow): keep derived criteria in scope
+276	z	e014df788c12365ee005a47d29c134b338c4f0eb	858cb42a1bce94a6337b2f555220c42082a40964	fix(workflow): report exhausted evidence searches
+277	z	3ee012d2cb0fcdfb4008e6f18c549764c934a755	e014df788c12365ee005a47d29c134b338c4f0eb	fix(workflow): preserve uncertainty outcomes
+278	z	69c94cbcb7cb669c91024022c1af0a44ee9b4b6b	3ee012d2cb0fcdfb4008e6f18c549764c934a755	fix(workflow): repair unavailable reads
+279	z	0dc45c19a92b660eee217fed910c8faf00e1abc5	69c94cbcb7cb669c91024022c1af0a44ee9b4b6b	docs(workflow): record test usage approval
+280	z	33684b337f8a04ba9476507268987f280d48a50c	0dc45c19a92b660eee217fed910c8faf00e1abc5	docs(workflow): preserve capacity test progress
+281	z	492e6da2155f74c2f7fecfd822b87ae050bdaeb4	33684b337f8a04ba9476507268987f280d48a50c	fix(workflow): bound known read reserves
+282	z	fbd92e704eb5a5f18943954a1d83e60d5639d0be	5af66578d9c796e478c138c273db9a7901fb7c70	fix(stalwart): restore mail after renewal
+283	z	1980caba918b0758cd128143df664fa77a4299de	492e6da2155f74c2f7fecfd822b87ae050bdaeb4,fbd92e704eb5a5f18943954a1d83e60d5639d0be	chore: merge current master
+284	z	bf2f9007d02885b002f010818b506ffda563a271	1980caba918b0758cd128143df664fa77a4299de	docs(workflow): extend case recovery allocation
+285	z	7bd54294d6d0bae8af3537eb8b9b5bad3a477869	bf2f9007d02885b002f010818b506ffda563a271	fix(workflow): keep completion proof in scope
+286	z	3541b0aab6440210b61287ca713c304e327fea4f	7bd54294d6d0bae8af3537eb8b9b5bad3a477869	docs(workflow): allocate remaining live tests
+287	z	d1399a2fee46313b797bc39964c862bcad76e575	3541b0aab6440210b61287ca713c304e327fea4f	fix(workflow): preserve full-read proof
+288	z	239f13dad1fdff122546763147d2a58b2ecbc5af	d1399a2fee46313b797bc39964c862bcad76e575	fix(agent): preserve graceful cell shutdown
+289	z	fc9def603a6be0b7bf9907995f25700dd8036b49	239f13dad1fdff122546763147d2a58b2ecbc5af	docs(test): record capacity-slot recovery
+290	z	94522fe2f1e04733b3997db598e796670908ff71	fc9def603a6be0b7bf9907995f25700dd8036b49	fix(agent): allow relevant search refinement
+291	z	d4af9a4e5b8f273dec6510a54c04199d816f4161	94522fe2f1e04733b3997db598e796670908ff71	fix(agent): reserve read and answer rounds
+292	z	63037456128919af6444a07b5b2a8b40fb663ff4	d4af9a4e5b8f273dec6510a54c04199d816f4161	fix(agent): direct repeated searches to reads
+293	z	4bc0ddfe84bfb0d178b53f42996da668278d8fb5	63037456128919af6444a07b5b2a8b40fb663ff4	fix(agent): scope empty searches to their path
+294	z	9458e97131edb81878de14421649e33f958a03a4	4bc0ddfe84bfb0d178b53f42996da668278d8fb5	test(agent): await crash recovery cleanup
+295	z	318f9afa95372ec4913589d5dbae4f60c835268e	9458e97131edb81878de14421649e33f958a03a4	docs(agent): correct completion control fixture
+296	z	1925ab1b28c3e0b53a1bc3ef22096f31baf2281a	318f9afa95372ec4913589d5dbae4f60c835268e	docs(workflow): record final development checks
+297	z	4451116b28b7cc04780738d119fa3b66adc68e22	1925ab1b28c3e0b53a1bc3ef22096f31baf2281a	fix(backup): retain schema 2 snapshots
+298	z	8272612f0a9048b14f72843e2b7d0268d37bb6f4	4451116b28b7cc04780738d119fa3b66adc68e22	docs(workflow): record deployment and outage
+299	z	034649b91c38e67df73b52c9eaef6f5179544620	8272612f0a9048b14f72843e2b7d0268d37bb6f4	docs(workflow): record host-reboot recovery
+300	z	0652b47c43c759e5c57a3cdb795a708c32330f25	034649b91c38e67df73b52c9eaef6f5179544620	docs(workflow): close recovery plans
+301	z	f084309ed6056a841e3b4d768839ebb88607cbf6	0652b47c43c759e5c57a3cdb795a708c32330f25	feat(ui): verify ChatGPT models on selection
+302	z	57ef25ee151633e465c5406d1f4f34ef878deeb1	f084309ed6056a841e3b4d768839ebb88607cbf6	feat(ui): use available-model dropdown
+303	z	098958e04dbee207f8d5ac4bc8bce3471079517d	57ef25ee151633e465c5406d1f4f34ef878deeb1	docs(plan): add Phase 4c.1 cloud providers
+304	z	4a5edc08def9d2bf3b0bb32af6f57790fe769173	098958e04dbee207f8d5ac4bc8bce3471079517d	docs(plan): accept Phase 4c.1 implementation
+305	z	a0458d4e09b39a483154e6c3ee61a4170fdb00f7	4a5edc08def9d2bf3b0bb32af6f57790fe769173	feat(fleet): add named routes and stable output
+306	z	009bc1dcbc12bb731c8bdb0eb99ddf3191a53d04	a0458d4e09b39a483154e6c3ee61a4170fdb00f7	feat(fabric): add grouped access selectors
+307	z	dfb5fb80ce873d61e0ff64845091f9f8fd50cf9f	009bc1dcbc12bb731c8bdb0eb99ddf3191a53d04	feat(cache): add scoped upstream policy
+308	z	417a9e936c844440d328712b885b532a88296183	dfb5fb80ce873d61e0ff64845091f9f8fd50cf9f	feat(incus): reconcile owned proxies live
+309	z	5e247677db0ae2ac4c26435ae2deffe66a562f92	417a9e936c844440d328712b885b532a88296183	feat(ci): use platform-owned cache layers
+310	z	b1a0f5bb4f57e2a7c6ea2648deed412c42d33171	5e247677db0ae2ac4c26435ae2deffe66a562f92	docs(tooling): assess shared library drift
