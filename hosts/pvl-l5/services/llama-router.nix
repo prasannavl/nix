@@ -131,7 +131,7 @@ in {
               - --models-max
               - "3"
             ports:
-              - "${toString exposedPorts.main.port}:8080"
+              - "${toString exposedPorts.main.port}:9931"
             volumes:
               - ./models.ini:/etc/llama-router/models.ini:ro
               - ${prismCache}:/cache
@@ -164,7 +164,7 @@ in {
               - --models-max
               - "3"
             ports:
-              - "${toString exposedPorts.main.port}:8080"
+              - "${toString exposedPorts.main.port}:9931"
             volumes:
               - ./models.ini:/etc/llama-router/models.ini:ro
               - ${prismCache}:/cache

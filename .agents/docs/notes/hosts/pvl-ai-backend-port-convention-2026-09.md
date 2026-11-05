@@ -39,6 +39,11 @@ Instance names drop the bare `llama-router` in favor of `llama-<device>` /
 CPU asset, so `11001` is reserved. vLLM and SGLang are not deployed; their
 blocks are reserved so a later implementation does not renumber llama.cpp again.
 
+PrismML build `prism-b12128-d7b2896` listens on container port `9931` by
+default; Compose maps host ports `12001`/`13001` to `9931`. Stock llama.cpp
+images still use container port `8080`. Update the mapping when either binary's
+upstream default changes.
+
 `pvl-a1`: Ollama `ollama-cpu` (manual), `ollama-rocm` (auto), `ollama-nvidia`
 (manual); llama.cpp `llama-cpu` (manual), `llama-rocm` (auto), `llama-nvidia`
 (manual); PrismML `llama-prism-rocm` (auto), `llama-prism-nvidia` (manual).
