@@ -100,8 +100,10 @@
   assert builtins.head repoRegistryConfig.nix.settings.extra-substituters == repoRegistry.nix.url;
   assert builtins.fromJSON repoRegistryConfig.environment.etc."repo-registry-test".text == repositoryNix;
   assert builtins.head repoRegistryConfig.nix.settings.extra-trusted-public-keys == builtins.head repositoryNix.trustedPublicKeys;
-  assert builtins.length repoRegistryConfig.nix.settings.extra-trusted-public-keys == 3;
-  assert builtins.length defaultRepoRegistryConfig.nix.settings.extra-substituters == 2;
+  assert builtins.length repoRegistryConfig.nix.settings.extra-trusted-public-keys == 4;
+  assert builtins.length defaultRepoRegistryConfig.nix.settings.extra-substituters == 3;
+  assert builtins.elem "https://cache.numtide.com" defaultRepoRegistryConfig.nix.settings.extra-substituters;
+  assert builtins.elem "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=" defaultRepoRegistryConfig.nix.settings.extra-trusted-public-keys;
     pkgs.runCommand "nix-repo-registry-test" {} ''
       touch "$out"
     '';
