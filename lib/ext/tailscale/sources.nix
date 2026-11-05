@@ -4,8 +4,8 @@
     owner = "tailscale";
     repo = "tailscale";
     tagPrefix = "v";
-    version = "1.104.4";
-    srcHash = "sha256-sJh3oXFarS1s+flMfm4ZAE+0ZSwp8F3Rib76+qBFVIw=";
+    version = "1.104.5";
+    srcHash = "sha256-aq4pBe75wNRFDEa3kSDa/pBLsZws5mOUOjHDUycpmXM=";
     vendorHash = "sha256-RvaouD88naVNOPJBVcqMaAn+ovjXI4g83ShCdRiR5/Q=";
   };
 }
