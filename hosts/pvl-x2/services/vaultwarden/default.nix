@@ -19,7 +19,7 @@ in {
     source = ''
       services:
         vaultwarden:
-          image: docker.io/vaultwarden/server:1.37.4
+          image: docker.io/vaultwarden/server:1.37.5
           container_name: vaultwarden
           environment:
             DOMAIN: "https://vault.p7log.com"

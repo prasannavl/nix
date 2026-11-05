@@ -135,7 +135,7 @@ in {
 
         meilisearch:
           # Startup upgrades mutate persisted data; back up before deployment.
-          image: docker.io/getmeili/meilisearch:v1.56.0
+          image: docker.io/getmeili/meilisearch:v1.56.1
           restart: unless-stopped
           user: "1000:1000"
           env_file:
