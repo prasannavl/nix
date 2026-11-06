@@ -29,5 +29,9 @@ in {
   # nixos-26.05 still ships obsidian.desktop with
   # StartupWMClass=md.Obsidian, which does not match the Electron app-id
   # md.obsidian.Obsidian; unstable renamed the entry and fixed the class.
-  inherit (unstable) obsidian;
+  #
+  # electron 43 default -> blank window, main-process rejections
+  # `webFrame[...] is not a function`; 45 ok for store 1.14.5 asar and
+  # auto-updated 1.15.0 asar. recheck after the next electron bump.
+  obsidian = unstable.obsidian.override {electron = unstable.electron_45;};
 }
