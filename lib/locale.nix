@@ -1,4 +1,9 @@
-{lib, ...}: {
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: {
   # We automatically set this below.
   # But we set it anyway due to:
   # https://github.com/nixos/nixpkgs/issues/499098
@@ -36,4 +41,25 @@
   # but reliable fallback if needed.
   # tzlogic: https://github.com/cdown/tzupdate/blob/437b3f0cef1ac85a97f8ba3dab97bd7090deb2bb/src/http.rs#L15-L44
   # services.tzupdate.enable = true;
+
+  # Refresh on network events: geoclue queries lazily, so restart the daemon
+  # to force one. Inert without automatic-timezoned. See
+  # .agents/docs/notes/hosts/timezone-follows-wan-2026-11.md
+  # getExe: dispatcher hook needs a file; writeShellApplication is a dir.
+  networking.networkmanager.dispatcherScripts = lib.optional config.services.automatic-timezoned.enable {
+    type = "basic";
+    source = lib.getExe (pkgs.writeShellApplication {
+      name = "automatic-timezoned-refresh";
+      runtimeInputs = [config.systemd.package];
+      text = ''
+        # args: iface, action, ...
+        [ "''${2-}" = connectivity-change ] || exit 0
+        exec systemctl --no-block try-restart automatic-timezoned.service
+      '';
+    });
+  };
+
+  powerManagement.resumeCommands = lib.optionalString config.services.automatic-timezoned.enable ''
+    ${config.systemd.package}/bin/systemctl --no-block try-restart automatic-timezoned.service
+  '';
 }
