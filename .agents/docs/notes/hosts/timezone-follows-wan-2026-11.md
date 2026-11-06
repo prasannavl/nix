@@ -72,6 +72,11 @@ static-timezone hosts stay inert:
 - `powerManagement.resumeCommands`, since the NetworkManager restart in
   `lib/network-wifi.nix` does not guarantee a dispatcher event.
 
+The unit also gets `Restart=on-failure` with a 30s delay: the daemon's loop is
+`set_timezone(...)?`, so any error exits the process, and `try-restart` only
+revives _active_ units - without this, one transient failure left timezone sync
+dead until reboot.
+
 No GNOME special case is needed: there the restart is redundant but harmless -
 same daemon, same data source, and `SetTimezone` with an unchanged value is a
 no-op. It also does not touch geoclue's agent (the `Requires=` edge runs the

@@ -62,4 +62,14 @@
   powerManagement.resumeCommands = lib.optionalString config.services.automatic-timezoned.enable ''
     ${config.systemd.package}/bin/systemctl --no-block try-restart automatic-timezoned.service
   '';
+
+  # daemon exits on any SetTimezone error and its unit sets no Restart=, so one
+  # transient failure leaves it dead; try-restart only revives active units.
+  # 30s spacing stays under systemd start limits, so it retries indefinitely.
+  systemd.services.automatic-timezoned = lib.mkIf config.services.automatic-timezoned.enable {
+    serviceConfig = {
+      Restart = "on-failure";
+      RestartSec = "30s";
+    };
+  };
 }
