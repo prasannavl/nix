@@ -6,6 +6,7 @@
   networking.networkmanager.wifi = {
     backend = "iwd";
     # Disable WiFi power saving (causes disconnections)
+    # NOTE: with the iwd backend NM ignores this; see DriverQuirks below.
     powersave = false;
     # Consistent MAC during scans (randomization causes issues)
     scanRandMacAddress = false;
@@ -20,6 +21,11 @@
       # (prevents conflicts between iwd and NetworkManager)
       # AddressRandomizationRange = "nic" # nic / full;
       EnableNetworkConfiguration = false;
+    };
+    # NM applies wifi.powersave only via wpa_supplicant, so with iwd power
+    # save stays on (MT7921/MT7922: latency spikes, RX reordering).
+    DriverQuirks = {
+      PowerSaveDisable = "mt7921e";
     };
     Settings = {
       AutoConnect = true;
