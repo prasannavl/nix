@@ -18,6 +18,7 @@
     # Core
     wget
     curl
+    bc
     fd
     ripgrep
     jq
@@ -66,6 +67,7 @@
     postgresql_18
 
     # Network
+    iw
     iperf3
     cloudflared
     tailscale
