@@ -4,16 +4,16 @@
     package = "bladebro";
     owner = "dondai44423";
     repo = "bladebro";
-    version = "4.6.6";
-    srcHash = "sha256-fMFHleVc4vmnTtC61laPkahqhxRKfNe7RNgbXFk7t0U=";
+    version = "4.6.8";
+    srcHash = "sha256-q64NDi1/7bpz10fQ3bFVmyhG07pjSfEvO0Y+jB9SLlc=";
     releases = {
       x86_64-linux = {
         package = "bladebro-linux-x64";
-        hash = "sha256-s+umrl9fw/vQqdA5CTxMhUXOmt9dyv9w3oHdWWztum4=";
+        hash = "sha256-8rb8hIlmexaQChQ+9FiIzFFfkf4+LGxubWbXMCoyJDk=";
       };
       aarch64-linux = {
         package = "bladebro-linux-arm64";
-        hash = "sha256-Zgk8BnPsi0MB6LSV8Oa3YUKqDCbcR1h/E22x+BCTRKI=";
+        hash = "sha256-ZvzaE31TBQzcn568AjS2FqbsgkwJufAeS0cOco8fa9Q=";
       };
     };
   };

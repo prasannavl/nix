@@ -23,15 +23,15 @@
     package = "@narumitw/pi-goal";
     owner = "narumiruna";
     repo = "pi-extensions";
-    version = "0.54.15";
-    srcHash = "sha256-DQBe+PzB/sOYAMNdt5a60h3k7l3gesf3KcO54/e/U7k=";
+    version = "0.55.1";
+    srcHash = "sha256-l5GzkOPWlZu64OKO1PHEnJwWmirJI3XPHDHzvblyAJc=";
     depsResolver = "registry";
     deps = {
       "@narumitw/pi-tui-kit" = {
         kind = "npm-dep";
-        range = "^0.69.0";
-        version = "0.69.0";
-        srcHash = "sha256-58thzeBl4knnQMy6aElUmcNCN3+qftvseJi9zmKfDAM=";
+        range = "^0.70.0";
+        version = "0.70.0";
+        srcHash = "sha256-vsepQnT2s/iZzCfWaba87wnGhHCrkGNNyz92Pshgjx8=";
       };
       "diff" = {
         kind = "npm-dep";
@@ -79,9 +79,9 @@
     package = "pi-models-discovery";
     owner = "maplezzk";
     repo = "pi-extensions";
-    version = "1.7.0";
-    rev = "7a3fecaef8ce48f5d1b9426133d5a0c3c99bfd22";
-    srcHash = "sha256-GWoz5Onq/7cBcLgv4Y91x81nddM0aeRNEHRFnGt1TVM=";
+    version = "1.8.0";
+    rev = "7af4745b92f764d85651de45bfa951f63c0217ec";
+    srcHash = "sha256-7aBamOksduH5msngyWoYBNYWiggX+jFpaaPt1cx7UM4=";
   };
 
   "pi-notify" = {
@@ -89,15 +89,15 @@
     package = "@narumitw/pi-notify";
     owner = "narumiruna";
     repo = "pi-extensions";
-    version = "0.4.3";
-    srcHash = "sha256-2AN99i+zw+5CcAtJcCJ1yKlaH7UF3aTpFW/YC7f+Xsw=";
+    version = "0.4.4";
+    srcHash = "sha256-47BR2iSBGvtVy7FoBFYsdoFVLGQ07RE52iZEHvIejMI=";
     depsResolver = "registry";
     deps = {
       "@narumitw/pi-tui-kit" = {
         kind = "npm-dep";
-        range = "^0.69.0";
-        version = "0.69.0";
-        srcHash = "sha256-58thzeBl4knnQMy6aElUmcNCN3+qftvseJi9zmKfDAM=";
+        range = "^0.70.0";
+        version = "0.70.0";
+        srcHash = "sha256-vsepQnT2s/iZzCfWaba87wnGhHCrkGNNyz92Pshgjx8=";
       };
       "diff" = {
         kind = "npm-dep";
@@ -125,8 +125,8 @@
     package = "pi-openai-toolkit";
     owner = "awoaCrim";
     repo = "pi-openai-toolkit";
-    version = "0.25.1";
-    srcHash = "sha256-aKnciBatAKULJ8DwbhlH0q9ALsnK3Vbzc+qFDl7v32A=";
+    version = "0.25.2";
+    srcHash = "sha256-IKbDHWW882nMerDL6c1eeLKaE/Cam/aho61MZ/SRRTY=";
   };
 
   "pi-patty-bg-tasks" = {
@@ -150,15 +150,15 @@
     package = "@narumitw/pi-stamp";
     owner = "narumiruna";
     repo = "pi-extensions";
-    version = "0.54.1";
-    srcHash = "sha256-G9FhAMyHhVG3WNE8TVir7HZGcm7qa7797R1AU+etuD0=";
+    version = "0.54.2";
+    srcHash = "sha256-ZTjt87Ky7OnTLgyzXMgoY49/uShVcfJbZwOa5jZMFWs=";
     depsResolver = "registry";
     deps = {
       "@narumitw/pi-tui-kit" = {
         kind = "npm-dep";
-        range = "^0.69.0";
-        version = "0.69.0";
-        srcHash = "sha256-58thzeBl4knnQMy6aElUmcNCN3+qftvseJi9zmKfDAM=";
+        range = "^0.70.0";
+        version = "0.70.0";
+        srcHash = "sha256-vsepQnT2s/iZzCfWaba87wnGhHCrkGNNyz92Pshgjx8=";
       };
       "diff" = {
         kind = "npm-dep";
@@ -193,15 +193,15 @@
     package = "@narumitw/pi-tool";
     owner = "narumiruna";
     repo = "pi-extensions";
-    version = "0.4.2";
-    srcHash = "sha256-/IKDUT0g99JEF04PdEJb9Jc0bWXSrU219ggr/rY7i4s=";
+    version = "0.4.3";
+    srcHash = "sha256-zsE84s82QgmOW108hV6x/ywgkcihhgVVxgP0uMvc7J0=";
     depsResolver = "registry";
     deps = {
       "@narumitw/pi-tui-kit" = {
         kind = "npm-dep";
-        range = "^0.69.0";
-        version = "0.69.0";
-        srcHash = "sha256-58thzeBl4knnQMy6aElUmcNCN3+qftvseJi9zmKfDAM=";
+        range = "^0.70.0";
+        version = "0.70.0";
+        srcHash = "sha256-vsepQnT2s/iZzCfWaba87wnGhHCrkGNNyz92Pshgjx8=";
       };
       "diff" = {
         kind = "npm-dep";
@@ -275,15 +275,15 @@
     package = "@narumitw/pi-usage";
     owner = "narumiruna";
     repo = "pi-extensions";
-    version = "0.69.2";
-    srcHash = "sha256-E1HrsETgzRF4H+7+G3m8svR52tTngIgOihNw25lbTb8=";
+    version = "0.69.3";
+    srcHash = "sha256-2SZABzSm51X+Tdr+4KDdrxXmy/jUpynbqXRg3jsjJoI=";
     depsResolver = "registry";
     deps = {
       "@narumitw/pi-tui-kit" = {
         kind = "npm-dep";
-        range = "^0.69.0";
-        version = "0.69.0";
-        srcHash = "sha256-58thzeBl4knnQMy6aElUmcNCN3+qftvseJi9zmKfDAM=";
+        range = "^0.70.0";
+        version = "0.70.0";
+        srcHash = "sha256-vsepQnT2s/iZzCfWaba87wnGhHCrkGNNyz92Pshgjx8=";
       };
       "diff" = {
         kind = "npm-dep";
