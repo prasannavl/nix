@@ -39,11 +39,6 @@
     mcpForBlender = pkgs.mcp-for-blender;
     mcpvault = pkgs.mcpvault;
     officePowerpoint = pkgs.office-powerpoint-mcp-server;
-    rmGuard = pkgs.writeShellApplication {
-      name = "rm";
-      runtimeInputs = [pkgs.coreutils pkgs.findutils];
-      text = builtins.readFile ./rm-guard/rm.sh;
-    };
     piModelsDiscoveryRoot = "${piModelsDiscovery}/share/pi/packages/pi-models-discovery";
     piSessionManagerRoot = "${piSessionManager}/share/pi/packages/pi-session-manager";
     piSubagentsRoot = "${piSubagents}/lib/node_modules/@gotgenes/pi-subagents";
@@ -158,10 +153,6 @@
       # prompt templates, so none are linked below.
       ".pi/agent/extensions/pi-subagents".source = piSubagentsRoot;
       ".pi/agent/extensions/pi-tps.ts".source = "${piTpsRoot}/extensions/pi-tps.ts";
-      # Agent shells: refuse recursive rm of repositories, cwd, $HOME, /.
-      ".pi/agent/extensions/rm-guard.ts".source = pkgs.replaceVars ./rm-guard/index.ts {
-        rmGuardBin = "${rmGuard}/bin";
-      };
 
       # pi-diff can register write/edit/apply_patch. Keep agents on Pi's
       # write/read tools by turning off its patch tool.
