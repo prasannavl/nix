@@ -1,4 +1,9 @@
-{inputs, ...}: {
+{
+  inputs,
+  lib,
+  pkgs,
+  ...
+}: {
   imports = [inputs.dotlink.nixosModules.default];
 
   # Launch directory is the access root for relative grants; keep it present
@@ -11,38 +16,37 @@
     enable = true;
     user = "pvl";
     workingDirectory = "/home/pvl/spaces/abird/";
-    logging.verbosity = "tools";
 
-    # Host integrations for Bubblewrap shell tools; maps to --allow-* flags.
-    # --allow-shell is added automatically, shell network comes from the
-    # saved profile.
-    hostAccess = {
-      nixDaemon = true;
-      nixConfig = true;
-      gitConfig = true;
-      sshAgent = true;
+    # Profile mode: grants/transports from pvl's profile, policy via DOTLINK_*.
+    environment = {
+      DOTLINK_ALLOW_SHELL = "1";
+      DOTLINK_ALLOW_NIX_DAEMON = "1";
+      DOTLINK_ALLOW_NIX_CONFIG = "1";
+      DOTLINK_ALLOW_GIT_CONFIG = "1";
+      DOTLINK_ALLOW_SSH_AGENT = "1";
+      DOTLINK_ALLOW_KVM = "1";
       # /dev/kvm (AMD-V) plus AMD and NVIDIA GPU devices/driver resources.
-      kvm = true;
-      gpu = ["amd" "nvidia"];
+      DOTLINK_ALLOW_GPU = "amd,nvidia";
+      # All cache kinds rw; missing dirs warn, later caches still covered.
+      DOTLINK_CACHES = lib.concatStringsSep "," [
+        "cargo-git:rw"
+        "cargo-registry:rw"
+        "ccache:rw"
+        "go-build:rw"
+        "go-mod:rw"
+        "gradle:rw"
+        "maven:rw"
+        "npm:rw"
+        "pip:rw"
+        "pnpm:rw"
+        "sccache:rw"
+        "uv:rw"
+        "yarn:rw"
+      ];
     };
 
-    # Every cache kind the module supports, read/write. A kind whose directory
-    # is absent is skipped with a warning instead of failing startup, so this
-    # also covers caches created after deployment.
-    cacheAccess = {
-      "cargo-registry" = "rw";
-      "cargo-git" = "rw";
-      "ccache" = "rw";
-      "go-mod" = "rw";
-      "go-build" = "rw";
-      "gradle" = "rw";
-      "maven" = "rw";
-      "npm" = "rw";
-      "pip" = "rw";
-      "pnpm" = "rw";
-      "sccache" = "rw";
-      "uv" = "rw";
-      "yarn" = "rw";
-    };
+    # Profile mode: PATH/groups not derivable; declare here.
+    extraPackages = with pkgs; [git nix openssh];
+    extraGroups = ["kvm" "render" "video"];
   };
 }
