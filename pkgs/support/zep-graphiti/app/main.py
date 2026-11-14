@@ -659,6 +659,14 @@ class GraphCreateRequest(BaseModel):
 def new_graph() -> Graphiti:
     api_key = os.environ.get("OPENAI_API_KEY", "ollama")
     base_url = os.environ.get("OPENAI_BASE_URL")
+    embedding_api_key = os.environ.get("EMBEDDING_API_KEY")
+    embedding_base_url = os.environ.get("EMBEDDING_BASE_URL")
+    if embedding_api_key is None and embedding_base_url is None:
+        # Preserve the public wrapper's shared binding for existing callers.
+        embedding_api_key, embedding_base_url = api_key, base_url
+    elif not (embedding_api_key or "").strip() or not (embedding_base_url or "").strip():
+        # Never send the chat key to a partially configured embedding endpoint.
+        raise ValueError("Set both EMBEDDING_API_KEY and EMBEDDING_BASE_URL to non-blank values")
     model = os.environ.get("MODEL_NAME")
     small_model = os.environ.get("SMALL_MODEL_NAME", model)
     embedding_model = os.environ.get("EMBEDDING_MODEL_NAME", "nomic-embed-text")
@@ -682,8 +690,8 @@ def new_graph() -> Graphiti:
     )
     embedder = OpenAIEmbedder(
         config=OpenAIEmbedderConfig(
-            api_key=api_key,
-            base_url=base_url,
+            api_key=embedding_api_key,
+            base_url=embedding_base_url,
             embedding_model=embedding_model,
         )
     )

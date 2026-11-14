@@ -12,17 +12,18 @@ import importlib.util
 import inspect
 import json
 import os
-from pathlib import Path
 import sys
-from types import SimpleNamespace
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 os.environ["GRAPHITI_TELEMETRY_ENABLED"] = "false"
 
-from graphiti_core.edges import EntityEdge
-from graphiti_core.edges import get_entity_edge_from_record
 from graphiti_core.driver.driver import GraphProvider
+from graphiti_core.edges import EntityEdge, get_entity_edge_from_record
 from graphiti_core.graph_queries import get_fulltext_indices, get_range_indices
 from graphiti_core.llm_client.config import LLMConfig, ModelSize
 from graphiti_core.llm_client.errors import RefusalError
@@ -31,7 +32,6 @@ from graphiti_core.prompts.dedupe_edges import EdgeDuplicate
 from graphiti_core.prompts.dedupe_nodes import NodeResolutions
 from graphiti_core.prompts.models import Message
 from openai.types.chat import ChatCompletion
-
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 RELEASE = json.loads((PACKAGE_DIR / "release.json").read_text())
@@ -84,6 +84,174 @@ class CoreContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             importlib.metadata.version("graphiti-core"), RELEASE["coreVersion"]
         )
+
+    async def test_independent_inference_clients_reach_their_own_binding(self):
+        await self.assert_inference_bindings(independent=True)
+
+    async def test_legacy_inference_clients_share_the_chat_binding(self):
+        await self.assert_inference_bindings(independent=False)
+
+    async def assert_inference_bindings(self, *, independent):
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                requests.append(
+                    (
+                        self.server.server_port,
+                        self.path,
+                        self.headers["Authorization"],
+                        body,
+                    )
+                )
+                response = (
+                    {
+                        "object": "list",
+                        "data": [
+                            {
+                                "object": "embedding",
+                                "index": 0,
+                                "embedding": [0.25] * 768,
+                            }
+                        ],
+                        "model": "served-embedding",
+                        "usage": {"prompt_tokens": 1, "total_tokens": 1},
+                    }
+                    if self.path.endswith("/embeddings")
+                    else completion('{"ok":true}').model_dump()
+                )
+                encoded = json.dumps(response).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+        servers = [ThreadingHTTPServer(("127.0.0.1", 0), Handler) for _ in range(2)]
+        workers = [
+            threading.Thread(target=server.serve_forever, daemon=True)
+            for server in servers
+        ]
+        for worker in workers:
+            worker.start()
+        graph = None
+        try:
+            environment = {
+                "OPENAI_API_KEY": "synthetic-chat-only",
+                "OPENAI_BASE_URL": f"http://127.0.0.1:{servers[0].server_port}/chat/v1",
+                "MODEL_NAME": "served-chat",
+                "SMALL_MODEL_NAME": "served-chat",
+                "EMBEDDING_MODEL_NAME": "served-embedding",
+                "NEO4J_URI": "bolt://127.0.0.1:1",
+                "NEO4J_PASSWORD": "synthetic-unused",
+                "LLM_MAX_TOKENS": "32768",
+                "LLM_REQUEST_TIMEOUT_SECONDS": "1",
+                "LLM_STRUCTURED_MAX_RETRIES": "2",
+                "LLM_REASONING_EFFORT": "none",
+            }
+            if independent:
+                environment.update({
+                    "EMBEDDING_API_KEY": "synthetic-embedding-only",
+                    "EMBEDDING_BASE_URL": (
+                        f"http://127.0.0.1:{servers[1].server_port}/embedding/v1"
+                    ),
+                })
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(
+                    app,
+                    "Graphiti",
+                    side_effect=lambda *args, **kwargs: SimpleNamespace(**kwargs),
+                ),
+            ):
+                graph = app.new_graph()
+            self.assertEqual(
+                await graph.llm_client.generate_response(
+                    [Message(role="user", content="Synthetic")]
+                ),
+                {"ok": True},
+            )
+            self.assertEqual(
+                len(await graph.embedder.create(input_data="Synthetic")), 768
+            )
+            self.assertEqual(len(requests), 2)
+            chat, embedding = requests
+            self.assertEqual(
+                chat[:3],
+                (
+                    servers[0].server_port,
+                    "/chat/v1/chat/completions",
+                    "Bearer synthetic-chat-only",
+                ),
+            )
+            self.assertEqual(chat[3]["model"], "served-chat")
+            self.assertEqual(chat[3]["max_tokens"], 32768)
+            self.assertEqual(chat[3]["reasoning_effort"], "none")
+            self.assertEqual(
+                embedding[:3],
+                (
+                    servers[1 if independent else 0].server_port,
+                    "/embedding/v1/embeddings" if independent else "/chat/v1/embeddings",
+                    (
+                        "Bearer synthetic-embedding-only"
+                        if independent
+                        else "Bearer synthetic-chat-only"
+                    ),
+                ),
+            )
+            self.assertEqual(embedding[3]["model"], "served-embedding")
+            self.assertEqual(graph.llm_client.MAX_RETRIES, 2)
+            self.assertEqual(graph.llm_client.request_timeout_seconds, 1)
+        finally:
+            if graph is not None:
+                await graph.llm_client.client.close()
+                await graph.embedder.client.close()
+            for server in servers:
+                server.shutdown()
+                server.server_close()
+            for worker in workers:
+                worker.join()
+
+    def test_partial_or_blank_embedding_binding_fails_before_constructing_clients(self):
+        for binding in (
+            {"EMBEDDING_API_KEY": "synthetic-embedding-only"},
+            {"EMBEDDING_BASE_URL": "http://127.0.0.1:1/v1"},
+            {"EMBEDDING_API_KEY": "", "EMBEDDING_BASE_URL": "http://127.0.0.1:1/v1"},
+            {"EMBEDDING_API_KEY": "synthetic-embedding-only", "EMBEDDING_BASE_URL": " "},
+        ):
+            with (
+                self.subTest(binding=binding),
+                patch.dict(os.environ, binding, clear=True),
+                patch.object(app, "ConfigurableOpenAIClient") as chat,
+                patch.object(app, "OpenAIEmbedder") as embedder,
+                patch.object(app, "Graphiti") as graph,
+            ):
+                with self.assertRaisesRegex(ValueError, "EMBEDDING_API_KEY.*EMBEDDING_BASE_URL"):
+                    app.new_graph()
+                chat.assert_not_called()
+                embedder.assert_not_called()
+                graph.assert_not_called()
+
+    async def test_legacy_missing_chat_binding_retains_upstream_defaults(self):
+        environment = {"NEO4J_URI": "bolt://127.0.0.1:1", "NEO4J_PASSWORD": "synthetic-unused"}
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(app, "Graphiti", side_effect=lambda *a, **kw: SimpleNamespace(**kw)),
+        ):
+            graph = app.new_graph()
+        try:
+            self.assertEqual(graph.llm_client.client.api_key, "ollama")
+            self.assertEqual(graph.embedder.client.api_key, "ollama")
+            self.assertEqual(str(graph.llm_client.client.base_url), "https://api.openai.com/v1/")
+            self.assertEqual(str(graph.embedder.client.base_url), "https://api.openai.com/v1/")
+            self.assertEqual(graph.embedder.config.embedding_model, "nomic-embed-text")
+        finally:
+            await graph.llm_client.client.close()
+            await graph.embedder.client.close()
 
     def test_requirements_pin_matches_canonical_release(self):
         core_pins = [
