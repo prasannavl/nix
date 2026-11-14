@@ -165,7 +165,106 @@ pub struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+enum OwnedBuildCommand {
+    /// One bounded public protocol request on stdin; server admission still applies.
+    Request,
+    /// Deliver source data once after InputReady; receipt is not build success.
+    Inputs {
+        attempt: String,
+        #[arg(long)]
+        request_digest: String,
+        #[arg(long)]
+        length: usize,
+    },
+    /// Reconnect to an existing attempt; never starts or retries work.
+    Status { attempt: String },
+    /// Request stop using the observed fence; ACK is not settlement.
+    Cancel { attempt: String },
+    /// Read bounded, redacted diagnostics. A sealed log is not a success receipt.
+    Logs {
+        attempt: String,
+        #[arg(long, requires = "offset")]
+        generation: Option<String>,
+        #[arg(long, requires = "generation")]
+        offset: Option<u64>,
+        #[arg(long, default_value_t = 8192)]
+        limit: usize,
+    },
+    /// Read one bounded page of durable events.
+    Events {
+        attempt: String,
+        #[arg(long)]
+        after: Option<u64>,
+        #[arg(long, default_value_t = 32)]
+        limit: usize,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum Command {
+    /// Observe or request cancellation of an existing owned build.
+    OwnedBuild {
+        #[command(subcommand)]
+        command: OwnedBuildCommand,
+    },
+    /// Internal per-connection Unix control service; no owned submission capability.
+    #[command(name = "_owned-control", hide = true)]
+    OwnedControl {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Internal installed supervisor; no initialization or caller-selected effects.
+    #[command(name = "_owned-supervisor", hide = true)]
+    OwnedSupervisor {
+        #[arg(long)]
+        role: PathBuf,
+    },
+    /// Explicit root provisioning; never repairs/regrants an existing authority.
+    #[command(name = "_owned-bootstrap", hide = true)]
+    OwnedBootstrap {
+        #[arg(long)]
+        role: PathBuf,
+    },
+    /// Fixed admitted template entry; journal kind selects Build/Maintenance.
+    #[command(name = "_owned-controller", hide = true)]
+    OwnedController {
+        #[arg(long)]
+        role: PathBuf,
+        #[arg(long)]
+        attempt: String,
+    },
+
+    #[command(name = "_owned-worker", hide = true)]
+    OwnedWorker {
+        #[arg(long)]
+        role: PathBuf,
+        #[arg(long)]
+        attempt: String,
+    },
+    /// Internal native daemon unit handoff; no arbitrary executable or arguments.
+    #[command(name = "_owned-daemon", hide = true)]
+    OwnedDaemon {
+        #[arg(long)]
+        policy: PathBuf,
+        #[arg(long)]
+        control: PathBuf,
+    },
+    /// Fixed installed GC intent issuer; never a public control operation.
+    #[command(name = "_owned-request-gc", hide = true)]
+    OwnedRequestGc {
+        #[arg(long)]
+        role: PathBuf,
+    },
+    /// Internal admitted collector unit; no submission, arbitrary argv or release.
+    #[command(name = "_owned-maintenance", hide = true)]
+    OwnedMaintenance {
+        #[arg(long)]
+        policy: PathBuf,
+        #[arg(long)]
+        control: PathBuf,
+        #[arg(long)]
+        attempt: String,
+    },
     /// Summarize this agent's declaration and durable local state.
     Status,
     /// Read the host, one resource, or one explicit systemd unit journal.
@@ -802,7 +901,15 @@ impl Cli {
     pub fn streams_output(&self) -> bool {
         matches!(
             &self.command,
-            Command::Logs(_)
+            Command::OwnedControl { .. }
+                | Command::OwnedSupervisor { .. }
+                | Command::OwnedController { .. }
+                | Command::OwnedWorker { .. }
+                | Command::OwnedBootstrap { .. }
+                | Command::OwnedRequestGc { .. }
+                | Command::OwnedDaemon { .. }
+                | Command::OwnedMaintenance { .. }
+                | Command::Logs(_)
                 | Command::Unit {
                     command: ServiceCommand::Logs(_),
                 }
@@ -811,6 +918,89 @@ impl Cli {
                 }
         )
     }
+}
+
+fn execute_build_executor(command: OwnedBuildCommand) -> Result<CommandOutput> {
+    use crate::build_executor::client;
+    use crate::build_executor::protocol::{Command as Request, Reply, Snapshot};
+
+    let response = match command {
+        OwnedBuildCommand::Request => {
+            use std::io::Read;
+            let limit = crate::build_executor::protocol::MAX_FRAME_BYTES;
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .take(limit as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            let request = crate::build_executor::protocol::Request::decode(&bytes)?;
+            client::request(request.command)?
+        }
+        OwnedBuildCommand::Inputs {
+            attempt,
+            request_digest,
+            length,
+        } => {
+            let receipt = crate::build_executor::source_transport::deliver_stdin(
+                &attempt,
+                &request_digest,
+                length,
+            )?;
+            return Ok(CommandOutput {
+                human: format!("{attempt}: source received; execution and settlement pending"),
+                value: serde_json::to_value(receipt)?,
+            });
+        }
+        OwnedBuildCommand::Status { attempt } => client::request(Request::Status {
+            attempt_id: attempt,
+        })?,
+        OwnedBuildCommand::Cancel { attempt } => client::cancel(&attempt)?,
+        OwnedBuildCommand::Logs {
+            attempt,
+            generation,
+            offset,
+            limit,
+        } => client::logs(&attempt, generation, offset, limit)?,
+        OwnedBuildCommand::Events {
+            attempt,
+            after,
+            limit,
+        } => client::events(&attempt, after, limit)?,
+    };
+    let human = match &response.reply {
+        Reply::Status { snapshot } => match snapshot.as_ref() {
+            Snapshot::Live {
+                acceptance,
+                phase,
+                pool,
+                ..
+            } => {
+                format!("{}: {phase:?}; pool {pool:?}", acceptance.attempt_id)
+            }
+            Snapshot::Retired {
+                acceptance,
+                outcome,
+                ..
+            } => {
+                format!("{}: retired; {outcome:?}", acceptance.attempt_id)
+            }
+        },
+        Reply::StopRequested { attempt_id } => {
+            format!("{attempt_id}: stop requested; descendant settlement not confirmed")
+        }
+        Reply::Unconfirmed { .. } => {
+            "Owned build observation unconfirmed; work may still be running".to_owned()
+        }
+        Reply::Rejected { code } => {
+            format!("Owned build request rejected ({code}); no settlement inferred")
+        }
+        _ => serde_json::to_string_pretty(&response)?,
+    };
+    // A decoded control reply is not a build result. Automation consumes its
+    // typed kind/outcome, never this command's exit status as settlement.
+    Ok(CommandOutput {
+        human,
+        value: serde_json::to_value(response)?,
+    })
 }
 
 pub fn execute(cli: Cli) -> Result<CommandOutput> {
@@ -827,6 +1017,61 @@ pub fn execute(cli: Cli) -> Result<CommandOutput> {
     let ssh_host_ed25519_public_key = cli.ssh_host_ed25519_public_key;
 
     match cli.command {
+        Command::OwnedBuild { command } => execute_build_executor(command),
+        Command::OwnedControl { config } => {
+            crate::build_executor::control::run_service(&config)?;
+            Ok(CommandOutput {
+                human: String::new(),
+                value: serde_json::Value::Null,
+            })
+        }
+        Command::OwnedSupervisor { role } => {
+            crate::build_executor::role::run_service(&role)?;
+            unreachable!("supervisor retains controller ownership for its service lifetime")
+        }
+        Command::OwnedBootstrap { role } => {
+            crate::build_executor::bootstrap::run_service(&role)?;
+            Ok(CommandOutput {
+                human: String::new(),
+                value: serde_json::Value::Null,
+            })
+        }
+        Command::OwnedController { role, attempt } => {
+            crate::build_executor::controller_service::run(&role, &attempt)?;
+            Ok(CommandOutput {
+                human: String::new(),
+                value: serde_json::Value::Null,
+            })
+        }
+        Command::OwnedWorker { role, attempt } => {
+            crate::build_executor::role::run_worker(&role, &attempt)?;
+            Ok(CommandOutput {
+                human: String::new(),
+                value: serde_json::Value::Null,
+            })
+        }
+        Command::OwnedDaemon { policy, control } => {
+            crate::build_executor::daemon::run_service(&policy, &control)?;
+            unreachable!("successful daemon handoff replaces this process")
+        }
+        Command::OwnedRequestGc { role } => {
+            crate::build_executor::maintenance_worker::request_service(&role)?;
+            Ok(CommandOutput {
+                human: String::new(),
+                value: serde_json::Value::Null,
+            })
+        }
+        Command::OwnedMaintenance {
+            policy,
+            control,
+            attempt,
+        } => {
+            crate::build_executor::maintenance_worker::run_service(&policy, &control, &attempt)?;
+            Ok(CommandOutput {
+                human: String::new(),
+                value: serde_json::Value::Null,
+            })
+        }
         Command::Status => execute_agent_status(
             &store,
             &jobs,
@@ -4531,6 +4776,104 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::*;
+
+    #[test]
+    fn build_executor_caller_exposes_only_existing_attempt_observation_and_stop() {
+        let key = "a".repeat(64);
+        for action in ["status", "cancel", "events", "logs"] {
+            assert!(Cli::try_parse_from(["agent", "owned-build", action, &key]).is_ok());
+        }
+        assert!(
+            Cli::try_parse_from([
+                "agent",
+                "owned-build",
+                "logs",
+                &key,
+                "--generation",
+                "journal14"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["agent", "owned-build", "logs", &key, "--offset", "1"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "agent",
+                "owned-build",
+                "logs",
+                &key,
+                "--generation",
+                "journal14",
+                "--offset",
+                "512"
+            ])
+            .is_ok()
+        );
+        for action in ["submit", "settle", "release", "recover", "run"] {
+            assert!(Cli::try_parse_from(["agent", "owned-build", action, &key]).is_err());
+        }
+        for flag in [
+            "--socket",
+            "--issuer",
+            "--service-uid",
+            "--program",
+            "--expected",
+        ] {
+            assert!(
+                Cli::try_parse_from(["agent", "owned-build", "status", &key, flag, "foreign"])
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn owned_daemon_accepts_only_explicit_declarations_not_executable_arguments() {
+        let args = [
+            "abird-host-agent",
+            "_owned-daemon",
+            "--policy",
+            "/etc/policy.json",
+            "--control",
+            "/state/control.json",
+        ];
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.streams_output());
+        assert!(matches!(cli.command, Command::OwnedDaemon { .. }));
+        for extra in ["/bin/sh", "--program=/bin/sh", "--store=local"] {
+            let mut changed = args.to_vec();
+            changed.push(extra);
+            assert!(Cli::try_parse_from(changed).is_err());
+        }
+        assert!(Cli::try_parse_from(["agent", "_owned-daemon"]).is_err());
+    }
+    #[test]
+    fn owned_maintenance_accepts_only_declared_existing_attempt() {
+        let args = [
+            "agent",
+            "_owned-maintenance",
+            "--policy",
+            "/policy",
+            "--control",
+            "/control",
+            "--attempt",
+            "attempt",
+        ];
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.streams_output());
+        assert!(matches!(cli.command, Command::OwnedMaintenance { .. }));
+        for extra in [
+            "/bin/sh",
+            "--operation=gc",
+            "--store=local",
+            "--invocation=other",
+        ] {
+            let mut changed = args.to_vec();
+            changed.push(extra);
+            assert!(Cli::try_parse_from(changed).is_err());
+        }
+        assert!(Cli::try_parse_from(&args[..6]).is_err());
+    }
     use crate::test_support::write_executable;
 
     fn write_reconcile_resource_manifest(directory: &Path) -> PathBuf {

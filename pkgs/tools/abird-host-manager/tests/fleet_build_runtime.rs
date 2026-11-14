@@ -4,6 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[path = "../src/physical.rs"]
+#[allow(dead_code)]
+mod physical;
+
 #[path = "../src/fleet/build.rs"]
 #[allow(dead_code)]
 mod build;
@@ -288,21 +292,17 @@ fn protected_builder(
 }
 
 #[test]
-fn protected_realization_rejects_changed_output_after_lease_loss() {
+fn protected_realization_never_rebuilds_a_missing_output_after_lease_loss() {
     let epochs = replacement_epochs(2);
     let mut builder = protected_builder(
         [epochs[0], epochs[1], epochs[1], epochs[1]],
         &["/nix/store/original-system", "/nix/store/changed-system"],
         &[false],
     );
-    let error = realize_protected(&mut builder, 3)
-        .expect_err("lease recovery must retain the first realized output identity");
-    assert!(
-        error
-            .to_string()
-            .contains("expected /nix/store/original-system")
-    );
-    assert_eq!(builder.realizations, 2);
+    let error =
+        realize_protected(&mut builder, 3).expect_err("lease recovery must not repeat realization");
+    assert!(error.to_string().contains("refusing to repeat realization"));
+    assert_eq!(builder.realizations, 1);
     assert_eq!(
         builder.verified,
         [NixStorePath::closure_output("/nix/store/original-system").unwrap()]

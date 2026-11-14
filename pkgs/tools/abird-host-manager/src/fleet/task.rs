@@ -12,6 +12,8 @@ use super::host_runtime::ProcessStream;
 /// Terminal state of one step.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskOutcome {
+    /// Observation ended without proof of remote execution settlement.
+    Unconfirmed,
     Succeeded,
     Failed,
     Interrupted,

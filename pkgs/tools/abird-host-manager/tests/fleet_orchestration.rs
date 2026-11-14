@@ -34,6 +34,82 @@ fn bounded_parallel_map_limits_workers_and_preserves_input_order() {
 }
 
 #[test]
+fn bounded_parallel_stop_preserves_results_and_never_admits_the_tail() {
+    use abird_host_manager::fleet::orchestration::bounded_parallel_map_until;
+    use std::sync::{Barrier, Condvar, Mutex};
+
+    let admitted = Barrier::new(2);
+    let stopped = (Mutex::new(false), Condvar::new());
+    let seen = Mutex::new(Vec::new());
+    let results = bounded_parallel_map_until(
+        (0..6).collect(),
+        2,
+        |value| {
+            seen.lock().unwrap().push(value);
+            assert!(value < 2, "admitted work after the stop decision");
+            admitted.wait();
+            if value == 1 {
+                let (ready, _) = stopped
+                    .1
+                    .wait_timeout_while(
+                        stopped.0.lock().unwrap(),
+                        Duration::from_secs(10),
+                        |ready| !*ready,
+                    )
+                    .unwrap();
+                assert!(*ready, "stop decision was never observed");
+            }
+            value
+        },
+        |output| {
+            if *output == 0 {
+                *stopped.0.lock().unwrap() = true;
+                stopped.1.notify_one();
+                true
+            } else {
+                false
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(results, vec![Some(0), Some(1), None, None, None, None]);
+    let mut seen = seen.into_inner().unwrap();
+    seen.sort_unstable();
+    assert_eq!(seen, vec![0, 1]);
+    assert!(bounded_parallel_map_until(vec![1], 0, |x| x, |_| true).is_err());
+    assert_eq!(
+        bounded_parallel_map_until(vec![1, 2], 1, |x| x, |_| true).unwrap(),
+        vec![Some(1), None]
+    );
+}
+
+#[test]
+fn remote_uncertainty_and_unadmitted_hosts_never_render_as_terminal_build_failure() {
+    for mode in [SummaryMode::BuildLike, SummaryMode::Deployment] {
+        let uncertain = HostSummaryFacts {
+            build_unconfirmed: true,
+            build_failed: true,
+            interrupted: true,
+            ..Default::default()
+        }
+        .final_state(mode);
+        assert_eq!(uncertain, FinalHostState::BuildUnconfirmed);
+        assert_eq!(uncertain.label(), "UNCONFIRMED (build)");
+        assert!(uncertain.is_failure());
+
+        let queued = HostSummaryFacts {
+            build_not_started: true,
+            build_failed: true,
+            ..Default::default()
+        }
+        .final_state(mode);
+        assert_eq!(queued, FinalHostState::BuildNotStarted);
+        assert_eq!(queued.label(), "not started (build)");
+        assert!(queued.is_failure());
+    }
+}
+
+#[test]
 fn readiness_retry_budget_rounds_up_without_zero_attempts() {
     assert_eq!(readiness_attempts(5, 2).unwrap(), 3);
     assert_eq!(readiness_attempts(3, 2).unwrap(), 2);

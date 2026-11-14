@@ -5821,7 +5821,7 @@ mod tests {
         let trace = temporary.path().join("nix-arguments");
         write_executable(
             &nix,
-            &format!(
+            format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' '{{\"schema_version\":1,\"mutations\":[{{\"domain\":\"serviceMoves\",\"kind\":\"service-move\",\"transaction\":\"move-suite\",\"path\":\"custom/moves/move-suite.declaration\"}},{{\"domain\":\"servicePlacements\",\"kind\":\"service-placement\",\"service\":\"zulip\",\"path\":\"custom/placements/zulip.declaration\"}},{{\"domain\":\"servicePlacements\",\"kind\":\"service-placement\",\"service\":\"zulip-worker\",\"path\":\"custom/placements/zulip-worker.declaration\"}}]}}'\n",
                 trace.display()
             ),
@@ -7849,7 +7849,7 @@ esac
         let nix = temp.path().join("fake-nix");
         write_executable(
             &nix,
-            &format!(
+            format!(
                 r#"#!{shell}
 set -eu
 case "$1" in

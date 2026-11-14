@@ -1,0 +1,336 @@
+{
+  "agent_ci_deferred": "independent agent CI observer ownership is not available yet; use a foreground controller profile or --strategy=nix",
+  "cases": [
+    {
+      "name": "default",
+      "environment": null,
+      "args": [],
+      "requested": "auto",
+      "forwarded": null,
+      "effective": "nix"
+    },
+    {
+      "name": "empty-env",
+      "environment": "",
+      "args": [],
+      "requested": "auto",
+      "forwarded": null,
+      "effective": "nix"
+    },
+    {
+      "name": "auto-equals",
+      "environment": null,
+      "args": [
+        "--strategy=auto"
+      ],
+      "requested": "auto",
+      "forwarded": "auto",
+      "effective": "nix"
+    },
+    {
+      "name": "auto-separate",
+      "environment": null,
+      "args": [
+        "--strategy",
+        "auto"
+      ],
+      "requested": "auto",
+      "forwarded": "auto",
+      "effective": "nix"
+    },
+    {
+      "name": "auto-environment",
+      "environment": "auto",
+      "args": [],
+      "requested": "auto",
+      "forwarded": "auto",
+      "effective": "nix"
+    },
+    {
+      "name": "nix-equals",
+      "environment": null,
+      "args": [
+        "--strategy=nix"
+      ],
+      "requested": "nix",
+      "forwarded": "legacy",
+      "effective": "nix"
+    },
+    {
+      "name": "nix-separate",
+      "environment": null,
+      "args": [
+        "--strategy",
+        "nix"
+      ],
+      "requested": "nix",
+      "forwarded": "legacy",
+      "effective": "nix"
+    },
+    {
+      "name": "nix-environment",
+      "environment": "nix",
+      "args": [],
+      "requested": "nix",
+      "forwarded": "legacy",
+      "effective": "nix"
+    },
+    {
+      "name": "agent-equals",
+      "environment": null,
+      "args": [
+        "--strategy=agent"
+      ],
+      "requested": "agent",
+      "forwarded": "owned",
+      "effective": "agent"
+    },
+    {
+      "name": "agent-separate",
+      "environment": null,
+      "args": [
+        "--strategy",
+        "agent"
+      ],
+      "requested": "agent",
+      "forwarded": "owned",
+      "effective": "agent"
+    },
+    {
+      "name": "agent-environment",
+      "environment": "agent",
+      "args": [],
+      "requested": "agent",
+      "forwarded": "owned",
+      "effective": "agent"
+    },
+    {
+      "name": "cli-overrides-agent-env",
+      "environment": "agent",
+      "args": [
+        "--strategy=nix"
+      ],
+      "requested": "nix",
+      "forwarded": "legacy",
+      "effective": "nix"
+    },
+    {
+      "name": "explicit-auto-overrides-env",
+      "environment": "agent",
+      "args": [
+        "--strategy",
+        "auto"
+      ],
+      "requested": "auto",
+      "forwarded": "auto",
+      "effective": "nix"
+    },
+    {
+      "name": "agent-overrides-nix-env",
+      "environment": "nix",
+      "args": [
+        "--strategy=agent"
+      ],
+      "requested": "agent",
+      "forwarded": "owned",
+      "effective": "agent"
+    },
+    {
+      "name": "last-choice-wins",
+      "environment": null,
+      "args": [
+        "--strategy=agent",
+        "--strategy",
+        "nix"
+      ],
+      "requested": "nix",
+      "forwarded": "legacy",
+      "effective": "nix"
+    },
+    {
+      "name": "option-value-is-not-strategy",
+      "environment": null,
+      "args": [
+        "--known-hosts=--strategy=agent"
+      ],
+      "requested": "auto",
+      "forwarded": null,
+      "effective": "nix"
+    },
+    {
+      "name": "invalid-argv-0",
+      "environment": null,
+      "args": [
+        "--strategy"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-argv-1",
+      "environment": null,
+      "args": [
+        "--strategy="
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-argv-2",
+      "environment": null,
+      "args": [
+        "--strategy",
+        ""
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-argv-3",
+      "environment": null,
+      "args": [
+        "--strategy=unknown"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-argv-4",
+      "environment": null,
+      "args": [
+        "--strategy=AUTO"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-argv-5",
+      "environment": null,
+      "args": [
+        "--strategy= nix"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-argv-6",
+      "environment": null,
+      "args": [
+        "--strategy=agent "
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-argv-7",
+      "environment": null,
+      "args": [
+        "--strategy=a+"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-argv-8",
+      "environment": null,
+      "args": [
+        "--strategy=b"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-argv-9",
+      "environment": null,
+      "args": [
+        "--strategy=agent;exit"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-argv-10",
+      "environment": null,
+      "args": [
+        "--strategy",
+        "--dry"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-argv-11",
+      "environment": null,
+      "args": [
+        "--strategy=bad",
+        "--strategy=nix"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-argv-12",
+      "environment": null,
+      "args": [
+        "--strategyX=nix"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-env-29",
+      "environment": "invalid",
+      "args": [
+        "--strategy=nix"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-env-30",
+      "environment": "AUTO",
+      "args": [
+        "--strategy=nix"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-env-31",
+      "environment": "agent ",
+      "args": [
+        "--strategy=nix"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "invalid-env-32",
+      "environment": "a+",
+      "args": [
+        "--strategy=nix"
+      ],
+      "parse_error": true
+    },
+    {
+      "name": "compat-legacy-equals",
+      "environment": null,
+      "args": [
+        "--strategy=legacy"
+      ],
+      "requested": "nix",
+      "forwarded": "legacy",
+      "effective": "nix"
+    },
+    {
+      "name": "compat-legacy-environment",
+      "environment": "legacy",
+      "args": [],
+      "requested": "nix",
+      "forwarded": "legacy",
+      "effective": "nix"
+    },
+    {
+      "name": "compat-owned-equals",
+      "environment": null,
+      "args": [
+        "--strategy=owned"
+      ],
+      "requested": "agent",
+      "forwarded": "owned",
+      "effective": "agent"
+    },
+    {
+      "name": "compat-owned-environment",
+      "environment": "owned",
+      "args": [],
+      "requested": "agent",
+      "forwarded": "owned",
+      "effective": "agent"
+    }
+  ]
+}

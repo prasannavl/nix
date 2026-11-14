@@ -1,15 +1,20 @@
 {
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
+  nativeNix ? pkgs.nix,
   abirdHostAgent ? pkgs.callPackage ../abird-host-agent/default.nix {pkgHelper = pkgHelper;},
 }: let
   fleetRuntimeInputs = with pkgs; [
     cloudflared
     git
-    nix
+    nativeNix
     openssh
     opentofu
   ];
+  buildNativeAdapter =
+    if nativeNix.version == "2.34.9"
+    then import ./native {inherit pkgs nativeNix;}
+    else null;
 in
   pkgHelper.mkRustDerivation {
     pkgs = pkgs;
@@ -28,13 +33,23 @@ in
     # Executable fixtures are published by an isolated writer process so the
     # ordinary parallel Cargo test schedule is safe from ETXTBSY races.
     enableDevShell = true;
-    extraPassthru = {fleetRuntimeInputs = fleetRuntimeInputs;};
+    extraPassthru = {
+      inherit fleetRuntimeInputs buildNativeAdapter;
+      buildNativeNix = nativeNix;
+    };
     buildAttrs = {
       nativeBuildInputs = [pkgs.makeWrapper];
       postInstall = ''
         if [ -x "$out/bin/abird-host-manager" ]; then
-          wrapProgram "$out/bin/abird-host-manager" \
-            --prefix PATH : ${pkgs.lib.makeBinPath fleetRuntimeInputs}
+          # Fixed worker subcommands use the same binary without the caller's
+          # PATH/repository wrapper. Never change a captured source profile.
+          mkdir -p "$out/libexec"
+          ${pkgs.lib.optionalString (buildNativeAdapter != null) ''
+          ln -s ${buildNativeAdapter}/lib/libabird-owned-nix.so "$out/libexec/libabird-owned-nix.so"
+        ''}
+          mv "$out/bin/abird-host-manager" "$out/libexec/abird-host-manager"
+          makeWrapper "$out/libexec/abird-host-manager" "$out/bin/abird-host-manager" \
+            --inherit-argv0 --prefix PATH : ${pkgs.lib.makeBinPath fleetRuntimeInputs}
         fi
 
         # Keep the Rust compatibility binary tested in the Cargo suite but do

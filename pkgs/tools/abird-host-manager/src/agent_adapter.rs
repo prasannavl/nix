@@ -5384,14 +5384,14 @@ mod tests {
         let declaration = r#"{"ok":true,"result":{"resource":{"data_paths":[],"data_roots":[{"name":"state","path":"/var/lib/state","excludes":[]}]}}}"#;
         write_executable(
             &source_agent,
-            &format!(
+            format!(
                 "#!/bin/sh\ncase \"$*\" in\n  *\"resource ready\"*) printf '%s\\n' '{{\"ok\":true,\"result\":{{\"ready\":true}}}}' ;;\n  *) printf '%s\\n' '{declaration}' ;;\nesac\n"
             ),
         )
         .unwrap();
         write_executable(
             &target_agent,
-            &format!(
+            format!(
                 "#!/bin/sh\ncase \"$*\" in\n  *\"job list\"*) printf '%s\\n' '{{\"ok\":true}}' ;;\n  *) printf '%s\\n' '{declaration}' ;;\nesac\n"
             ),
         )
@@ -5432,7 +5432,7 @@ mod tests {
 
         write_executable(
             &source_agent,
-            &format!(
+            format!(
                 "#!/bin/sh\ncase \"$*\" in\n  *\"resource ready\"*) printf '%s\\n' '{{\"ok\":true,\"result\":{{\"ready\":false}}}}' ;;\n  *) printf '%s\\n' '{declaration}' ;;\nesac\n"
             ),
         )

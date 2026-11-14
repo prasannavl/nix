@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use anyhow::{Result, bail};
+use serde::Serialize;
 
 use super::inventory::{DeployMode, Inventory, validate_host_name};
 
@@ -27,7 +28,7 @@ impl Default for SelectionOptions {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Selection {
     pub groups: Vec<String>,
     pub direct: Vec<String>,

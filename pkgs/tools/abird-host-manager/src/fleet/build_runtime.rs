@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use super::build::{
     BuildArgs, CommandAttempt, CommandExecutor, CommandSpec, CommandStatus, NixStorePath,
@@ -112,15 +112,57 @@ pub fn plan_remote_build(
     }
 }
 
+/// Lost client observation is not proof that native workers settled.
+pub struct UnconfirmedBuild {
+    observation: Option<CommandAttempt>,
+}
+
+impl UnconfirmedBuild {
+    pub(super) fn unobserved() -> Self {
+        Self { observation: None }
+    }
+
+    pub fn observation(&self) -> Option<&CommandAttempt> {
+        self.observation.as_ref()
+    }
+}
+
+impl std::fmt::Debug for UnconfirmedBuild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UnconfirmedBuild")
+            .field(
+                "status",
+                &self.observation.as_ref().map(|attempt| attempt.status),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for UnconfirmedBuild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "remote build unconfirmed")?;
+        if let Some(attempt) = &self.observation {
+            write!(f, " (client {:?})", attempt.status)?;
+        }
+        write!(
+            f,
+            "; remote work may still be running; realization was not retried"
+        )
+    }
+}
+
+impl std::error::Error for UnconfirmedBuild {}
+
 pub fn validate_remote_build_output(build: &CommandAttempt) -> Result<RemoteBuildOutput> {
     if build.status != CommandStatus::Success {
-        bail!(
-            "remote build failed with status {}: {}",
-            build.status.code(),
-            build.stderr.trim()
-        );
+        return Err(UnconfirmedBuild {
+            observation: Some(build.clone()),
+        }
+        .into());
     }
-    RemoteBuildOutput::validate(&build.stdout)
+    RemoteBuildOutput::validate(&build.stdout).with_context(|| UnconfirmedBuild {
+        observation: Some(build.clone()),
+    })
 }
 
 pub fn execute_remote_command(
@@ -145,21 +187,16 @@ pub fn realize_protected(
     let mut pending: Option<NixStorePath> = None;
     for _ in 0..attempts {
         let before = builder.ensure_lease()?;
-        let closure = if let Some(expected) = &pending
-            && builder.verify_closure(expected)?
-        {
-            expected.clone()
-        } else {
-            let realized = builder.realize()?;
-            if let Some(expected) = &pending
-                && realized != *expected
-            {
+        let closure = if let Some(expected) = &pending {
+            if !builder.verify_closure(expected)? {
                 bail!(
-                    "recovered remote build produced {}, expected {}",
-                    realized.as_str(),
+                    "builder protection lost for {}; refusing to repeat realization",
                     expected.as_str()
                 );
             }
+            expected.clone()
+        } else {
+            let realized = builder.realize()?;
             pending = Some(realized.clone());
             realized
         };

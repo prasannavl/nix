@@ -3,6 +3,15 @@ use clap::Parser;
 use abird_host_agent::cli::{Cli, execute};
 
 fn main() {
+    if let Some(valid) =
+        abird_host_agent::build_executor::capture_role::relay::entry(std::env::args_os().skip(1))
+    {
+        if !valid || abird_host_agent::build_executor::capture_role::relay::run().is_err() {
+            eprintln!("owned input relay rejected");
+            std::process::exit(1);
+        }
+        return;
+    }
     let cli = Cli::parse();
     let json = cli.json;
     let streams_output = cli.streams_output();

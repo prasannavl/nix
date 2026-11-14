@@ -254,6 +254,12 @@ impl Environment {
             .map(parse_goal)
             .transpose()?
             .unwrap_or_default();
+        options.strategy = self
+            .value("NIXBOT_STRATEGY")
+            .map(abird_host_agent::build_executor::strategy::Strategy::parse)
+            .transpose()?
+            .unwrap_or_default();
+        options.strategy_explicit = self.value("NIXBOT_STRATEGY").is_some();
         options.build_host = self.owned("NIXBOT_BUILD_HOST");
         options.build_host_explicit = self.values.contains_key("NIXBOT_BUILD_HOST");
         options.build_host_deploy_mode = self

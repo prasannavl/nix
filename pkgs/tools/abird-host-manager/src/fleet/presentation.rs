@@ -143,6 +143,11 @@ impl FleetProgress {
             .host_finished(host, false, None, safe_host_summary(&summary.into()));
     }
 
+    pub fn host_unconfirmed(&self, host: &str, summary: impl Into<String>) {
+        self.reporter
+            .host_unconfirmed(host, safe_error_excerpt(&summary.into()));
+    }
+
     pub fn host_skipped(&self, host: &str, summary: impl Into<String>) {
         self.reporter
             .host_skipped(host, safe_host_summary(&summary.into()));
@@ -590,6 +595,10 @@ impl Task for ProgressTask {
     fn finished(&self, elapsed: Duration, outcome: TaskOutcome) {
         match &self.target {
             TaskTarget::Host(host) => match outcome {
+                TaskOutcome::Unconfirmed => {
+                    self.reporter
+                        .host_task_unconfirmed(host, &self.name, &self.running, elapsed)
+                }
                 TaskOutcome::Interrupted => {
                     self.reporter
                         .host_task_interrupted(host, &self.name, &self.running, elapsed)
@@ -626,6 +635,11 @@ impl Task for ProgressTask {
                 }
             },
             TaskTarget::Phase => match outcome {
+                TaskOutcome::Unconfirmed => self.reporter.task_interrupted(
+                    self.name.clone(),
+                    format!("{} · remote execution unconfirmed", self.running),
+                    elapsed,
+                ),
                 TaskOutcome::Interrupted => {
                     self.reporter.task_interrupted(
                         self.name.clone(),

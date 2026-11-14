@@ -1,4 +1,5 @@
 pub mod broker;
+pub mod build_executor;
 pub mod cli;
 pub mod command;
 pub mod deployment;

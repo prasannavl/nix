@@ -24,6 +24,14 @@ pub struct RuntimeRoots {
     pub diagnostic_keep: PathBuf,
 }
 
+impl RuntimeRoots {
+    /// Native selection only; an admitted caller may bind it before allocation.
+    pub fn select_namespace(&self, preference: RuntimeRootPreference) -> Result<PathBuf> {
+        validate_roots(self)?;
+        Ok(choose_namespace_root(self, preference))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeRootPreference {
     Auto,
@@ -139,9 +147,21 @@ impl RunState {
         run_id: &str,
         preference: RuntimeRootPreference,
     ) -> Result<Self> {
+        let namespace_root = roots.select_namespace(preference)?;
+        Self::allocate_selected(roots, run_id, namespace_root)
+    }
+
+    /// Original admitted selection, not another primary/fallback decision.
+    pub(super) fn allocate_selected(
+        roots: RuntimeRoots,
+        run_id: &str,
+        namespace_root: PathBuf,
+    ) -> Result<Self> {
         validate_roots(&roots)?;
         validate_safe_name("run ID", run_id)?;
-        let namespace_root = choose_namespace_root(&roots, preference);
+        if namespace_root != roots.primary && namespace_root != roots.fallback {
+            bail!("selected runtime namespace differs from native roots");
+        }
         ensure_directory(&namespace_root, 0o700)?;
 
         let run_dir = namespace_root.join(format!("run-{run_id}"));

@@ -32,6 +32,29 @@ where
     U: Send,
     F: Fn(T) -> U + Sync,
 {
+    Ok(
+        bounded_parallel_map_until(inputs, limit, operation, |_| false)?
+            .into_iter()
+            .map(|result| result.expect("unconditional operation returns every result"))
+            .collect(),
+    )
+}
+
+/// Stop dequeuing when a result requests it; join already admitted operations.
+/// Missing entries were never admitted. This is run-local scheduling, not
+/// durable remote ownership or proof of descendant settlement.
+pub fn bounded_parallel_map_until<T, U, F, S>(
+    inputs: Vec<T>,
+    limit: usize,
+    operation: F,
+    stop: S,
+) -> Result<Vec<Option<U>>>
+where
+    T: Send,
+    U: Send,
+    F: Fn(T) -> U + Sync,
+    S: Fn(&U) -> bool + Sync,
+{
     if limit == 0 {
         bail!("parallelism limit must be positive");
     }
@@ -53,6 +76,14 @@ where
                         break;
                     };
                     let output = operation(input);
+                    // Serialize the stop decision with queue admission. Existing
+                    // operations finish normally; no cancellation/kill is inferred.
+                    {
+                        let mut queue = queue.lock().expect("parallel work queue poisoned");
+                        if stop(&output) {
+                            queue.clear();
+                        }
+                    }
                     results
                         .lock()
                         .expect("parallel result map poisoned")
@@ -64,16 +95,7 @@ where
     let mut results = results
         .into_inner()
         .map_err(|_| anyhow::anyhow!("parallel result map was poisoned"))?;
-    if results.len() != length {
-        bail!("parallel operation did not return every result");
-    }
-    Ok((0..length)
-        .map(|index| {
-            results
-                .remove(&index)
-                .expect("validated complete stable result map")
-        })
-        .collect())
+    Ok((0..length).map(|index| results.remove(&index)).collect())
 }
 
 /// State of one host's deploy attempt around the activation admission boundary.
@@ -668,6 +690,8 @@ pub enum SummaryMode {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct HostSummaryFacts {
+    pub build_unconfirmed: bool,
+    pub build_not_started: bool,
     pub build_succeeded: bool,
     pub build_failed: bool,
     pub interrupted: bool,
@@ -691,6 +715,12 @@ pub struct HostSummaryFacts {
 impl HostSummaryFacts {
     /// Resolve overlapping observations using the legacy summary precedence.
     pub fn final_state(self, mode: SummaryMode) -> FinalHostState {
+        if self.build_unconfirmed {
+            return FinalHostState::BuildUnconfirmed;
+        }
+        if self.build_not_started {
+            return FinalHostState::BuildNotStarted;
+        }
         if self.build_failed {
             return FinalHostState::BuildFailed;
         }
@@ -746,6 +776,8 @@ impl HostSummaryFacts {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FinalHostState {
+    BuildUnconfirmed,
+    BuildNotStarted,
     BuildFailed,
     Skipped,
     Interrupted,
@@ -770,6 +802,8 @@ pub enum FinalHostState {
 impl FinalHostState {
     pub fn label(self) -> &'static str {
         match self {
+            Self::BuildUnconfirmed => "UNCONFIRMED (build)",
+            Self::BuildNotStarted => "not started (build)",
             Self::BuildFailed => "FAIL (build)",
             Self::Skipped => "skip",
             Self::Interrupted => "interrupted",
@@ -793,6 +827,7 @@ impl FinalHostState {
     }
 
     pub fn is_failure(self) -> bool {
-        self.label().starts_with("FAIL")
+        matches!(self, Self::BuildUnconfirmed | Self::BuildNotStarted)
+            || self.label().starts_with("FAIL")
     }
 }

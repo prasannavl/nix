@@ -267,19 +267,24 @@ fn immutable_flake_arguments(command: CommandSpec) -> CommandSpec {
 }
 
 fn inventory_apply_expression(repository_config: Option<&Path>) -> Result<String> {
-    let arguments = match repository_config {
+    let expression = match repository_config {
         Some(path) => {
             let path = path
                 .to_str()
                 .context("repository config path is not valid UTF-8")?;
             let literal = serde_json::to_string(path).context("encode repository config path")?;
-            format!("{{ stacks = (import (builtins.toPath {literal})).stacks; }}")
+            Some(format!("(builtins.toPath {literal})"))
         }
-        None => "{}".to_owned(),
+        None => None,
     };
-    Ok(format!(
-        "inventory: if builtins.isFunction inventory then inventory {arguments} else inventory"
-    ))
+    Ok(inventory_application(expression.as_deref()))
+}
+
+pub(crate) fn inventory_application(repository_config_expression: Option<&str>) -> String {
+    let arguments = repository_config_expression
+        .map(|value| format!("{{ stacks = (import {value}).stacks; }}"))
+        .unwrap_or_else(|| "{}".into());
+    format!("inventory: if builtins.isFunction inventory then inventory {arguments} else inventory")
 }
 
 fn offline_cache_arguments(command: CommandSpec, cache: &FileBinaryCache) -> CommandSpec {
@@ -312,7 +317,7 @@ fn merge_json(base: &mut Value, overlay: Value) {
     }
 }
 
-fn merge_inventory_json(base: &mut Value, overlay: Value) {
+pub(crate) fn merge_inventory_json(base: &mut Value, overlay: Value) {
     let route_replacements = overlay
         .get("hosts")
         .and_then(Value::as_object)

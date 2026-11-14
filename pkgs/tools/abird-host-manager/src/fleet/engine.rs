@@ -57,41 +57,103 @@ impl Error for PhaseFailure {}
 pub trait FleetEffects {
     fn run_phase(&mut self, phase: Phase) -> std::result::Result<(), PhaseFailure>;
     fn rollback(&mut self, failed_phase: Phase) -> Result<()>;
+
+    /// Stop forward work after mutation, including successfully activated hosts
+    /// when the adapter owns durable cancellation. Never set process cancellation
+    /// to request this: rollback must retain its ordinary execution authority.
+    fn rollback_interrupted(&mut self, phase: Phase) -> Result<()> {
+        self.rollback(phase)
+    }
 }
 
 pub fn execute(invocation: &Invocation, effects: &mut impl FleetEffects) -> Result<()> {
     execute_with_interrupt_check(invocation, effects, super::signal::check_interrupted)
 }
 
+/// Retained owned results: the build strategy was resolved at admission and
+/// the results are already settled; the ordinary phases and rollback follow.
+pub fn execute_retained(invocation: &Invocation, effects: &mut impl FleetEffects) -> Result<()> {
+    execute_retained_with_interrupt_check(invocation, effects, super::signal::check_interrupted)
+}
+
+/// The retained caller supplies its durable stop check alongside process signals.
+/// This check governs forward phases only, never the rollback's subprocesses.
+pub fn execute_retained_with_interrupt_check(
+    invocation: &Invocation,
+    effects: &mut impl FleetEffects,
+    check_interrupted: impl FnMut() -> Result<()>,
+) -> Result<()> {
+    run_phases(invocation, effects, check_interrupted)
+}
+
 fn execute_with_interrupt_check(
+    invocation: &Invocation,
+    effects: &mut impl FleetEffects,
+    check_interrupted: impl FnMut() -> Result<()>,
+) -> Result<()> {
+    invocation.require_nix_pipeline()?;
+    run_phases(invocation, effects, check_interrupted)
+}
+
+fn run_phases(
     invocation: &Invocation,
     effects: &mut impl FleetEffects,
     mut check_interrupted: impl FnMut() -> Result<()>,
 ) -> Result<()> {
     let mut execution = ActionExecution::new(WorkflowPlan::for_action(&invocation.action).phases);
     let mut deferred_failure: Option<(PhaseFailure, Phase)> = None;
+    // Retain mutation eligibility across phase boundaries, including the gap
+    // before Health and cancellation during/after a successful health check.
+    let mut rollback_phase = None;
 
     while let Some(phase) = execution.start_next()? {
-        check_interrupted()?;
+        if let Err(interrupted) = check_interrupted() {
+            return stop_after_interruption(invocation, effects, rollback_phase, interrupted);
+        }
+        if matches!(phase, Phase::Deploy | Phase::Health) {
+            rollback_phase = Some(phase);
+        }
         if let Err(failure) = effects.run_phase(phase) {
-            let rollback_eligible = matches!(failure.phase, Phase::Deploy | Phase::Health);
-            if rollback_eligible
+            let interrupted = check_interrupted().err();
+            let failed_rollback_phase = if interrupted.is_some() {
+                rollback_phase
+            } else {
+                matches!(failure.phase, Phase::Deploy | Phase::Health).then_some(failure.phase)
+            };
+            if let Some(rollback_phase) = failed_rollback_phase
                 && !invocation.options.no_rollback
-                && let Err(rollback) = effects.rollback(failure.phase)
             {
-                execution.finish_current(PhaseOutcome::FailedAbort)?;
-                let rollback_failure = anyhow!("{failure}; rollback also failed: {rollback:#}");
-                return if let Some((earlier, _)) = deferred_failure {
-                    Err(anyhow!("{earlier}; subsequent {rollback_failure}"))
+                let rollback = if interrupted.is_some() {
+                    effects.rollback_interrupted(rollback_phase)
                 } else {
-                    Err(rollback_failure)
+                    effects.rollback(rollback_phase)
                 };
+                if let Err(rollback) = rollback {
+                    execution.finish_current(PhaseOutcome::FailedAbort)?;
+                    let rollback_failure = anyhow!("{failure}; rollback also failed: {rollback:#}");
+                    let rollback_failure = if let Some(interrupted) = interrupted {
+                        anyhow!("{interrupted:#}; {rollback_failure}")
+                    } else {
+                        rollback_failure
+                    };
+                    return if let Some((earlier, _)) = deferred_failure {
+                        Err(anyhow!("{earlier}; subsequent {rollback_failure}"))
+                    } else {
+                        Err(rollback_failure)
+                    };
+                }
             }
 
-            // A signal may be the reason the phase stopped, but rollback
-            // eligibility is a safety decision that must be handled before
-            // returning the interrupted exit status.
-            check_interrupted()?;
+            // Report interruption only after rollback; a deferred phase failure
+            // must not open Health (or any later phase) after durable withdrawal.
+            if let Some(interrupted) = interrupted {
+                return Err(interrupted);
+            }
+            // Cancellation can arrive while ordinary failure rollback runs.
+            // Give the adapter a chance to include other mutated hosts as well.
+            if let Err(interrupted) = check_interrupted() {
+                return stop_after_interruption(invocation, effects, rollback_phase, interrupted);
+            }
 
             if let Some(continue_through) = failure.continue_through() {
                 execution.finish_current(PhaseOutcome::FailedContinue)?;
@@ -120,15 +182,7 @@ fn execute_with_interrupt_check(
         execution.finish_current(PhaseOutcome::Succeeded)?;
 
         if let Err(interrupted) = check_interrupted() {
-            if phase == Phase::Deploy
-                && !invocation.options.no_rollback
-                && let Err(rollback) = effects.rollback(phase)
-            {
-                return Err(anyhow!(
-                    "{interrupted:#}; interrupted deploy rollback also failed: {rollback:#}"
-                ));
-            }
-            return Err(interrupted);
+            return stop_after_interruption(invocation, effects, rollback_phase, interrupted);
         }
 
         if deferred_failure
@@ -149,6 +203,23 @@ fn execute_with_interrupt_check(
     } else {
         Ok(())
     }
+}
+
+fn stop_after_interruption(
+    invocation: &Invocation,
+    effects: &mut impl FleetEffects,
+    rollback_phase: Option<Phase>,
+    interrupted: anyhow::Error,
+) -> Result<()> {
+    if let Some(phase) = rollback_phase
+        && !invocation.options.no_rollback
+        && let Err(rollback) = effects.rollback_interrupted(phase)
+    {
+        return Err(anyhow!(
+            "{interrupted:#}; interrupted {phase:?} rollback also failed: {rollback:#}"
+        ));
+    }
+    Err(interrupted)
 }
 
 #[cfg(test)]
@@ -203,6 +274,26 @@ mod tests {
         .unwrap_err();
 
         assert!(error.downcast_ref::<Interrupted>().is_some());
+        assert_eq!(*effects.calls.borrow(), ["deploy", "rollback"]);
+    }
+
+    #[test]
+    fn retained_owned_deploy_runs_ordinary_phases_and_rollback_without_resolving_agent() {
+        let invocation = Invocation {
+            action: Action::Deploy,
+            options: Options {
+                strategy: abird_host_agent::build_executor::strategy::Strategy::Agent,
+                ..Options::default()
+            },
+        };
+        let mut effects = InterruptedDeploy {
+            calls: RefCell::new(Vec::new()),
+            interrupted: Rc::new(Cell::new(false)),
+        };
+        // The agent strategy never enters the ordinary nix entry.
+        assert!(execute(&invocation, &mut effects).is_err());
+        assert!(effects.calls.borrow().is_empty());
+        assert!(execute_retained(&invocation, &mut effects).is_err());
         assert_eq!(*effects.calls.borrow(), ["deploy", "rollback"]);
     }
 

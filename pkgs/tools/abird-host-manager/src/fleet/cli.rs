@@ -1,12 +1,15 @@
 use std::path::PathBuf;
 
+use abird_host_agent::build_executor::strategy::{ExecutionStrategy, Strategy};
 use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
 
 use super::environment::Environment;
 use super::inventory::validate_host_name;
 use super::inventory_routing::{RouteRequest, RouteSource};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     Help,
     Deps,
@@ -29,14 +32,25 @@ pub enum Action {
     Tofu(Vec<String>),
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+impl Action {
+    pub fn uses_build_strategy(&self) -> bool {
+        matches!(
+            self,
+            Self::Run | Self::Deploy | Self::Build | Self::DevBuild
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CleanMode {
     #[default]
     Auto,
     All,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActivationGoal {
     #[default]
     Switch,
@@ -45,7 +59,8 @@ pub enum ActivationGoal {
     DryActivate,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildHostDeployMode {
     #[default]
     Auto,
@@ -53,14 +68,16 @@ pub enum BuildHostDeployMode {
     LocalCopy,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum JobCount {
     #[default]
     Auto,
     Count(usize),
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum LogFormat {
     #[default]
     Auto,
@@ -68,7 +85,8 @@ pub enum LogFormat {
     Plain,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DiscoverKeys {
     #[default]
     Auto,
@@ -76,7 +94,8 @@ pub enum DiscoverKeys {
     Off,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Options {
     pub sha: Option<String>,
     pub host: Option<String>,
@@ -85,6 +104,8 @@ pub struct Options {
     pub groups: Vec<String>,
     pub nix_config: Option<String>,
     pub goal: ActivationGoal,
+    pub strategy: Strategy,
+    pub strategy_explicit: bool,
     pub build_host: Option<String>,
     pub build_host_explicit: bool,
     pub build_host_deploy_mode: BuildHostDeployMode,
@@ -147,6 +168,8 @@ impl Default for Options {
             groups: Vec::new(),
             nix_config: None,
             goal: ActivationGoal::Switch,
+            strategy: Strategy::Auto,
+            strategy_explicit: false,
             build_host: None,
             build_host_explicit: false,
             build_host_deploy_mode: BuildHostDeployMode::Auto,
@@ -201,13 +224,39 @@ impl Default for Options {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl Options {
+    /// Omit implicit auto for old controllers; preserve every explicit choice.
+    pub fn forwarded_strategy(&self) -> Option<Strategy> {
+        (self.strategy_explicit || self.strategy != Strategy::Auto).then_some(self.strategy)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Invocation {
     pub action: Action,
     pub options: Options,
 }
 
 impl Invocation {
+    /// Check at execution boundaries, not while parsing a remote request.
+    pub fn resolve_build_strategy(&self) -> Result<Option<ExecutionStrategy>> {
+        self.action
+            .uses_build_strategy()
+            .then(|| self.options.strategy.resolve())
+            .transpose()
+    }
+
+    /// The nix pipeline/engine: everything except an agent-resolved build action.
+    pub fn require_nix_pipeline(&self) -> Result<Option<ExecutionStrategy>> {
+        let strategy = self.resolve_build_strategy()?;
+        anyhow::ensure!(
+            strategy != Some(ExecutionStrategy::Agent),
+            abird_host_agent::build_executor::strategy::AGENT_BACKEND_ONLY
+        );
+        Ok(strategy)
+    }
+
     pub fn parse_legacy<I, S>(arguments: I) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
@@ -533,6 +582,10 @@ fn parse_options(
             }
             "--nix-config" => options.nix_config = Some(value()?),
             "--goal" => options.goal = parse_goal(&value()?)?,
+            "--strategy" => {
+                options.strategy = Strategy::parse(&value()?)?;
+                options.strategy_explicit = true;
+            }
             "--build-host" => {
                 options.build_host = Some(value()?);
                 options.build_host_explicit = true;

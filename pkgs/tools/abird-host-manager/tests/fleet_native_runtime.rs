@@ -81,6 +81,47 @@ fn control_paths(log: &str) -> Vec<String> {
 }
 
 #[test]
+fn owned_ci_uses_ordinary_operator_preprocessing_before_receiver_admission() {
+    let directory = tempdir();
+    let forbidden = directory.path().join("preprocessing-probe");
+    let log = directory.path().join("effects");
+    write_executable(
+        &forbidden,
+        "#!/bin/sh\nprintf 'unexpected\\n' >> \"$OWNED_UNEXPECTED_EFFECTS\"\nexit 91\n",
+    )
+    .unwrap();
+    for (program, prefix) in [
+        (env!("CARGO_BIN_EXE_abird-host-manager"), vec!["fleet"]),
+        (env!("CARGO_BIN_EXE_nixbot"), vec![]),
+    ] {
+        let output = Command::new(program)
+            .args(prefix)
+            .args([
+                "build",
+                "--ci-trigger",
+                "--strategy=agent",
+                "--dirty-staged",
+            ])
+            .env_clear()
+            .env("HOME", directory.path())
+            .env("PATH", directory.path())
+            .env("ABIRD_HOST_MANAGER_GIT", &forbidden)
+            .env("ABIRD_HOST_MANAGER_NIX", &forbidden)
+            .env("NIXBOT_GIT", &forbidden)
+            .env("NIXBOT_NIX", &forbidden)
+            .env("OWNED_UNEXPECTED_EFFECTS", &log)
+            .current_dir(directory.path())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        // Only the forwarding caller enters ordinary Git preparation. This
+        // injected failure stops it before inventory evaluation or SSH delivery.
+        assert!(String::from_utf8_lossy(&output.stderr).contains("locate fleet repository"));
+        assert!(log.exists());
+    }
+}
+
+#[test]
 fn managed_workflow_clones_before_loading_inventory_and_pins_overlay_absence() {
     let temporary = tempdir();
     let seed = temporary.path().join("seed");
@@ -585,6 +626,10 @@ esac
     assert!(reexec.contains("abird=<unset>"), "{reexec}");
     assert!(reexec.contains("nixbot=<unset>"), "{reexec}");
     assert!(reexec.contains("executor=developer"), "{reexec}");
+    assert!(
+        !reexec.contains("--strategy"),
+        "implicit auto keeps old argv: {reexec}"
+    );
 
     // Relative explicit overlays are pinned before the worktree becomes the
     // child cwd; inherited overlay variables cannot be re-resolved there.
@@ -611,6 +656,7 @@ esac
         .env("NATIVE_FLEET_NIX_LOG", &log)
         .env("ABIRD_HOST_MANAGER_CONFIG_OVERRIDE", "abird.override.nix")
         .env("NIXBOT_CONFIG_OVERRIDE_PATH", "nixbot.override.nix")
+        .env("NIXBOT_STRATEGY", "legacy")
         .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
         .env(
             "NIXBOT_RUNTIME_FALLBACK_ROOT",
@@ -634,7 +680,7 @@ esac
         .unwrap();
     assert!(
         reexec.contains(&format!(
-            "--known-hosts --config-override=literal --use-repo-script --config-override operator.override.nix --config-override {}/operator.override.nix",
+            "--known-hosts --config-override=literal --use-repo-script --config-override operator.override.nix --config-override {}/operator.override.nix --strategy legacy",
             repository.display()
         )),
         "{reexec}"
@@ -1286,6 +1332,137 @@ esac
             .all(|(_, contents)| *contents == "PRIVATE-KEY-FIXTURE"),
         "{materialized}"
     );
+}
+
+#[test]
+fn remote_disconnect_aborts_native_admission_without_replay_or_deploy() {
+    for (action, code, concurrency) in [
+        ("build", 255, 1),
+        ("build", 124, 2),
+        ("deploy", 255, 2),
+        ("deploy", 1, 1),
+    ] {
+        let temporary = tempdir();
+        let repository = temporary.path().join("repository");
+        let tools = temporary.path().join("tools");
+        let effects = temporary.path().join("effects");
+        let diagnostics = temporary.path().join("diagnostics");
+        fs::create_dir_all(&repository).unwrap();
+        fs::create_dir_all(&tools).unwrap();
+        fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
+        fs::write(repository.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+        run(git_command().args(["init", "-q"]).arg(&repository));
+        git(&repository, &["config", "user.name", "Fleet Test"]);
+        git(
+            &repository,
+            &["config", "user.email", "fleet@example.invalid"],
+        );
+        git(&repository, &["config", "commit.gpgsign", "false"]);
+        git(&repository, &["add", "."]);
+        git(&repository, &["commit", "-qm", "fixture"]);
+        let nix = tools.join("nix");
+        write_executable(&nix, r#"#!/bin/sh
+set -eu
+printf 'NIX %s\n' "$*" >> "$FLEET_EFFECTS"
+case "$*" in
+  *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
+  *'--file '*'hosts.nix'*)
+    printf '%s\n' '{"hosts":{"app-a":{},"app-b":{},"app-c":{},"app-d":{},"builder":{"target":"192.0.2.80"}},"config":{}}'
+    ;;
+  *'.#nixbot.plans --apply builtins.attrNames') printf '["app-a","app-b","app-c","app-d"]\n' ;;
+  *'.drvPath') printf '/nix/store/aaaaaaaa-system.drv\n' ;;
+  'copy --to '*) ;;
+  *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
+esac
+"#).unwrap();
+        write_executable(
+            &tools.join("ssh"),
+            r#"#!/bin/sh
+set -eu
+case "$*" in
+  *nixbot-build-lease*hold*)
+    printf 'READY\n'
+    while read -r command; do
+      [ "$command" = PING ] || exit 2
+      printf 'PONG\n'
+    done
+    exit 0
+    ;;
+  *'-O exit'*) exit 0 ;;
+esac
+cat >/dev/null
+printf 'REALIZE\n' >> "$FLEET_EFFECTS"
+printf 'partial-native-output\n'
+printf 'Nix daemon disconnected unexpectedly; original-evidence\n' >&2
+exit "$FLEET_CLIENT_EXIT"
+"#,
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+            .current_dir(&repository)
+            .args([
+                action,
+                "--hosts=app-a,app-b,app-c,app-d",
+                "--config",
+                "hosts.nix",
+                "--no-override",
+                "--build-host=builder",
+                &format!("--build-jobs={concurrency}"),
+            ])
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    tools.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("ABIRD_HOST_MANAGER_NIX", &nix)
+            .env("FLEET_EFFECTS", &effects)
+            .env("FLEET_CLIENT_EXIT", code.to_string())
+            .env("NIXBOT_BUILD_PLAN_CACHE", "0")
+            .env(
+                "NIXBOT_HOST_LOCAL_LOCK_PATH",
+                temporary.path().join("host-local.lock.d"),
+            )
+            .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
+            .env(
+                "NIXBOT_RUNTIME_FALLBACK_ROOT",
+                temporary.path().join("fallback"),
+            )
+            .env("NIXBOT_DIAG_KEEP_ROOT", &diagnostics)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "{action}/{code}/{concurrency}: {stderr}"
+        );
+        assert!(stderr.contains("UNCONFIRMED (build)"), "{stderr}");
+        assert!(stderr.contains("not started (build)"), "{stderr}");
+        assert!(!stderr.contains("FAIL (build)"), "{stderr}");
+        assert!(stderr.contains("may still be running"), "{stderr}");
+        let effects = fs::read_to_string(effects).unwrap();
+        let realizations = effects.lines().filter(|line| *line == "REALIZE").count();
+        assert!((1..=concurrency).contains(&realizations), "{effects}");
+        assert!(!effects.contains("copy --from"), "{effects}");
+        assert!(!effects.contains("store verify"), "{effects}");
+
+        let mut pending = vec![diagnostics];
+        let mut evidence = String::new();
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    pending.push(entry.path());
+                } else if entry.file_name().to_string_lossy().ends_with(".log") {
+                    evidence.push_str(&fs::read_to_string(entry.path()).unwrap());
+                }
+            }
+        }
+        assert!(evidence.contains("partial-native-output"), "{evidence}");
+        assert!(evidence.contains("original-evidence"), "{evidence}");
+    }
 }
 
 #[test]

@@ -1805,6 +1805,12 @@ impl std::fmt::Display for RenderedCommandFailure {
 impl std::error::Error for RenderedCommandFailure {}
 
 fn main() -> ExitCode {
+    // Fixed worker modes never enter caller config, publication, or terminal UI.
+    if let Some(status) = abird_host_manager::fleet::build_backend::agent::entry::dispatch(
+        std::env::args_os().skip(1),
+    ) {
+        return status;
+    }
     // Restore the terminal and release the live region on every exit path:
     // the guard covers a normal return, and its panic hook covers unwinding.
     let _terminal = abird_host_manager::progress::guard_terminal_exit();
@@ -1872,6 +1878,11 @@ fn run() -> Result<()> {
     };
     match cli.command {
         Command::Fleet { arguments } => {
+            if let Some(result) =
+                abird_host_manager::fleet::build_backend::agent::commands::dispatch(&arguments)
+            {
+                return result;
+            }
             configure_github_nix_access()?;
             let mut reexec_arguments = vec!["fleet".to_owned()];
             reexec_arguments.extend(arguments.clone());

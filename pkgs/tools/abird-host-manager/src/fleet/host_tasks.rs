@@ -268,7 +268,7 @@ pub fn run_step<T>(
 
 /// Like [`run_step`], but derives the row outcome from the returned value.
 ///
-/// Interruption always wins. A cancelled process marks the task (covering
+/// Remote uncertainty survives local interruption. A cancelled process marks the task (covering
 /// bodies that swallow the failure into a value), a typed interruption error is
 /// honored directly, and a failure observed while cancellation is requested is
 /// attributed to the interruption.
@@ -282,7 +282,13 @@ pub fn run_step_with<T>(
     task.started();
     let started = Instant::now();
     let result = body(Arc::clone(&task));
-    let outcome = if task.was_interrupted() {
+    let outcome = if result.as_ref().err().is_some_and(|error| {
+        error
+            .downcast_ref::<super::build_runtime::UnconfirmedBuild>()
+            .is_some()
+    }) {
+        TaskOutcome::Unconfirmed
+    } else if task.was_interrupted() {
         TaskOutcome::Interrupted
     } else {
         let mapped = match &result {
@@ -307,4 +313,57 @@ fn cancellation_requested() -> bool {
     super::signal::runtime()
         .and_then(|runtime| runtime.interruption())
         .is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fleet::build::CommandAttempt;
+    use crate::fleet::host_runtime::ProcessStream;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    #[derive(Debug, Default)]
+    struct InterruptedTask(Mutex<Option<TaskOutcome>>);
+
+    impl Task for InterruptedTask {
+        fn name(&self) -> &str {
+            "remote-build"
+        }
+        fn started(&self) {}
+        fn output(&self, _: ProcessStream, _: &str) {}
+        fn was_interrupted(&self) -> bool {
+            true
+        }
+        fn finished(&self, _: Duration, outcome: TaskOutcome) {
+            *self.0.lock().unwrap() = Some(outcome);
+        }
+    }
+
+    struct Scope(Arc<InterruptedTask>);
+    impl TaskScope for Scope {
+        fn step(&self, _: &dyn StepSpecSource) -> Arc<dyn Task> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn local_interruption_does_not_replace_remote_uncertainty() {
+        let task = Arc::new(InterruptedTask::default());
+        let scope: Arc<dyn TaskScope> = Arc::new(Scope(task.clone()));
+        let result =
+            run_step(
+                &scope,
+                BuildStep::Realize {
+                    builder: "builder".into(),
+                },
+                |_| {
+                    crate::fleet::build_runtime::validate_remote_build_output(
+                        &CommandAttempt::failure(255, "partial output", "lost observation"),
+                    )
+                },
+            );
+        assert!(result.is_err());
+        assert_eq!(*task.0.lock().unwrap(), Some(TaskOutcome::Unconfirmed));
+    }
 }

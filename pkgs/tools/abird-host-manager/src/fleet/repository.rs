@@ -17,6 +17,21 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 
 use crate::programs::clear_git_repository_environment;
 
+mod checkout;
+mod commit;
+mod index;
+mod object;
+mod projection;
+mod tree;
+mod tree_inventory;
+pub use checkout::{CheckoutSettings, StandaloneCheckout};
+pub use commit::CommitObject;
+pub use index::IndexEntries;
+pub use object::ObjectId;
+pub use projection::CheckoutProjection;
+pub use tree::{TreeEntry, TreeKind, TreeObject};
+pub use tree_inventory::{ObjectLimits, ObservedEntry, TreeInventory};
+
 pub const SSH_ARGV_PREFIX: &str = "__nixbot_argv64";
 
 fn shell_quote(value: &str) -> String {
@@ -326,6 +341,21 @@ impl<R: CommandRunner> RepositoryManager<R> {
         &self.runner
     }
 
+    pub fn repository_root(&mut self, cwd: &Path) -> Result<PathBuf> {
+        let output = self.run_git(cwd, ["rev-parse", "--show-toplevel"], None)?;
+        if !output.succeeded() {
+            bail!("fleet workflow must run from inside a Git checkout");
+        }
+        let root = PathBuf::from(output_text(&output.stdout, "repository root")?.trim());
+        if !root.is_absolute() || !root.is_dir() {
+            bail!(
+                "Git returned an invalid repository root: {}",
+                root.display()
+            );
+        }
+        Ok(root)
+    }
+
     pub fn prepare_managed(&mut self, repository: &ManagedRepository) -> Result<RepositorySync> {
         if repository.url.is_empty() {
             bail!("managed repository requires a configured URL");
@@ -428,6 +458,16 @@ impl<R: CommandRunner> RepositoryManager<R> {
         target_ref: &str,
     ) -> Result<DetachedWorktree> {
         let commit = self.resolve_commit(source_root, target_ref)?;
+        self.create_detached_worktree_at(source_root, worktree, &commit)
+    }
+
+    /// Already selected by the original admitted capture; never resolve its ref again.
+    pub fn create_detached_worktree_at(
+        &mut self,
+        source_root: &Path,
+        worktree: &Path,
+        commit: &CommitSha,
+    ) -> Result<DetachedWorktree> {
         let add = self.git_request(
             source_root,
             [
@@ -435,7 +475,8 @@ impl<R: CommandRunner> RepositoryManager<R> {
                 OsString::from("add"),
                 OsString::from("--detach"),
                 worktree.as_os_str().to_owned(),
-                OsString::from(target_ref),
+                // The ref may move after resolution; never select it again.
+                OsString::from(commit.as_str()),
             ],
             None,
         );
@@ -443,7 +484,7 @@ impl<R: CommandRunner> RepositoryManager<R> {
         self.prune_worktrees(source_root);
         Ok(DetachedWorktree {
             path: worktree.to_path_buf(),
-            commit,
+            commit: commit.clone(),
         })
     }
 
@@ -571,7 +612,7 @@ impl<R: CommandRunner> RepositoryManager<R> {
         Ok("origin/master".to_owned())
     }
 
-    fn resolve_commit(&mut self, root: &Path, target: &str) -> Result<CommitSha> {
+    pub fn resolve_commit(&mut self, root: &Path, target: &str) -> Result<CommitSha> {
         self.try_resolve_commit(root, target)?
             .with_context(|| format!("requested repository target is unavailable: {target}"))
     }
@@ -706,6 +747,7 @@ pub enum DirtyForwarding {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CiTriggerRequest {
     pub action: String,
+    pub strategy: Option<abird_host_agent::build_executor::strategy::Strategy>,
     pub sha: Option<CommitSha>,
     pub clean_mode: CiCleanMode,
     pub group: Option<String>,
@@ -790,6 +832,9 @@ pub fn plan_ci_trigger(request: &CiTriggerRequest) -> Result<CiTriggerPlan> {
         }
     }
 
+    if let Some(strategy) = request.strategy {
+        argv.extend(["--strategy".to_owned(), strategy.wire_name().to_owned()]);
+    }
     match request.log_format {
         CiLogFormat::Auto => {}
         CiLogFormat::GithubActions => {

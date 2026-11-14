@@ -23,6 +23,7 @@ use super::inventory::Inventory;
 use super::maintenance::{CleanMode as MaintenanceCleanMode, clean_roots, missing_programs};
 use super::native::NativeFleetEffects;
 use super::plan::Phase;
+use super::preparation::{self, InventoryContext, Routes, ensure_explicit_named_route_effective};
 use super::presentation::FleetProgress;
 use super::repository::{
     CiCleanMode, CommitSha, ManagedRepository, ProcessCommandRunner, RepositoryManager,
@@ -32,12 +33,10 @@ use super::run_state::{
     CleanupOptions, DirectoryLock, RetentionOutcome, RunState, RuntimeRootPreference, RuntimeRoots,
     SystemProcessProbe,
 };
-use super::selection::{Selection, SelectionOptions, select};
+use super::selection::Selection;
 use super::terraform::{
     AutomaticTfvars, BackendValues, plan_tofu_wrapper_command, validate_tofu_wrapper_invocation,
 };
-
-const DEFAULT_DEPLOY_DEPS_KEY: &str = "nixbot.deployDependencies";
 
 pub const FLEET_VERSION: &str = "2026.07.23";
 pub const USAGE: &str = r#"Usage:
@@ -54,11 +53,15 @@ Canonical surface:
   abird-host-manager fleet <hosts|groups|run|deploy|build|dev-build|check-bootstrap|clean>
   abird-host-manager fleet terraform <all|dns|platform|apps|project NAME>
   abird-host-manager fleet repo sync
+  abird-host-manager fleet owned <submit|status|attach|cancel|consume|retire|events|logs|help>
   abird-host-manager fleet tofu <tofu-args...>
 
 Selection: --group, --host, --hosts, --require-hosts, --nix-config, --sha, --control-plane-first
 Build: --build-host, --build-host-deploy-mode, --build-cache-url,
        --build-cache-host, --build-plan-jobs, --build-jobs, --build-logs
+       --strategy=auto|nix|agent (or NIXBOT_STRATEGY; CLI wins; agent is
+       experimental; requires installed caller/builder profiles)
+       auto currently selects nix
 Deploy: --goal, --deploy-jobs, --deploy-jobs-per-domain, --verify-jobs,
         --bootstrap, --no-rollback, --no-verify, --restart-managed
 Repository: --dirty, --dirty-staged, --repo-url, --repo-path, --ci-trigger
@@ -89,26 +92,16 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     pub fn from_environment() -> Self {
         let search_paths = env::split_paths(&env::var_os("PATH").unwrap_or_default()).collect();
+        let roots = runtime_roots(|name| env::var_os(name));
         Self {
             nix_program: env::var_os("ABIRD_HOST_MANAGER_NIX")
                 .or_else(|| env::var_os("NIXBOT_NIX"))
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/run/current-system/sw/bin/nix")),
             search_paths,
-            runtime_root: env::var_os("NIXBOT_RUNTIME_WORK_ROOT")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/dev/shm/nixbot")),
-            runtime_fallback_root: env::var_os("NIXBOT_RUNTIME_FALLBACK_ROOT")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    env::var_os("TMPDIR")
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| PathBuf::from("/tmp"))
-                        .join("nixbot")
-                }),
-            diagnostic_root: env::var_os("NIXBOT_DIAG_KEEP_ROOT")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/var/tmp/nixbot")),
+            runtime_root: roots.primary,
+            runtime_fallback_root: roots.fallback,
+            diagnostic_root: roots.diagnostic_keep,
             git_program: env::var_os("ABIRD_HOST_MANAGER_GIT")
                 .or_else(|| env::var_os("NIXBOT_GIT"))
                 .map(PathBuf::from)
@@ -125,16 +118,39 @@ impl RuntimeConfig {
     }
 }
 
+/// Shared native defaults, also usable with the private admitted environment.
+/// Selection/allocation remain in RunState; this reads no repository or store.
+pub(super) fn runtime_roots(
+    mut value: impl FnMut(&str) -> Option<std::ffi::OsString>,
+) -> RuntimeRoots {
+    RuntimeRoots {
+        primary: value("NIXBOT_RUNTIME_WORK_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/dev/shm/nixbot")),
+        fallback: value("NIXBOT_RUNTIME_FALLBACK_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                value("TMPDIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("/tmp"))
+                    .join("nixbot")
+            }),
+        diagnostic_keep: value("NIXBOT_DIAG_KEEP_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/var/tmp/nixbot")),
+    }
+}
+
 struct RepositoryRuntime {
     manager: RepositoryManager<ProcessCommandRunner>,
     _temporary_known_hosts: Option<tempfile::TempDir>,
 }
 
 #[derive(Clone, Debug)]
-struct PinnedInventoryInput {
-    source_root: PathBuf,
-    source_config: PathBuf,
-    overlay: Option<PathBuf>,
+pub(super) struct PinnedInventoryInput {
+    pub source_root: PathBuf,
+    pub source_config: PathBuf,
+    pub overlay: Option<PathBuf>,
 }
 
 impl PinnedInventoryInput {
@@ -243,6 +259,15 @@ fn reject_managed_overlay_before_dispatch(invocation: &Invocation) -> Result<()>
 }
 
 pub fn run(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
+    super::build_backend::run(invocation, runtime)
+}
+
+pub(super) fn run_nix(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
+    let strategy = if invocation.options.ci_trigger {
+        None // The controller, not the forwarding client, resolves availability.
+    } else {
+        invocation.require_nix_pipeline()?
+    };
     reject_managed_overlay_before_dispatch(&invocation)?;
     super::signal::install()?;
     // Seed the verbose section once, before any phase or host builds a view over
@@ -253,16 +278,31 @@ pub fn run(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
             run_ci_trigger(&invocation, &runtime)
         });
     }
+    if let Some(strategy) = strategy {
+        FleetProgress::from_options(&invocation.options).message(format!(
+            "Build strategy: {} (requested {})",
+            strategy.as_str(),
+            invocation.options.strategy.as_str()
+        ));
+    }
+    let _mutex = action_mutex(&invocation)?;
+    run_unlocked(invocation, runtime)
+}
+
+/// The ordinary host-local action lock, shared by every frontend/backend.
+/// Target activation relies on it when the controller is also the target.
+pub(super) fn action_mutex(
+    invocation: &Invocation,
+) -> Result<Option<super::run_state::ActionMutex>> {
     let action_name = action_name(&invocation.action);
-    let _mutex = if !invocation.options.skip_global_lock
+    if !invocation.options.skip_global_lock
         && super::run_state::action_needs_local_mutex(action_name)
     {
         let path = host_local_action_lock_path();
-        Some(acquire_action_mutex(&path, action_name)?)
+        Ok(Some(acquire_action_mutex(&path, action_name)?))
     } else {
-        None
-    };
-    run_unlocked(invocation, runtime)
+        Ok(None)
+    }
 }
 
 pub(super) fn host_local_action_lock_path() -> PathBuf {
@@ -700,7 +740,13 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
             let action = if invocation.options.use_repo_script
                 && env::var("NIXBOT_REEXECED_FROM_REPO").as_deref() != Ok("1")
             {
-                reexec_from_workspace(&runtime, &source_root, &workspace.root, &pinned_inventory)
+                reexec_from_workspace(
+                    &invocation,
+                    &runtime,
+                    &source_root,
+                    &workspace.root,
+                    &pinned_inventory,
+                )
             } else {
                 (|| {
                     let inventory = load_inventory_from_pinned(
@@ -762,6 +808,7 @@ fn interactive_capture_allowed(invocation: &Invocation, reexeced_from_repo: bool
 }
 
 fn reexec_from_workspace(
+    invocation: &Invocation,
     runtime: &RuntimeConfig,
     source_root: &Path,
     workspace: &Path,
@@ -770,10 +817,13 @@ fn reexec_from_workspace(
     if runtime.repo_reexec_arguments.is_empty() {
         bail!("--use-repo-script requires the invoking binary to preserve its arguments");
     }
-    let reexec_arguments = super::inventory_overlay::normalize_reexec_arguments(
+    let mut reexec_arguments = super::inventory_overlay::normalize_reexec_arguments(
         &runtime.repo_reexec_arguments,
         pinned_inventory.overlay.as_deref(),
     );
+    if let Some(strategy) = invocation.options.forwarded_strategy() {
+        reexec_arguments.extend(["--strategy".to_owned(), strategy.wire_name().to_owned()]);
+    }
     let executor_kind = if inventory_routing::managed_execution_context()? {
         "managed"
     } else {
@@ -841,7 +891,7 @@ fn repository_lock_path(git_program: &Path, root: &Path) -> PathBuf {
     }
 }
 
-fn allocate_run_state(runtime: &RuntimeConfig) -> Result<RunState> {
+pub(super) fn allocate_run_state(runtime: &RuntimeConfig) -> Result<RunState> {
     RunState::allocate(
         RuntimeRoots {
             primary: runtime.runtime_root.clone(),
@@ -852,7 +902,7 @@ fn allocate_run_state(runtime: &RuntimeConfig) -> Result<RunState> {
     )
 }
 
-fn finish_run_state<T>(state: RunState, action: Result<T>) -> Result<T> {
+pub(super) fn finish_run_state<T>(state: RunState, action: Result<T>) -> Result<T> {
     let warned = super::presentation::take_warning_presented();
     let succeeded = action.is_ok() && !warned;
     let cleanup = state.normal_cleanup(CleanupOptions {
@@ -868,7 +918,7 @@ fn finish_run_state<T>(state: RunState, action: Result<T>) -> Result<T> {
     combine_action_cleanup(action, cleanup.map(|_| ()), "runtime cleanup")
 }
 
-fn staged_patch(
+pub(super) fn staged_patch(
     invocation: &Invocation,
     source_root: &Path,
     runtime: &RuntimeConfig,
@@ -884,9 +934,12 @@ fn staged_patch(
             .or_else(|| invocation.options.sha.clone())
             .context("stdin staged patch requires --dirty-staged-base or --sha")?;
         let mut bytes = Vec::new();
+        let limit = abird_host_agent::build_executor::preparation::source::MAX_PATCH_BYTES;
         std::io::stdin()
+            .take(limit as u64 + 1)
             .read_to_end(&mut bytes)
             .context("read staged patch from stdin")?;
+        anyhow::ensure!(bytes.len() <= limit, "staged patch exceeds source bound");
         if bytes.is_empty() {
             bail!("dirty-staged patch payload was empty");
         }
@@ -917,24 +970,9 @@ fn combine_action_cleanup<T>(
 }
 
 fn repository_root(git: &Path, current: &Path) -> Result<PathBuf> {
-    let mut command = Command::new(git);
-    clear_git_repository_environment(&mut command);
-    let output = command
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(current)
-        .output()
-        .context("locate fleet repository")?;
-    if !output.status.success() {
-        bail!("fleet workflow must run from inside a Git checkout");
-    }
-    let root = PathBuf::from(String::from_utf8(output.stdout)?.trim());
-    if !root.is_absolute() || !root.is_dir() {
-        bail!(
-            "Git returned an invalid repository root: {}",
-            root.display()
-        );
-    }
-    Ok(root)
+    RepositoryManager::new(git, ProcessCommandRunner)
+        .repository_root(current)
+        .context("locate fleet repository")
 }
 
 fn run_tofu(arguments: &[String], invocation: &Invocation, runtime: &RuntimeConfig) -> Result<()> {
@@ -1094,7 +1132,7 @@ pub fn load_inventory_at(
         repository,
         inventory_overlay::OverlayPolicy::Allowed,
     )?;
-    load_inventory_from_pinned(invocation, runtime, repository, true, &pinned)
+    load_inventory_from_pinned(invocation, runtime, &pinned.source_root, true, &pinned)
 }
 
 // Freeze paths and overlay presence before checkout; the tracked inventory may
@@ -1106,7 +1144,23 @@ fn pin_inventory_input(
 ) -> Result<PinnedInventoryInput> {
     let invocation_cwd =
         env::current_dir().context("resolve operator overlay from invocation directory")?;
-    let source_root = absolute_from(source_root, &invocation_cwd);
+    pin_inventory_input_at(
+        invocation,
+        source_root,
+        policy,
+        &invocation_cwd,
+        inventory_routing::managed_execution_context()?,
+    )
+}
+
+pub(super) fn pin_inventory_input_at(
+    invocation: &Invocation,
+    source_root: &Path,
+    policy: inventory_overlay::OverlayPolicy,
+    invocation_cwd: &Path,
+    managed: bool,
+) -> Result<PinnedInventoryInput> {
+    let source_root = absolute_from(source_root, invocation_cwd);
     let source_config = absolute_from(
         invocation
             .options
@@ -1115,7 +1169,6 @@ fn pin_inventory_input(
             .unwrap_or_else(|| Path::new("hosts/nixbot.nix")),
         &source_root,
     );
-    let managed = inventory_routing::managed_execution_context()?;
     inventory_overlay::reject_managed_explicit_input(
         invocation.options.config_override.as_deref(),
         managed,
@@ -1125,7 +1178,7 @@ fn pin_inventory_input(
         invocation.options.config_override.as_deref(),
         invocation.options.no_override,
         policy,
-        &invocation_cwd,
+        invocation_cwd,
     )?;
     if managed && overlay.is_some() {
         bail!("Nixbot config overrides are allowed only for direct developer execution");
@@ -1148,65 +1201,43 @@ fn load_inventory_from_pinned(
     if !config.is_file() {
         bail!("deploy config not found: {}", config.display());
     }
+    let context = inventory_context(config, pinned.overlay.clone())?;
+    let identity = (resolve_routes && invocation.options.route == RouteRequest::Auto)
+        .then(SelfIdentity::detect)
+        .transpose()?;
+    let routes = if resolve_routes {
+        Routes::Resolve {
+            request: invocation.options.route,
+            source: invocation.options.route_source,
+            identity: identity.as_ref(),
+        }
+    } else {
+        Routes::ValidateOnly
+    };
+    preparation::load_inventory(&mut Nix::new(&runtime.nix_program)?, &context, routes)
+}
+
+/// Ordinary inventory path discovery, also used on the admitted CI checkout.
+/// No evaluation or source transfer; an absent repository config stays absent.
+pub(super) fn inventory_context(
+    config: PathBuf,
+    overlay: Option<PathBuf>,
+) -> Result<InventoryContext> {
     let repository = find_repository_root(
         config
             .parent()
             .context("fleet inventory path has no parent directory")?,
     )?;
-    let repository_config_dir = repository.join("config");
-    let repository_config = repository_config_dir
-        .join("default.nix")
-        .is_file()
-        .then_some(repository_config_dir.as_path());
-    let (mut value, base, override_value) = Nix::new(&runtime.nix_program)?
-        .eval_inventory_file_with_overlay_layers_json(
-            &config,
-            pinned.overlay.as_deref(),
-            repository_config,
-        )
-        .with_context(|| format!("evaluate fleet inventory {}", config.display()))?;
-    let identity = (resolve_routes && invocation.options.route == RouteRequest::Auto)
-        .then(SelfIdentity::detect)
-        .transpose()?;
-    let route_decision = if resolve_routes {
-        Some(inventory_routing::apply_named_routes_with_source(
-            &mut value,
-            &base,
-            override_value.as_ref(),
-            invocation.options.route,
-            invocation.options.route_source,
-            identity.as_ref(),
-        )?)
-    } else {
-        inventory_routing::validate_named_routes(&value, &base, override_value.as_ref())?;
-        None
-    };
-    let mut inventory: Inventory = serde_json::from_value(value)
-        .with_context(|| format!("decode fleet inventory {}", config.display()))?;
-    inventory.route_decision = route_decision;
-    let key = inventory
-        .config
-        .deploy_deps_key
-        .clone()
-        .unwrap_or_else(|| DEFAULT_DEPLOY_DEPS_KEY.to_owned());
-    if key.is_empty()
-        || !key
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
-        bail!("config.deployDepsKey must be a non-empty flake attribute path");
-    }
-    let dependencies = Nix::new(&runtime.nix_program)?
-        .eval_installable_json(&repository, &format!(".#{key}"))
-        .with_context(|| format!("evaluate deploy dependency attribute {key}"))?;
-    let dependencies = serde_json::from_value::<BTreeMap<String, Vec<String>>>(dependencies)
-        .context("decode evaluated deploy dependencies")?;
-    inventory.apply_deploy_dependencies(dependencies)?;
-    inventory.validate()?;
-    Ok(inventory)
+    let directory = repository.join("config");
+    Ok(InventoryContext {
+        config,
+        overlay,
+        repository_config: directory.join("default.nix").is_file().then_some(directory),
+        dependency_repository: repository,
+    })
 }
 
-fn find_repository_root(start: &Path) -> Result<PathBuf> {
+pub(super) fn find_repository_root(start: &Path) -> Result<PathBuf> {
     for directory in start.ancestors() {
         if directory.join("flake.nix").is_file()
             && (directory.join(".git").exists() || directory.join(".git").is_file())
@@ -1218,76 +1249,7 @@ fn find_repository_root(start: &Path) -> Result<PathBuf> {
 }
 
 fn select_inventory(inventory: &Inventory, invocation: &Invocation) -> Result<Selection> {
-    let hosts_explicit = invocation.options.host.is_some() || invocation.options.hosts.is_some();
-    let groups = if invocation.options.groups.is_empty() && !hosts_explicit {
-        inventory
-            .config
-            .default_group
-            .as_deref()
-            .map(split_values)
-            .unwrap_or_default()
-    } else {
-        invocation.options.groups.clone()
-    };
-    let hosts = invocation.options.hosts.clone().or_else(|| {
-        (!hosts_explicit)
-            .then(|| inventory.config.default_hosts.clone())
-            .flatten()
-    });
-    let deploy_jobs_per_domain = if invocation.options.deploy_jobs_per_domain_explicit {
-        invocation.options.deploy_jobs_per_domain
-    } else {
-        inventory
-            .config
-            .deploy_jobs_per_domain
-            .unwrap_or(invocation.options.deploy_jobs_per_domain)
-    };
-    let selection = select(
-        inventory,
-        &SelectionOptions {
-            groups,
-            host: invocation.options.host.clone(),
-            hosts,
-            required_hosts: invocation.options.required_hosts.clone(),
-            control_plane_first: invocation.options.control_plane_first,
-            deploy_jobs_per_domain,
-        },
-    )?;
-    ensure_explicit_named_route_effective(inventory, selection.ordered.iter().map(String::as_str))?;
-    Ok(selection)
-}
-
-fn ensure_explicit_named_route_effective<'a>(
-    inventory: &Inventory,
-    hosts: impl IntoIterator<Item = &'a str>,
-) -> Result<()> {
-    let Some(route) =
-        inventory
-            .route_decision
-            .as_ref()
-            .and_then(|decision| match decision.request {
-                RouteRequest::Cf | RouteRequest::Ts => Some(decision.request.as_str()),
-                RouteRequest::Auto | RouteRequest::Default => None,
-            })
-    else {
-        return Ok(());
-    };
-    if hosts.into_iter().any(|name| {
-        inventory.hosts[name]
-            .routing
-            .as_ref()
-            .is_some_and(|route| route.effective)
-    }) {
-        return Ok(());
-    }
-    bail!("explicit route {route} does not affect any selected host path")
-}
-
-fn split_values(raw: &str) -> Vec<String> {
-    raw.split([',', ' ', '\t', '\n'])
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .collect()
+    preparation::select_inventory(inventory, &invocation.options)
 }
 
 fn absolute_from(path: &Path, base: &Path) -> PathBuf {
@@ -1361,6 +1323,53 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     use super::same_file;
+
+    #[test]
+    fn relative_inventory_root_is_resolved_before_explicit_context() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        fs::create_dir(root.join("hosts")).unwrap();
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::write(root.join("flake.nix"), "{}").unwrap();
+        fs::write(root.join("hosts/nixbot.nix"), "{}").unwrap();
+        let nix = root.join("nix");
+        crate::test_support::write_executable(
+            &nix,
+            concat!(
+                "#!/bin/sh\ncase \"$*\" in\n",
+                "  *'.#nixbot.deployDependencies'*) printf '{}\\n' ;;\n",
+                "  *) printf '%s\\n' '{\"hosts\":{\"app\":{}}}' ;;\nesac\n",
+            ),
+        )
+        .unwrap();
+        let mut relative = std::path::PathBuf::new();
+        for _ in std::env::current_dir().unwrap().ancestors().skip(1) {
+            relative.push("..");
+        }
+        relative.push(root.strip_prefix("/").unwrap());
+        assert!(!relative.is_absolute());
+        let invocation = super::Invocation {
+            action: super::Action::ListHosts,
+            options: super::super::cli::Options {
+                route: super::RouteRequest::Default,
+                no_override: true,
+                ..super::super::cli::Options::default()
+            },
+        };
+        let runtime = super::RuntimeConfig {
+            nix_program: nix,
+            ..super::RuntimeConfig::from_environment()
+        };
+        let inventory = super::load_inventory_at(&invocation, &runtime, &relative).unwrap();
+        assert_eq!(
+            inventory
+                .hosts
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["app"]
+        );
+    }
 
     #[test]
     fn same_file_matches_equivalent_lock_path_spellings() {

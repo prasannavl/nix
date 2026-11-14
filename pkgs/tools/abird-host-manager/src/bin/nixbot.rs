@@ -15,6 +15,13 @@ fn main() -> ExitCode {
     match configure_github_nix_access()
         .and_then(|()| hydrate_arguments(&arguments, original_command.as_deref()))
         .and_then(|request| {
+            if let Some(result) =
+                abird_host_manager::fleet::build_backend::agent::commands::dispatch(
+                    &request.arguments,
+                )
+            {
+                return result;
+            }
             let mut runtime = RuntimeConfig::from_environment();
             runtime.repo_reexec_arguments = request.arguments.clone();
             let invocation = Invocation::parse_legacy_with_environment(

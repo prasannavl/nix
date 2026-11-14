@@ -261,6 +261,95 @@ fn detached_worktree_lifecycle_keeps_the_source_checkout_unchanged() {
     assert_eq!(git(&root, &["rev-parse", "HEAD"]), head);
 }
 
+struct MovingWorktreeRef {
+    root: PathBuf,
+    resolved: String,
+    replacement: String,
+    remove_resolved: bool,
+    requests: Vec<CommandRequest>,
+}
+
+impl CommandRunner for MovingWorktreeRef {
+    fn run(&mut self, request: &CommandRequest) -> Result<CommandOutput> {
+        self.requests.push(request.clone());
+        if request.args.starts_with(&["worktree".into(), "add".into()]) {
+            git(
+                &self.root,
+                &["update-ref", "refs/heads/moving", &self.replacement],
+            );
+            if self.remove_resolved {
+                fs::remove_file(
+                    self.root
+                        .join(".git/objects")
+                        .join(&self.resolved[..2])
+                        .join(&self.resolved[2..]),
+                )?;
+            }
+        }
+        ProcessCommandRunner.run(request)
+    }
+}
+
+fn moving_ref_fixture(root: &Path, remove_resolved: bool) -> MovingWorktreeRef {
+    let resolved = init_repo(root);
+    fs::write(root.join("state"), "replacement\n").unwrap();
+    git(root, &["commit", "-qam", "replacement"]);
+    let replacement = git(root, &["rev-parse", "HEAD"]);
+    git(root, &["branch", "moving", &resolved]);
+    MovingWorktreeRef {
+        root: root.into(),
+        resolved,
+        replacement,
+        remove_resolved,
+        requests: Vec::new(),
+    }
+}
+
+#[test]
+fn detached_worktree_uses_resolved_commit_even_if_target_ref_moves_before_add() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repo");
+    let checkout = temp.path().join("execution");
+    let runner = moving_ref_fixture(&root, false);
+    let resolved = runner.resolved.clone();
+    let replacement = runner.replacement.clone();
+    let mut manager = RepositoryManager::new("git", runner);
+    let worktree = manager
+        .create_detached_worktree(&root, &checkout, "moving")
+        .unwrap();
+    assert_eq!(worktree.commit.as_str(), resolved);
+    assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), resolved);
+    assert_eq!(
+        fs::read_to_string(checkout.join("state")).unwrap(),
+        "initial\n"
+    );
+    assert_eq!(git(&root, &["rev-parse", "moving"]), replacement);
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), replacement);
+    manager.remove_worktree(&root, &checkout).unwrap();
+}
+
+#[test]
+fn detached_worktree_does_not_substitute_moved_ref_when_resolved_object_is_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repo");
+    let checkout = temp.path().join("execution");
+    let runner = moving_ref_fixture(&root, true);
+    let resolved = runner.resolved.clone();
+    let mut manager = RepositoryManager::new("git", runner);
+    assert!(
+        manager
+            .create_detached_worktree(&root, &checkout, "moving")
+            .is_err()
+    );
+    let requests = &manager.runner().requests;
+    assert_eq!(
+        requests.len(),
+        2,
+        "missing commit must not trigger another selection"
+    );
+    assert_eq!(requests[1].args.last(), Some(&OsString::from(resolved)));
+}
+
 #[test]
 fn staged_binary_patch_is_captured_base_checked_and_applied_with_index_state() {
     let temp = tempfile::tempdir().unwrap();
@@ -308,6 +397,798 @@ fn staged_binary_patch_is_captured_base_checked_and_applied_with_index_state() {
     assert_eq!(fs::read(checkout.join("asset.bin")).unwrap(), after);
     assert!(!git(&checkout, &["diff", "--cached", "--name-only"]).is_empty());
     manager.remove_worktree(&root, &checkout).unwrap();
+}
+
+#[test]
+fn standalone_checkout_preserves_native_settings_and_selected_bytes_without_parent_metadata() {
+    for autocrlf in ["false", "true", "input"] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let base = init_repo(&source);
+        git(&source, &["config", "core.autocrlf", autocrlf]);
+        git(&source, &["config", "core.eol", "lf"]);
+        fs::write(source.join("state"), "selected\n").unwrap();
+        git(&source, &["add", "state"]);
+        fs::write(source.join("state"), "ignored unstaged\n").unwrap();
+        fs::write(source.join("untracked"), "ignored\n").unwrap();
+        let mut manager = manager();
+        let patch = manager
+            .capture_staged_patch(&source)
+            .unwrap()
+            .unwrap()
+            .patch;
+        let native = temp.path().join("native");
+        manager
+            .create_detached_worktree(&source, &native, &base)
+            .unwrap();
+        manager.apply_staged_patch(&native, &patch).unwrap();
+        let settings = manager.checkout_settings(&native).unwrap();
+        let target = temp.path().join("standalone");
+        let replica = manager
+            .create_standalone_checkout(&source, &target, &patch.base, &settings)
+            .unwrap();
+        manager.apply_staged_patch(&target, &patch).unwrap();
+        assert_eq!(replica.path, target);
+        assert_eq!(replica.commit, patch.base);
+        assert!(
+            manager.checkout_settings(&native).unwrap()
+                == manager.checkout_settings(&target).unwrap()
+        );
+        assert_eq!(
+            fs::read(native.join("state")).unwrap(),
+            fs::read(target.join("state")).unwrap()
+        );
+        assert!(!target.join("untracked").exists());
+        assert!(target.join(".git").is_dir());
+        assert!(!target.join(".git/commondir").exists());
+        assert!(!target.join(".git/objects/info/alternates").exists());
+        fs::rename(&source, temp.path().join("source-moved")).unwrap();
+        assert_eq!(git(&target, &["rev-parse", "HEAD"]), base);
+        assert!(
+            !git_command()
+                .arg("-C")
+                .arg(&native)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        git(&target, &["fsck", "--full", "--strict", "--no-reflogs"]);
+    }
+}
+
+#[test]
+fn native_projection_preserves_modes_but_does_not_verify_working_bytes_or_checkout_context() {
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+
+    use abird_host_manager::fleet::repository::{ObjectLimits, TreeKind};
+
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    init_repo(&source);
+    for (key, value) in [
+        ("core.autocrlf", "false"),
+        ("core.eol", "lf"),
+        ("core.filemode", "true"),
+        ("core.symlinks", "true"),
+        ("core.ignorecase", "false"),
+        ("core.safecrlf", "false"),
+    ] {
+        git(&source, &["config", key, value]);
+    }
+    fs::write(
+        source.join(".gitattributes"),
+        b"crlf.txt text eol=crlf\nlink.txt text eol=crlf\nfiltered.txt filter=mark\n",
+    )
+    .unwrap();
+    fs::write(source.join("crlf.txt"), b"line\n").unwrap();
+    fs::write(source.join("filtered.txt"), b"payload\n").unwrap();
+    symlink("dest\n", source.join("link.txt")).unwrap();
+    git(
+        &source,
+        &[
+            "add",
+            ".gitattributes",
+            "crlf.txt",
+            "filtered.txt",
+            "link.txt",
+        ],
+    );
+    git(&source, &["commit", "-qm", "checkout context"]);
+    let revision = CommitSha::parse(git(&source, &["rev-parse", "HEAD"])).unwrap();
+    git(&source, &["config", "filter.mark.required", "true"]);
+    git(
+        &source,
+        &[
+            "config",
+            "filter.mark.smudge",
+            ": > .projection-effect; printf 'smudged:'; while IFS= read -r line; do printf '%s\\n' \"$line\"; done",
+        ],
+    );
+    git(
+        &source,
+        &[
+            "config",
+            "filter.mark.clean",
+            "while IFS= read -r line; do printf '%s\\n' \"${line#smudged:}\"; done",
+        ],
+    );
+    let mut manager = manager();
+    let commit = manager.commit_object(&source, &revision).unwrap();
+    let observed = manager
+        .observe_tree(
+            &source,
+            &commit.tree_id().unwrap(),
+            ObjectLimits {
+                entries: 16,
+                bytes: 8192,
+                depth: 4,
+                path_bytes: 8192,
+            },
+        )
+        .unwrap();
+    for symlinks in ["true", "false"] {
+        git(&source, &["config", "core.symlinks", symlinks]);
+        let native = temp.path().join(format!("native-{symlinks}"));
+        manager
+            .create_detached_worktree(&source, &native, revision.as_str())
+            .unwrap();
+        assert!(native.join(".projection-effect").exists());
+        fs::remove_file(native.join(".projection-effect")).unwrap();
+        let filtered = manager
+            .checkout_projection(&native, &observed, b"filtered.txt")
+            .unwrap();
+        assert_eq!(filtered.bytes(), b"smudged:payload\n");
+        assert_eq!(
+            filtered.bytes(),
+            fs::read(native.join("filtered.txt")).unwrap()
+        );
+        assert!(native.join(".projection-effect").exists());
+        let link = manager
+            .checkout_projection(&native, &observed, b"link.txt")
+            .unwrap();
+        assert!(link.kind() == TreeKind::Symlink);
+        assert_eq!(link.bytes(), b"dest\n");
+        if symlinks == "true" {
+            assert_eq!(
+                fs::read_link(native.join("link.txt"))
+                    .unwrap()
+                    .as_os_str()
+                    .as_bytes(),
+                link.bytes()
+            );
+        } else {
+            assert!(!native.join("link.txt").is_symlink());
+            assert_eq!(fs::read(native.join("link.txt")).unwrap(), link.bytes());
+        }
+        let wrong = git_command()
+            .arg("-C")
+            .arg(&native)
+            .args([
+                "cat-file",
+                "--filters",
+                "--path=link.txt",
+                link.object().as_str(),
+            ])
+            .output()
+            .unwrap();
+        assert!(wrong.status.success());
+        assert_eq!(wrong.stdout, b"dest\r\n");
+        let text = manager
+            .checkout_projection(&native, &observed, b"crlf.txt")
+            .unwrap();
+        assert_eq!(text.bytes(), b"line\r\n");
+        assert_eq!(text.bytes(), fs::read(native.join("crlf.txt")).unwrap());
+        fs::write(native.join("crlf.txt"), b"tampered\n").unwrap();
+        assert!(
+            manager
+                .index_entries(&native)
+                .unwrap()
+                .matches_tree(&observed)
+        );
+        assert_ne!(
+            manager
+                .checkout_projection(&native, &observed, b"crlf.txt")
+                .unwrap()
+                .bytes(),
+            fs::read(native.join("crlf.txt")).unwrap(),
+        );
+    }
+    fs::write(source.join(".git/info/attributes"), b"crlf.txt -text\n").unwrap();
+    let native = temp.path().join("native-info");
+    manager
+        .create_detached_worktree(&source, &native, revision.as_str())
+        .unwrap();
+    let settings = manager.checkout_settings(&native).unwrap();
+    let replica = temp.path().join("replica");
+    manager
+        .create_standalone_checkout(&source, &replica, &revision, &settings)
+        .unwrap();
+    assert!(manager.checkout_settings(&replica).unwrap() == settings);
+    for name in [b"crlf.txt".as_slice(), b"filtered.txt"] {
+        let actual = manager
+            .checkout_projection(&native, &observed, name)
+            .unwrap();
+        let copied = manager
+            .checkout_projection(&replica, &observed, name)
+            .unwrap();
+        assert_ne!(actual.bytes(), copied.bytes());
+        for path in [&native, &replica] {
+            assert!(manager.index_entries(path).unwrap().matches_tree(&observed));
+        }
+    }
+}
+
+#[test]
+fn checkout_settings_use_effective_values_and_distinguish_bare_from_empty() {
+    use std::io::Write;
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let base = init_repo(&source);
+    git(&source, &["config", "--add", "core.autocrlf", "input"]);
+    git(&source, &["config", "--add", "core.autocrlf", "false"]);
+    // Native typed --get rejects shadowed input even though the effective value
+    // is false. Snapshot + isolated conversion must not inherit that failure.
+    assert!(
+        !git_command()
+            .arg("-C")
+            .arg(&source)
+            .args(["config", "--type=bool", "--get", "core.autocrlf"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let mut manager = manager();
+    let settings = manager.checkout_settings(&source).unwrap();
+    let target = temp.path().join("replica");
+    manager
+        .create_standalone_checkout(
+            &source,
+            &target,
+            &CommitSha::parse(base).unwrap(),
+            &settings,
+        )
+        .unwrap();
+    assert_eq!(git(&target, &["config", "--get", "core.autocrlf"]), "false");
+    fs::OpenOptions::new()
+        .append(true)
+        .open(source.join(".git/config"))
+        .unwrap()
+        .write_all(b"\n[core]\nautocrlf\nfilemode=\n")
+        .unwrap();
+    let implicit = manager.checkout_settings(&source).unwrap();
+    manager.apply_checkout_settings(&target, &implicit).unwrap();
+    assert_eq!(git(&target, &["config", "--get", "core.autocrlf"]), "true");
+    assert_eq!(git(&target, &["config", "--get", "core.filemode"]), "false");
+}
+
+#[test]
+fn native_index_entries_reject_hidden_flags_but_do_not_claim_working_bytes_or_index_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    init_repo(&root);
+    let mut manager = manager();
+    let baseline = manager.index_entries(&root).unwrap();
+    let commit = manager
+        .commit_object(
+            &root,
+            &CommitSha::parse(git(&root, &["rev-parse", "HEAD"])).unwrap(),
+        )
+        .unwrap();
+    let limits = abird_host_manager::fleet::repository::ObjectLimits {
+        entries: 16,
+        bytes: 4096,
+        depth: 4,
+        path_bytes: 4096,
+    };
+    let observed = manager
+        .observe_tree(&root, &commit.tree_id().unwrap(), limits)
+        .unwrap();
+    assert!(baseline.matches_tree(&observed));
+    fs::write(root.join("state"), b"unrequested bytes\n").unwrap();
+    assert!(manager.index_entries(&root).unwrap() == baseline);
+    assert!(
+        manager
+            .index_entries(&root)
+            .unwrap()
+            .matches_tree(&observed)
+    );
+    for flag in ["assume-unchanged", "skip-worktree"] {
+        git(
+            &root,
+            &["update-index", &format!("--{flag}"), "--", "state"],
+        );
+        let error = manager.index_entries(&root).err().unwrap().to_string();
+        assert!(error.contains("unsupported native index entry flags"));
+        git(
+            &root,
+            &["update-index", &format!("--no-{flag}"), "--", "state"],
+        );
+        assert!(manager.index_entries(&root).unwrap() == baseline);
+    }
+    git(&root, &["add", "state"]);
+    assert!(manager.index_entries(&root).unwrap() != baseline);
+    // Intent-to-add is not exposed by this listing; do not call it an index-file
+    // verifier. Full flags/extensions and source semantics remain separate gates.
+    fs::write(root.join("empty"), b"").unwrap();
+    git(&root, &["add", "-N", "empty"]);
+    let intent = manager.index_entries(&root).unwrap();
+    git(&root, &["add", "empty"]);
+    assert!(manager.index_entries(&root).unwrap() == intent);
+    let indexed =
+        abird_host_manager::fleet::repository::ObjectId::parse(git(&root, &["write-tree"]))
+            .unwrap();
+    let ordinary = manager.observe_tree(&root, &indexed, limits).unwrap();
+    assert!(intent.matches_tree(&ordinary)); // Projection still hides intent-to-add.
+}
+
+#[test]
+fn selected_tree_observation_rejects_substituted_child_blobs_with_valid_parent_objects() {
+    use abird_host_manager::fleet::repository::ObjectLimits;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    for replacement_ref in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        init_repo(&source);
+        fs::create_dir(source.join("d")).unwrap();
+        fs::write(source.join("d/file"), b"child\0\xff").unwrap();
+        git(&source, &["add", "d/file"]);
+        git(&source, &["commit", "-m", "child"]);
+        let base = CommitSha::parse(git(&source, &["rev-parse", "HEAD"])).unwrap();
+        let mut manager = manager();
+        let commit = manager.commit_object(&source, &base).unwrap();
+        let root = commit.tree_id().unwrap();
+        let limits = ObjectLimits {
+            entries: 16,
+            bytes: 4096,
+            depth: 4,
+            path_bytes: 4096,
+        };
+        let observed = manager.observe_tree(&source, &root, limits).unwrap();
+        assert_eq!(observed.entries().len(), 3);
+        let child = observed
+            .entries()
+            .get(b"d/file".as_slice())
+            .unwrap()
+            .object();
+        let made = ProcessCommandRunner
+            .run(
+                &CommandRequest::new("git")
+                    .args(["hash-object", "--no-filters", "-t", "blob", "-w", "--stdin"])
+                    .current_dir(&source)
+                    .stdin(b"changed child\n".to_vec()),
+            )
+            .unwrap();
+        assert!(made.succeeded());
+        let other = String::from_utf8(made.stdout).unwrap().trim().to_owned();
+        assert_ne!(child.as_str(), other);
+        if replacement_ref {
+            git(&source, &["replace", child.as_str(), &other]);
+        } else {
+            let path = source
+                .join(".git/objects")
+                .join(&child.as_str()[..2])
+                .join(&child.as_str()[2..]);
+            let other = source
+                .join(".git/objects")
+                .join(&other[..2])
+                .join(&other[2..]);
+            let meta = fs::symlink_metadata(&path).unwrap();
+            assert!(meta.is_file() && meta.nlink() == 1);
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::write(path, fs::read(other).unwrap()).unwrap();
+        }
+        assert_eq!(
+            manager.commit_object(&source, &base).unwrap().bytes(),
+            commit.bytes()
+        );
+        manager.tree_object(&source, &root).unwrap();
+        manager
+            .tree_object(
+                &source,
+                observed.entries().get(b"d".as_slice()).unwrap().object(),
+            )
+            .unwrap();
+        let error = manager.observe_tree(&source, &root, limits).err().unwrap();
+        assert!(error.to_string().contains("native blob content differs"));
+    }
+}
+
+#[test]
+fn hashed_tree_with_missing_child_is_not_a_complete_selected_tree_observation() {
+    use abird_host_manager::fleet::repository::{ObjectId, ObjectLimits};
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    let bytes = [b"100644 missing\0".as_slice(), &[1; 20]].concat();
+    let made = ProcessCommandRunner
+        .run(
+            &CommandRequest::new("git")
+                .args(["hash-object", "--no-filters", "-t", "tree", "-w", "--stdin"])
+                .current_dir(temp.path())
+                .stdin(bytes),
+        )
+        .unwrap();
+    assert!(made.succeeded());
+    let root = ObjectId::parse(String::from_utf8(made.stdout).unwrap().trim()).unwrap();
+    let mut manager = manager();
+    assert_eq!(
+        manager
+            .tree_object(temp.path(), &root)
+            .unwrap()
+            .entries()
+            .len(),
+        1
+    );
+    let error = manager
+        .observe_tree(
+            temp.path(),
+            &root,
+            ObjectLimits {
+                entries: 16,
+                bytes: 4096,
+                depth: 4,
+                path_bytes: 4096,
+            },
+        )
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("read native blob object failed"));
+}
+
+#[test]
+fn root_tree_hash_rejects_replacement_and_corruption_before_recipe_worktree_creation() {
+    use abird_host_agent::build_executor::request::Source;
+    use abird_host_manager::fleet::preparation::source::SourceRecipe;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    for replacement_ref in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let base = CommitSha::parse(init_repo(&source)).unwrap();
+        let mut manager = manager();
+        let commit = manager.commit_object(&source, &base).unwrap();
+        let id = commit.tree_id().unwrap();
+        let observed = manager
+            .observe_tree(
+                &source,
+                &id,
+                abird_host_manager::fleet::repository::ObjectLimits {
+                    entries: 16,
+                    bytes: 4096,
+                    depth: 4,
+                    path_bytes: 4096,
+                },
+            )
+            .unwrap();
+        let tree = manager.tree_object(&source, &id).unwrap();
+        assert_eq!(tree.identity().as_str(), id.as_str());
+        assert_eq!(tree.entries().len(), 1);
+        assert_eq!(tree.entries()[0].name(), b"state");
+        let raw = ProcessCommandRunner
+            .run(
+                &CommandRequest::new("git")
+                    .args(["cat-file", "tree", id.as_str()])
+                    .current_dir(&source),
+            )
+            .unwrap();
+        assert!(raw.succeeded());
+        let mut changed = raw.stdout;
+        assert_eq!(&changed[7..12], b"state");
+        changed[7..12].copy_from_slice(b"other");
+        let made = ProcessCommandRunner
+            .run(
+                &CommandRequest::new("git")
+                    .args(["hash-object", "--no-filters", "-t", "tree", "-w", "--stdin"])
+                    .current_dir(&source)
+                    .stdin(changed.clone()),
+            )
+            .unwrap();
+        assert!(made.succeeded());
+        let other = String::from_utf8(made.stdout).unwrap().trim().to_owned();
+        assert_ne!(other, id.as_str());
+        if replacement_ref {
+            git(&source, &["replace", id.as_str(), &other]);
+        } else {
+            let path = source
+                .join(".git/objects")
+                .join(&id.as_str()[..2])
+                .join(&id.as_str()[2..]);
+            let other_path = source
+                .join(".git/objects")
+                .join(&other[..2])
+                .join(&other[2..]);
+            let meta = fs::symlink_metadata(&path).unwrap();
+            assert!(meta.is_file() && meta.nlink() == 1);
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::write(path, fs::read(other_path).unwrap()).unwrap();
+        }
+        // Commit bytes still match; root-tree bytes are a distinct obligation.
+        assert_eq!(
+            manager.commit_object(&source, &base).unwrap().bytes(),
+            commit.bytes()
+        );
+        let error = manager.tree_object(&source, &id).err().unwrap();
+        assert!(error.to_string().contains("native tree content differs"));
+        let recipe = SourceRecipe::bind(
+            &Source {
+                revision: base.as_str().into(),
+                base_revision: base.as_str().into(),
+                tree_digest: None,
+                patch_digest: None,
+            },
+            None,
+        )
+        .unwrap();
+        let target = temp.path().join("new-parent/view");
+        let error = recipe
+            .native_worktree(&mut manager, &source, &target, &observed)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("native tree content differs"));
+        assert!(!target.parent().unwrap().exists());
+    }
+}
+
+#[test]
+fn native_commit_bytes_reject_replacement_and_corrupt_objects_at_the_requested_name() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    for replacement_ref in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let base = CommitSha::parse(init_repo(&source)).unwrap();
+        let mut manager = manager();
+        let original = manager.commit_object(&source, &base).unwrap();
+        assert_eq!(original.revision(), &base);
+        let mut changed = original.bytes().to_vec();
+        changed.extend_from_slice(b"different synthetic message\n");
+        let made = ProcessCommandRunner
+            .run(
+                &CommandRequest::new("git")
+                    .args([
+                        "hash-object",
+                        "--no-filters",
+                        "-t",
+                        "commit",
+                        "-w",
+                        "--stdin",
+                    ])
+                    .current_dir(&source)
+                    .stdin(changed.clone()),
+            )
+            .unwrap();
+        assert!(made.succeeded());
+        let other = String::from_utf8(made.stdout).unwrap().trim().to_owned();
+        assert_ne!(other, base.as_str());
+        if replacement_ref {
+            git(&source, &["replace", base.as_str(), &other]);
+            assert_eq!(git(&source, &["rev-parse", "HEAD"]), base.as_str());
+        } else {
+            // Only freshly created synthetic, unshared loose objects.
+            let path = source
+                .join(".git/objects")
+                .join(&base.as_str()[..2])
+                .join(&base.as_str()[2..]);
+            let other_path = source
+                .join(".git/objects")
+                .join(&other[..2])
+                .join(&other[2..]);
+            let meta = fs::symlink_metadata(&path).unwrap();
+            assert!(meta.is_file() && meta.nlink() == 1);
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::write(path, fs::read(other_path).unwrap()).unwrap();
+            // Native resolution itself checks corruption; cat-file alone doesn't.
+            assert!(
+                manager
+                    .validate_staged_base(&source, base.as_str(), &base)
+                    .is_err()
+            );
+        }
+        let captured = ProcessCommandRunner
+            .run(
+                &CommandRequest::new("git")
+                    .args(["cat-file", "commit", base.as_str()])
+                    .current_dir(&source),
+            )
+            .unwrap();
+        assert!(captured.succeeded());
+        assert_eq!(captured.stdout, changed);
+        let error = manager.commit_object(&source, &base).err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("content differs from requested identity")
+        );
+    }
+}
+
+struct ReplaceCommitBeforeWorktree {
+    root: PathBuf,
+    base: String,
+    replacement: String,
+    requests: Vec<CommandRequest>,
+}
+impl CommandRunner for ReplaceCommitBeforeWorktree {
+    fn run(&mut self, request: &CommandRequest) -> Result<CommandOutput> {
+        self.requests.push(request.clone());
+        if request.args.starts_with(&["worktree".into(), "add".into()]) {
+            git(&self.root, &["replace", &self.base, &self.replacement]);
+        }
+        ProcessCommandRunner.run(request)
+    }
+}
+
+#[test]
+fn recipe_rejects_late_replacement_base_index_before_patch_without_cleanup_or_replay() {
+    use abird_host_agent::build_executor::request::Source;
+    use abird_host_manager::fleet::preparation::source::SourceRecipe;
+    use abird_host_manager::fleet::repository::ObjectLimits;
+    use sha2::{Digest, Sha256};
+    for with_patch in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        let base = init_repo(&root);
+        fs::write(root.join("unexpected"), b"not selected\n").unwrap();
+        git(&root, &["add", "unexpected"]);
+        git(&root, &["commit", "-m", "replacement"]);
+        let replacement = git(&root, &["rev-parse", "HEAD"]);
+        git(&root, &["checkout", "--detach", &base]);
+        let mut observer = manager();
+        let patch = if with_patch {
+            fs::write(root.join("state"), b"selected\n").unwrap();
+            git(&root, &["add", "state"]);
+            Some(observer.capture_staged_patch(&root).unwrap().unwrap().patch)
+        } else {
+            None
+        };
+        let intent = Source {
+            revision: base.clone(),
+            base_revision: base.clone(),
+            tree_digest: None,
+            patch_digest: patch
+                .as_ref()
+                .map(|p| format!("{:x}", Sha256::digest(&p.bytes))),
+        };
+        let recipe = SourceRecipe::bind(&intent, patch).unwrap();
+        let commit = observer
+            .commit_object(&root, &CommitSha::parse(base.clone()).unwrap())
+            .unwrap();
+        let observed = observer
+            .observe_tree(
+                &root,
+                &commit.tree_id().unwrap(),
+                ObjectLimits {
+                    entries: 16,
+                    bytes: 4096,
+                    depth: 4,
+                    path_bytes: 4096,
+                },
+            )
+            .unwrap();
+        let mut repository = RepositoryManager::new(
+            "git",
+            ReplaceCommitBeforeWorktree {
+                root: root.clone(),
+                base: base.clone(),
+                replacement,
+                requests: Vec::new(),
+            },
+        );
+        let target = temp.path().join("view");
+        let error = recipe
+            .native_worktree(&mut repository, &root, &target, &observed)
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.to_string(),
+            "native base index differs from observed tree"
+        );
+        assert_eq!(git(&target, &["rev-parse", "HEAD"]), base);
+        assert_eq!(fs::read(target.join("state")).unwrap(), b"initial\n");
+        assert_eq!(
+            fs::read(target.join("unexpected")).unwrap(),
+            b"not selected\n"
+        );
+        let requests = &repository.runner().requests;
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.args.starts_with(&["worktree".into(), "add".into()]))
+                .count(),
+            1
+        );
+        assert!(
+            !requests.iter().any(|r| r.args[0] == "apply"
+                || r.args.starts_with(&["worktree".into(), "remove".into()]))
+        );
+    }
+}
+
+#[test]
+fn source_recipe_binds_exact_binary_artifact_before_native_materialization() {
+    use abird_host_agent::build_executor::request::Source;
+    use abird_host_manager::fleet::preparation::source::SourceRecipe;
+    use sha2::{Digest, Sha256};
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let base = init_repo(&source);
+    fs::write(source.join("binary"), b"selected\0binary\xff").unwrap();
+    fs::write(source.join("state"), b"selected\n").unwrap();
+    git(&source, &["add", "state", "binary"]);
+    fs::write(source.join("state"), b"ignored unstaged\n").unwrap();
+    fs::write(source.join("ignored"), b"untracked").unwrap();
+    let mut manager = manager();
+    let selected = manager.capture_staged_patch(&source).unwrap().unwrap();
+    let intent = Source {
+        revision: base.clone(),
+        base_revision: base.clone(),
+        tree_digest: None,
+        patch_digest: Some(format!("{:x}", Sha256::digest(&selected.patch.bytes))),
+    };
+    let mut corrupt = selected.patch.clone();
+    corrupt.bytes.push(b' ');
+    assert!(SourceRecipe::bind(&intent, Some(corrupt)).is_err());
+    let recipe = SourceRecipe::bind(&intent, Some(selected.patch)).unwrap();
+    let target = temp.path().join("native");
+    let commit = manager
+        .commit_object(&source, &CommitSha::parse(base.clone()).unwrap())
+        .unwrap();
+    let observed = manager
+        .observe_tree(
+            &source,
+            &commit.tree_id().unwrap(),
+            abird_host_manager::fleet::repository::ObjectLimits {
+                entries: 16,
+                bytes: 4096,
+                depth: 4,
+                path_bytes: 4096,
+            },
+        )
+        .unwrap();
+    let view = recipe
+        .native_worktree(&mut manager, &source, &target, &observed)
+        .unwrap();
+    assert_eq!(view.commit.as_str(), base);
+    assert_eq!(git(&target, &["rev-parse", "HEAD"]), base);
+    assert_eq!(fs::read(target.join("state")).unwrap(), b"selected\n");
+    assert_eq!(
+        fs::read(target.join("binary")).unwrap(),
+        b"selected\0binary\xff"
+    );
+    assert!(!target.join("ignored").exists());
+    manager.remove_worktree(&source, &target).unwrap();
+}
+
+#[test]
+fn standalone_missing_commit_does_not_fallback_or_adopt_existing_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let base = init_repo(&source);
+    let mut manager = manager();
+    let settings = manager.checkout_settings(&source).unwrap();
+    let missing = CommitSha::parse("f".repeat(40)).unwrap();
+    assert_ne!(missing.as_str(), base);
+    let target = temp.path().join("standalone");
+    assert!(
+        manager
+            .create_standalone_checkout(&source, &target, &missing, &settings)
+            .is_err()
+    );
+    assert!(
+        target.join(".git").is_dir(),
+        "failed producer remains tracked, not deleted"
+    );
+    assert!(
+        manager
+            .create_standalone_checkout(
+                &source,
+                &target,
+                &CommitSha::parse(base.clone()).unwrap(),
+                &settings
+            )
+            .is_err()
+    );
+    assert_eq!(git(&source, &["rev-parse", "HEAD"]), base);
 }
 
 #[derive(Default)]
@@ -406,6 +1287,7 @@ fn argv_codec_round_trips_nuls_spaces_unicode_and_empty_arguments() {
 fn deploy_trigger() -> CiTriggerRequest {
     CiTriggerRequest {
         action: "deploy".to_owned(),
+        strategy: None,
         sha: Some(CommitSha::parse("abcdef0").unwrap()),
         clean_mode: CiCleanMode::Auto,
         group: Some("prod".to_owned()),
@@ -508,6 +1390,7 @@ fn ci_trigger_plans_only_the_remote_contract_and_exact_patch_stdin() {
 
     let clean = plan_ci_trigger(&CiTriggerRequest {
         action: "clean".to_owned(),
+        strategy: None,
         sha: None,
         clean_mode: CiCleanMode::All,
         group: None,

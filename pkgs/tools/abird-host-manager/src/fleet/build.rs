@@ -12,6 +12,9 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 
+#[path = "build_query.rs"]
+pub mod query;
+
 use super::build_lease::LeaseEpoch;
 use super::transport::{
     output_indicates_daemon_disconnect, output_indicates_host_key_failure,
@@ -86,27 +89,18 @@ pub enum BuildPlanAttribute {
 }
 
 impl BuildPlanAttribute {
-    fn installable(self, configuration: &str) -> String {
+    fn attribute(self, configuration: &str) -> String {
         match self {
-            Self::Native => format!(".#nixbot.plans.{configuration}.drvPath"),
-            Self::NixosConfiguration => format!(
-                ".#nixosConfigurations.{configuration}.config.system.build.toplevel.drvPath"
-            ),
+            Self::Native => format!("nixbot.plans.{configuration}.drvPath"),
+            Self::NixosConfiguration => {
+                format!("nixosConfigurations.{configuration}.config.system.build.toplevel.drvPath")
+            }
         }
     }
 }
 
 pub fn build_plan_probe_command(nix: &str, nix_args: &[String]) -> CommandSpec {
-    let mut args = vec!["eval".to_owned()];
-    args.extend_from_slice(nix_args);
-    args.extend([
-        "--json".to_owned(),
-        "--no-write-lock-file".to_owned(),
-        ".#nixbot.plans".to_owned(),
-        "--apply".to_owned(),
-        "builtins.attrNames".to_owned(),
-    ]);
-    CommandSpec::new(nix, args)
+    query::FlakeQuery::catalog().command(nix, nix_args, ".")
 }
 
 pub fn build_plan_evaluation_command(
@@ -115,14 +109,7 @@ pub fn build_plan_evaluation_command(
     attribute: BuildPlanAttribute,
     configuration: &str,
 ) -> CommandSpec {
-    let mut args = vec!["eval".to_owned()];
-    args.extend_from_slice(nix_args);
-    args.extend([
-        "--raw".to_owned(),
-        "--no-write-lock-file".to_owned(),
-        attribute.installable(configuration),
-    ]);
-    CommandSpec::new(nix, args)
+    query::FlakeQuery::derivation(attribute, configuration).command(nix, nix_args, ".")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -364,8 +351,6 @@ impl RemoteBuildOutput {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuilderClosure {
     pub path: NixStorePath,
-    pub derivation: NixStorePath,
-    pub build: BuildArgs,
     pub protected_epoch: LeaseEpoch,
 }
 

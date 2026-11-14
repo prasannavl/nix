@@ -26,12 +26,13 @@ use crate::programs::clear_git_repository_environment;
 
 use super::bootstrap::ForcedCommandPlan;
 use super::build::{
-    self, CacheSource, CommandAttempt, CommandSpec, CommandStatus,
-    FailureEvidence as BuildFailureEvidence, NixStorePath, RemoteBuildOutput, RetryDecision,
-    RetryPolicy, RetryTracker,
+    self, CacheSource, CommandAttempt, CommandSpec, CommandStatus, NixStorePath, RemoteBuildOutput,
+    RetryDecision, RetryPolicy, RetryTracker,
 };
 use super::build_lease::LeaseProcessSpec;
-use super::build_runtime::{RemoteBuildTools, builder_lease_hold_command};
+use super::build_runtime::{
+    RemoteBuildTools, UnconfirmedBuild, builder_lease_hold_command, validate_remote_build_output,
+};
 use super::deploy::{
     self, ActivationGoal, ActivationSample, DeployDecision, GenerationSnapshot, RemoteCommand,
     SnapshotRequirement, SystemGeneration, VerificationDecision,
@@ -565,7 +566,8 @@ fn observe_stream(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostExecutionTarget {
     pub route: SshRoutePlan,
     pub cwd: PathBuf,
@@ -575,6 +577,7 @@ pub struct HostExecutionTarget {
     pub ssh_server_alive_interval_seconds: u64,
     pub ssh_server_alive_count_max: usize,
     pub remote_read_timeout_seconds: u64,
+    #[serde(skip)]
     pub control_master: Option<ControlMaster>,
 }
 
@@ -1436,6 +1439,39 @@ impl<R: ProcessRunner> HostRuntime<R> {
         self.run_bounded_read(request, target.remote_read_timeout_seconds)
     }
 
+    /// Independent control lane; preserve the authenticated route and caller UID.
+    /// Never share the realization's SSH master or elevate through root_argv.
+    pub(crate) fn execute_control_command(
+        &mut self,
+        target: &HostExecutionTarget,
+        command: &CommandSpec,
+        effect: EffectKind,
+        task: Arc<dyn Task>,
+    ) -> Result<ProcessOutput> {
+        let mut isolated = target.clone();
+        isolated.control_master = None;
+        let mut request = self.remote_command_request(&isolated, command, effect, task)?;
+        if !target.local {
+            let separator = request
+                .args
+                .iter()
+                .position(|arg| arg == "--")
+                .context("SSH control request has no option separator")?;
+            request.args.splice(
+                separator..separator,
+                [
+                    "-S".to_owned(),
+                    "none".to_owned(),
+                    "-o".to_owned(),
+                    "ControlMaster=no".to_owned(),
+                    "-o".to_owned(),
+                    "ControlPath=none".to_owned(),
+                ],
+            );
+        }
+        self.run_bounded_read(request, target.remote_read_timeout_seconds.min(30))
+    }
+
     pub fn execute_remote_root_command_bounded(
         &mut self,
         target: &HostExecutionTarget,
@@ -1472,38 +1508,13 @@ impl<R: ProcessRunner> HostRuntime<R> {
         &mut self,
         target: &HostExecutionTarget,
         command: &CommandSpec,
-        retry: RetryPolicy,
         task: Arc<dyn Task>,
-    ) -> Result<RemoteBuildExecution> {
-        let mut tracker = RetryTracker::new(retry);
-        let action_attempt = loop {
-            let process =
-                self.remote_command_request(target, command, EffectKind::Build, Arc::clone(&task))?;
-            let output = self.run(process)?;
-            let attempt = command_attempt(&output);
-            match tracker.observe(attempt.clone()) {
-                RetryDecision::Retry { delay, .. } => self.runner.wait(delay),
-                RetryDecision::Complete | RetryDecision::Stop { .. } => break attempt,
-            }
-        };
-
-        let output = if action_attempt.status == CommandStatus::Success {
-            RemoteBuildOutput::validate(&action_attempt.stdout).ok()
-        } else {
-            None
-        };
-        let status = if output.is_some() {
-            CommandStatus::Success
-        } else if action_attempt.status == CommandStatus::Success {
-            CommandStatus::Exit(1)
-        } else {
-            action_attempt.status
-        };
-        Ok(RemoteBuildExecution {
-            output,
-            failures: tracker.failures().to_vec(),
-            status,
-        })
+    ) -> Result<RemoteBuildOutput> {
+        let process = self.remote_command_request(target, command, EffectKind::Build, task)?;
+        // Once dispatched, neither a transport error nor a local exit proves
+        // remote settlement. Never turn another SSH execution into observation.
+        let output = self.run(process).context(UnconfirmedBuild::unobserved())?;
+        validate_remote_build_output(&command_attempt(&output))
     }
 
     pub fn cache_pull(
@@ -1660,16 +1671,42 @@ impl<R: ProcessRunner> HostRuntime<R> {
         }
 
         self.runner.activation_started();
-        let observer_status = (|| {
+        let observer_status: Result<ProcessOutput> = (|| {
             if let Some(observer) = &command.observer_script {
                 let observer = CommandSpec::new(SYSTEM_BASH, ["-c".to_owned(), observer.clone()]);
-                let request = self.remote_root_command_request_without_control_master(
+                let mut request = self.remote_root_command_request_without_control_master(
                     target,
                     &observer,
                     EffectKind::ReadOnly,
                     Arc::clone(&task),
                 )?;
-                self.run(request)
+                let observed = self.run(request.clone())?;
+                let status = command_status(observed.status);
+                if !observed.succeeded()
+                    && matches!(observed.status, ProcessStatus::Code(_))
+                    && deploy::classify_deploy_failure(
+                        status.code(),
+                        &observed.combined_output(),
+                        true,
+                        1,
+                        1,
+                    ) == deploy::DeployFailureAction::VerifyTarget
+                    && ActivationSample::parse_observer_marker(&observed.stderr)
+                        .ok()
+                        .and_then(|sample| sample.admitted)
+                        != Some(false)
+                {
+                    // Reattach the bounded read-only observer, never resubmit activation.
+                    request.task = InternalTask::child(
+                        format!("{}-reconnect", task.name()),
+                        Arc::clone(&task),
+                    );
+                    let reattached = self.run(request)?;
+                    if !reattached.succeeded() {
+                        return Ok(reattached);
+                    }
+                }
+                Ok(observed)
             } else {
                 Ok(submitted)
             }
@@ -1933,13 +1970,6 @@ fn require_success(output: &ProcessOutput, label: &str) -> Result<()> {
     } else {
         bail!("{label} failed: {}", output.combined_output())
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RemoteBuildExecution {
-    pub output: Option<RemoteBuildOutput>,
-    pub failures: Vec<BuildFailureEvidence>,
-    pub status: CommandStatus,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

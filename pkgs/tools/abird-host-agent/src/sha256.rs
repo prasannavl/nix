@@ -44,7 +44,7 @@ pub fn to_hex(bytes: &[u8]) -> String {
     encoded
 }
 
-struct Sha256 {
+pub(crate) struct Sha256 {
     state: [u32; 8],
     buffer: [u8; 64],
     buffer_len: usize,
@@ -52,7 +52,7 @@ struct Sha256 {
 }
 
 impl Sha256 {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: INITIAL_STATE,
             buffer: [0; 64],
@@ -61,7 +61,7 @@ impl Sha256 {
         }
     }
 
-    fn update(&mut self, mut bytes: &[u8]) {
+    pub(crate) fn update(&mut self, mut bytes: &[u8]) {
         self.length_bytes = self.length_bytes.wrapping_add(bytes.len() as u64);
 
         if self.buffer_len > 0 {
@@ -75,6 +75,8 @@ impl Sha256 {
                 let block = self.buffer;
                 self.compress(&block);
                 self.buffer_len = 0;
+            } else {
+                return;
             }
         }
 
@@ -88,7 +90,7 @@ impl Sha256 {
         self.buffer_len = bytes.len();
     }
 
-    fn finish(mut self) -> [u8; 32] {
+    pub(crate) fn finish(mut self) -> [u8; 32] {
         let bit_length = self.length_bytes.wrapping_mul(8);
         self.buffer[self.buffer_len] = 0x80;
         self.buffer_len += 1;
@@ -163,6 +165,26 @@ impl Sha256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_updates_preserve_partial_blocks_and_empty_chunks() {
+        let bytes: Vec<u8> = (0..=255).cycle().take(768).collect();
+        let expected = "f3a25aa93aa2fbba28d79260535bbd6a5eb0fc1c24a8b0f04e12b484c1dfe363";
+        for size in 1..=129 {
+            let mut hash = Sha256::new();
+            for chunk in bytes.chunks(size) {
+                hash.update(chunk);
+                hash.update(&[]);
+            }
+            assert_eq!(to_hex(&hash.finish()), expected, "chunk size {size}");
+        }
+        for split in 0..=bytes.len() {
+            let mut hash = Sha256::new();
+            hash.update(&bytes[..split]);
+            hash.update(&bytes[split..]);
+            assert_eq!(to_hex(&hash.finish()), expected, "split {split}");
+        }
+    }
 
     #[test]
     fn matches_known_vectors() {

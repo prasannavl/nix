@@ -400,6 +400,7 @@ impl Default for HostRow {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HostRowState {
+    Unconfirmed,
     Pending,
     Running,
     Completed,
@@ -415,6 +416,7 @@ enum HostRowState {
 /// is a distinct terminal outcome, not a failure of the host itself.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HostTaskOutcome {
+    Unconfirmed,
     Done,
     Finalizing,
     Failed,
@@ -680,6 +682,27 @@ impl ProgressReporter {
         );
     }
 
+    pub fn host_task_unconfirmed(&self, host: &str, key: &str, label: &str, elapsed: Duration) {
+        self.finish_host_task(
+            host,
+            key,
+            label,
+            label,
+            elapsed,
+            HostTaskOutcome::Unconfirmed,
+        );
+    }
+
+    pub fn host_unconfirmed(&self, host: &str, summary: impl Into<String>) {
+        let summary = summary.into();
+        self.update_host_row(host, Redraw::Immediate, |row| {
+            row.state = HostRowState::Unconfirmed;
+            row.summary = Some(summary);
+            row.task_started = None;
+            row.output.clone_from(&row.failure_output);
+        });
+    }
+
     fn finish_host_task(
         &self,
         host: &str,
@@ -703,6 +726,8 @@ impl ProgressReporter {
                 "{host} · {} · {}",
                 match outcome {
                     HostTaskOutcome::Done | HostTaskOutcome::Finalizing => done.to_owned(),
+                    HostTaskOutcome::Unconfirmed =>
+                        format!("{label} · remote execution unconfirmed"),
                     HostTaskOutcome::Failed => format!("{label} · failed"),
                     HostTaskOutcome::Interrupted => format!("{label} · interrupted"),
                 },
@@ -710,7 +735,9 @@ impl ProgressReporter {
             );
             // Interruption is a terminal outcome with no later summary of its
             // own, so it must not be rate-limited like a rolling detail line.
-            if outcome == HostTaskOutcome::Interrupted {
+            if outcome == HostTaskOutcome::Unconfirmed {
+                self.message(format!("? {line}"));
+            } else if outcome == HostTaskOutcome::Interrupted {
                 self.message(format!("⊘ {line}"));
             } else {
                 self.detail(line);
@@ -733,8 +760,12 @@ impl ProgressReporter {
                     row.state = HostRowState::Finalizing;
                     row.output.clear();
                 }
-                HostTaskOutcome::Failed | HostTaskOutcome::Interrupted => {
-                    row.state = if outcome == HostTaskOutcome::Interrupted {
+                HostTaskOutcome::Failed
+                | HostTaskOutcome::Interrupted
+                | HostTaskOutcome::Unconfirmed => {
+                    row.state = if outcome == HostTaskOutcome::Unconfirmed {
+                        HostRowState::Unconfirmed
+                    } else if outcome == HostTaskOutcome::Interrupted {
                         HostRowState::Interrupted
                     } else {
                         HostRowState::Failed
@@ -761,7 +792,7 @@ impl ProgressReporter {
     ) {
         let summary = summary.into();
         self.update_host_row(host, Redraw::Immediate, |row| {
-            if row.keep_interrupted(elapsed) {
+            if row.state == HostRowState::Unconfirmed || row.keep_interrupted(elapsed) {
                 return;
             }
             row.state = if succeeded {
@@ -789,7 +820,7 @@ impl ProgressReporter {
     pub fn host_skipped(&self, host: &str, summary: impl Into<String>) {
         let summary = summary.into();
         self.update_host_row(host, Redraw::Immediate, |row| {
-            if row.keep_interrupted(None) {
+            if row.state == HostRowState::Unconfirmed || row.keep_interrupted(None) {
                 return;
             }
             row.state = HostRowState::Skipped;
@@ -1396,21 +1427,28 @@ impl ProgressReporter {
                     .into_iter()
                     .filter_map(|host| {
                         let row = dashboard.rows.get(&host)?;
-                        (matches!(row.state, HostRowState::Failed | HostRowState::Interrupted))
-                            .then(|| {
-                                let summary = row
-                                    .summary
-                                    .clone()
-                                    .or_else(|| row.task.clone())
-                                    .unwrap_or_else(|| {
-                                        if row.state == HostRowState::Interrupted {
-                                            "interrupted".to_owned()
-                                        } else {
-                                            "failed".to_owned()
-                                        }
-                                    });
-                                (host, summary, row.output.iter().cloned().collect())
-                            })
+                        (matches!(
+                            row.state,
+                            HostRowState::Failed
+                                | HostRowState::Interrupted
+                                | HostRowState::Unconfirmed
+                        ))
+                        .then(|| {
+                            let summary = row
+                                .summary
+                                .clone()
+                                .or_else(|| row.task.clone())
+                                .unwrap_or_else(|| {
+                                    if row.state == HostRowState::Unconfirmed {
+                                        "remote execution unconfirmed".to_owned()
+                                    } else if row.state == HostRowState::Interrupted {
+                                        "interrupted".to_owned()
+                                    } else {
+                                        "failed".to_owned()
+                                    }
+                                });
+                            (host, summary, row.output.iter().cloned().collect())
+                        })
                     })
                     .collect()
             })
@@ -2607,7 +2645,10 @@ fn host_dashboard_lines(
             dashboard.rows.get(*host).is_some_and(|row| {
                 matches!(
                     row.state,
-                    HostRowState::Running | HostRowState::Failed | HostRowState::Interrupted
+                    HostRowState::Running
+                        | HostRowState::Failed
+                        | HostRowState::Interrupted
+                        | HostRowState::Unconfirmed
                 ) && !row.output.is_empty()
             })
         })
@@ -2663,6 +2704,16 @@ fn host_dashboard_lines(
             continue;
         };
         let (tone, status, metadata) = match row.state {
+            HostRowState::Unconfirmed => (
+                Tone::Warning,
+                format!(
+                    "? {}",
+                    row.summary
+                        .as_deref()
+                        .unwrap_or("remote execution unconfirmed")
+                ),
+                String::new(),
+            ),
             HostRowState::Pending => (Tone::Muted, "○ pending".to_owned(), String::new()),
             HostRowState::Completed | HostRowState::Finalizing => (
                 Tone::Muted,
@@ -2743,7 +2794,10 @@ fn host_dashboard_lines(
         ));
         if matches!(
             row.state,
-            HostRowState::Running | HostRowState::Failed | HostRowState::Interrupted
+            HostRowState::Running
+                | HostRowState::Failed
+                | HostRowState::Interrupted
+                | HostRowState::Unconfirmed
         ) && !row.output.is_empty()
         {
             let limit = (base_host_detail_limit
@@ -4558,8 +4612,10 @@ mod tests {
         let hosts = (0..20)
             .map(|index| format!("host-{index:02}"))
             .collect::<Vec<_>>();
-        let mut state = ProgressState::default();
-        state.verbose_active = true;
+        let mut state = ProgressState {
+            verbose_active: true,
+            ..ProgressState::default()
+        };
         state.stack.push(ActiveProgress {
             id: 1,
             label: "Build systems".to_owned(),
@@ -5118,6 +5174,46 @@ mod tests {
         .join("\n");
         assert!(rendered.contains("app  ○ build done · 3.0s"), "{rendered}");
         assert!(!rendered.contains("compiling"), "{rendered}");
+    }
+
+    #[test]
+    fn unconfirmed_remote_task_keeps_evidence_and_resists_terminal_overwrite() {
+        set_json_output(false);
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: true,
+            recent_update_limit: 10,
+            style: TerminalStyle::from_capabilities(false, false),
+            destination: ProgressDestination::Buffer(Arc::new(Mutex::new(Vec::new()))),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+        reporter.started("Build systems");
+        reporter.begin_host_dashboard(&["app".to_owned()]);
+        reporter.host_task_started("app", "build-app", "build", None);
+        reporter.host_task_output("app", "build-app", "last remote observation".to_owned());
+        reporter.host_task_unconfirmed("app", "build-app", "build", Duration::from_secs(3));
+        reporter.host_unconfirmed("app", "remote build unconfirmed; may still be running");
+        reporter.host_finished("app", false, None, "failed");
+        reporter.host_finished("app", true, None, "done");
+        reporter.host_skipped("app", "not started");
+
+        let state = reporter.state.lock().unwrap();
+        let dashboard = state.stack.last().unwrap();
+        let row = &dashboard.host_dashboard.as_ref().unwrap().rows["app"];
+        assert_eq!(row.state, HostRowState::Unconfirmed);
+        let rendered = dashboard_lines(
+            TerminalStyle::from_capabilities(false, false),
+            dashboard,
+            Duration::from_secs(3),
+        )
+        .join("\n");
+        assert!(
+            rendered.contains("? remote build unconfirmed; may still be running"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("last remote observation"), "{rendered}");
+        assert!(!rendered.contains("✗"), "{rendered}");
     }
 
     #[test]

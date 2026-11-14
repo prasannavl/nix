@@ -1,5 +1,10 @@
 #![allow(dead_code)]
 
+mod fleet {
+    pub(crate) use crate::{build, host_runtime, task, transport};
+    pub use abird_host_manager::fleet::signal;
+}
+
 mod programs {
     pub use abird_host_manager::programs::clear_git_repository_environment;
 }
@@ -8,6 +13,10 @@ mod programs {
 #[path = "../src/fleet/bootstrap.rs"]
 mod bootstrap;
 #[allow(clippy::all)]
+#[path = "../src/physical.rs"]
+#[allow(dead_code)]
+mod physical;
+
 #[path = "../src/fleet/build.rs"]
 mod build;
 #[allow(clippy::all)]
@@ -19,6 +28,9 @@ mod build_runtime;
 #[allow(clippy::all)]
 #[path = "../src/fleet/cli.rs"]
 mod cli;
+#[deny(clippy::all)]
+#[path = "../src/fleet/build_backend/agent/control.rs"]
+mod control;
 #[allow(clippy::all)]
 #[path = "../src/fleet/deploy.rs"]
 mod deploy;
@@ -65,7 +77,7 @@ use base64::Engine as _;
 use bootstrap::ForcedCommandPlan;
 use build::{
     BuildPlanAttribute, CacheSource, CommandSpec, CommandStatus, LocalBuildSpec, NixStorePath,
-    RemoteFailureKind, RetryPolicy, build_plan_evaluation_command, local_build_command,
+    RetryPolicy, build_plan_evaluation_command, local_build_command,
 };
 use deploy::{
     ActivationCommand, ActivationGoal, BootEnvironment, RemoteCommand, SnapshotRequirement,
@@ -228,6 +240,194 @@ fn target_as(user: &str) -> HostExecutionTarget {
         false,
     )
     .unwrap()
+}
+
+fn owned_ack(attempt: &str) -> String {
+    serde_json::json!({"version": 3, "reply": {"kind": "stop_requested", "attempt_id": attempt}})
+        .to_string()
+}
+
+#[test]
+fn control_preserves_complete_receipt_after_transport_exit_without_replay() {
+    let key = "a".repeat(64);
+    let mut output = success(&owned_ack(&key));
+    output.status = ProcessStatus::Code(255);
+    let mut runtime = HostRuntime::new(
+        FakeRunner::with_outputs([output]),
+        "/repo".into(),
+        DryRun::No,
+    )
+    .unwrap();
+    let response = control::exchange(
+        &mut runtime,
+        &target_as("operator"),
+        &key,
+        control::Operation::Cancel,
+        InternalTask::new("owned-cancel"),
+    )
+    .unwrap()
+    .executed()
+    .unwrap();
+    assert!(matches!(
+        response.reply,
+        abird_host_agent::build_executor::protocol::Reply::StopRequested { .. }
+    ));
+    let runner = runtime.into_runner();
+    assert_eq!(runner.requests.len(), 1);
+    assert!(runner.waits.is_empty());
+    assert_eq!(runner.timeouts, [Duration::from_secs(20)]);
+    let request = &runner.requests[0];
+    assert_eq!(
+        framed_remote_argv(request),
+        strings(&[
+            "/run/current-system/sw/bin/abird-host-agent",
+            "--json",
+            "owned-build",
+            "cancel",
+            &key,
+        ])
+    );
+    assert!(request.args.iter().any(|arg| arg == "operator@192.0.2.42"));
+    assert!(request.args.iter().any(|arg| arg == "ControlMaster=no"));
+    assert!(request.args.iter().any(|arg| arg == "ControlPath=none"));
+    assert!(!request.stdin.as_ref().unwrap().contains("sudo"));
+}
+
+#[test]
+fn control_accepts_a_maximum_frame_with_the_cli_line_terminator() {
+    use abird_host_agent::build_executor::protocol::{MAX_FRAME_BYTES, Reply};
+    let key = "a".repeat(64);
+    let mut body = owned_ack(&key);
+    body.push_str(&" ".repeat(MAX_FRAME_BYTES - body.len()));
+    body.push('\n');
+    assert_eq!(body.len(), MAX_FRAME_BYTES + 1);
+    let mut runtime = HostRuntime::new(
+        FakeRunner::with_outputs([success(&body)]),
+        "/repo".into(),
+        DryRun::No,
+    )
+    .unwrap();
+    let response = control::exchange(
+        &mut runtime,
+        &target(),
+        &key,
+        control::Operation::Cancel,
+        InternalTask::new("owned-cancel"),
+    )
+    .unwrap()
+    .executed()
+    .unwrap();
+    assert!(matches!(response.reply, Reply::StopRequested { .. }));
+}
+
+#[test]
+fn control_missing_wrong_or_unrelated_reply_stays_unconfirmed() {
+    use abird_host_agent::build_executor::protocol::Reply;
+    let key = "a".repeat(64);
+    for output in [
+        success(""),
+        failure(255, "connection lost"),
+        success(&owned_ack(&"b".repeat(64))),
+        success(&owned_ack(&key)),
+    ] {
+        let mut runtime = HostRuntime::new(
+            FakeRunner::with_outputs([output]),
+            "/repo".into(),
+            DryRun::No,
+        )
+        .unwrap();
+        let response = control::exchange(
+            &mut runtime,
+            &target(),
+            &key,
+            control::Operation::Status,
+            InternalTask::new("owned-status"),
+        )
+        .unwrap()
+        .executed()
+        .unwrap();
+        assert!(matches!(response.reply, Reply::Unconfirmed { .. }));
+        let runner = runtime.into_runner();
+        assert_eq!(runner.requests.len(), 1);
+        assert!(runner.waits.is_empty());
+    }
+}
+
+#[test]
+fn control_dry_cancel_and_invalid_request_never_dispatch() {
+    let mut runtime = HostRuntime::new(FakeRunner::default(), "/repo".into(), DryRun::Yes).unwrap();
+    let response = control::exchange(
+        &mut runtime,
+        &target(),
+        &"a".repeat(64),
+        control::Operation::Cancel,
+        InternalTask::new("owned-cancel"),
+    )
+    .unwrap();
+    assert!(response.is_dry_run());
+    assert!(
+        control::exchange(
+            &mut runtime,
+            &target(),
+            "PRIVATE-INVALID",
+            control::Operation::Status,
+            InternalTask::new("owned-status")
+        )
+        .is_err()
+    );
+    assert!(runtime.into_runner().requests.is_empty());
+}
+
+#[test]
+fn control_events_preserve_cursor_and_bound_independent_transport_deadline() {
+    let body = serde_json::json!({"version":3,"reply":{"kind":"rejected","code":"capability_unavailable"}}).to_string();
+    let mut runtime = HostRuntime::new(
+        FakeRunner::with_outputs([success(&body)]),
+        "/repo".into(),
+        DryRun::No,
+    )
+    .unwrap();
+    let mut target = target_as("operator");
+    target.remote_read_timeout_seconds = 600;
+    target.control_master = Some(host_runtime::ControlMaster {
+        socket: "/tmp/shared-build-master".into(),
+        persist_seconds: 60,
+    });
+    let key = "a".repeat(64);
+    control::exchange(
+        &mut runtime,
+        &target,
+        &key,
+        control::Operation::Events {
+            after: Some(7),
+            limit: 3,
+        },
+        InternalTask::new("owned-events"),
+    )
+    .unwrap();
+    let runner = runtime.into_runner();
+    assert_eq!(runner.timeouts, [Duration::from_secs(30)]);
+    assert_eq!(runner.requests.len(), 1);
+    assert!(
+        !runner.requests[0]
+            .args
+            .iter()
+            .any(|arg| arg.contains("shared-build-master"))
+    );
+    assert_eq!(
+        framed_remote_argv(&runner.requests[0]),
+        strings(&[
+            "/run/current-system/sw/bin/abird-host-agent",
+            "--json",
+            "owned-build",
+            "events",
+            &key,
+            "--limit",
+            "3",
+            "--after",
+            "7",
+        ])
+    );
 }
 
 fn framed_remote_argv(request: &ProcessRequest) -> Vec<String> {
@@ -690,34 +890,61 @@ fn build_plan_then_local_build_preserves_order_cwd_and_parsing() {
 }
 
 #[test]
-fn remote_build_retries_daemon_disconnect_and_validates_exact_output() {
+fn remote_build_transport_loss_never_replays_realization() {
+    for code in [124, 255] {
+        let runner = FakeRunner::with_outputs([
+            failure(code, "Connection timed out during banner exchange"),
+            success("/nix/store/would-be-replayed-system\n"),
+        ]);
+        let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+        let error = runtime
+            .run_remote_build(
+                &target(),
+                &CommandSpec::new("nix", strings(&["build", "drv^out"])),
+                InternalTask::new("original-incident"),
+            )
+            .unwrap_err();
+        let evidence = error
+            .downcast_ref::<build_runtime::UnconfirmedBuild>()
+            .unwrap()
+            .observation()
+            .unwrap();
+        assert_eq!(evidence.status, CommandStatus::Exit(code));
+        assert_eq!(
+            evidence.stderr,
+            "Connection timed out during banner exchange"
+        );
+        assert!(error.to_string().contains("may still be running"));
+        let runner = runtime.into_runner();
+        assert_eq!(runner.requests.len(), 1);
+        assert!(runner.waits.is_empty());
+    }
+}
+
+#[test]
+fn remote_build_daemon_disconnect_does_not_retry_or_claim_settlement() {
     let runner = FakeRunner::with_outputs([
         failure(1, "Nix daemon disconnected unexpectedly"),
-        success("/nix/store/def-nixos-system-new\n"),
+        success("/nix/store/would-be-replayed-system\n"),
     ]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
-    let result = runtime
+    let error = runtime
         .run_remote_build(
             &target(),
-            &CommandSpec::new(
-                "nix",
-                strings(&["build", "--no-link", "--print-out-paths", "drv^out"]),
-            ),
-            RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
+            &CommandSpec::new("nix", strings(&["build", "drv^out"])),
             InternalTask::new("build-app-via-builder"),
         )
+        .unwrap_err();
+    let evidence = error
+        .downcast_ref::<build_runtime::UnconfirmedBuild>()
+        .unwrap()
+        .observation()
         .unwrap();
-    assert_eq!(
-        result.output.unwrap().path.as_str(),
-        "/nix/store/def-nixos-system-new"
-    );
-    assert_eq!(result.failures.len(), 1);
-    assert_eq!(result.failures[0].kind, RemoteFailureKind::DaemonDisconnect);
-    assert_eq!(result.status, CommandStatus::Success);
-
+    assert_eq!(evidence.status, CommandStatus::Exit(1));
+    assert_eq!(evidence.stderr, "Nix daemon disconnected unexpectedly");
     let runner = runtime.into_runner();
-    assert_eq!(runner.requests.len(), 2);
-    assert_eq!(runner.waits, vec![Duration::from_secs(2)]);
+    assert_eq!(runner.requests.len(), 1);
+    assert!(runner.waits.is_empty());
     assert_eq!(runner.requests[0].task.name(), "build-app-via-builder");
     assert!(
         runner.requests[0]
@@ -729,42 +956,96 @@ fn remote_build_retries_daemon_disconnect_and_validates_exact_output() {
 }
 
 #[test]
-fn remote_build_reports_action_failure_status() {
+fn remote_build_retains_client_failure_without_inferring_remote_settlement() {
     let runner = FakeRunner::with_outputs([failure(7, "build failed")]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
-    let result = runtime
+    let error = runtime
         .run_remote_build(
             &target(),
             &CommandSpec::new("nix", strings(&["build", "drv^out"])),
-            RetryPolicy::new(1, Duration::ZERO).unwrap(),
             InternalTask::new("build-app-via-builder"),
         )
+        .unwrap_err();
+    let evidence = error
+        .downcast_ref::<build_runtime::UnconfirmedBuild>()
+        .unwrap()
+        .observation()
         .unwrap();
-    assert_eq!(result.status, CommandStatus::Exit(7));
+    assert_eq!(evidence.status, CommandStatus::Exit(7));
+    assert_eq!(evidence.stderr, "build failed");
     assert_eq!(runtime.into_runner().requests.len(), 1);
 }
 
 #[test]
 fn remote_build_preserves_failure_evidence_without_cleanup_side_effects() {
-    let runner = FakeRunner::with_outputs([failure(
-        1,
-        "ControlPath too long ('/very/long/control/socket' >= 108 bytes)",
-    )]);
+    let evidence = "ControlPath too long ('/very/long/control/socket' >= 108 bytes)";
+    let runner = FakeRunner::with_outputs([failure(1, evidence)]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
-    let result = runtime
+    let error = runtime
         .run_remote_build(
             &target(),
             &CommandSpec::new("nix", strings(&["build", "drv^out"])),
-            RetryPolicy::new(3, Duration::from_secs(2)).unwrap(),
             InternalTask::new("build-app-via-builder"),
         )
+        .unwrap_err();
+    let failure = error
+        .downcast_ref::<build_runtime::UnconfirmedBuild>()
         .unwrap();
-    assert_eq!(result.status, CommandStatus::Exit(1));
-    assert!(result.output.is_none());
-
+    assert_eq!(failure.observation().unwrap().stderr, evidence);
+    assert!(!format!("{failure:?}").contains(evidence));
     let runner = runtime.into_runner();
     assert_eq!(runner.requests.len(), 1);
     assert!(runner.waits.is_empty());
+}
+
+#[test]
+fn remote_client_signal_is_not_a_remote_cancellation_receipt() {
+    let runner = FakeRunner::with_outputs([ProcessOutput {
+        status: ProcessStatus::Signal(15),
+        stdout: "partial output".to_owned(),
+        stderr: "last native diagnostic".to_owned(),
+        skipped: false,
+    }]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+    let error = runtime
+        .run_remote_build(
+            &target(),
+            &CommandSpec::new("nix", strings(&["build", "drv^out"])),
+            InternalTask::new("build-app-via-builder"),
+        )
+        .unwrap_err();
+    let evidence = error
+        .downcast_ref::<build_runtime::UnconfirmedBuild>()
+        .unwrap()
+        .observation()
+        .unwrap();
+    assert_eq!(evidence.status, CommandStatus::Signal(143));
+    assert_eq!(evidence.stdout, "partial output");
+    assert_eq!(evidence.stderr, "last native diagnostic");
+    assert_eq!(runtime.into_runner().requests.len(), 1);
+}
+
+#[test]
+fn remote_build_missing_or_ambiguous_success_output_stays_unconfirmed() {
+    for output in ["", "/nix/store/a\n/nix/store/b\n"] {
+        let runner = FakeRunner::with_outputs([success(output)]);
+        let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+        let error = runtime
+            .run_remote_build(
+                &target(),
+                &CommandSpec::new("nix", strings(&["build", "drv^out"])),
+                InternalTask::new("build-app-via-builder"),
+            )
+            .unwrap_err();
+        let evidence = error
+            .downcast_ref::<build_runtime::UnconfirmedBuild>()
+            .unwrap()
+            .observation()
+            .unwrap();
+        assert_eq!(evidence.status, CommandStatus::Success);
+        assert_eq!(evidence.stdout, output);
+        assert_eq!(runtime.into_runner().requests.len(), 1);
+    }
 }
 
 #[test]
@@ -778,15 +1059,10 @@ fn dry_run_executes_remote_builder_store_effects() {
                 "nix",
                 strings(&["build", "--no-link", "--print-out-paths", "drv^out"]),
             ),
-            RetryPolicy::new(1, Duration::ZERO).unwrap(),
             InternalTask::new("build-app-via-builder"),
         )
         .unwrap();
-    assert_eq!(result.status, CommandStatus::Success);
-    assert_eq!(
-        result.output.unwrap().path.as_str(),
-        "/nix/store/def-nixos-system-new"
-    );
+    assert_eq!(result.path.as_str(), "/nix/store/def-nixos-system-new");
     let requests = runtime.into_runner().requests;
     assert_eq!(requests.len(), 1);
     assert!(
@@ -1285,6 +1561,7 @@ fn transport_loss_after_submission_can_be_recovered_by_authoritative_verificatio
     let runner = FakeRunner::with_outputs([
         success(""),
         failure(255, "Connection reset by peer"),
+        success(""),
         success(marker),
     ]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
@@ -1302,6 +1579,17 @@ fn transport_loss_after_submission_can_be_recovered_by_authoritative_verificatio
     );
     let runner = runtime.into_runner();
     assert_eq!(runner.requests[2].program, "ssh");
+    assert!(runner.requests[2].task.name().ends_with("-reconnect"));
+    assert_eq!(runner.requests[2].effect, EffectKind::ReadOnly);
+    assert_eq!(runner.requests.len(), 4);
+    assert_eq!(
+        runner
+            .requests
+            .iter()
+            .filter(|request| request.effect == EffectKind::Mutation)
+            .count(),
+        1,
+    );
     assert!(!runner.timeouts.is_empty());
     assert!(
         runner

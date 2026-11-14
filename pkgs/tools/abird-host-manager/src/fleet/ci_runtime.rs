@@ -179,6 +179,7 @@ pub fn prepare_ci_trigger<R: CiRepositorySource>(
     };
     let plan = plan_ci_trigger(&CiTriggerRequest {
         action: input.action.to_owned(),
+        strategy: input.options.forwarded_strategy(),
         sha,
         clean_mode: input.clean_mode,
         group: selection.group,
@@ -198,6 +199,84 @@ pub fn prepare_ci_trigger<R: CiRepositorySource>(
         revision_source,
         base_proven,
     })
+}
+
+/// Retain the existing CI planner's exact argv/source once, without executing its
+/// SSH forced command. The installed controller supplies its normal environment;
+/// the caller's selected route is not forwarded into managed execution.
+///
+/// Inputs must come from the original accounted capture. This constructor neither
+/// admits that capture nor turns an ordinary unbounded CI preparation into one.
+pub fn owned_submission(
+    caller: &super::cli::Invocation,
+    prepared: PreparedCiTrigger,
+    controller_environment: &super::environment::Environment,
+    source_root: PathBuf,
+    locations: crate::fleet::build_backend::agent::controller::Locations,
+    binding: crate::fleet::build_backend::agent::controller::Binding,
+    snapshots: std::collections::BTreeMap<String, Vec<u8>>,
+) -> Result<crate::fleet::build_backend::agent::controller::Submission> {
+    use crate::fleet::build_backend::agent::controller::{
+        CapturedSource, InvocationRecord, Submission,
+    };
+    anyhow::ensure!(
+        caller.options.ci_trigger
+            && caller.options.strategy
+                == abird_host_agent::build_executor::strategy::Strategy::Agent,
+        "owned CI parent requires an explicit owned CI invocation"
+    );
+    validate_remote_command(&prepared.plan)?;
+    let effective = super::cli::Invocation::parse_legacy_with_environment(
+        prepared.plan.argv.clone(),
+        controller_environment,
+    )?;
+    anyhow::ensure!(
+        effective.action == caller.action
+            && !effective.options.ci_trigger
+            && effective.options.no_override,
+        "owned CI command semantics differ"
+    );
+    let revision = CommitSha::parse(
+        effective
+            .options
+            .sha
+            .as_deref()
+            .context("owned CI revision missing")?,
+    )?;
+    let patch = prepared
+        .plan
+        .stdin
+        .map(|bytes| -> Result<StagedPatch> {
+            anyhow::ensure!(
+                prepared.base_proven && effective.options.dirty_staged_patch_stdin,
+                "owned CI patch was not base-bound"
+            );
+            let base = CommitSha::parse(
+                effective
+                    .options
+                    .dirty_staged_base
+                    .as_deref()
+                    .context("owned CI patch base missing")?,
+            )?;
+            anyhow::ensure!(base == revision, "owned CI exact patch base differs");
+            Ok(StagedPatch { base, bytes })
+        })
+        .transpose()?;
+    let source = CapturedSource::new(revision, patch, snapshots)?;
+    Submission::ci(
+        InvocationRecord {
+            caller: caller.clone(),
+            effective,
+            source_root,
+            caller_repository: None,
+            locations,
+            ci_argv: Some(prepared.plan.argv),
+            git_context_digest: None,
+            checkout: None,
+        },
+        binding,
+        source,
+    )
 }
 
 /// Git-backed source for the read-only revision and staged-index observations

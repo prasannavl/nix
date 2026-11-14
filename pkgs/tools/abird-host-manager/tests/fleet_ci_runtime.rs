@@ -1,29 +1,6 @@
 #![allow(dead_code)]
 
-mod programs {
-    pub mod age {
-        pub use abird_host_manager::programs::age::Age;
-    }
-}
-
-use abird_host_manager::fleet::repository;
-
-#[path = "../src/fleet/ci_runtime.rs"]
-mod ci_runtime;
-#[path = "../src/fleet/cli.rs"]
-mod cli;
-#[path = "../src/fleet/environment.rs"]
-mod environment;
-#[path = "../src/fleet/inventory.rs"]
-mod inventory;
-#[allow(clippy::all)]
-#[path = "../src/fleet/inventory_routing.rs"]
-mod inventory_routing;
-#[path = "../src/fleet/system.rs"]
-mod system;
-#[allow(clippy::all)]
-#[path = "../src/fleet/system_identity.rs"]
-mod system_identity;
+use abird_host_manager::fleet::{ci_runtime, cli, inventory, inventory_routing, repository};
 #[path = "../src/test_support.rs"]
 mod test_support;
 
@@ -155,6 +132,48 @@ fn default_head_and_group_only_scope_are_forwarded_without_host_flattening() {
             .iter()
             .any(|arg| arg.starts_with("--route="))
     );
+}
+
+#[test]
+fn explicit_strategy_is_forwarded_even_when_not_available_on_the_caller() {
+    use abird_host_agent::build_executor::strategy::Strategy;
+
+    let fixture = TempDir::new().unwrap();
+    let inventory = inventory();
+    for (strategy, explicit, expected) in [
+        (Strategy::Auto, false, None),
+        (Strategy::Auto, true, Some("auto")),
+        (Strategy::Nix, true, Some("legacy")),
+        (Strategy::Agent, true, Some("owned")),
+        (Strategy::Agent, false, Some("owned")),
+    ] {
+        let options = Options {
+            strategy,
+            strategy_explicit: explicit,
+            ..Options::default()
+        };
+        let mut repository = FakeRepository {
+            resolved: BTreeMap::from([("HEAD".to_owned(), sha("abcdef0123456789"))]),
+            ..FakeRepository::default()
+        };
+        let prepared = prepare_ci_trigger(
+            &request_input(&options, &inventory, fixture.path()),
+            &mut repository,
+        )
+        .unwrap();
+        let forwarded = prepared
+            .plan
+            .argv
+            .windows(2)
+            .find(|pair| pair[0] == "--strategy")
+            .map(|pair| pair[1].as_str());
+        assert_eq!(forwarded, expected);
+        assert_eq!(
+            repository::decode_argv(&prepared.plan.encoded_argv).unwrap(),
+            prepared.plan.argv
+        );
+        assert!(prepared.plan.argv.iter().any(|arg| arg == "--no-override"));
+    }
 }
 
 #[test]
@@ -508,6 +527,7 @@ impl CommandRunner for RecordingRunner {
 fn trigger_plan(dry_run: bool, stdin: Option<Vec<u8>>) -> repository::CiTriggerPlan {
     let mut request = repository::CiTriggerRequest {
         action: "deploy".to_owned(),
+        strategy: None,
         sha: Some(sha("abcdef0123456789")),
         clean_mode: CiCleanMode::Auto,
         group: Some("prod; echo unsafe".to_owned()),
