@@ -655,9 +655,55 @@ run_conventional_package_apps() {
 	done
 }
 
-run_full_root_flake_check() {
-	nix flake check --all-systems . 2> >(grep -v "^warning: unknown flake output\|^warning: The check omitted these incompatible systems" >&2)
+run_full_root_flake_check() (
+	local check_dir metadata indexes selection git_local_env git_var
+	# Hooks can export selectors that redirect init/add into the caller's repository.
+	git_local_env="$(git rev-parse --local-env-vars)" || return
+	while IFS= read -r git_var; do
+		unset "${git_var}" || return
+	done <<<"${git_local_env}"
+	mkdir -p "${REPO_ROOT}/tmp" || return
+	check_dir="$(mktemp -d "${REPO_ROOT}/tmp/flake-check.XXXXXX")" || return
+	trap 'rm -rf -- "${check_dir}"' EXIT
+
+	# Pin the Git-filtered snapshot, including tracked uncommitted changes.
+	metadata="$(nix flake metadata --json .)" || return
+	printf '"indexes"\n' >"${check_dir}/selection.json" || return
+	printf '{\n' >"${check_dir}/flake.nix" || return
+	jq -r '.locked | del(.__final, .dirtyRev, .dirtyShortRev) | to_entries[] |
+    "  inputs.repository.\(.key) = \(.value | tojson | gsub("\\$\\{"; "\\${"));"' <<<"${metadata}" >>"${check_dir}/flake.nix" || return
+	cat >>"${check_dir}/flake.nix" <<'EOF'
+  outputs = {repository, ...}: let
+    selection = builtins.fromJSON (builtins.readFile ./selection.json);
+  in
+    if selection == null
+    then builtins.removeAttrs repository.outputs ["nixosConfigurations" "checks"]
+    else if selection == "indexes"
+    then {
+      indexes = {
+        hosts = builtins.attrNames (repository.nixosConfigurations or {});
+        checkSystems = builtins.attrNames (repository.checks or {});
+      };
+    }
+    else if selection ? host
+    then {nixosConfigurations.${selection.host} = repository.nixosConfigurations.${selection.host};}
+    else {checks.${selection.system} = repository.checks.${selection.system};};
 }
+EOF
+	git init --quiet --template= "${check_dir}" || return
+	git -C "${check_dir}" add flake.nix selection.json || return
+	indexes="$(nix eval --json "${check_dir}#indexes")" || return
+
+	# Release each host/system's module graph before checking the next one.
+	while IFS= read -r selection; do
+		printf '    - root outputs: %s\n' "${selection}" >&2
+		printf '%s\n' "${selection}" >"${check_dir}/selection.json" || return
+		nix flake check --all-systems "$@" "${check_dir}" || return
+	done < <(jq -c '(.hosts[] | {host: .}), (.checkSystems[] | {system: .})' <<<"${indexes}")
+
+	printf 'null\n' >"${check_dir}/selection.json" || return
+	nix flake check --all-systems "$@" "${check_dir}" 2> >(grep -v "^warning: unknown flake output\|^warning: The check omitted these incompatible systems" >&2)
+)
 
 run_targeted_root_flake_check() {
 	local -a host_names=()

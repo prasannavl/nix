@@ -4,7 +4,7 @@ set -Eeuo pipefail
 usage() {
 	cat >&2 <<'EOF'
 Usage:
-  fmt [--project <name>]
+  fmt [.] [--project <name>]
 EOF
 }
 
@@ -51,6 +51,7 @@ ensure_runtime_shell() {
 parse_args() {
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
+		.) ;; # nix fmt supplies the repository target.
 		--project)
 			shift
 			[ "$#" -gt 0 ] || die "fmt: --project requires an argument"
