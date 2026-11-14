@@ -41,7 +41,6 @@
           golang.go
 
           openai.chatgpt
-          kilocode.kilo-code
           # anthropic.claude-code
           # google.gemini-cli-vscode-ide-companion
           # google.geminicodeassist
@@ -70,9 +69,6 @@
           "terminal.integrated.initialHint" = false;
           "chatgpt.followUpQueueMode" = "steer";
           "chat.viewSessions.orientation" = "stacked";
-          "kilo-code.new.agentWorkStyle" = "autonomous";
-          "kilo-code.new.showTaskTimeline" = true;
-          "kilo-code.new.autoApprove.enabled" = true;
           "remote.SSH.defaultExtensions" = extensionIds;
         };
         pvlProfile = pkgs.vscode-utils.buildVscodeExtension {
