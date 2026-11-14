@@ -105,18 +105,29 @@
     # override it.
     name ? "cargo-workspace-source",
   }: let
-    root = builtins.toString src;
+    inputIsFiltered = src._isLibCleanSourceWith or false;
+    sourceRoot =
+      if inputIsFiltered
+      then src.origSrc
+      else src;
+    root = builtins.toString sourceRoot;
     isSelectedPath = rel:
       builtins.any (dir: rel == dir || hasPrefix "${dir}/" rel) selectedDirs;
     isParentOfSelectedPath = rel:
       builtins.any (dir: hasPrefix "${rel}/" dir) selectedDirs;
+    gitignoreFile = sourceRoot + "/.gitignore";
     gitignorePatterns =
       [".git"]
-      ++ pkgs.lib.optional (builtins.pathExists (src + "/.gitignore")) (src + "/.gitignore");
-    gitignoreAllows = pkgs.nix-gitignore.gitignoreFilterPure (_: _: true) gitignorePatterns src;
+      ++ pkgs.lib.optional (
+        builtins.pathExists gitignoreFile
+        && (!inputIsFiltered || src.filter (toString gitignoreFile) (builtins.readDir sourceRoot).".gitignore")
+      )
+      (builtins.readFile gitignoreFile);
+    gitignoreAllows = pkgs.nix-gitignore.gitignoreFilterPure (_: _: true) gitignorePatterns sourceRoot;
   in
-    builtins.path {
-      path = src;
+    # Crane must read manifests from origSrc during read-only, cold evaluation.
+    pkgs.lib.cleanSourceWith {
+      src = src;
       inherit name;
       filter = path: type: let
         rel = stripPrefix "${root}/" (builtins.toString path);
@@ -320,7 +331,7 @@
     # Crane's own writer instead, after its normal dummy generation. This is a
     # build-time copy, never an evaluator read of the generated TOML (no IFD).
     cleanedRoot = craneLib.cleanCargoToml {
-      cargoToml = builtins.unsafeDiscardStringContext (toString source) + "/Cargo.toml";
+      cargoToml = builtins.unsafeDiscardStringContext (toString source.origSrc) + "/Cargo.toml";
     };
     projectedRoot = craneLib.writeTOML "Cargo.toml" (cleanedRoot
       // {

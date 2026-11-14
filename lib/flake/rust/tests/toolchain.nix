@@ -53,6 +53,7 @@ let
     nix-gitignore.gitignoreFilterPure = _: _: _: _: _: true;
     extend = overlay: fakePkgs // overlay fakePkgs fakePkgs;
     lib = {
+      cleanSourceWith = import ./mock-clean-source.nix;
       optional = condition: value:
         if condition
         then [value]

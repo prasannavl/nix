@@ -289,8 +289,12 @@ in
   assert manager.cargoArtifacts.drvPath == explicitManager.cargoArtifacts.drvPath;
   assert manager.memberLayer.drvPath == explicitManager.memberLayer.drvPath;
   assert manager.cargoArtifacts.drvPath != sourceOnlyManager.cargoArtifacts.drvPath;
-  # Inspect the evaluator-visible input, never build the source laundering drv.
-  assert builtins.pathExists "${sourceOnlyManager.src.src}/pkgs/tools/abird-host-agent/Cargo.toml";
+  # Inspect the input/filter, not an unmaterialized lazy store output.
+  assert (let
+    source = sourceOnlyManager.src.src;
+    path = source.origSrc + "/pkgs/tools/abird-host-agent/Cargo.toml";
+  in
+    source.filter (toString path) "regular" && builtins.pathExists path);
   assert taggedAgent.memberLayer.drvPath != parentPackages.abird-host-agent.memberLayer.drvPath;
   assert taggedManager.cargoArtifacts.drvPath == explicitTaggedManager.cargoArtifacts.drvPath;
   assert taggedManager.cargoArtifacts.drvPath != manager.cargoArtifacts.drvPath;

@@ -57,6 +57,7 @@
     writeShellApplication = attrs: mkDrv attrs.name attrs;
     nix-gitignore.gitignoreFilterPure = _: _: _: _: _: true;
     lib = {
+      cleanSourceWith = import ./mock-clean-source.nix;
       optional = c: v:
         if c
         then [v]

@@ -63,6 +63,7 @@
     writeShellApplication = attrs: mkDrv attrs.name attrs;
     nix-gitignore.gitignoreFilterPure = _: _: _: _: _: true;
     lib = {
+      cleanSourceWith = import ./mock-clean-source.nix;
       optional = c: v:
         if c
         then [v]
@@ -112,6 +113,19 @@
         buildAttrs = record;
       });
   consumer = extra: helper.mkRustDerivation (context // args // extra);
+  prefilteredSource = let
+    src = packages.lib.cleanSourceWith {
+      src = context.src;
+      name = "prefiltered";
+      filter = path: _: toString path != "${toString context.src}/members/application/unused.txt";
+    };
+    package = consumer {
+      src = src;
+      useWorkspaceDeps = false;
+      cargoLock.lockFileContents = builtins.readFile (context.src + "/Cargo.lock");
+    };
+  in
+    package.src.src;
   fails = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
   inputA = packages.pkg-config;
   inputB = packages.protobuf;
@@ -255,6 +269,8 @@
   };
   assertions =
     {
+      prefilteredSourceKeepsMember = prefilteredSource.filter "${toString context.src}/members/application/Cargo.toml" "regular";
+      prefilteredSourceKeepsCallerExclusion = !prefilteredSource.filter "${toString context.src}/members/application/unused.txt" "regular";
       managerShape = (compose manager).mkRustDerivation args != null;
       agentShape = (compose agent).mkRustDerivation args != null;
       bridgeShape = (compose bridge).mkRustDerivation args != null;
