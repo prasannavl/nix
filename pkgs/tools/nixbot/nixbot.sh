@@ -67,16 +67,23 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 	tr
 )
 readonly NIXBOT_SSH_ARGV_PREFIX="__nixbot_argv64"
+# Shared with abird-host-manager (tests/fixtures/build-strategies.json).
+# Consumed by the cross-frontend contract test; Rust owns this rejection.
+# shellcheck disable=SC2034
+readonly NIXBOT_AGENT_CI_DEFERRED="independent agent CI observer ownership is not available yet; use a foreground controller profile or --strategy=nix"
 
 usage() {
-	cat <<'USAGE'
+	local usage_text=""
+
+	# Argument help can run before the runtime shell supplies coreutils.
+	IFS= read -r -d '' usage_text <<'USAGE' || true
 Usage:
   nixbot
   nixbot <deps|check-deps|version>
   nixbot repo sync
   nixbot --list-hosts [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--config <path>] [--config-override <path>] [--no-override] [--route <auto|default|cf|ts>] [--control-plane-first]
   nixbot --list-groups [--config <path>] [--config-override <path>] [--no-override]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--require-hosts "host1,host2"] [--nix-config <name>] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--restart-managed] [--bootstrap] [--control-plane-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--config-override <path>] [--route <auto|default|cf|ts>] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--require-hosts "host1,host2"] [--nix-config <name>] [--goal <goal>] [--strategy <auto|nix|agent>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--restart-managed] [--bootstrap] [--control-plane-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--config-override <path>] [--route <auto|default|cf|ts>] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot --clean[=auto|all] [--dry] [--ci-trigger] [ci/auth/config options]
   nixbot tofu <tofu-args...>
 
@@ -119,6 +126,10 @@ Workflow Selection Options:
   --sha            Commit to check out before running
 
 Build Action Options (`run`, `deploy`, `build`):
+  --strategy       auto|nix|agent; build execution strategy (also dev-build);
+                   agent is experimental; requires installed caller/builder profiles
+                   auto currently selects nix.
+                   Explicit choice is forwarded to CI; no silent fallback.
   --build-host     local|<ssh-host> (default: first config.builders entry, else local)
   --build-host-deploy-mode auto|cache|local-copy (default: auto)
   --build-cache-url Signed cache URL for remote deploy builds
@@ -223,6 +234,7 @@ Environment (Workflow Selection):
   NIXBOT_SHA                  Same as --sha
 
 Environment (Build Actions):
+  NIXBOT_STRATEGY             Same as --strategy; CLI overrides a valid env default
   NIXBOT_BUILD_HOST           Same as --build-host
   NIXBOT_BUILD_HOST_DEPLOY_MODE Same as --build-host-deploy-mode
   NIXBOT_BUILD_CACHE_URL      Same as --build-cache-url
@@ -321,6 +333,7 @@ Local tofu wrapper:
   encrypted files under `data/secrets/globals/gcp/`.
   This mode is local-only and not supported via ci trigger.
 USAGE
+	printf '%s' "${usage_text}"
 }
 
 die() {
@@ -587,6 +600,57 @@ configure_github_nix_access_token() {
 	esac
 }
 
+##### Build execution strategy #####
+
+# Thin selector only; the agent lifecycle remains in the host-agent Rust crate.
+parse_build_strategy() {
+	case "$1" in
+	auto | nix | agent) printf '%s\n' "$1" ;;
+	legacy) printf 'nix\n' ;;
+	owned) printf 'agent\n' ;;
+	*) die "Unsupported build strategy: $1 (expected auto|nix|agent)" ;;
+	esac
+}
+
+resolve_build_strategy() {
+	case "$1" in
+	auto | nix | legacy) printf 'nix\n' ;;
+	# Experimental; runs only in abird-host-manager (see delegate_agent_strategy).
+	agent | owned) printf 'agent\n' ;;
+	*) parse_build_strategy "$1" >/dev/null ;;
+	esac
+}
+
+# Rust owns the agent backend end to end; Bash never runs a second lifecycle.
+delegate_agent_strategy() {
+	exec abird-host-manager fleet "${ACTION}" "$@"
+}
+
+action_uses_build_strategy() {
+	case "$1" in
+	run | deploy | build | dev-build) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+require_build_strategy() {
+	BUILD_STRATEGY_EFFECTIVE="$(resolve_build_strategy "${BUILD_STRATEGY_REQUEST:-auto}")" || return "$?"
+}
+
+append_build_strategy_args() {
+	local -n strategy_args_ref="$1"
+
+	# Omit implicit auto for old controllers; freeze explicit CLI/env intent.
+	if [ "${BUILD_STRATEGY_EXPLICIT:-0}" -eq 1 ] || [ "${BUILD_STRATEGY_REQUEST:-auto}" != auto ]; then
+		# Keep existing CI/re-exec peers compatible; public names are normalized.
+		case "${BUILD_STRATEGY_REQUEST}" in
+		nix) strategy_args_ref+=(--strategy legacy) ;;
+		agent) strategy_args_ref+=(--strategy owned) ;;
+		*) strategy_args_ref+=(--strategy "${BUILD_STRATEGY_REQUEST}") ;;
+		esac
+	fi
+}
+
 init_vars() {
 	if [ -z "${NIXBOT_EXECUTOR_KIND:-}" ]; then
 		if [ -n "${SSH_ORIGINAL_COMMAND:-}" ] ||
@@ -632,6 +696,10 @@ init_vars() {
 	ACTION=""
 	HOST_ACTION=""
 	GOAL="${NIXBOT_GOAL:-switch}"
+	BUILD_STRATEGY_REQUEST="$(parse_build_strategy "${NIXBOT_STRATEGY:-auto}")" || return "$?"
+	BUILD_STRATEGY_EXPLICIT=0
+	[ -z "${NIXBOT_STRATEGY:-}" ] || BUILD_STRATEGY_EXPLICIT=1
+	BUILD_STRATEGY_EFFECTIVE=""
 	BUILD_HOST="${NIXBOT_BUILD_HOST:-local}"
 	BUILD_HOST_EXPLICIT=0
 	[ -z "${NIXBOT_BUILD_HOST+x}" ] || BUILD_HOST_EXPLICIT=1
@@ -1314,11 +1382,17 @@ resolved_host_action() {
 }
 
 emit_normalized_hosts() {
-	local raw="$1"
+	local raw="$1" token=""
+	local -a seen_tokens=()
 
-	printf '%s' "${raw}" |
-		tr ', ' '\n' |
-		awk 'NF && !seen[$0]++'
+	# Also used before runtime bootstrap: split commas/spaces/newlines, preserve
+	# token bytes and first-seen order. Like awk NF, ignore tab-only records.
+	while IFS= read -r token; do
+		[ -n "${token//$'\t'/}" ] || continue
+		array_contains "${token}" "${seen_tokens[@]}" && continue
+		seen_tokens+=("${token}")
+		printf '%s\n' "${token}"
+	done <<<"${raw//[ ,]/$'\n'}"
 }
 
 host_token_is_glob() {
@@ -1337,13 +1411,13 @@ valid_host_name() {
 }
 
 normalize_hosts_input() {
-	local raw="$1"
-	if [ "${raw}" = "all" ]; then
-		printf 'all\n'
-		return
-	fi
+	local raw="$1" token="" normalized="" separator=""
 
-	emit_normalized_hosts "${raw}" | paste -sd, -
+	while IFS= read -r token; do
+		normalized+="${separator}${token}"
+		separator=,
+	done < <(emit_normalized_hosts "${raw}")
+	printf '%s\n' "${normalized}"
 }
 
 nix_config_host_from_selectors() {
@@ -1376,7 +1450,7 @@ host_nix_config_for() {
 }
 
 normalize_groups_input() {
-	emit_normalized_hosts "$1" | paste -sd, -
+	normalize_hosts_input "$1"
 }
 
 append_group_raw() {
@@ -1525,9 +1599,9 @@ parse_args() {
 			;;
 		--require-hosts | --require-hosts=*)
 			take_optval "$@"
-			normalized_required_hosts="$(emit_normalized_hosts "${OPTVAL}" | paste -sd, -)"
+			normalized_required_hosts="$(normalize_hosts_input "${OPTVAL}")"
 			[ -n "${normalized_required_hosts}" ] || die "--require-hosts cannot be empty"
-			REQUIRED_HOSTS_RAW="$(emit_normalized_hosts "${REQUIRED_HOSTS_RAW},${normalized_required_hosts}" | paste -sd, -)"
+			REQUIRED_HOSTS_RAW="$(normalize_hosts_input "${REQUIRED_HOSTS_RAW},${normalized_required_hosts}")"
 			shift "${OPTSHIFT}"
 			;;
 		--nix-config | --nix-config=*)
@@ -1544,6 +1618,12 @@ parse_args() {
 		--goal | --goal=*)
 			take_optval "$@"
 			GOAL="${OPTVAL}"
+			shift "${OPTSHIFT}"
+			;;
+		--strategy | --strategy=*)
+			take_optval "$@"
+			BUILD_STRATEGY_REQUEST="$(parse_build_strategy "${OPTVAL}")" || return "$?"
+			BUILD_STRATEGY_EXPLICIT=1
 			shift "${OPTSHIFT}"
 			;;
 		--build-host | --build-host=*)
@@ -3714,7 +3794,7 @@ run_ci_trigger() {
 	# expected to use its repo-local defaults and checked-in config for
 	# deploy-shaping settings such as goal, build host, job counts, rollback
 	# policy, and similar local overrides. Operator execution modifiers such as
-	# --dry, --force, --dirty, --no-verify, and --control-plane-first are explicit parts
+	# --dry, --force, --dirty, --no-verify, --strategy, and --control-plane-first are explicit parts
 	# of this contract.
 	if is_clean_action; then
 		remote_args=("${ACTION}" --no-override --clean "${NIXBOT_CLEAN_MODE:-auto}")
@@ -3739,6 +3819,10 @@ run_ci_trigger() {
 			remote_args+=(--nix-config "${NIXBOT_NIX_CONFIG}")
 		fi
 	fi
+	if [ "${BUILD_STRATEGY_EXPLICIT:-0}" -eq 1 ] || [ "${BUILD_STRATEGY_REQUEST:-auto}" != auto ]; then
+		echo "Build strategy requested: ${BUILD_STRATEGY_REQUEST} (resolved by controller)" >&2
+	fi
+	append_build_strategy_args remote_args
 	if [ "${LOG_FORMAT}" != "auto" ]; then
 		remote_args+=(--log-format "${LOG_FORMAT}")
 	elif is_github_actions_log_mode; then
@@ -4050,6 +4134,8 @@ reexec_repo_script_if_needed() {
 	else
 		reexec_args+=(--no-override)
 	fi
+
+	append_build_strategy_args reexec_args
 
 	log_section "Phase: Repo Re-exec"
 	echo "Re-executing deploy from worktree repo script:" >&2
@@ -6183,6 +6269,9 @@ log_run_context() {
 	echo "Started: ${NIXBOT_RUN_STARTED_AT}" >&2
 	print_config_override_line
 	log_routing_context
+	if [ -n "${BUILD_STRATEGY_EFFECTIVE:-}" ]; then
+		printf 'Build strategy: %s (requested %s)\n' "${BUILD_STRATEGY_EFFECTIVE}" "${BUILD_STRATEGY_REQUEST}" >&2
+	fi
 	print_selected_groups_block
 	print_selected_hosts_block "${selected_json}"
 	if is_deploy_style_action; then
@@ -13973,6 +14062,15 @@ resolve_build_out_path() {
 }
 
 run_build_phase() {
+	require_build_strategy || return "$?"
+	case "${BUILD_STRATEGY_EFFECTIVE}" in
+	nix) run_nix_build_phase "$@" ;;
+	agent) die "agent build strategy runs only through its own backend" ;;
+	*) die "Unsupported resolved build strategy: ${BUILD_STRATEGY_EFFECTIVE}" ;;
+	esac
+}
+
+run_nix_build_phase() {
 	local build_jobs="$1" build_parallel="$2"
 	local build_log_dir="$3" build_status_dir="$4" build_out_dir="$5" built_hosts_out_name="$7"
 	local -n rbp_build_hosts_in_ref="$6"
@@ -17092,6 +17190,11 @@ run_all_action() {
 run_requested_action() {
 	local selected_json="" action_rc=0
 
+	if action_uses_build_strategy "${ACTION}"; then
+		require_build_strategy || return "$?"
+		[ "${BUILD_STRATEGY_EFFECTIVE}" = nix ] || die "agent build strategy runs only through its own backend"
+	fi
+
 	if action_is_tf_only "${ACTION}"; then
 		log_section "nixbot"
 		echo "Version: ${NIXBOT_VERSION}" >&2
@@ -17134,6 +17237,10 @@ main() {
 	fi
 
 	case "${request_args[0]}" in
+	build-controller | owned)
+		# Rust owns durable intent, reconnect and settlement; no Bash scheduler.
+		exec abird-host-manager fleet "${request_args[@]}"
+		;;
 	repo)
 		[ "${#request_args[@]}" -eq 2 ] || die "Usage: nixbot repo sync"
 		[ "${request_args[1]}" = "sync" ] || die "Unknown repo action: ${request_args[1]}"
@@ -17215,9 +17322,16 @@ main() {
 		;;
 	esac
 
-	ensure_runtime_ready "$@"
+	# Agent requests belong to the installed manager, before any Nix bootstrap.
 	parse_args "${request_args[@]}"
+	if action_uses_build_strategy "${ACTION}" && [ "${BUILD_STRATEGY_REQUEST:-auto}" = agent ]; then
+		delegate_agent_strategy "${request_args[@]}"
+	fi
+	if [ "${CI_TRIGGER}" -eq 0 ] && action_uses_build_strategy "${ACTION}"; then
+		require_build_strategy || return "$?"
+	fi
 	reject_managed_config_override
+	ensure_runtime_ready "$@"
 	if [ "${ACTION}" != "clean" ]; then
 		cleanup_stale_runtime_dirs
 	fi

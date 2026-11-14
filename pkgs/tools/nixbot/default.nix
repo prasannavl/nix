@@ -2,6 +2,7 @@
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
 }: let
+  buildController = pkgs.abird-host-manager or (pkgs.callPackage ../abird-host-manager {pkgHelper = pkgHelper;});
   app = pkgs.writeShellApplication {
     name = "nixbot";
     meta = {
@@ -10,6 +11,7 @@
       mainProgram = "nixbot";
     };
     runtimeInputs = with pkgs; [
+      buildController
       age
       cloudflared
       coreutils

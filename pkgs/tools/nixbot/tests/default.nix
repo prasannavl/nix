@@ -28,6 +28,8 @@
       cp ${../../abird-host-manager/default.nix} "$repo/pkgs/tools/abird-host-manager/default.nix"
       cp ${../../abird-host-manager/tests/fixtures/named-routes.json} \
         "$repo/pkgs/tools/abird-host-manager/tests/fixtures/named-routes.json"
+      cp ${../../abird-host-manager/tests/fixtures/build-strategies.json} \
+        "$repo/pkgs/tools/abird-host-manager/tests/fixtures/build-strategies.json"
       cp ${../../../../flake.nix} "$repo/flake.nix"
       mkdir -p "$repo/pkgs"
       cp ${../../../manifest.nix} "$repo/pkgs/manifest.nix"

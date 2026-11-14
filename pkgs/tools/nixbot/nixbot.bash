@@ -50,7 +50,7 @@ _nixbot_inventory_context_args() {
 		--ci-trigger)
 			ci_trigger=1
 			;;
-		--sha | --group | --host | --hosts | --require-hosts | --nix-config | --goal | --build-host | --build-host-deploy-mode | --build-cache-url | --build-cache-host | --build-plan-jobs | --build-jobs | --deploy-jobs | --deploy-jobs-per-domain | --verify-jobs | --log-format | --user | --ssh-key | --operator-user | --operator-key | --bootstrap-key | --known-hosts | --age-key-file | --repo-url | --repo-path | --ci-check-ssh-key-path | --ci-host | --ci-user | --ci-ssh-key | --ci-known-hosts | --dirty-staged-base)
+		--sha | --group | --host | --hosts | --require-hosts | --nix-config | --goal | --strategy | --build-host | --build-host-deploy-mode | --build-cache-url | --build-cache-host | --build-plan-jobs | --build-jobs | --deploy-jobs | --deploy-jobs-per-domain | --verify-jobs | --log-format | --user | --ssh-key | --operator-user | --operator-key | --bootstrap-key | --known-hosts | --age-key-file | --repo-url | --repo-path | --ci-check-ssh-key-path | --ci-host | --ci-user | --ci-ssh-key | --ci-known-hosts | --dirty-staged-base)
 			if ((i + 1 < COMP_CWORD)); then
 				if [[ "${COMP_WORDS[i + 1]}" == "=" ]] && ((i + 2 < COMP_CWORD)); then
 					((i += 2))
@@ -222,7 +222,7 @@ _nixbot() {
 	commands+=("${tf_projects[@]}")
 
 	options=(
-		--list-hosts --list-groups --sha --group --host --hosts --nix-config --goal --build-host --build-host-deploy-mode
+		--list-hosts --list-groups --sha --group --host --hosts --nix-config --goal --strategy --build-host --build-host-deploy-mode
 		--build-cache-url --build-cache-host --build-jobs --build-logs --no-build-logs
 		--deploy-jobs --deploy-jobs-per-domain --verify-jobs --clean --force --restart-managed --bootstrap --control-plane-first
 		--skip-global-lock
@@ -253,6 +253,10 @@ _nixbot() {
 		;;
 	--goal)
 		_nixbot_compgen_words "$cur" "switch boot test dry-activate"
+		return 0
+		;;
+	--strategy)
+		_nixbot_compgen_words "$cur" "auto nix agent"
 		return 0
 		;;
 	--build-host)
@@ -302,6 +306,10 @@ _nixbot() {
 		_nixbot_compgen_words "$cur" "switch boot test dry-activate"
 		return 0
 		;;
+	--strategy)
+		_nixbot_compgen_words "$cur" "auto nix agent"
+		return 0
+		;;
 	--build-host)
 		_nixbot_compgen_words "$cur" "local $(_nixbot_hosts)"
 		return 0
@@ -347,6 +355,9 @@ _nixbot() {
 		;;
 	--goal=*)
 		_nixbot_compgen_words "${cur#--goal=}" "switch boot test dry-activate" "--goal="
+		;;
+	--strategy=*)
+		_nixbot_compgen_words "${cur#--strategy=}" "auto nix agent" "--strategy="
 		;;
 	--build-host=*)
 		_nixbot_compgen_words "${cur#--build-host=}" "local $(_nixbot_hosts)" "--build-host="
