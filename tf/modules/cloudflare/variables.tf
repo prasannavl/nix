@@ -3,7 +3,7 @@ variable "zones" {
   type        = any
 
   validation {
-    condition = can(
+    condition = try(
       alltrue(flatten([
         for zone_name, zone in var.zones : [
           for record in try(zone.records, []) : (
@@ -16,9 +16,13 @@ variable "zones" {
             )
           )
         ]
-      ]))
+        ])) && alltrue([
+        for zone_name, zone in var.zones :
+        length(distinct([for record in try(zone.records, []) : record.key])) == length(try(zone.records, []))
+      ]),
+      false
     )
-    error_message = "Each DNS record must include `key`, `name`, `type`, and either `content` or `data`."
+    error_message = "Each DNS record must include `key`, `name`, `type`, and either `content` or `data`. Record keys must be unique within each zone."
   }
 }
 
@@ -35,11 +39,11 @@ variable "workers" {
   default     = {}
 
   validation {
-    condition = can(
+    condition = try(
       alltrue([
         for worker_name, worker in var.workers : (
           (
-            (
+            try(
               contains(keys(worker), "main_module")
               && contains(keys(worker), "modules")
               && length(try(worker.modules, [])) > 0
@@ -50,7 +54,8 @@ variable "workers" {
                   && contains(keys(module), "content_type")
                 )
               ])
-              && contains([for module in try(worker.modules, []) : module.name], worker.main_module)
+              && contains([for module in try(worker.modules, []) : module.name], worker.main_module),
+              false
             )
             || try(worker.assets, null) != null
           )
@@ -68,10 +73,17 @@ variable "workers" {
               && contains(keys(domain), "zone_name")
             )
           ])
+          && length(distinct([
+            for route in try(worker.routes, []) : route.key
+          ])) == length(try(worker.routes, []))
+          && length(distinct([
+            for domain in try(worker.custom_domains, []) : domain.key
+          ])) == length(try(worker.custom_domains, []))
         )
-      ])
+      ]),
+      false
     )
-    error_message = "Each worker must either declare `main_module` plus a non-empty `modules` list with `name`, `content_file`, and `content_type`, or provide `assets` for an assets-only Worker. Any routes or custom domains must include stable `key` values plus `zone_name`."
+    error_message = "Each worker must either declare `main_module` plus a non-empty `modules` list with `name`, `content_file`, and `content_type`, or provide `assets` for an assets-only Worker. Routes require `key`, `pattern`, and `zone_name`; custom domains require `key`, `hostname`, and `zone_name`. Keys must be unique within each list per worker."
   }
 }
 
@@ -129,7 +141,7 @@ variable "r2_buckets" {
   default     = {}
 
   validation {
-    condition = can(
+    condition = try(
       alltrue([
         for bucket_name, bucket in var.r2_buckets : (
           alltrue([
@@ -147,10 +159,17 @@ variable "r2_buckets" {
               && contains(keys(notification), "rules")
             )
           ])
+          && length(distinct([
+            for domain in try(bucket.custom_domains, []) : domain.key
+          ])) == length(try(bucket.custom_domains, []))
+          && length(distinct([
+            for notification in try(bucket.event_notifications, []) : notification.key
+          ])) == length(try(bucket.event_notifications, []))
         )
-      ])
+      ]),
+      false
     )
-    error_message = "R2 custom domains and event notifications must include stable `key` values. Custom domains also require `domain`, `zone_name`, and `enabled`; event notifications require `queue_id` and `rules`."
+    error_message = "R2 custom domains and event notifications must include stable `key` values, unique within each list per bucket. Custom domains also require `domain`, `zone_name`, and `enabled`; event notifications require `queue_id` and `rules`."
   }
 }
 
@@ -244,18 +263,22 @@ variable "email_routing" {
   default     = {}
 
   validation {
-    condition = can(
+    condition = try(
       alltrue([
-        for zone_name, config in var.email_routing : alltrue([
-          for rule in try(config.rules, []) : (
-            contains(keys(rule), "key")
-            && contains(keys(rule), "matchers")
-            && contains(keys(rule), "actions")
-          )
-        ])
-      ])
+        for zone_name, config in var.email_routing : (
+          alltrue([
+            for rule in try(config.rules, []) : (
+              contains(keys(rule), "key")
+              && contains(keys(rule), "matchers")
+              && contains(keys(rule), "actions")
+            )
+          ])
+          && length(distinct([for rule in try(config.rules, []) : rule.key])) == length(try(config.rules, []))
+        )
+      ]),
+      false
     )
-    error_message = "Email routing rules must include stable `key` values plus `matchers` and `actions`."
+    error_message = "Email routing rules must include stable `key` values, unique per zone, plus `matchers` and `actions`."
   }
 }
 
@@ -265,7 +288,7 @@ variable "secret_zones_main" {
   default     = {}
 
   validation {
-    condition = can(
+    condition = try(
       alltrue(flatten([
         for zone_name, zone in var.secret_zones_main : [
           for record in try(zone.records, []) : (
@@ -278,9 +301,13 @@ variable "secret_zones_main" {
             )
           )
         ]
-      ]))
+        ])) && alltrue([
+        for zone_name, zone in var.secret_zones_main :
+        length(distinct([for record in try(zone.records, []) : record.key])) == length(try(zone.records, []))
+      ]),
+      false
     )
-    error_message = "Each main secret DNS record must include `key`, `name`, `type`, and either `content` or `data`."
+    error_message = "Each main secret DNS record must include `key`, `name`, `type`, and either `content` or `data`. Record keys must be unique within each zone."
   }
 }
 
@@ -290,7 +317,7 @@ variable "secret_zones_stage" {
   default     = {}
 
   validation {
-    condition = can(
+    condition = try(
       alltrue(flatten([
         for zone_name, zone in var.secret_zones_stage : [
           for record in try(zone.records, []) : (
@@ -303,9 +330,13 @@ variable "secret_zones_stage" {
             )
           )
         ]
-      ]))
+        ])) && alltrue([
+        for zone_name, zone in var.secret_zones_stage :
+        length(distinct([for record in try(zone.records, []) : record.key])) == length(try(zone.records, []))
+      ]),
+      false
     )
-    error_message = "Each staging secret DNS record must include `key`, `name`, `type`, and either `content` or `data`."
+    error_message = "Each staging secret DNS record must include `key`, `name`, `type`, and either `content` or `data`. Record keys must be unique within each zone."
   }
 }
 
@@ -315,7 +346,7 @@ variable "secret_zones_archive" {
   default     = {}
 
   validation {
-    condition = can(
+    condition = try(
       alltrue(flatten([
         for zone_name, zone in var.secret_zones_archive : [
           for record in try(zone.records, []) : (
@@ -328,9 +359,13 @@ variable "secret_zones_archive" {
             )
           )
         ]
-      ]))
+        ])) && alltrue([
+        for zone_name, zone in var.secret_zones_archive :
+        length(distinct([for record in try(zone.records, []) : record.key])) == length(try(zone.records, []))
+      ]),
+      false
     )
-    error_message = "Each archived secret DNS record must include `key`, `name`, `type`, and either `content` or `data`."
+    error_message = "Each archived secret DNS record must include `key`, `name`, `type`, and either `content` or `data`. Record keys must be unique within each zone."
   }
 }
 
@@ -340,7 +375,7 @@ variable "secret_zones_inactive" {
   default     = {}
 
   validation {
-    condition = can(
+    condition = try(
       alltrue(flatten([
         for zone_name, zone in var.secret_zones_inactive : [
           for record in try(zone.records, []) : (
@@ -353,9 +388,13 @@ variable "secret_zones_inactive" {
             )
           )
         ]
-      ]))
+        ])) && alltrue([
+        for zone_name, zone in var.secret_zones_inactive :
+        length(distinct([for record in try(zone.records, []) : record.key])) == length(try(zone.records, []))
+      ]),
+      false
     )
-    error_message = "Each inactive secret DNS record must include `key`, `name`, `type`, and either `content` or `data`."
+    error_message = "Each inactive secret DNS record must include `key`, `name`, `type`, and either `content` or `data`. Record keys must be unique within each zone."
   }
 }
 

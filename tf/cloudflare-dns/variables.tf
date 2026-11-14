@@ -16,7 +16,7 @@ variable "zones" {
   type        = any
 
   validation {
-    condition = can(
+    condition = try(
       alltrue(flatten([
         for zone_name, zone in var.zones : [
           for record in try(zone.records, []) : (
@@ -29,9 +29,13 @@ variable "zones" {
             )
           )
         ]
-      ]))
+        ])) && alltrue([
+        for zone_name, zone in var.zones :
+        length(distinct([for record in try(zone.records, []) : record.key])) == length(try(zone.records, []))
+      ]),
+      false
     )
-    error_message = "Each DNS record must include `key`, `name`, `type`, and either `content` or `data`."
+    error_message = "Each DNS record must include `key`, `name`, `type`, and either `content` or `data`. Record keys must be unique within each zone."
   }
 }
 
@@ -41,7 +45,7 @@ variable "secret_zones_main" {
   default     = {}
 
   validation {
-    condition = can(
+    condition = try(
       alltrue(flatten([
         for zone_name, zone in var.secret_zones_main : [
           for record in try(zone.records, []) : (
@@ -54,9 +58,13 @@ variable "secret_zones_main" {
             )
           )
         ]
-      ]))
+        ])) && alltrue([
+        for zone_name, zone in var.secret_zones_main :
+        length(distinct([for record in try(zone.records, []) : record.key])) == length(try(zone.records, []))
+      ]),
+      false
     )
-    error_message = "Each main secret DNS record must include `key`, `name`, `type`, and either `content` or `data`."
+    error_message = "Each main secret DNS record must include `key`, `name`, `type`, and either `content` or `data`. Record keys must be unique within each zone."
   }
 }
 
@@ -66,7 +74,7 @@ variable "secret_zones_stage" {
   default     = {}
 
   validation {
-    condition = can(
+    condition = try(
       alltrue(flatten([
         for zone_name, zone in var.secret_zones_stage : [
           for record in try(zone.records, []) : (
@@ -79,9 +87,13 @@ variable "secret_zones_stage" {
             )
           )
         ]
-      ]))
+        ])) && alltrue([
+        for zone_name, zone in var.secret_zones_stage :
+        length(distinct([for record in try(zone.records, []) : record.key])) == length(try(zone.records, []))
+      ]),
+      false
     )
-    error_message = "Each staging secret DNS record must include `key`, `name`, `type`, and either `content` or `data`."
+    error_message = "Each staging secret DNS record must include `key`, `name`, `type`, and either `content` or `data`. Record keys must be unique within each zone."
   }
 }
 
@@ -91,7 +103,7 @@ variable "secret_zones_archive" {
   default     = {}
 
   validation {
-    condition = can(
+    condition = try(
       alltrue(flatten([
         for zone_name, zone in var.secret_zones_archive : [
           for record in try(zone.records, []) : (
@@ -104,9 +116,13 @@ variable "secret_zones_archive" {
             )
           )
         ]
-      ]))
+        ])) && alltrue([
+        for zone_name, zone in var.secret_zones_archive :
+        length(distinct([for record in try(zone.records, []) : record.key])) == length(try(zone.records, []))
+      ]),
+      false
     )
-    error_message = "Each archived secret DNS record must include `key`, `name`, `type`, and either `content` or `data`."
+    error_message = "Each archived secret DNS record must include `key`, `name`, `type`, and either `content` or `data`. Record keys must be unique within each zone."
   }
 }
 
@@ -116,7 +132,7 @@ variable "secret_zones_inactive" {
   default     = {}
 
   validation {
-    condition = can(
+    condition = try(
       alltrue(flatten([
         for zone_name, zone in var.secret_zones_inactive : [
           for record in try(zone.records, []) : (
@@ -129,8 +145,12 @@ variable "secret_zones_inactive" {
             )
           )
         ]
-      ]))
+        ])) && alltrue([
+        for zone_name, zone in var.secret_zones_inactive :
+        length(distinct([for record in try(zone.records, []) : record.key])) == length(try(zone.records, []))
+      ]),
+      false
     )
-    error_message = "Each inactive secret DNS record must include `key`, `name`, `type`, and either `content` or `data`."
+    error_message = "Each inactive secret DNS record must include `key`, `name`, `type`, and either `content` or `data`. Record keys must be unique within each zone."
   }
 }

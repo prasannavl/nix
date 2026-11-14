@@ -57,6 +57,38 @@ variable "r2_buckets" {
   description = "Cloudflare R2 buckets and related bucket-level configuration."
   type        = any
   default     = {}
+
+  validation {
+    condition = try(
+      alltrue([
+        for bucket_name, bucket in var.r2_buckets : (
+          alltrue([
+            for domain in try(bucket.custom_domains, []) : (
+              contains(keys(domain), "key")
+              && contains(keys(domain), "domain")
+              && contains(keys(domain), "zone_name")
+              && contains(keys(domain), "enabled")
+            )
+          ])
+          && alltrue([
+            for notification in try(bucket.event_notifications, []) : (
+              contains(keys(notification), "key")
+              && contains(keys(notification), "queue_id")
+              && contains(keys(notification), "rules")
+            )
+          ])
+          && length(distinct([
+            for domain in try(bucket.custom_domains, []) : domain.key
+          ])) == length(try(bucket.custom_domains, []))
+          && length(distinct([
+            for notification in try(bucket.event_notifications, []) : notification.key
+          ])) == length(try(bucket.event_notifications, []))
+        )
+      ]),
+      false
+    )
+    error_message = "R2 custom domains and event notifications must include stable `key` values, unique within each list per bucket. Custom domains also require `domain`, `zone_name`, and `enabled`; event notifications require `queue_id` and `rules`."
+  }
 }
 
 variable "zone_dnssec" {
@@ -147,6 +179,25 @@ variable "email_routing" {
   description = "Cloudflare Email Routing zone configuration keyed by zone name."
   type        = any
   default     = {}
+
+  validation {
+    condition = try(
+      alltrue([
+        for zone_name, config in var.email_routing : (
+          alltrue([
+            for rule in try(config.rules, []) : (
+              contains(keys(rule), "key")
+              && contains(keys(rule), "matchers")
+              && contains(keys(rule), "actions")
+            )
+          ])
+          && length(distinct([for rule in try(config.rules, []) : rule.key])) == length(try(config.rules, []))
+        )
+      ]),
+      false
+    )
+    error_message = "Email routing rules must include stable `key` values, unique per zone, plus `matchers` and `actions`."
+  }
 }
 
 variable "secrets" {
