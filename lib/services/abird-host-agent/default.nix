@@ -518,7 +518,7 @@
       "${pkgs.coreutils}/bin/touch ${userHoldReadyMarker}"
     ];
 in {
-  imports = [./options.nix];
+  imports = [./options.nix ./build-executor];
 
   config = lib.mkIf cfg.enable {
     assertions = [

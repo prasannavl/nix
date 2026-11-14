@@ -221,6 +221,10 @@ in
   }
   // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
     lib-abird-host-agent-phase-projection-vm = import ./abird-host-agent-phase-projection-vm.nix {inherit pkgs;};
+    lib-nix-builder-containment-vm = import ./nix-builder-containment-vm.nix {inherit pkgs;};
+    lib-nix-builder-launch-gate-vm = import ./nix-builder-launch-gate-vm.nix {inherit pkgs;};
+    lib-build-executor-control = import ./build-executor-control.nix {inherit pkgs;};
+    lib-build-agent-workflow-vm = import ./build-agent-workflow-vm.nix {inherit pkgs;};
     lib-podman-compose-quadlet-generator-lifecycle = podmanComposeTests.quadlet-generator-lifecycle;
     lib-podman-compose-quadlet-provider-transition = podmanComposeTests.quadlet-provider-transition;
     lib-podman-compose-systemd-user-lifecycle = podmanComposeTests.systemd-user-lifecycle;

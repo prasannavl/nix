@@ -189,6 +189,8 @@ args @ {
   allCloseouts = runtimeProjectionCloseouts.closeouts // nixNativeCloseouts;
   controllerCloseouts = lib.filterAttrs (_: closeout: closeout.controller_reconcile or true) allCloseouts;
 in {
+  imports = [./build-controller.nix];
+
   options.services.abird-host-manager = {
     enable = lib.mkEnableOption "controller-authoritative Abird host-manager reconciliation";
 
