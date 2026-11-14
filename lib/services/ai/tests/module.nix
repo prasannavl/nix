@@ -801,7 +801,84 @@
     };
   };
   device = eval deviceCfg;
+  inference = {
+    providers = {
+      local = {
+        endpoint = "ollama";
+        auth = "none";
+      };
+      cloud = {
+        apiBases.openai = "https://cloud.test/v1";
+        auth = "bearer";
+        accountRef = "team";
+      };
+    };
+    targets = {
+      local-chat = {
+        provider = "local";
+        catalogKey = "gemma4-e2b";
+      };
+      remote = {
+        provider = "cloud";
+        model = "remote:1";
+      };
+    };
+    defaults = {
+      main = "local-chat";
+      smallTask = "local-chat";
+    };
+    consumers = {
+      local-app = {};
+      cloud-app = {
+        roles.main = "remote";
+        roles.smallTask = null;
+        credentials.cloud = "app-key";
+      };
+    };
+  };
+  withInference = evalModules [baseConfig {services.ai.inference = inference;}];
+  cloudOnly = eval {
+    services.ai = {
+      models = [];
+      inherit inference;
+    };
+  };
+  localBinding = withInference.services.ai.inferenceFor "consumer.internal" "local-app" ["main"];
+  remoteBinding = cloudOnly.services.ai.inferenceFor null "cloud-app" ["main" "smallTask"];
+  pureBinding =
+    (projectionLib.checkedInference (projectionLib.resolveInference {
+      hosting = {inherit catalog models;};
+      inherit inference;
+      localEndpoints.ollama = [
+        {
+          instance = "ollama";
+          url = "http://consumer.internal:11434";
+          modelIds = modelIds;
+        }
+        {
+          instance = "ollama-2";
+          url = "http://consumer.internal:12434";
+          modelIds = modelIds;
+        }
+      ];
+      requests.local-app = ["main"];
+    })).local-app;
 in
+  assert allAssertionsHold withInference;
+  assert allAssertionsHold cloudOnly;
+  assert localBinding == pureBinding;
+  assert localBinding.explicitChoiceRoles == [];
+  assert remoteBinding.roles.main.apis.openai.model == "remote:1";
+  assert remoteBinding.roles.smallTask == null;
+  assert remoteBinding.choices.smallTask == [];
+  assert withInference.services.ai.inference.providers.local
+  == {
+    endpoint = "ollama";
+    auth = "none";
+  };
+  assert !(allAssertionsHold (eval {services.ai.inference = inference // {defaults.main = "missing";};}));
+  assert !(builtins.tryEval (builtins.deepSeq (eval {services.ai.inference.optionalRoles = [];}).services.ai.inference true)).success;
+  assert !(builtins.tryEval (builtins.deepSeq (eval {services.ai.inference.consumers.app.roles.main = {};}).services.ai.inference true)).success;
   assert allAssertionsHold cfg;
   assert builtins.length prefetchPlan == 14;
   assert builtins.all (entry: entry.policy == "best-effort") prefetchPlan;

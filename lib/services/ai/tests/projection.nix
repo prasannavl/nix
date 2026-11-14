@@ -248,7 +248,30 @@
   };
   diagnosticCodes = policy: builtins.map (entry: entry.code) policy.diagnostics;
   invalidProjection = value: builtins.tryEval (builtins.deepSeq value true);
+  cloudInference = {
+    providers.cloud = {
+      apiBases.openai = "https://cloud.test/v1";
+      auth = "bearer";
+    };
+    targets.chat = {
+      provider = "cloud";
+      model = "remote:1";
+    };
+    defaults.main = "chat";
+    consumers.app.credentials.cloud = "app-key";
+  };
+  cloudProjection = projectionLib.mkProjection {
+    inherit backends catalog roles;
+    inference = cloudInference;
+  };
 in
+  assert cloudProjection.valid;
+  assert cloudProjection.defaults == autoProjection.defaults;
+  assert cloudProjection.ollama == autoProjection.ollama;
+  assert cloudProjection.llama == autoProjection.llama;
+  assert builtins.removeAttrs cloudProjection.moduleConfig ["inference"] == autoProjection.moduleConfig;
+  assert cloudProjection.moduleConfig.inference == cloudInference;
+  assert !(autoProjection.moduleConfig ? inference);
   # Backend admission is derived by the resolver, including auto-selection.
   assert llamaOnlyPolicy.valid;
   assert llamaOnlyPolicy.models == ["llama-only"];

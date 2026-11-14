@@ -61,7 +61,11 @@ let
     && (entry ? id)
     && isNonEmptyString entry.id
     && (!(entry ? internal) || builtins.isBool entry.internal)
-    && (!(entry ? artifacts) || builtins.isAttrs entry.artifacts);
+    && (!(entry ? artifacts) || builtins.isAttrs entry.artifacts)
+    && (!(entry ? capabilities)
+      || (builtins.isList entry.capabilities
+        && builtins.all (value: builtins.elem value ["chat" "embedding"]) entry.capabilities
+        && duplicateValues entry.capabilities == []));
   validBackend = backend: entry:
     validEntry entry
     && backendLib.validBackendConfig (backendLib.backendConfig backend entry);
@@ -123,6 +127,8 @@ let
       else {}
     );
 in rec {
+  inherit (import ./inference.nix) resolveInference;
+  checkedInference = (import ./inference.nix).checked;
   # Admit the catalog as one fleet-wide policy artifact. Diagnostics are
   # independent of a host selection so a malformed dormant entry cannot hide
   # until the first machine tries to serve it.
@@ -631,19 +637,33 @@ in rec {
       llamaRouter.deployments = [];
     },
     apiServices ? {},
+    inference ? {},
   }: let
     policy = resolvePolicy {inherit backends catalog models roles;};
+    inferencePolicy = resolveInference {
+      hosting = policy;
+      inherit inference;
+      requests = {};
+    };
   in
     policy
     // {
+      valid = policy.valid && inferencePolicy.valid;
+      diagnostics = policy.diagnostics ++ inferencePolicy.diagnostics;
       mkApi = registry:
         mkServiceApis {
           inherit registry;
           services = apiServices;
         };
-      moduleConfig = {
-        inherit (policy) catalog models roles;
-        backends = sanitizeBackends backends;
-      };
+      moduleConfig =
+        {
+          inherit (policy) catalog models roles;
+          backends = sanitizeBackends backends;
+        }
+        // (
+          if inference == {}
+          then {}
+          else {inherit inference;}
+        );
     };
 }

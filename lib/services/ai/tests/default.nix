@@ -1,4 +1,11 @@
 {pkgs}: {
+  consumer-selection = import ./consumer.nix {inherit pkgs;};
+  inference = import ./inference.nix {inherit pkgs;};
+  inference-runtime = pkgs.runCommand "ai-inference-runtime-test" {nativeBuildInputs = [pkgs.python3];} ''
+    export AI_RUNTIME_HELPERS=${../runtime.py}
+    python ${./test_runtime.py}
+    touch "$out"
+  '';
   model-prefetch =
     pkgs.runCommand "ai-model-prefetch-test" {
       nativeBuildInputs = [

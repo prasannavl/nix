@@ -19,6 +19,7 @@
   # mapping is declared, not derived. Keep families alphabetical, base models
   # in natural size order, and each base model's variants directly after it.
   bonsai2-27b = {
+    capabilities = ["chat"];
     id = "bonsai2:27b";
     # Ternary-weight model that only the PrismML llama.cpp fork loads, so it
     # is pinned to the `prism` runtime. Only its public GGUF distribution is
@@ -40,6 +41,7 @@
   */
 
   gemma4-e2b = {
+    capabilities = ["chat"];
     id = "gemma4:e2b";
     hf = "google/gemma-4-E2B-it";
     ollama = "gemma4:e2b";
@@ -50,6 +52,7 @@
     pinned = true;
   };
   gemma4-e4b = {
+    capabilities = ["chat"];
     id = "gemma4:e4b";
     hf = "google/gemma-4-E4B-it";
     ollama = "gemma4:e4b";
@@ -60,6 +63,7 @@
     pinned = true;
   };
   gemma4-12b = {
+    capabilities = ["chat"];
     id = "gemma4:12b";
     hf = "google/gemma-4-12B-it";
     ollama = "gemma4:12b";
@@ -75,6 +79,7 @@
     };
   };
   gemma4-26b-a4b = {
+    capabilities = ["chat"];
     id = "gemma4:26b";
     hf = "google/gemma-4-26B-A4B-it";
     ollama = "gemma4:26b";
@@ -85,6 +90,7 @@
     pinned = true;
   };
   gemma4-31b = {
+    capabilities = ["chat"];
     id = "gemma4:31b";
     hf = "google/gemma-4-31B-it";
     ollama = "gemma4:31b";
@@ -95,6 +101,7 @@
   };
 
   gpt-oss-20b-mxfp4 = {
+    capabilities = ["chat"];
     id = "gpt-oss:20b";
     hf = "openai/gpt-oss-20b";
     ollama = "gpt-oss:20b";
@@ -107,6 +114,7 @@
   };
 
   nomic-embed-text-v15-100m = {
+    capabilities = ["embedding"];
     id = "nomic-embed-text";
     hf = "nomic-ai/nomic-embed-text-v1.5";
     ollama = "nomic-embed-text";
@@ -114,6 +122,7 @@
   };
 
   ornith15-9b = {
+    capabilities = ["chat"];
     id = "ornith-1.5:9b";
     hf = "ornith-ai/Ornith-1.5-9B";
     ollama = "ornith-1.5:9b";
@@ -124,6 +133,7 @@
     pinned = true;
   };
   ornith15-35b-a3b = {
+    capabilities = ["chat"];
     id = "ornith-1.5:35b";
     hf = "ornith-ai/Ornith-1.5-35B-A3B";
     ollama = "ornith-1.5:35b";
@@ -135,6 +145,7 @@
   };
 
   qwen35-800m = {
+    capabilities = ["chat"];
     id = "qwen3.5:0.8b";
     hf = "Qwen/Qwen3.5-0.8B";
     ollama = "qwen3.5:0.8b";
@@ -145,6 +156,7 @@
     pinned = true;
   };
   qwen35-2b = {
+    capabilities = ["chat"];
     id = "qwen3.5:2b";
     hf = "Qwen/Qwen3.5-2B";
     ollama = "qwen3.5:2b";
@@ -155,6 +167,7 @@
     pinned = true;
   };
   qwen35-4b = {
+    capabilities = ["chat"];
     id = "qwen3.5:4b";
     hf = "Qwen/Qwen3.5-4B";
     ollama = "qwen3.5:4b";
@@ -165,6 +178,7 @@
     pinned = true;
   };
   qwen35-9b = {
+    capabilities = ["chat"];
     id = "qwen3.5:9b";
     hf = "Qwen/Qwen3.5-9B";
     ollama = "qwen3.5:9b";
@@ -175,6 +189,7 @@
     pinned = true;
   };
   qwen38-27b = {
+    capabilities = ["chat"];
     id = "qwen3.8:27b";
     hf = "Qwen/Qwen3.8-27B";
     ollama = "qwen3.8:27b";
@@ -194,6 +209,7 @@
     };
   };
   qwen38-27b-fp8 = {
+    capabilities = ["chat"];
     id = "qwen3.8:27b-fp8";
     hf = "Qwen/Qwen3.8-27B-FP8";
   };

@@ -165,6 +165,9 @@ in
     lib-ai-lib = aiTests.lib;
     lib-ai-module = aiTests.module;
     lib-ai-projection = aiTests.projection;
+    lib-ai-inference = aiTests.inference;
+    lib-ai-consumer-selection = aiTests.consumer-selection;
+    lib-ai-inference-runtime = aiTests.inference-runtime;
     lib-incus-helper = incusTests.helper;
     lib-incus-module = incusTests.module;
     lib-excalidash-helper = import ../services/excalidash/tests {inherit pkgs;};

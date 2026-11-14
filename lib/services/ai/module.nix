@@ -29,6 +29,86 @@
     backends = policyBackends;
   };
   resolvedModels = policy.models;
+  inferencePolicy = projectionLib.resolveInference {
+    hosting = policy;
+    inference = cfg.inference;
+    requests = {};
+  };
+
+  # Nullable module defaults are removed before entering the pure declaration API.
+  present = lib.filterAttrs (_: value: value != null);
+  inferenceType = types.submodule {
+    options = {
+      providers = mkOption {
+        default = {};
+        type = types.attrsOf (types.submodule {
+          options = {
+            endpoint = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+            };
+            apiBases = mkOption {
+              type = types.nullOr (types.attrsOf types.str);
+              default = null;
+            };
+            auth = mkOption {type = types.enum ["none" "bearer"];};
+            accountRef = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+            };
+          };
+        });
+        apply = lib.mapAttrs (_: present);
+        description = "Provider API surfaces and auth mode; no secret values.";
+      };
+      targets = mkOption {
+        default = {};
+        type = types.attrsOf (types.submodule {
+          options = {
+            provider = mkOption {type = types.str;};
+            catalogKey = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+            };
+            model = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+            };
+          };
+        });
+        apply = lib.mapAttrs (_: present);
+        description = "Local catalog or explicit API model targets.";
+      };
+      defaults = mkOption {
+        type = types.attrsOf types.str;
+        default = {};
+        description = "Target reference inherited by each same-name requested role.";
+      };
+      consumers = mkOption {
+        default = {};
+        type = types.attrsOf (types.submodule {
+          options = {
+            roles = mkOption {
+              type = types.attrsOf (types.nullOr types.str);
+              default = {};
+              description = "Overrides only; null explicitly disables a role.";
+            };
+            choices = mkOption {
+              type = types.attrsOf (types.listOf types.str);
+              default = {};
+              description = "Explicit ordered menus; absent roles derive choices.";
+            };
+            credentials = mkOption {
+              type = types.attrsOf types.str;
+              default = {};
+              description = "Opaque per-consumer/provider secret references.";
+            };
+          };
+        });
+        description = "Consumer policy; adapters supply their actual role lists.";
+      };
+    };
+  };
 
   stackName = cfg.stack.name;
   stackReady = stackName != null;
@@ -792,6 +872,18 @@ in {
       '';
     };
 
+    inference = mkOption {
+      type = inferenceType;
+      default = {};
+      description = "Additive inference declarations, independent of model hosting.";
+    };
+
+    inferenceFor = mkOption {
+      type = types.functionTo (types.functionTo (types.functionTo types.attrs));
+      readOnly = true;
+      description = "Resolve one consumer's adapter-requested roles using this module's endpoint context.";
+    };
+
     backends = {
       hf = {
         cacheDir = mkOption {
@@ -945,6 +1037,19 @@ in {
     {
       services.ai = {
         resolvedModels = resolvedModels;
+        inferenceFor = defaultHost: name: roleNames: let
+          endpoints = cfg.consumersFor defaultHost;
+          result = projectionLib.resolveInference {
+            hosting = policy;
+            inference = cfg.inference;
+            localEndpoints = {
+              ollama = endpoints.ollama.endpoints;
+              llama = endpoints.llama.endpoints;
+            };
+            requests.${name} = roleNames;
+          };
+        in
+          (projectionLib.checkedInference result).${name};
         consumersFor = defaultHost:
           projectionLib.mkConsumers {
             inherit defaultHost;
@@ -1128,7 +1233,7 @@ in {
           assertion = false;
           inherit (entry) message;
         })
-        policy.diagnostics
+        (policy.diagnostics ++ inferencePolicy.diagnostics)
         ++ [
           {
             assertion = !anyBackends || stackReady;
