@@ -84,7 +84,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     dotlink = {
-      url = "github:abird-ai/dotlink/v0.16.5";
+      url = "github:abird-ai/dotlink/v0.17.0";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         crane.follows = "crane";
