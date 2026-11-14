@@ -225,6 +225,7 @@ in
     lib-nix-builder-launch-gate-vm = import ./nix-builder-launch-gate-vm.nix {inherit pkgs;};
     lib-build-executor-control = import ./build-executor-control.nix {inherit pkgs;};
     lib-build-agent-workflow-vm = import ./build-agent-workflow-vm.nix {inherit pkgs;};
+    lib-opendesign-managed-byok-provider = (import ../../pkgs/ext/opendesign/tests {inherit pkgs;}).managed-byok-provider;
     lib-podman-compose-quadlet-generator-lifecycle = podmanComposeTests.quadlet-generator-lifecycle;
     lib-podman-compose-quadlet-provider-transition = podmanComposeTests.quadlet-provider-transition;
     lib-podman-compose-systemd-user-lifecycle = podmanComposeTests.systemd-user-lifecycle;
