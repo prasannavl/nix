@@ -62,16 +62,23 @@ Color reinforces the existing glyph and prose vocabulary; it never replaces it.
 Interactive terminals use one restrained semantic palette: success is green,
 failure is red with readable red diagnostics, warnings and deferred work are
 yellow, active work is cyan, headings alone are bold, rolling progress details
-are dimmed, neutral or skipped outcomes and completed-line metadata use nixbot
-gray, and structured field labels are blue. Completed phase rows color only the
-primary phase outcome; host summaries color successful status values while
-skipped host lines remain wholly gray. Host names are the one non-semantic use
-of color: each takes a stable identity color from the shared nine-color nixbot
-host palette, hashed with FNV-1a, so parallel rows stay distinguishable while
-the glyph and status word remain authoritative for state. The same palette
-applies across all structured command families, transient and durable progress,
-terminal failure rendering, deprecation warnings, and the closeout confirmation
-prompt.
+are dimmed, neutral outcomes and completed-line metadata use nixbot gray, and
+structured field labels are blue. Completed phase rows color only the primary
+phase outcome; host summaries color each typed status segment independently.
+Successful skipped host rows are wholly dimmed while retaining their host
+identity hue; warning/failure skip-like states remain semantically colored. Host
+names are the one non-semantic use of color: each takes a stable identity color
+from the shared nine-color nixbot host palette, hashed with FNV-1a, so parallel
+rows stay distinguishable while the glyph and status word remain authoritative
+for state. The same palette applies across all structured command families,
+transient and durable progress, terminal failure rendering, deprecation
+warnings, and the closeout confirmation prompt.
+
+Input feedback is transient, not an outcome: pressed footer keys and changed
+concurrency numbers briefly use pink-red (xterm 204). Feedback expires after
+800ms through the existing input reader; no per-key timer/thread or extra log
+message. Footer layout measures plain labels before applying color, favors the
+pressed hint when space is tight, and always retains the cancellation hint.
 
 Color is automatic only when the destination stream is a terminal. Stdout and
 stderr are detected independently, `NO_COLOR` and `TERM=dumb` disable ANSI, and
@@ -116,28 +123,72 @@ preserve `--local` whenever repository evidence or retained command steps show
 local authority, preventing an operator from crossing journal/publication
 authority modes between lifecycle commands.
 
+Host selection lists render the selected parent relation as a compact tree.
+Every root remains a normal `- host` list item; descendants alone use tree
+branches. Parentage is structural rather than repeated as metadata; host
+identity keeps the stable Nixbot color while tree guides and endpoint/routing
+metadata are muted. A node shows only a target that differs from its inventory
+name plus `via <jump-host>` when proxied; a custom proxy command is
+`via proxy-command`. Parent relationships alone do not imply a proxy, and proxy
+arguments are never displayed. Route selection and transport targets are
+unchanged.
+
 Fleet deployment phases keep the selected-host roster visible. In the verbose
 dashboard an oversized roster windows to its last hosts with a muted
 `▲ N hosts above` marker, so the bottom of the roster stays on screen; the plain
 dashboard still appends the full roster through the append-only snapshot path.
 Each running host owns a bounded rolling tail of up to five safe semantic lines;
-successful work collapses, while failed work retains its tail. The phase header
-reports stage, wave (only when the phase has multiple waves), running slots
-(`<running>/<concurrency>`), completed, and elapsed counts, and omits the
-derivable pending count. Host rows use one lowercase stage vocabulary for every
-task: the live row reads `● <stage> · task elapsed <t>`, and a task that
-finishes before the host reaches its terminal outcome leaves
-`○ <stage> done · <t>` instead of the stale running label. While a running step
-declares a heartbeat, a live row stays plain `●` while it is producing output
-and pulses `●`/`○` once it has been quiet for a few seconds; once a declared
-heartbeat is overdue (twice its interval), the glyph turns warning and the row
-reports `no heartbeat · <age>`. Activation and rollback keep their stage and
-read `○ activation done, finalizing · <t>` while the detached unit settles.
-Terminal tasks whose outcome carries no duration keep the last task's elapsed
-time, so completion rows still report how long the host took. Stage labels drop
-the redundant host column but keep transport builders and readiness parents as
-detail, for example `build done via abird gondor ci` and
-`parent reconcile done · gap3 gondor`. Output ownership is consistent by phase:
+successful work collapses, while failed work retains its tail. Exact source
+identity is printed once as startup metadata before build strategy. The phase
+header keeps the primary phase/title on one line and renders only phase-local
+occupancy, wave, outcome and elapsed metadata as muted, semantically wrapped
+continuation lines. The final summary uses the same grammar with elapsed
+metadata only. Build strategy shows the requested selector first and resolved
+backend in muted parentheses (`auto (nix)`). The scheduler owns occupancy; a
+finished substep is not a finished host-stage. Completed stage counts/times stay
+in the live region, and each host's terminal outcome is published without
+waiting for its siblings.
+
+Host rows use a compact stage/outcome vocabulary for ordinary states
+(`build done`, `snapshot skip`, `acquire skip`, `deploy blocked`,
+`health skip`). Benign skips are muted; blocked, deferred and unavailable
+nonfatal states use warning emphasis while retaining skipped phase accounting;
+dynamic failures retain their diagnostic detail. Rows retain accumulated stage
+work time across steps, including retries and finalization but excluding
+admission queue gaps. Nested intervals count once. Current-step duration appears
+additionally when distinct. Final `Hosts:` rows combine typed outcomes with
+compact stage timings; adjacent skipped/not-run stages are grouped, with no
+separate timing table. Long final rows wrap without truncation. Live `elapsed`
+names stage wall time; total run time appears once in the final summary heading,
+not a second live `Run` row. Exact source identity is invocation metadata
+emitted once before build strategy after source authority is resolved; it is
+never repeated in phase headers or the final summary. There is no timing toggle;
+outcomes and timing remain independent of log verbosity.
+
+Fleet parsing and help share one canonical Clap command schema with grouped
+command/option sections and terminal-aware styling. Normal Clap help respects
+the actual TTY width (`max_term_width(0)`), avoiding the long-help blank-line
+layout and the 100-column cap that unnecessarily pushes whole option groups onto
+second lines; narrow terminals still wrap normally. Environment-derived options
+remain the default layer and explicit CLI matches overlay them. Legacy `nixbot`
+code only translates compatibility action spellings/argv into this canonical
+parser; it does not maintain a second option parser. The outer `fleet` wrapper
+delegates bare/help/-h/--help directly before environment/Nix setup.
+
+A running step with heartbeat stays plain `●` while producing output and pulses
+`●`/`○` after a few quiet seconds. Twice the declared heartbeat interval without
+a beat produces warning `no heartbeat · <age>`. Detached activation/rollback
+retain their finalizing state until settlement. Step labels keep transport
+builders and readiness parents as detail, without repeating the host column.
+
+`+`/`=` and `-` adjust one invocation-wide target for subsequent work, including
+later stages; decreases drain rather than cancel. Before the first adjustment,
+per-domain/stage startup limits apply. Afterwards only the manual global target
+and hard constraints (including an optional per-domain maximum) govern slots. No
+domain bonus counter or renderer-side admission decisions. Source identity comes
+from execution inputs, not the manager binary or a later caller HEAD. See
+[preparation and progress](host-manager-preparation-and-progress-2026-11.md) for
+these boundaries. Output ownership is consistent by phase:
 
 - build shows normalized Nix evaluation, realization, copy, and store events;
 - snapshot shows parent-readiness lifecycle events and the captured generation;

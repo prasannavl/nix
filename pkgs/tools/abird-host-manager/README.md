@@ -337,40 +337,144 @@ It is available for explicit validation, but the packaged `nixbot` command,
 NixOS module, workflows, move-command deployment adapter, and repository wrapper
 continue to use the existing Bash implementation until a separate cutover.
 
+### Prepare before deployment
+
+```console
+nix run .#abird-host-manager -- fleet prepare --dirty-staged
+nix run .#abird-host-manager -- fleet deploy --dirty-staged
+```
+
+`prepare` runs Build → Acquire, without generation snapshots, activation or
+post-deployment health checks. It warms target closures, Podman images and AI
+models through the existing admission checks. It is not read-only: acquisition
+may also install declared identities and reconcile parent readiness. Prefetch
+that requires first activation is reported as deferred, not fully prepared.
+
+Preparation is cache warming, not a retained deployment transaction. Run-owned
+candidate roots are released; ordinary cache/GC policy applies. Deployment
+captures fresh rollback generations and verifies/reacquires artifacts. Use the
+same `--sha` and host selection for committed inputs; `--dirty-staged` captures
+the current index again, so changing staged content changes the candidate. The
+native Nix backend supports preparation; unsupported agent/remote CI preparation
+fails before dispatch rather than changing backend implicitly.
+
+### Live concurrency and timing
+
+`+` (or `=`) increases the displayed admission limit by one; `-` decreases it
+(minimum one), letting admitted work drain without cancellation. The first
+adjustment establishes one session-wide target for new work in all remaining
+waves and stages, including deployment. It does not change Nix/compiler thread
+counts. The footer advertises controls only for a live adjustable local pool.
+
+Before adjustment, existing stage defaults apply: `--build-jobs` for builds,
+`--jobs` / `--deploy-jobs` for deployment stages, and `--jobs-per-domain` /
+`--deploy-jobs-per-domain` for each domain's initial allowance. The displayed
+startup limit reflects remaining work under those defaults, not an unreachable
+global cap. Manual adjustment replaces soft startup limits with the one global
+target; it does not increment separate domain budgets.
+
+Optional `--jobs-per-domain-max` (`--deploy-jobs-per-domain-max`,
+`NIXBOT_JOBS_PER_DOMAIN_MAX`) remains a hard domain ceiling even after manual
+adjustment. Dependencies, control-plane exclusivity and backend restrictions
+also remain authoritative. A higher target is capacity, not a promise to start
+work blocked by those constraints. Saturated keys and keys outside an active
+pool have no effect or feedback; accepted targets persist until the invocation
+exits. Controls are shown only while adjustable work is active—not during
+exclusive builds, stopped admission, cleanup or unrelated infrastructure phases.
+The handler remains attached across phases; no stage needs to re-enable it.
+Accepted key hints briefly flash pink-red; changed concurrency limits and
+running counts flash with them. Feedback fades after 800ms without adding log
+lines or timers per key. `NO_COLOR` and redirected output remain plain.
+
+The target is absolute, not a delta from each stage's defaults. For example,
+with `--jobs 8`, pressing `+` while a two-host level shows `limit 2` selects
+`limit 3` for the remaining invocation—even when the next level has ten hosts.
+Further presses adjust that chosen limit; they do not restore stage defaults.
+
+The initial host roster is a compact parent tree: every root is a clean `-` list
+item, descendants use tree branches, parentage is structural, host names use the
+stable Nixbot identity palette, and muted parentheses show only a differing
+target plus `via <route>` when applicable. Exact execution source is printed
+once as invocation metadata, immediately before build strategy; build strategy
+reports the requested value first and the resolved backend as muted metadata,
+e.g. `auto (nix)`. Live phase headings keep the phase/title on one line and wrap
+only phase-local occupancy, outcomes and elapsed time into indented muted
+continuation lines at semantic boundaries. Final summary headings use the same
+two-tier grammar: result first, then elapsed metadata on an indented muted line.
+
+Timings are always visible. Each host row uses compact stage/outcome language
+such as `build done`, `acquire skip`, `deploy blocked` and `health skip`. Benign
+skips are muted; blocked, deferred or unavailable nonfatal states are
+warning-colored while still counted as skipped for phase accounting. Real
+failures retain their diagnostic detail. Each row accumulates all its work in
+the current stage, including retries/finalization but excluding scheduler queue
+gaps; step changes never reset that total. Distinct current-step time appears
+alongside it. Completed stages retain counts and wall times. Final `Hosts:` rows
+render a composable typed result (`milestone + qualifier`) plus measured-only
+timing metadata, e.g. `app  acquired, fail deploy [b2.8s s327ms a23s d11s]`. The
+timing keys are `b` build, `s` snapshot, `a` acquire, `d` deploy, `h` health and
+`c` bootstrap check; each value keeps a compact explicit unit and
+skipped/not-run phases are omitted. Host names retain the stable Nixbot identity
+palette. Successful skip rows that stop before the command's final host goal are
+wholly dimmed; warning/failure skip-like outcomes retain their semantic color.
+Live `elapsed` is the current stage's wall time; total runtime appears once in
+the final summary heading. Neither is the sum of parallel host durations.
+Completions update as each host finishes.
+
+Canonical `fleet` parsing and help share one Clap command schema. Commands and
+Selection, Build, Deployment, Repository, CI, Behavior and Authentication
+options are therefore declared once; environment-derived defaults are overlaid
+only when CLI values are absent. The legacy `nixbot` surface does only
+compatibility argv translation before entering that same parser. Help respects
+the actual terminal width rather than Clap's default width cap, so wide
+terminals keep option/help rows dense while narrow terminals wrap naturally.
+Terminal help uses a restrained cyan/green/yellow Clap palette while
+redirected/NO_COLOR output stays plain.
+
+The startup `Source:` line identifies the exact execution source: short commit
+SHA plus an applied-content fingerprint for staged changes. `dev-build`
+identifies a mutable checkout; full source identity annotates existing
+diagnostics best-effort without changing run success or empty-log retention. It
+describes the requested candidate, not a claim that every target activated it.
+
+### Logs and cancellation
+
 Human output follows the same progress grammar as move commands. Interactive
 terminals keep one active status line, redirected output emits stable start and
 completion lines, and GitHub Actions mode uses groups and annotations. Normal
 output is concise. `--verbose` streams detailed command output, automatically
-attributed when phases can run concurrently, while failure diagnostics retain
-raw, uncolored stdout, stderr, status, and duration files in the reported
-private diagnostics directory. `--prefix-host-logs` forces attribution; an
-explicit false `NIXBOT_PREFIX_HOST_LOGS` disables the automatic behavior.
-Verbose lines are muted gray so phase progress stays dominant, with errors in
-red and warnings in a milder amber. On a terminal they render as a bounded live
-tail in the same overwriteable region as the dashboard, with one blank row
-between the tail and the dashboard, a blank row before the key footer, and the
-whole region sized to the viewport, so the stream is cleared and redrawn like
-progress rather than appended. Redirected output still appends plain lines.
+attributed for multi-host phases; attribution stays stable across exclusive
+substeps, draining and cancellation while the phase is active. Failure
+diagnostics retain raw, uncolored stdout, stderr, status, and duration files in
+the reported private diagnostics directory. `--prefix-host-logs` forces
+attribution; an explicit false `NIXBOT_PREFIX_HOST_LOGS` disables the automatic
+behavior. Verbose lines are muted gray so phase progress stays dominant, with
+errors in red and warnings in a milder amber. On a terminal they render as a
+bounded live tail in the same overwriteable region as the dashboard, with one
+blank row between the tail and the dashboard, a blank row before the key footer,
+and the whole region sized to the viewport, so the stream is cleared and redrawn
+like progress rather than appended. Redirected output still appends plain lines.
 Native fleet runs on an interactive terminal capture the `v` key and advertise
-it in a footer while running: `keys: v: verbose · ctrl-c: cancel`. A `● Logs`
-header opens the block whenever verbose is on, naming the active view and when
-the oldest line it holds was recorded (`● Logs · run · since 14:32:05`); the
-footer then adds the view keys (`ctrl/alt-r: run · ctrl/alt-e: errors`), and
-hiding drops the live ring so the screen looks as if it had never been shown.
-Every shortcut also has an `alt` form, because a terminal that consumes the
-control bytes would take the key with it, and on a terminal too narrow for the
-whole footer the hints drop in whole groups — the view pair leaves together — so
-the escalating `ctrl-c` label is never cut. No hint is printed after the run
-summary. `ctrl-r` shows the live stream; `ctrl-e` shows every error and warning
-retained for the run with two lines of context on each side, non-adjacent runs
-joined by a `...` line, remembered even while hidden. The `since` label always
-dates the oldest line the shown view still holds, so it restarts with the ring
-after a hide and moves forward as older lines are evicted, while the errors view
-dates its own retained digest. Agent jobs share that one section, so
-`--nixbot-deploy` behaves like a native run, and the section renders even while
-a wait owns no dashboard. When a view is taller than the window,
-`ctrl-k`/`ctrl-j` (or `alt-k`/`alt-j`) scroll by lines and `ctrl-h`/`ctrl-l` (or
-`alt-h`/`alt-l`) by pages, and the separator row below the logs becomes a muted
+it in a footer while running; an active scheduler also advertises `+/-`:
+`keys: +/-: concurrency · v: verbose · ctrl-c: cancel`. A `● Logs` header opens
+the block whenever verbose is on, naming the active view and when the oldest
+line it holds was recorded (`● Logs · run · since 14:32:05`); the footer then
+adds the view keys (`ctrl/alt-r: run · ctrl/alt-e: errors`), and hiding drops
+the live ring so the screen looks as if it had never been shown. Every shortcut
+also has an `alt` form, because a terminal that consumes the control bytes would
+take the key with it, and on a terminal too narrow for the whole footer the
+hints drop in whole groups — the view pair leaves together — so the escalating
+`ctrl-c` label is never cut. No hint is printed after the run summary. `ctrl-r`
+shows the live stream; `ctrl-e` shows every error and warning retained for the
+run with two lines of context on each side, non-adjacent runs joined by a `...`
+line, remembered even while hidden. The `since` label always dates the oldest
+line the shown view still holds, so it restarts with the ring after a hide and
+moves forward as older lines are evicted, while the errors view dates its own
+retained digest. Agent jobs share that one section, so `--nixbot-deploy` behaves
+like a native run, and the section renders even while a wait owns no dashboard.
+When a view is taller than the window, `ctrl-k`/`ctrl-j` (or `alt-k`/`alt-j`)
+scroll by lines and `ctrl-h`/`ctrl-l` (or `alt-h`/`alt-l`) by pages, and the
+separator row below the logs becomes a muted
 `▲ N above · ▼ M below · ctrl/alt-h/j/k/l: scroll` marker. Ctrl-C is a two-step
 confirm whose footer label tracks the escalation (`cancel`, `confirm cancel`,
 `force exit`): the first press only arms the cancel, a lone first press expires

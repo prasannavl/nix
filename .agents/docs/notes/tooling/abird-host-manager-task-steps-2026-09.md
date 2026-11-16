@@ -64,10 +64,12 @@ Only `presentation.rs` knows how a step looks:
   success. A step that merely completes (for example a snapshot probe with no
   previous generation) is `Succeeded`; the host-level policy decides whether a
   missing generation is a failure or an optional skip.
-- The host row is a projection of its steps. `host_task_interrupted` renders
-  `⊘ interrupted` and keeps the bounded output tail, and it is terminal: a later
-  `host_finished` or `host_skipped` for the same host keeps the interruption
-  (`HostRow::keep_interrupted`).
+- The host row combines step detail with a distinct host-stage outcome and
+  accumulated execution time. Scheduler occupancy is independent of both.
+  Completing a substep neither completes the host-stage nor resets its timer.
+  `host_task_interrupted` renders `⊘ interrupted` and keeps the bounded output
+  tail, and it is terminal: a later `host_finished` or `host_skipped` for the
+  same host keeps the interruption (`HostRow::keep_interrupted`).
 - A terminal host outcome must not be rate-limited like a rolling detail line,
   so non-interactive interruption uses `ProgressReporter::message` rather than
   `detail`.
