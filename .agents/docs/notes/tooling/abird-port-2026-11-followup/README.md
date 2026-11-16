@@ -89,3 +89,36 @@ focused check realizations and explicit limits.
 
 [parity.md](parity.md): current shared-tree audit, per-tree counts and the
 classified exception list.
+
+## Divergence fixes
+
+Triaged all 67 shared-tree differences; 66 are policy, identity, infra state, or
+local-ahead. Fixed what was genuinely missing on this side:
+
+- `tf/modules/cloudflare/access.tf`: adopted Abird `71af6cdde`'s Access
+  identity-provider secret-ref resolver and fail-closed precondition, making the
+  file byte-identical. `var.secrets` finally has a consumer; the channel
+  `data/secrets/globals/tf/cloudflare-platform/access-account.tfvars.age` and
+  the `nixbot` `config_secret_refs` guard were already in place.
+- Documentation corrected where this repository's bytes were wrong:
+  `tf/README.md` package-build command and phase lists,
+  `tf/gcp-platform/README.md`, `tf/gcp-bootstrap/README.md`,
+  `tf/modules/cloudflare/workers.tf` message,
+  `pkgs/cloudflare-apps/{,llmug-hello/}README.md` worker channel paths,
+  `lib/sudo.nix` timeout comment. Abird's generic root-package `.checks.test`
+  and system-qualified child-flake check notes were added to `pkgs/README.md`.
+
+Two earlier classifications corrected:
+
+- `workers_main/archive/stage` are load-bearing: `tf/cloudflare-apps/main.tf`
+  merges them, and they are the encrypted per-environment channels
+  (`data/secrets/globals/tf/cloudflare-apps/project-{main,stage,archive}.tfvars.age`).
+  Same design as `secret_zones_*`. Not dead interface.
+- `tf/modules/cloudflare/tunnels.tf`'s `config_src` default is live: local
+  tunnels declare no `config_src`, so switching `"cloudflare"` to `null` would
+  change provider/state behaviour. Kept.
+
+Not changed: `zone-email-routing.tf` (this side supports `enabled = false`),
+`tf/*variables.tf` and tfvars channels, child-flake wrappers, identity/policy
+modules, the retained patched-Cargo lane, and our adapted
+`tf/tests/test_variables.py`.

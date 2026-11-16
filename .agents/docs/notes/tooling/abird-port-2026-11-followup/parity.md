@@ -9,10 +9,10 @@ Snapshot: nix `master` after `12244f6d1` compared with Abird `master`
 | ----------- | -------: | -------: | ------: | -------: | ---------: |
 | `lib/`      |      548 |      563 |     97% |       63 |         50 |
 | `pkgs/`     |      488 |      505 |     97% |       55 |        483 |
-| `tf/`       |       55 |       84 |     65% |        1 |          4 |
+| `tf/`       |       56 |       84 |     67% |        1 |          4 |
 | `scripts/`  |       27 |       31 |     87% |       13 |          8 |
 | `overlays/` |        2 |        4 |     50% |        7 |          1 |
-| **Total**   | **1120** | **1187** | **94%** |  **139** |    **546** |
+| **Total**   | **1121** | **1187** | **94%** |  **139** |    **546** |
 
 Previous audit: `lib/` 527/549, `pkgs/` 457/490 equal common paths. The
 denominator grew with source-side additions, and Abird's reverse port replaced

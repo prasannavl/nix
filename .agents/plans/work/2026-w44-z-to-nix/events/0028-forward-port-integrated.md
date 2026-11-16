@@ -28,3 +28,10 @@
   topology, Pvl overlays and plan ownership. No push, deployment, secret access
   or history rewrite. Receipt:
   `.agents/docs/notes/tooling/abird-port-2026-11-followup/`.
+
+- Follow-up divergence triage: 67 shared-tree differences classified; 66 are
+  policy, identity, infra state or local-ahead. Adopted the missing Access
+  identity-provider secret-ref resolver (`tf/modules/cloudflare/access.tf`,
+  byte-identical) and corrected local documentation/message paths. Two earlier
+  classifications corrected: `workers_*` are the encrypted per-environment
+  channels, and the `tunnels.tf` `config_src` default is live.

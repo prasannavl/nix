@@ -63,3 +63,18 @@ Adapted files: `lib/tests/default.nix` (registration only),
   acceptance.
 - `tf/` was validated by format checks and synthetic variable contracts only; no
   `plan`/`apply` and no state access.
+
+## Divergence fixes
+
+- `tofu init -backend=false` + `tofu validate` on a scratch copy of
+  `tf/cloudflare-platform` with the shared module:
+  `Success! The configuration is
+  valid` (only the pre-existing `environment`
+  deprecation warning in `workers.tf`). No backend, state or provider
+  credentials used.
+- `tf/modules/cloudflare/access.tf` is byte-identical to Abird `c735a7247`.
+- `tofu fmt -check`, `alejandra --check`, `deno fmt --check` and
+  `markdownlint-cli2` clean on every changed file.
+- Documented `data/secrets/...` paths re-validated against the tree; the only
+  absent file is the declared (gitignored)
+  `gcp/application-default-credentials.json.age`.
