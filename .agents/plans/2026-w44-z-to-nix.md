@@ -13,6 +13,9 @@ Author: pvl Owner: @pvl
 - Batch delivery is complete. Global compatibility/carry-back was ported as
   seven signed units after `7723150f5` (event 0028) with a shared-tree parity
   audit; no blanket parity, rollback-safety or deployment-readiness claim.
+- Event 0029 audits the later source tail `c735a7247..d968b3885` (9 commits).
+  Nothing needed porting; one shared guidance file was aligned. Parity is
+  measured, not claimed.
 
 ## Contract
 

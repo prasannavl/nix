@@ -122,3 +122,10 @@ Not changed: `zone-email-routing.tf` (this side supports `enabled = false`),
 `tf/*variables.tf` and tfvars channels, child-flake wrappers, identity/policy
 modules, the retained patched-Cargo lane, and our adapted
 `tf/tests/test_variables.py`.
+
+## Tail audit
+
+Source tail `c735a7247..d968b3885` (9 linear commits, 2026-11-16): nothing to
+port except a shared guidance document, which was aligned. Per-commit
+dispositions, the fresh parity snapshot and the retained-divergence classes are
+in [tail-audit-2026-11-16](tail-audit-2026-11-16.md).

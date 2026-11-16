@@ -16,6 +16,10 @@ Plan: [contract](../../2026-w44-z-to-nix.md)
   the forward port in event 0028: seven signed units after `7723150f5`, `lib/`
   548/563 and `pkgs/` 488/505 shared paths equal. No blanket parity,
   rollback-safety or deployment-readiness claim.
+- Event 0029 audits the further source tail `c735a7247..d968b3885` (9 commits):
+  nothing to port; one shared guidance file aligned. Fresh snapshot `lib/`
+  547/561, `pkgs/` 486/503, 38 shared files differing, all classified. Both
+  forward receipts leave parity, rollback-safety and deployment unclaimed.
 
 | Batch | Reverse rows | Global rows | State                                   |
 | ----- | ------------ | ----------- | --------------------------------------- |
