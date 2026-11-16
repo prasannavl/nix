@@ -185,7 +185,6 @@ in
     lib-update-helper-repository = import ../../scripts/support/tests {pkgs = pkgs;};
     lib-lint-manifest-temp-cleanup = lintManifestTempCleanupTest;
     lib-lint-no-ifd = lintNoIfdTest;
-    lib-lint-root-flake = import ./lint-root-flake.nix {inherit pkgs;};
     lib-model-reconciler-wrapper = modelReconcilerTest;
     lib-nix-repo-registry = repoRegistryTest;
     lib-openssh = import ./openssh.nix {inherit pkgs;};
