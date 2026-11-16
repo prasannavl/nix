@@ -42,6 +42,18 @@
 - Prefer `let ... in` for local bindings over deeply nested inline expressions.
 - Avoid empty `let in` blocks — statix flags these (W02).
 - Collapsible nested `let` blocks should be merged into one (W06).
+- Keep a repeated attrset path in one place. For example, do not spread one
+  `services.podman-compose.<stack>.instances.<name>` definition across multiple
+  top-level merged blocks just to attach helpers later.
+- If a module needs local helper logic such as `mkSecret`, `mkDirs`, or optional
+  `envSecrets`, prefer top-level helper bindings or a local `let` around the one
+  attrset that uses them, and keep that attrset together.
+- Keep `age.secrets` as a trailing top-level attr when practical, rather than
+  interspersing it between split helper blocks.
+- If you need the repo's optional tracked-path helper (`builtins.pathExists`
+  plus `builtins.path` with a stable name), prefer the exported shared helper on
+  the service platform (`s.srv.trackedPath`) instead of re-declaring a local
+  `trackedPath` copy in each module.
 
 ## Function arguments
 
@@ -179,24 +191,52 @@
   `nixosModules`.
 - Use `.` for root-flake `nix build` and `nix run` examples (e.g.,
   `nix run .#lint`).
+- For local repo flake refs in commands, use Git-aware forms such as `.` /
+  `./subdir` / an absolute repo path. Agents must not use explicit `path:` flake
+  refs for repo validation or builds.
+- This rule also applies to wrapper entrypoints and helper scripts, not just
+  human-facing examples. If a repo hook or script delegates to a repo flake
+  command, keep the outer flake ref Git-aware as well:
+
+  ```nix
+  # good
+  nix run .#lint
+  nix shell --inputs-from "$repo_root" nixpkgs#jq
+  nix flake check --no-build .
+
+  # bad: pulls ignored/untracked working-tree content like target/, dist/, tmp/
+  nix run path:.#lint
+  nix shell --inputs-from "path:$repo_root" nixpkgs#jq
+  nix flake check --no-build path:.
+  ```
+
+- In this repo, accidental `path:` use on wrapper entrypoints can make pre-push
+  and similar workflows spend a long time copying ignored build output into the
+  store.
 - Lint evaluation is a no-IFD gate. The pre-push hook must invoke the outer
   `nix run .#lint` with `--option allow-import-from-derivation false`, and the
   lint script must propagate `allow-import-from-derivation = false` through
   `NIX_CONFIG` so root checks, parallel host evaluations, and child-package
   commands cannot use IFD. Keep both boundaries: an option applied only to the
   outer `nix run` is not inherited automatically by nested `nix` processes.
-- For AI-driven validation, do not use `path:` as the live-untracked escape
-  hatch. A bare absolute path is Git-aware as a command-line flake ref, but it
-  resolves to `path:` inside `builtins.getFlake`, so impure self-references must
-  go through `lib/flake/repo-flake.nix` (or an explicit `git+file:///...` ref).
-  If untracked files seem required, stop and make the state explicit first. See
-  `.agents/docs/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`.
+- If untracked files seem required for AI-driven validation, stop and make the
+  state explicit first. Either stage/track the intended files when acceptable,
+  validate the specific file or module directly without a flake `path:` ref, or
+  ask the user. A bare absolute path is Git-aware as a command-line flake ref,
+  but it resolves to `path:` inside `builtins.getFlake`, so impure
+  self-references must go through `lib/flake/repo-flake.nix` (or an explicit
+  `git+file:///...` ref). Do not use `path:` as the live-untracked escape hatch.
+  See `.agents/docs/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`.
+- Within this repo, prefer canonical package `default.nix` imports or root-flake
+  wiring over local sibling flake inputs in child wrapper flakes. Relative local
+  flake inputs are `path` inputs and will include untracked files, while
+  absolute `git+file:///...` inputs are too host-specific to commit.
 - Child flakes declare only inputs their build closure needs. `crane` is
   optional in the generic helper: Rust-building children supply it, while
   unrelated Go/Node/Python/static/shell children omit it. Ref maintenance
   synchronizes declared optional inputs, never inserts them or guesses build
   languages. Tests must supply each wrapper's actual declared input set, not
   silently rescue missing declarations with extra inputs.
-- The root `flake.lock` is committed. Child-flake `flake.lock` files are
-  generated local state and ignored; run `scripts/update.sh --only-flake` to
-  refresh existing locks without creating new tracked child locks.
+- The root `flake.lock` is committed. Child locks are ignored local state.
+  `scripts/update.sh --only-flake` updates the root lock, synchronizes retained
+  wrapper refs, then refreshes existing child locks.
