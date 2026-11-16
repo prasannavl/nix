@@ -72,6 +72,17 @@ the root; registration in `pkgs/manifest.nix` follows placement. See
 - `nix build .#cloudflare-apps`
 - `nix run .#cloudflare-apps-deploy -- --dry`
 
+For root-exported packages, package-owned checks are available through the root
+package attr:
+
+- `nix build .#nats-http-bridge.checks.test`
+- `nix build .#abird-host-manager.checks.test`
+
+When addressing a child flake directly by path, checks are system-qualified:
+
+- `system=$(nix eval --raw --impure --expr builtins.currentSystem)`
+- `nix build ./pkgs/support/nats-http-bridge#checks.${system}.test`
+
 Inside a child directory, plain `.` uses the child flake directly.
 
 Overlay package example:

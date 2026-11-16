@@ -37,7 +37,7 @@ This directory holds repo-managed Cloudflare application source trees used by
 ## Terraform inputs
 
 Worker/app definitions are referenced from `tf/cloudflare-apps/*.auto.tfvars` or
-encrypted tfvars files under `data/secrets/globals/tf/cloudflare/workers/`.
+encrypted tfvars files under `data/secrets/globals/tf/cloudflare-apps/`.
 
 Minimal `tf/cloudflare-apps/workers.auto.tfvars` example:
 

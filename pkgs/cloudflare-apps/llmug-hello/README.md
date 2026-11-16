@@ -36,4 +36,4 @@ Layout:
 
 The Worker definition is in:
 
-- `data/secrets/globals/tf/cloudflare/workers/stage.tfvars.age`
+- `data/secrets/globals/tf/cloudflare-apps/project-stage.tfvars.age`
