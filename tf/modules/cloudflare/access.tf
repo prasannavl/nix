@@ -1,4 +1,14 @@
 locals {
+  access_identity_provider_config = {
+    for key, identity_provider in var.access_identity_providers : key => merge(
+      try(identity_provider["config"], {}),
+      {
+        for config_key, secret_key in try(identity_provider["config_secret_refs"], {}) :
+        config_key => lookup(var.secrets, secret_key, null)
+      },
+    )
+  }
+
   access_policies_resolved = {
     for key, policy in var.access_policies : key => merge(policy, {
       include = length(try(policy.include, [])) == 0 ? null : [
@@ -174,8 +184,20 @@ resource "cloudflare_zero_trust_access_identity_provider" "identity_provider" {
   account_id  = var.cloudflare_account_id
   name        = try(each.value.name, null)
   type        = each.value.type
-  config      = try(each.value.config, {})
+  config      = local.access_identity_provider_config[each.key]
   scim_config = each.value.type == "onetimepin" ? null : try(each.value.scim_config, null)
+
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        for secret_key in try(values(each.value["config_secret_refs"]), []) :
+        contains(keys(var.secrets), secret_key)
+        && trimspace(lookup(var.secrets, secret_key, "")) != ""
+        && !startswith(trimspace(lookup(var.secrets, secret_key, "")), "__replace_")
+      ])
+      error_message = "An Access identity provider references a missing or placeholder key in var.secrets."
+    }
+  }
 }
 
 resource "cloudflare_zero_trust_access_group" "group" {
