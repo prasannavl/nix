@@ -22,8 +22,9 @@ Management style decides the root, not the other way around. Registration in
 - A unit may be promoted from `lib/ext/` to `pkgs/ext/` once it needs a
   repo-owned patch or lock, and moved back if that ownership goes away.
 - Agent-facing tooling that follows upstream (MCP servers, browser and desktop
-  drivers, agent workspaces) is grouped in `overlays/agent-tools.nix`;
-  repo-managed agent tooling stays manifest-registered.
+  drivers, agent workspaces) is grouped in `overlays/agent-tools.nix`; other
+  upstream-following units belong in the shared overlay block, and repo-managed
+  agent tooling stays manifest-registered.
 - Do not collapse the two roots. Their consumer boundary is intentional; the
   source convention spans both.
 

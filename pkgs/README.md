@@ -26,9 +26,11 @@ To add a new package:
 Example projects live under `pkgs/examples/`. Their root flake package names are
 prefixed with `example-`.
 
-Standalone external tooling can live under `pkgs/ext/` when it is intentionally
-not exported as a root-flake package. Keep those trees documented by their own
-playbook or README.
+Externally sourced units live under `lib/ext/` when they follow upstream
+(unpatched, pinned release) and under `pkgs/ext/` when this repository owns
+their shape (patches, vendored locks, own build logic). Management style decides
+the root; registration in `pkgs/manifest.nix` follows placement. See
+[external source units](../.agents/docs/design-patterns/external-source-units.md).
 
 ## Current Examples
 
