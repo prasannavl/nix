@@ -1,4 +1,5 @@
 {
+  applyPatches,
   dockerTools,
   fetchFromGitHub,
   craneLib ? null,
@@ -27,15 +28,22 @@
     ${builtins.readFile ./imap-idle-selected-mailbox-updates.patch}
     ${builtins.readFile ./imap-store-pipeline-sync.patch}
     ${builtins.readFile ./imap-quota-empty-root-compat.patch}
+    ${builtins.readFile ./opentelemetry-git-source.patch}
   '');
   imageName = "localhost/abird/stalwart";
   imageTag = "${version}-bind-template-${patchHash}";
   imageRef = "${imageName}:${imageTag}";
 
-  src = fetchFromGitHub {
-    inherit (source) owner repo;
-    inherit rev;
-    hash = source.srcHash;
+  # v0.16.11 locks opentelemetry to a deleted fork; the locked rev is an upstream
+  # commit, so repoint it. Rewrite must land in `src`: vendored and build trees
+  # each carry a Cargo.lock and cargoSetupHook rejects a mismatch.
+  src = applyPatches {
+    src = fetchFromGitHub {
+      inherit (source) owner repo;
+      inherit rev;
+      hash = source.srcHash;
+    };
+    patches = [./opentelemetry-git-source.patch];
   };
 
   patches = [

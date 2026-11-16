@@ -1,0 +1,70 @@
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5105,7 +5105,7 @@
+ [[package]]
+ name = "opentelemetry"
+ version = "0.31.0"
+-source = "git+https://github.com/stalwartlabs/opentelemetry-rust#274b4d324794280ce6f4def095a3428197a9e6e3"
++source = "git+https://github.com/open-telemetry/opentelemetry-rust#274b4d324794280ce6f4def095a3428197a9e6e3"
+ dependencies = [
+  "futures-core",
+  "futures-sink",
+@@ -5118,7 +5118,7 @@
+ [[package]]
+ name = "opentelemetry-http"
+ version = "0.31.0"
+-source = "git+https://github.com/stalwartlabs/opentelemetry-rust#274b4d324794280ce6f4def095a3428197a9e6e3"
++source = "git+https://github.com/open-telemetry/opentelemetry-rust#274b4d324794280ce6f4def095a3428197a9e6e3"
+ dependencies = [
+  "async-trait",
+  "bytes",
+@@ -5130,7 +5130,7 @@
+ [[package]]
+ name = "opentelemetry-otlp"
+ version = "0.31.0"
+-source = "git+https://github.com/stalwartlabs/opentelemetry-rust#274b4d324794280ce6f4def095a3428197a9e6e3"
++source = "git+https://github.com/open-telemetry/opentelemetry-rust#274b4d324794280ce6f4def095a3428197a9e6e3"
+ dependencies = [
+  "http 1.4.2",
+  "opentelemetry",
+@@ -5148,7 +5148,7 @@
+ [[package]]
+ name = "opentelemetry-proto"
+ version = "0.31.0"
+-source = "git+https://github.com/stalwartlabs/opentelemetry-rust#274b4d324794280ce6f4def095a3428197a9e6e3"
++source = "git+https://github.com/open-telemetry/opentelemetry-rust#274b4d324794280ce6f4def095a3428197a9e6e3"
+ dependencies = [
+  "opentelemetry",
+  "opentelemetry_sdk",
+@@ -5160,12 +5160,12 @@
+ [[package]]
+ name = "opentelemetry-semantic-conventions"
+ version = "0.31.0"
+-source = "git+https://github.com/stalwartlabs/opentelemetry-rust#274b4d324794280ce6f4def095a3428197a9e6e3"
++source = "git+https://github.com/open-telemetry/opentelemetry-rust#274b4d324794280ce6f4def095a3428197a9e6e3"
+ 
+ [[package]]
+ name = "opentelemetry_sdk"
+ version = "0.31.0"
+-source = "git+https://github.com/stalwartlabs/opentelemetry-rust#274b4d324794280ce6f4def095a3428197a9e6e3"
++source = "git+https://github.com/open-telemetry/opentelemetry-rust#274b4d324794280ce6f4def095a3428197a9e6e3"
+ dependencies = [
+  "futures-channel",
+  "futures-executor",
+--- a/crates/common/Cargo.toml
++++ b/crates/common/Cargo.toml
+@@ -44,10 +44,10 @@
+ pem = "3.0"
+ chrono = { version = "0.4", features = ["serde"] }
+ hyper = { version = "1.0.1", features = ["server", "http1", "http2"] }
+-opentelemetry = { git = "https://github.com/stalwartlabs/opentelemetry-rust" }
+-opentelemetry_sdk = { git = "https://github.com/stalwartlabs/opentelemetry-rust" }
+-opentelemetry-otlp = { git = "https://github.com/stalwartlabs/opentelemetry-rust", default-features = false, features = ["reqwest-client", "http-proto", "trace", "metrics", "logs", "internal-logs", "grpc-tonic", "tls-aws-lc", "tls-roots", "reqwest-rustls"] }
+-opentelemetry-semantic-conventions = { git = "https://github.com/stalwartlabs/opentelemetry-rust" }
++opentelemetry = { git = "https://github.com/open-telemetry/opentelemetry-rust" }
++opentelemetry_sdk = { git = "https://github.com/open-telemetry/opentelemetry-rust" }
++opentelemetry-otlp = { git = "https://github.com/open-telemetry/opentelemetry-rust", default-features = false, features = ["reqwest-client", "http-proto", "trace", "metrics", "logs", "internal-logs", "grpc-tonic", "tls-aws-lc", "tls-roots", "reqwest-rustls"] }
++opentelemetry-semantic-conventions = { git = "https://github.com/open-telemetry/opentelemetry-rust" }
+ prometheus = { version = "0.14", default-features = false }
+ imagesize = "0.14"
+ sha1 = "0.11"
