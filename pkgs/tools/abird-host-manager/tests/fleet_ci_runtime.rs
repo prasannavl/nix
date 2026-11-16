@@ -95,6 +95,59 @@ fn request_input<'a>(
 }
 
 #[test]
+fn prepare_ci_is_rejected_before_any_repository_observation() {
+    let inventory = inventory();
+    let options = Options {
+        dirty_staged: true,
+        ..Options::default()
+    };
+    let mut source = FakeRepository::default();
+    let mut input = request_input(&options, &inventory, Path::new("/unobserved"));
+    input.action = "prepare";
+    let error = prepare_ci_trigger(&input, &mut source).unwrap_err();
+    assert!(error.to_string().contains("prepare is not supported"));
+    assert!(source.resolve_calls.is_empty());
+    assert_eq!(source.captures, 0);
+}
+
+#[test]
+fn ci_maximum_preserves_the_initial_limits_and_legacy_strategy_spelling() {
+    let inventory = inventory();
+    let invocation = cli::Invocation::parse_legacy([
+        "deploy",
+        "--jobs=10",
+        "--jobs-per-domain=2",
+        "--jobs-per-domain-max=6",
+        "--strategy=nix",
+    ])
+    .unwrap();
+    let mut source = FakeRepository {
+        resolved: BTreeMap::from([("HEAD".to_owned(), sha("abcdef0123456789"))]),
+        ..FakeRepository::default()
+    };
+    let prepared = prepare_ci_trigger(
+        &request_input(&invocation.options, &inventory, Path::new("/unobserved")),
+        &mut source,
+    )
+    .unwrap();
+    assert!(
+        prepared
+            .plan
+            .argv
+            .windows(2)
+            .any(|pair| pair == ["--strategy", "legacy"])
+    );
+    let forwarded = cli::Invocation::parse_legacy(prepared.plan.argv.clone()).unwrap();
+    assert_eq!(forwarded.options.deploy_jobs, 10);
+    assert_eq!(forwarded.options.deploy_jobs_per_domain, 2);
+    assert_eq!(forwarded.options.deploy_jobs_per_domain_max, Some(6));
+    assert_eq!(
+        decode_argv(&prepared.plan.encoded_argv).unwrap(),
+        prepared.plan.argv
+    );
+}
+
+#[test]
 fn default_head_and_group_only_scope_are_forwarded_without_host_flattening() {
     let fixture = TempDir::new().unwrap();
     let inventory = inventory();
@@ -528,6 +581,9 @@ fn trigger_plan(dry_run: bool, stdin: Option<Vec<u8>>) -> repository::CiTriggerP
     let mut request = repository::CiTriggerRequest {
         action: "deploy".to_owned(),
         strategy: None,
+        deploy_jobs: None,
+        deploy_jobs_per_domain: None,
+        deploy_jobs_per_domain_max: None,
         sha: Some(sha("abcdef0123456789")),
         clean_mode: CiCleanMode::Auto,
         group: Some("prod; echo unsafe".to_owned()),

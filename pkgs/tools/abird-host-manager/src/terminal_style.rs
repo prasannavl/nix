@@ -14,6 +14,7 @@ pub enum Tone {
     Label,
     Emphasis,
     Muted,
+    InputFeedback,
     Neutral,
 }
 
@@ -31,6 +32,9 @@ impl Tone {
             Self::Label => "\x1b[34m",
             Self::Emphasis => "\x1b[1m",
             Self::Muted => "\x1b[2m",
+            // Pink-red transient acknowledgement: visible without reading as
+            // failure red. xterm 204 = #ff5f87.
+            Self::InputFeedback => "\x1b[38;5;204m",
             Self::Neutral => "\x1b[90m",
         }
     }
@@ -90,19 +94,15 @@ impl TerminalStyle {
         if !self.enabled {
             return host.to_owned();
         }
-        const HOST_COLORS: [&str; 9] = [
-            "\x1b[36m", "\x1b[34m", "\x1b[35m", "\x1b[33m", "\x1b[94m", "\x1b[95m", "\x1b[96m",
-            "\x1b[92m", "\x1b[93m",
-        ];
-        // FNV-1a (32-bit), matching nixbot's host color index. A plain
-        // polynomial hash clusters shared host prefixes onto one color.
-        let hash = host.bytes().fold(2_166_136_261u32, |hash, byte| {
-            (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
-        });
-        format!(
-            "{}{host}{RESET}",
-            HOST_COLORS[(hash % HOST_COLORS.len() as u32) as usize]
-        )
+        format!("{}{host}{RESET}", host_color_code(host))
+    }
+
+    /// Retain the stable identity hue while letting skipped work recede.
+    pub fn paint_host_muted(self, host: &str) -> String {
+        if !self.enabled {
+            return host.to_owned();
+        }
+        format!("\x1b[2m{}{host}{RESET}", host_color_code(host))
     }
 
     pub fn semantic_document(self, document: &str) -> String {
@@ -160,6 +160,19 @@ impl TerminalStyle {
         }
         line.to_owned()
     }
+}
+
+fn host_color_code(host: &str) -> &'static str {
+    const HOST_COLORS: [&str; 9] = [
+        "\x1b[36m", "\x1b[34m", "\x1b[35m", "\x1b[33m", "\x1b[94m", "\x1b[95m", "\x1b[96m",
+        "\x1b[92m", "\x1b[93m",
+    ];
+    // FNV-1a (32-bit), matching nixbot's host color index. A plain polynomial
+    // hash clusters shared host prefixes onto one color.
+    let hash = host.bytes().fold(2_166_136_261u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
+    });
+    HOST_COLORS[(hash % HOST_COLORS.len() as u32) as usize]
 }
 
 fn color_disabled_by_environment() -> bool {
@@ -228,8 +241,17 @@ mod tests {
             "\x1b[92m", "\x1b[93m",
         ];
         assert_eq!(style.paint_host("alpha"), style.paint_host("alpha"));
+        assert!(
+            style
+                .paint_host_muted("alpha")
+                .starts_with(&format!("\x1b[2m{}", host_color_code("alpha")))
+        );
         assert_eq!(
             TerminalStyle::from_capabilities(false, false).paint_host("alpha"),
+            "alpha"
+        );
+        assert_eq!(
+            TerminalStyle::from_capabilities(false, false).paint_host_muted("alpha"),
             "alpha"
         );
 

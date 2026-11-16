@@ -332,7 +332,13 @@ esac
     assert!(progress.contains("● Build systems · 1 host"), "{progress}");
     assert!(progress.contains("✓ Build systems · 1 host"), "{progress}");
     assert!(progress.contains("Summary · build · success"), "{progress}");
-    assert!(progress.contains("app · ok"), "{progress}");
+    let host_summary = progress
+        .lines()
+        .find(|line| line.trim_start().starts_with("app  built [b"))
+        .expect("host outcome and timing share one summary line");
+    assert!(host_summary.ends_with(']'), "{host_summary}");
+    assert!(!host_summary.contains("not run"), "{host_summary}");
+    assert!(!progress.contains("Host phase durations"));
     assert!(!progress.contains("/nix/store/aaaaaaaa-system.drv"));
 
     let commands = fs::read_to_string(&log).unwrap();
@@ -643,6 +649,7 @@ esac
             "--config",
             "hosts.nix",
             "--known-hosts",
+            "known_hosts",
             "--config-override=literal",
             "--use-repo-script",
             "--config-override",
@@ -680,8 +687,9 @@ esac
         .unwrap();
     assert!(
         reexec.contains(&format!(
-            "--known-hosts --config-override=literal --use-repo-script --config-override operator.override.nix --config-override {}/operator.override.nix --strategy legacy",
-            repository.display()
+            "--known-hosts known_hosts --config-override=literal --use-repo-script --config-override operator.override.nix --config-override {}/operator.override.nix --sha {} --strategy legacy",
+            repository.display(),
+            git(&repository, &["rev-parse", "HEAD"]).trim()
         )),
         "{reexec}"
     );
@@ -830,8 +838,8 @@ esac
         progress.contains("Summary · build · interrupted"),
         "{progress}"
     );
-    assert!(progress.contains("app · interrupted"), "{progress}");
-    assert!(!progress.contains("app · FAIL (build)"), "{progress}");
+    assert!(progress.contains("app  interrupted"), "{progress}");
+    assert!(!progress.contains("app  fail build"), "{progress}");
     assert!(!progress.contains("✗ "), "{progress}");
 }
 
@@ -1438,9 +1446,9 @@ exit "$FLEET_CLIENT_EXIT"
             !output.status.success(),
             "{action}/{code}/{concurrency}: {stderr}"
         );
-        assert!(stderr.contains("UNCONFIRMED (build)"), "{stderr}");
-        assert!(stderr.contains("not started (build)"), "{stderr}");
-        assert!(!stderr.contains("FAIL (build)"), "{stderr}");
+        assert!(stderr.contains("build unconfirmed"), "{stderr}");
+        assert!(stderr.contains("build not started"), "{stderr}");
+        assert!(!stderr.contains("fail build"), "{stderr}");
         assert!(stderr.contains("may still be running"), "{stderr}");
         let effects = fs::read_to_string(effects).unwrap();
         let realizations = effects.lines().filter(|line| *line == "REALIZE").count();

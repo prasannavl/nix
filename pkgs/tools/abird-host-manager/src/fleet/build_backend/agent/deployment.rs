@@ -71,7 +71,13 @@ pub fn deploy(parent: &Controller, attempt: &str, nix: &Path, _lock: &ActionLock
         std::fs::symlink_metadata(&tree).is_ok_and(|metadata| metadata.is_dir()),
         "evaluated source tree is not retained locally"
     );
+    let source_identity = parent.source_identity(attempt)?;
     FleetProgress::begin_command(options);
+    crate::fleet::runtime::announce_execution_metadata(
+        &invocation,
+        source_identity.display(),
+        Some(abird_host_agent::build_executor::strategy::ExecutionStrategy::Agent),
+    );
     let diagnostics = state.layout().diagnostic_dir.clone();
     let result = (|| {
         let durable_check = || {
@@ -88,16 +94,10 @@ pub fn deploy(parent: &Controller, attempt: &str, nix: &Path, _lock: &ActionLock
             handoff,
             &diagnostics,
         )?
-        .with_forward_work(forward_work.clone())?;
+        .with_forward_work(forward_work)?;
         let started = Instant::now();
-        let result = crate::fleet::engine::execute_retained_with_interrupt_check(
-            &invocation,
-            &mut effects,
-            || {
-                crate::fleet::signal::check_interrupted()?;
-                forward_work.check()
-            },
-        );
+        let result = effects.execute();
+        let _ = source_identity.record(&diagnostics);
         effects.report_summary(&result, started.elapsed());
         result
     })();

@@ -138,6 +138,18 @@ pub fn load_inventory(
     Ok(inventory)
 }
 
+/// CLI intent overrides inventory; otherwise preserve the command default.
+pub(crate) fn effective_jobs_per_domain(inventory: &Inventory, options: &Options) -> usize {
+    if options.deploy_jobs_per_domain_explicit {
+        options.deploy_jobs_per_domain
+    } else {
+        inventory
+            .config
+            .deploy_jobs_per_domain
+            .unwrap_or(options.deploy_jobs_per_domain)
+    }
+}
+
 pub fn select_inventory(inventory: &Inventory, options: &Options) -> Result<Selection> {
     let hosts_explicit = options.host.is_some() || options.hosts.is_some();
     let groups = if options.groups.is_empty() && !hosts_explicit {
@@ -160,14 +172,14 @@ pub fn select_inventory(inventory: &Inventory, options: &Options) -> Result<Sele
             .then(|| inventory.config.default_hosts.clone())
             .flatten()
     });
-    let deploy_jobs_per_domain = if options.deploy_jobs_per_domain_explicit {
-        options.deploy_jobs_per_domain
-    } else {
-        inventory
-            .config
-            .deploy_jobs_per_domain
-            .unwrap_or(options.deploy_jobs_per_domain)
-    };
+    let deploy_jobs_per_domain = effective_jobs_per_domain(inventory, options);
+    if let Some(max) = options.deploy_jobs_per_domain_max
+        && (max == 0 || max < deploy_jobs_per_domain)
+    {
+        bail!(
+            "--jobs-per-domain-max ({max}) must be at least the effective per-domain jobs ({deploy_jobs_per_domain})"
+        );
+    }
     let selection = select(
         inventory,
         &SelectionOptions {
@@ -176,7 +188,6 @@ pub fn select_inventory(inventory: &Inventory, options: &Options) -> Result<Sele
             hosts,
             required_hosts: options.required_hosts.clone(),
             control_plane_first: options.control_plane_first,
-            deploy_jobs_per_domain,
         },
     )?;
     ensure_explicit_named_route_effective(inventory, selection.ordered.iter().map(String::as_str))?;
@@ -270,7 +281,7 @@ pub fn plan_targets(
             } else {
                 host
             };
-            let skipped = matches!(action, Action::Run | Action::Deploy)
+            let skipped = matches!(action, Action::Run | Action::Deploy | Action::Prepare)
                 && entry.deploy == DeployMode::Skip
                 && matches!(catalog, PlanCatalog::Native(plans) if !plans.contains(configuration));
             Ok(PlanTarget {

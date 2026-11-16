@@ -275,7 +275,11 @@ fn signal_loop(read_fd: RawFd, coordinator: Arc<SignalCoordinator>) {
             coordinator.receive_now(signal);
             // Re-render so an interactive footer reflects the pending state.
             if crate::fleet::interactive::keys_available() {
-                crate::progress::command_reporter().refresh();
+                let reporter = crate::progress::command_reporter();
+                if signal == TerminationSignal::Interrupt {
+                    reporter.key_pressed(crate::progress::FeedbackKey::Cancel);
+                }
+                reporter.refresh();
             }
             continue;
         }

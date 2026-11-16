@@ -1,87 +1,14 @@
 use std::collections::BTreeSet;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use abird_host_manager::fleet::orchestration::{
     ActionExecution, ActionStatus, AttemptCancellation, CancellationController,
     CancellationDecision, DeployActivity, DeployClassification, DeployObservation,
     DeployRequirement, FailFastPlan, FinalHostState, HostAttempt, HostAttemptEvent,
-    HostAttemptState, HostSummaryFacts, PhaseOutcome, PhaseStatus, SnapshotEligibility,
-    SnapshotOutcome, SummaryMode, TerminationSignal, bounded_parallel_map, classify_deploy,
-    readiness_attempts, rollback_waves,
+    HostAttemptState, HostMilestone, HostQualifier, HostStage, HostSummaryFacts, PhaseOutcome,
+    PhaseStatus, SnapshotEligibility, SnapshotOutcome, SummaryMode, TerminationSignal,
+    classify_deploy, readiness_attempts, rollback_waves,
 };
-
-#[test]
-fn bounded_parallel_map_limits_workers_and_preserves_input_order() {
-    let active = Arc::new(AtomicUsize::new(0));
-    let maximum = Arc::new(AtomicUsize::new(0));
-    let results = bounded_parallel_map((0..12).collect(), 3, {
-        let active = Arc::clone(&active);
-        let maximum = Arc::clone(&maximum);
-        move |value| {
-            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
-            maximum.fetch_max(now, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(2));
-            active.fetch_sub(1, Ordering::SeqCst);
-            value * 2
-        }
-    })
-    .unwrap();
-    assert_eq!(results, (0..12).map(|value| value * 2).collect::<Vec<_>>());
-    assert!(maximum.load(Ordering::SeqCst) <= 3);
-    assert!(bounded_parallel_map(vec![1], 0, |value| value).is_err());
-}
-
-#[test]
-fn bounded_parallel_stop_preserves_results_and_never_admits_the_tail() {
-    use abird_host_manager::fleet::orchestration::bounded_parallel_map_until;
-    use std::sync::{Barrier, Condvar, Mutex};
-
-    let admitted = Barrier::new(2);
-    let stopped = (Mutex::new(false), Condvar::new());
-    let seen = Mutex::new(Vec::new());
-    let results = bounded_parallel_map_until(
-        (0..6).collect(),
-        2,
-        |value| {
-            seen.lock().unwrap().push(value);
-            assert!(value < 2, "admitted work after the stop decision");
-            admitted.wait();
-            if value == 1 {
-                let (ready, _) = stopped
-                    .1
-                    .wait_timeout_while(
-                        stopped.0.lock().unwrap(),
-                        Duration::from_secs(10),
-                        |ready| !*ready,
-                    )
-                    .unwrap();
-                assert!(*ready, "stop decision was never observed");
-            }
-            value
-        },
-        |output| {
-            if *output == 0 {
-                *stopped.0.lock().unwrap() = true;
-                stopped.1.notify_one();
-                true
-            } else {
-                false
-            }
-        },
-    )
-    .unwrap();
-    assert_eq!(results, vec![Some(0), Some(1), None, None, None, None]);
-    let mut seen = seen.into_inner().unwrap();
-    seen.sort_unstable();
-    assert_eq!(seen, vec![0, 1]);
-    assert!(bounded_parallel_map_until(vec![1], 0, |x| x, |_| true).is_err());
-    assert_eq!(
-        bounded_parallel_map_until(vec![1, 2], 1, |x| x, |_| true).unwrap(),
-        vec![Some(1), None]
-    );
-}
 
 #[test]
 fn remote_uncertainty_and_unadmitted_hosts_never_render_as_terminal_build_failure() {
@@ -93,9 +20,13 @@ fn remote_uncertainty_and_unadmitted_hosts_never_render_as_terminal_build_failur
             ..Default::default()
         }
         .final_state(mode);
-        assert_eq!(uncertain, FinalHostState::BuildUnconfirmed);
-        assert_eq!(uncertain.label(), "UNCONFIRMED (build)");
-        assert!(uncertain.is_failure());
+        assert_eq!(
+            uncertain,
+            FinalHostState::new(
+                HostMilestone::None,
+                HostQualifier::Unconfirmed(HostStage::Build)
+            )
+        );
 
         let queued = HostSummaryFacts {
             build_not_started: true,
@@ -103,9 +34,13 @@ fn remote_uncertainty_and_unadmitted_hosts_never_render_as_terminal_build_failur
             ..Default::default()
         }
         .final_state(mode);
-        assert_eq!(queued, FinalHostState::BuildNotStarted);
-        assert_eq!(queued.label(), "not started (build)");
-        assert!(queued.is_failure());
+        assert_eq!(
+            queued,
+            FinalHostState::new(
+                HostMilestone::None,
+                HostQualifier::NotStarted(HostStage::Build)
+            )
+        );
     }
 }
 
@@ -530,7 +465,7 @@ fn cancellation_configuration_rejects_zero_and_honors_immediate_threshold() {
 }
 
 #[test]
-fn final_host_state_preserves_legacy_precedence_and_labels() {
+fn final_host_state_preserves_precedence_with_composable_milestone_and_qualifier() {
     let facts = HostSummaryFacts {
         build_failed: true,
         fully_skipped: true,
@@ -541,9 +476,8 @@ fn final_host_state_preserves_legacy_precedence_and_labels() {
     };
     assert_eq!(
         facts.final_state(SummaryMode::Deployment),
-        FinalHostState::BuildFailed
+        FinalHostState::failed(HostMilestone::None, HostStage::Build)
     );
-    assert_eq!(FinalHostState::BuildFailed.label(), "FAIL (build)");
 
     let skipped = HostSummaryFacts {
         fully_skipped: true,
@@ -552,7 +486,16 @@ fn final_host_state_preserves_legacy_precedence_and_labels() {
     };
     assert_eq!(
         skipped.final_state(SummaryMode::Deployment),
-        FinalHostState::Skipped
+        FinalHostState::skipped(HostMilestone::None, None)
+    );
+    assert_eq!(
+        HostSummaryFacts {
+            build_succeeded: true,
+            fully_skipped: true,
+            ..HostSummaryFacts::default()
+        }
+        .final_state(SummaryMode::Deployment),
+        FinalHostState::skipped(HostMilestone::Built, Some(HostStage::Deploy))
     );
 
     let optional = HostSummaryFacts {
@@ -563,11 +506,13 @@ fn final_host_state_preserves_legacy_precedence_and_labels() {
     };
     assert_eq!(
         optional.final_state(SummaryMode::Deployment),
-        FinalHostState::OptionalRollbackFailed
-    );
-    assert_eq!(
-        FinalHostState::OptionalRollbackFailed.label(),
-        "optional (rollback failed)"
+        FinalHostState::new(
+            HostMilestone::Acquired,
+            HostQualifier::RollbackFailed {
+                failed: Some(HostStage::Deploy),
+                optional: true,
+            }
+        )
     );
 
     let health = HostSummaryFacts {
@@ -578,7 +523,13 @@ fn final_host_state_preserves_legacy_precedence_and_labels() {
     };
     assert_eq!(
         health.final_state(SummaryMode::Deployment),
-        FinalHostState::HealthRolledBack
+        FinalHostState::new(
+            HostMilestone::Deployed,
+            HostQualifier::RolledBack {
+                failed: Some(HostStage::Health),
+                optional: false,
+            }
+        )
     );
 
     let deploy = HostSummaryFacts {
@@ -589,7 +540,7 @@ fn final_host_state_preserves_legacy_precedence_and_labels() {
     };
     assert_eq!(
         deploy.final_state(SummaryMode::Deployment),
-        FinalHostState::SnapshotFailed
+        FinalHostState::failed(HostMilestone::Built, HostStage::Snapshot)
     );
 }
 
@@ -601,11 +552,11 @@ fn final_host_state_handles_build_like_actions_and_fallbacks() {
             ..HostSummaryFacts::default()
         }
         .final_state(SummaryMode::BuildLike),
-        FinalHostState::Ok
+        FinalHostState::ok(HostMilestone::Built)
     );
     assert_eq!(
         HostSummaryFacts::default().final_state(SummaryMode::BuildLike),
-        FinalHostState::Failed
+        FinalHostState::new(HostMilestone::None, HostQualifier::Failed(None))
     );
     assert_eq!(
         HostSummaryFacts {
@@ -613,11 +564,8 @@ fn final_host_state_handles_build_like_actions_and_fallbacks() {
             ..HostSummaryFacts::default()
         }
         .final_state(SummaryMode::Deployment),
-        FinalHostState::Built
+        FinalHostState::ok(HostMilestone::Built)
     );
-    assert_eq!(FinalHostState::Failed.label(), "FAIL");
-    assert!(FinalHostState::Failed.is_failure());
-    assert!(!FinalHostState::OptionalRollbackFailed.is_failure());
 }
 
 #[test]
@@ -628,10 +576,8 @@ fn interruption_is_distinct_from_failure_but_preserves_completed_work() {
             ..HostSummaryFacts::default()
         }
         .final_state(SummaryMode::Deployment),
-        FinalHostState::Interrupted
+        FinalHostState::new(HostMilestone::None, HostQualifier::Interrupted)
     );
-    assert_eq!(FinalHostState::Interrupted.label(), "interrupted");
-    assert!(!FinalHostState::Interrupted.is_failure());
 
     assert_eq!(
         HostSummaryFacts {
@@ -640,7 +586,7 @@ fn interruption_is_distinct_from_failure_but_preserves_completed_work() {
             ..HostSummaryFacts::default()
         }
         .final_state(SummaryMode::Deployment),
-        FinalHostState::Built
+        FinalHostState::new(HostMilestone::Built, HostQualifier::Interrupted)
     );
     assert_eq!(
         HostSummaryFacts {
@@ -649,6 +595,6 @@ fn interruption_is_distinct_from_failure_but_preserves_completed_work() {
             ..HostSummaryFacts::default()
         }
         .final_state(SummaryMode::Deployment),
-        FinalHostState::Skipped
+        FinalHostState::skipped(HostMilestone::None, None)
     );
 }

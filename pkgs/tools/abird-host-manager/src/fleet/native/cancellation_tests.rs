@@ -73,7 +73,7 @@ fn exercise(mode: &str) {
         ..Inventory::default()
     };
     let selection = select(&inventory, &SelectionOptions::default()).unwrap();
-    assert_eq!(selection.waves, [vec!["a", "b", "c"]]);
+    assert_eq!(selection.levels, [vec!["a", "b", "c"]]);
     let new = NixStorePath::closure_output("/nix/store/aaaaaaaa-nixos-system-new").unwrap();
     let old = SystemGeneration::parse("/nix/store/bbbbbbbb-nixos-system-old").unwrap();
     let closures = selection

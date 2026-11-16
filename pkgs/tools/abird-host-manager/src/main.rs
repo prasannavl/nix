@@ -225,9 +225,10 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Build, deploy, verify, and maintain the managed host fleet.
+    #[command(disable_help_flag = true)]
     Fleet {
         /// Fleet action and options. Run `abird-host-manager fleet help` for details.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 1..)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
         arguments: Vec<String>,
     },
     /// Run durable infrastructure-instance operations on an Incus controller agent.
@@ -1853,6 +1854,24 @@ fn main() -> ExitCode {
     }
 }
 
+fn fleet_help_requested(arguments: &[String]) -> bool {
+    if arguments
+        .first()
+        .is_some_and(|argument| matches!(argument.as_str(), "owned" | "build-controller"))
+    {
+        return false;
+    }
+    FleetInvocation::parse_canonical(
+        std::iter::once("fleet".to_owned()).chain(arguments.iter().cloned()),
+    )
+    .is_ok_and(|invocation| {
+        matches!(
+            invocation.action,
+            abird_host_manager::fleet::cli::Action::Help
+        )
+    })
+}
+
 fn run() -> Result<()> {
     let mut cli = Cli::parse();
     set_json_output(cli.json);
@@ -1882,6 +1901,9 @@ fn run() -> Result<()> {
                 abird_host_manager::fleet::build_backend::agent::commands::dispatch(&arguments)
             {
                 return result;
+            }
+            if fleet_help_requested(&arguments) {
+                return abird_host_manager::fleet::cli::print_help();
             }
             configure_github_nix_access()?;
             let mut reexec_arguments = vec!["fleet".to_owned()];
@@ -13982,6 +14004,34 @@ esac
                 .lines()
                 .any(|line| line.trim_start().starts_with("hold "))
         );
+    }
+
+    #[test]
+    fn fleet_wrapper_delegates_general_help_to_the_fleet_surface() {
+        for arguments in [
+            Vec::<&str>::new(),
+            vec!["help"],
+            vec!["-h"],
+            vec!["--help"],
+            vec!["deploy", "--help"],
+        ] {
+            let mut argv = vec!["abird-host-manager", "fleet"];
+            argv.extend(arguments);
+            let cli = Cli::try_parse_from(argv).unwrap();
+            let Command::Fleet { arguments } = cli.command else {
+                panic!("fleet command")
+            };
+            assert!(fleet_help_requested(&arguments), "{arguments:?}");
+        }
+        assert!(!fleet_help_requested(&["deploy".to_owned()]));
+        assert!(!fleet_help_requested(&[
+            "owned".to_owned(),
+            "--help".to_owned()
+        ]));
+        assert!(!fleet_help_requested(&[
+            "unknown".to_owned(),
+            "--help".to_owned()
+        ]));
     }
 
     #[test]

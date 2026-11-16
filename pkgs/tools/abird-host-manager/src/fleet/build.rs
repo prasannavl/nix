@@ -247,11 +247,9 @@ impl BuildArgs {
         }
     }
 
-    pub fn for_concurrency(max_jobs: usize, build_logs: bool) -> Result<Self> {
-        if max_jobs == 0 {
-            bail!("build jobs must be positive");
-        }
-        let nix_args = if max_jobs > 1 {
+    /// Parallel evaluators must not contend on Nix's evaluation cache.
+    pub fn for_parallelism(parallel_possible: bool, build_logs: bool) -> Self {
+        let nix_args = if parallel_possible {
             vec![
                 "--option".to_owned(),
                 "eval-cache".to_owned(),
@@ -260,7 +258,7 @@ impl BuildArgs {
         } else {
             Vec::new()
         };
-        Ok(Self::new(nix_args, build_logs))
+        Self::new(nix_args, build_logs)
     }
 }
 
@@ -615,16 +613,11 @@ pub enum BuildBatch {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuildSchedule {
-    pub max_in_flight: usize,
     pub batches: Vec<BuildBatch>,
-    build_logs: bool,
 }
 
 impl BuildSchedule {
-    pub fn new(hosts: Vec<String>, max_in_flight: usize, control_plane: &[String]) -> Result<Self> {
-        if max_in_flight == 0 {
-            bail!("build concurrency must be positive");
-        }
+    pub fn new(hosts: Vec<String>, control_plane: &[String]) -> Result<Self> {
         if hosts.iter().any(String::is_empty) {
             bail!("build schedule contains an empty host");
         }
@@ -636,7 +629,8 @@ impl BuildSchedule {
         let mut batches = Vec::new();
         let mut parallel = Vec::new();
         for host in hosts {
-            if max_in_flight > 1 && control_plane.contains(&host) {
+            // Exclusivity is policy, independent of the initial live limit.
+            if control_plane.contains(&host) {
                 if !parallel.is_empty() {
                     batches.push(BuildBatch::Parallel(std::mem::take(&mut parallel)));
                 }
@@ -648,21 +642,7 @@ impl BuildSchedule {
         if !parallel.is_empty() {
             batches.push(BuildBatch::Parallel(parallel));
         }
-        Ok(Self {
-            max_in_flight,
-            batches,
-            build_logs: false,
-        })
-    }
-
-    pub fn with_build_logs(mut self, build_logs: bool) -> Self {
-        self.build_logs = build_logs;
-        self
-    }
-
-    pub fn build_args(&self) -> BuildArgs {
-        BuildArgs::for_concurrency(self.max_in_flight, self.build_logs)
-            .expect("validated build concurrency")
+        Ok(Self { batches })
     }
 }
 

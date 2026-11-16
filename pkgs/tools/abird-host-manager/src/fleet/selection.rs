@@ -5,27 +5,13 @@ use serde::Serialize;
 
 use super::inventory::{DeployMode, Inventory, validate_host_name};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SelectionOptions {
     pub groups: Vec<String>,
     pub host: Option<String>,
     pub hosts: Option<String>,
     pub required_hosts: Vec<String>,
     pub control_plane_first: bool,
-    pub deploy_jobs_per_domain: usize,
-}
-
-impl Default for SelectionOptions {
-    fn default() -> Self {
-        Self {
-            groups: Vec::new(),
-            host: None,
-            hosts: None,
-            required_hosts: Vec::new(),
-            control_plane_first: false,
-            deploy_jobs_per_domain: 8,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -37,16 +23,25 @@ pub struct Selection {
     pub skipped: Vec<String>,
     pub ordered: Vec<String>,
     pub levels: Vec<Vec<String>>,
-    pub waves: Vec<Vec<String>>,
+}
+
+impl Selection {
+    /// Earlier retained planning included capacity chunks (`waves`). They were
+    /// scheduling hints, not selection/dependency authority. Compare every other
+    /// field exactly; unknown or changed selection facts still fail closed.
+    pub(crate) fn matches_retained(&self, retained: &str) -> Result<bool> {
+        let mut retained: serde_json::Value = serde_json::from_str(retained)?;
+        if let Some(fields) = retained.as_object_mut() {
+            fields.remove("waves");
+        }
+        Ok(serde_json::to_value(self)? == retained)
+    }
 }
 
 pub fn select(inventory: &Inventory, options: &SelectionOptions) -> Result<Selection> {
     inventory.validate()?;
     if options.host.is_some() && options.hosts.is_some() {
         bail!("use either one exact host or host selectors, not both");
-    }
-    if options.deploy_jobs_per_domain == 0 {
-        bail!("deploy jobs per domain must be positive");
     }
 
     let all_hosts = inventory.hosts.keys().cloned().collect::<Vec<_>>();
@@ -137,7 +132,6 @@ pub fn select(inventory: &Inventory, options: &SelectionOptions) -> Result<Selec
         );
     }
     let levels = dependency_levels(inventory, &ordered, &control_plane)?;
-    let waves = capacity_waves(inventory, &levels, options.deploy_jobs_per_domain)?;
 
     Ok(Selection {
         groups,
@@ -147,7 +141,6 @@ pub fn select(inventory: &Inventory, options: &SelectionOptions) -> Result<Selec
         skipped,
         ordered,
         levels,
-        waves,
     })
 }
 
@@ -403,39 +396,7 @@ fn dependency_levels(
         .collect())
 }
 
-fn capacity_waves(
-    inventory: &Inventory,
-    levels: &[Vec<String>],
-    per_domain: usize,
-) -> Result<Vec<Vec<String>>> {
-    let mut waves = Vec::new();
-    for level in levels {
-        let mut pending = level.clone();
-        while !pending.is_empty() {
-            let mut counts = BTreeMap::<String, usize>::new();
-            let mut wave = Vec::new();
-            let mut later = Vec::new();
-            for host in pending {
-                let domain = deploy_domain(inventory, &host)?;
-                let count = counts.entry(domain).or_default();
-                if *count >= per_domain {
-                    later.push(host);
-                } else {
-                    *count += 1;
-                    wave.push(host);
-                }
-            }
-            if wave.is_empty() {
-                bail!("deploy concurrency policy produced an empty wave");
-            }
-            waves.push(wave);
-            pending = later;
-        }
-    }
-    Ok(waves)
-}
-
-fn deploy_domain(inventory: &Inventory, name: &str) -> Result<String> {
+pub(crate) fn deploy_domain(inventory: &Inventory, name: &str) -> Result<String> {
     let mut current = name;
     let mut visited = BTreeSet::new();
     loop {

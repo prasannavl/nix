@@ -162,7 +162,7 @@ fn named_routes_keep_original_layers_and_explicit_identity_context() {
 }
 
 #[test]
-fn native_defaults_dependencies_order_and_capacity_are_reused() {
+fn selection_depends_on_inventory_not_concurrency() {
     let inventory = fixture();
     let actual = select_inventory(&inventory, &Options::default()).unwrap();
     let expected = select(
@@ -170,7 +170,6 @@ fn native_defaults_dependencies_order_and_capacity_are_reused() {
         &SelectionOptions {
             groups: vec!["apps".into()],
             hosts: Some("app-*".into()),
-            deploy_jobs_per_domain: 1,
             ..SelectionOptions::default()
         },
     )
@@ -186,8 +185,34 @@ fn native_defaults_dependencies_order_and_capacity_are_reused() {
         ..Options::default()
     };
     let wider = select_inventory(&inventory, &options).unwrap();
-    assert_eq!(actual.ordered, wider.ordered);
-    assert!(actual.waves.len() > wider.waves.len());
+    assert_eq!(actual, wider);
+    let mut retained = serde_json::to_value(&actual).unwrap();
+    retained["waves"] = serde_json::json!([["old-capacity-hint"]]);
+    assert!(actual.matches_retained(&retained.to_string()).unwrap());
+    retained["levels"] = serde_json::json!([["different-host"]]);
+    assert!(!actual.matches_retained(&retained.to_string()).unwrap());
+}
+
+#[test]
+fn maximum_is_validated_against_effective_inventory_or_explicit_initial_jobs() {
+    let mut inventory = fixture();
+    inventory.config.deploy_jobs_per_domain = Some(12);
+    let mut options = Options {
+        deploy_jobs_per_domain_max: Some(10),
+        ..Options::default()
+    };
+    let error = select_inventory(&inventory, &options).unwrap_err();
+    assert!(error.to_string().contains("effective per-domain jobs (12)"));
+    options.deploy_jobs_per_domain_max = Some(12);
+    assert!(select_inventory(&inventory, &options).is_ok());
+    options.deploy_jobs_per_domain_explicit = true;
+    options.deploy_jobs_per_domain = 2;
+    options.deploy_jobs_per_domain_max = Some(2);
+    assert!(select_inventory(&inventory, &options).is_ok());
+    options.deploy_jobs_per_domain_max = Some(1);
+    assert!(select_inventory(&inventory, &options).is_err());
+    options.deploy_jobs_per_domain_max = None;
+    assert!(select_inventory(&inventory, &options).is_ok());
 }
 
 #[test]
@@ -221,7 +246,13 @@ fn only_missing_native_deploy_skip_targets_are_no_work() {
         ..Options::default()
     };
     let selection = select_inventory(&inventory, &options).unwrap();
-    for action in [Action::Run, Action::Deploy, Action::Build, Action::DevBuild] {
+    for action in [
+        Action::Run,
+        Action::Deploy,
+        Action::Prepare,
+        Action::Build,
+        Action::DevBuild,
+    ] {
         for catalog in [
             PlanCatalog::NixosConfiguration,
             PlanCatalog::Native(BTreeSet::new()),
@@ -249,7 +280,7 @@ fn only_missing_native_deploy_skip_targets_are_no_work() {
                     .find(|target| target.host == "external")
                     .unwrap()
                     .skipped,
-                matches!(action, Action::Run | Action::Deploy)
+                matches!(action, Action::Run | Action::Deploy | Action::Prepare)
                     && matches!(&catalog, PlanCatalog::Native(plans) if !plans.contains("external"))
             );
         }
@@ -341,4 +372,19 @@ fn malformed_successful_probe_never_becomes_compatibility_fallback() {
     for output in ["not JSON", "{}", "null", "[1]", "[\"app\"] trailing"] {
         assert!(PlanCatalog::from_probe(true, output).is_err());
     }
+}
+
+#[test]
+fn domain_jobs_resolution_has_one_explicit_inventory_default_precedence() {
+    let mut inventory = fixture();
+    let mut options = Options {
+        deploy_jobs_per_domain: 7,
+        ..Options::default()
+    };
+    inventory.config.deploy_jobs_per_domain = None;
+    assert_eq!(effective_jobs_per_domain(&inventory, &options), 7);
+    inventory.config.deploy_jobs_per_domain = Some(3);
+    assert_eq!(effective_jobs_per_domain(&inventory, &options), 3);
+    options.deploy_jobs_per_domain_explicit = true;
+    assert_eq!(effective_jobs_per_domain(&inventory, &options), 7);
 }

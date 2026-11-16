@@ -6,8 +6,7 @@
 //! activation admission boundary and cancellation behavior independently
 //! testable.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::Mutex;
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -24,78 +23,6 @@ pub fn readiness_attempts(timeout_seconds: u64, interval_seconds: u64) -> Result
         .and_then(|value| value.checked_add(1))
         .context("readiness attempt count overflow")?;
     usize::try_from(attempts).context("readiness attempt count does not fit usize")
-}
-
-pub fn bounded_parallel_map<T, U, F>(inputs: Vec<T>, limit: usize, operation: F) -> Result<Vec<U>>
-where
-    T: Send,
-    U: Send,
-    F: Fn(T) -> U + Sync,
-{
-    Ok(
-        bounded_parallel_map_until(inputs, limit, operation, |_| false)?
-            .into_iter()
-            .map(|result| result.expect("unconditional operation returns every result"))
-            .collect(),
-    )
-}
-
-/// Stop dequeuing when a result requests it; join already admitted operations.
-/// Missing entries were never admitted. This is run-local scheduling, not
-/// durable remote ownership or proof of descendant settlement.
-pub fn bounded_parallel_map_until<T, U, F, S>(
-    inputs: Vec<T>,
-    limit: usize,
-    operation: F,
-    stop: S,
-) -> Result<Vec<Option<U>>>
-where
-    T: Send,
-    U: Send,
-    F: Fn(T) -> U + Sync,
-    S: Fn(&U) -> bool + Sync,
-{
-    if limit == 0 {
-        bail!("parallelism limit must be positive");
-    }
-    if inputs.is_empty() {
-        return Ok(Vec::new());
-    }
-    let length = inputs.len();
-    let queue = Mutex::new(inputs.into_iter().enumerate().collect::<VecDeque<_>>());
-    let results = Mutex::new(BTreeMap::new());
-    std::thread::scope(|scope| {
-        for _ in 0..limit.min(length) {
-            scope.spawn(|| {
-                loop {
-                    let next = queue
-                        .lock()
-                        .expect("parallel work queue poisoned")
-                        .pop_front();
-                    let Some((index, input)) = next else {
-                        break;
-                    };
-                    let output = operation(input);
-                    // Serialize the stop decision with queue admission. Existing
-                    // operations finish normally; no cancellation/kill is inferred.
-                    {
-                        let mut queue = queue.lock().expect("parallel work queue poisoned");
-                        if stop(&output) {
-                            queue.clear();
-                        }
-                    }
-                    results
-                        .lock()
-                        .expect("parallel result map poisoned")
-                        .insert(index, output);
-                }
-            });
-        }
-    });
-    let mut results = results
-        .into_inner()
-        .map_err(|_| anyhow::anyhow!("parallel result map was poisoned"))?;
-    Ok((0..length).map(|index| results.remove(&index)).collect())
 }
 
 /// State of one host's deploy attempt around the activation admission boundary.
@@ -378,6 +305,21 @@ pub fn rollback_waves(
             (!wave.is_empty()).then_some(wave)
         })
         .collect()
+}
+
+/// Terminal phase result; a missing result means the phase did not run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PhaseResultKind {
+    Succeeded,
+    Warning,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PhaseResult {
+    pub kind: PhaseResultKind,
+    pub elapsed: Duration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -716,118 +658,202 @@ impl HostSummaryFacts {
     /// Resolve overlapping observations using the legacy summary precedence.
     pub fn final_state(self, mode: SummaryMode) -> FinalHostState {
         if self.build_unconfirmed {
-            return FinalHostState::BuildUnconfirmed;
+            return FinalHostState::new(
+                HostMilestone::None,
+                HostQualifier::Unconfirmed(HostStage::Build),
+            );
         }
         if self.build_not_started {
-            return FinalHostState::BuildNotStarted;
+            return FinalHostState::new(
+                HostMilestone::None,
+                HostQualifier::NotStarted(HostStage::Build),
+            );
         }
         if self.build_failed {
-            return FinalHostState::BuildFailed;
+            return FinalHostState::failed(HostMilestone::None, HostStage::Build);
         }
         if self.fully_skipped {
-            return FinalHostState::Skipped;
+            return if self.build_succeeded {
+                FinalHostState::skipped(HostMilestone::Built, Some(HostStage::Deploy))
+            } else {
+                FinalHostState::skipped(HostMilestone::None, None)
+            };
         }
         if mode == SummaryMode::BuildLike {
             return if self.interrupted {
-                FinalHostState::Interrupted
+                FinalHostState::new(
+                    if self.build_succeeded {
+                        HostMilestone::Built
+                    } else {
+                        HostMilestone::None
+                    },
+                    HostQualifier::Interrupted,
+                )
             } else if self.build_succeeded {
-                FinalHostState::Ok
+                FinalHostState::ok(HostMilestone::Built)
             } else {
-                FinalHostState::Failed
+                FinalHostState::new(HostMilestone::None, HostQualifier::Failed(None))
             };
         }
         if self.optional_rollback_failed {
-            FinalHostState::OptionalRollbackFailed
+            FinalHostState::new(
+                HostMilestone::Acquired,
+                HostQualifier::RollbackFailed {
+                    failed: Some(HostStage::Deploy),
+                    optional: true,
+                },
+            )
         } else if self.optional_snapshot_skipped {
-            FinalHostState::OptionalSnapshotSkipped
+            FinalHostState::new(
+                HostMilestone::Built,
+                HostQualifier::OptionalSkipped(HostStage::Snapshot),
+            )
         } else if self.optional_rollback_succeeded {
-            FinalHostState::OptionalRolledBack
+            FinalHostState::new(
+                HostMilestone::Acquired,
+                HostQualifier::RolledBack {
+                    failed: Some(HostStage::Deploy),
+                    optional: true,
+                },
+            )
         } else if self.rollback_failed {
-            FinalHostState::RollbackFailed
+            FinalHostState::new(
+                HostMilestone::Acquired,
+                HostQualifier::RollbackFailed {
+                    failed: None,
+                    optional: false,
+                },
+            )
         } else if self.health_rollback_failed {
-            FinalHostState::HealthRollbackFailed
+            FinalHostState::new(
+                HostMilestone::Deployed,
+                HostQualifier::RollbackFailed {
+                    failed: Some(HostStage::Health),
+                    optional: false,
+                },
+            )
         } else if self.health_rollback_succeeded {
-            FinalHostState::HealthRolledBack
+            FinalHostState::new(
+                HostMilestone::Deployed,
+                HostQualifier::RolledBack {
+                    failed: Some(HostStage::Health),
+                    optional: false,
+                },
+            )
         } else if self.health_failed {
-            FinalHostState::HealthFailed
+            FinalHostState::failed(HostMilestone::Deployed, HostStage::Health)
         } else if self.deploy_rollback_failed {
-            FinalHostState::DeployRollbackFailed
+            FinalHostState::new(
+                HostMilestone::Acquired,
+                HostQualifier::RollbackFailed {
+                    failed: Some(HostStage::Deploy),
+                    optional: false,
+                },
+            )
         } else if self.snapshot_failed {
-            FinalHostState::SnapshotFailed
+            FinalHostState::failed(HostMilestone::Built, HostStage::Snapshot)
         } else if self.deploy_rollback_succeeded {
-            FinalHostState::DeployRolledBack
+            FinalHostState::new(
+                HostMilestone::Acquired,
+                HostQualifier::RolledBack {
+                    failed: Some(HostStage::Deploy),
+                    optional: false,
+                },
+            )
         } else if self.deploy_failed {
-            FinalHostState::DeployFailed
+            FinalHostState::failed(HostMilestone::Acquired, HostStage::Deploy)
         } else if self.rollback_succeeded {
-            FinalHostState::RolledBack
+            FinalHostState::new(
+                HostMilestone::Acquired,
+                HostQualifier::RolledBack {
+                    failed: None,
+                    optional: false,
+                },
+            )
         } else if self.deploy_skipped {
-            FinalHostState::DeploySkipped
+            FinalHostState::skipped(HostMilestone::Built, Some(HostStage::Deploy))
         } else if self.deploy_succeeded {
-            FinalHostState::Ok
-        } else if self.build_succeeded {
-            FinalHostState::Built
+            FinalHostState::ok(HostMilestone::Deployed)
         } else if self.interrupted {
-            FinalHostState::Interrupted
+            FinalHostState::new(
+                if self.build_succeeded {
+                    HostMilestone::Built
+                } else {
+                    HostMilestone::None
+                },
+                HostQualifier::Interrupted,
+            )
+        } else if self.build_succeeded {
+            FinalHostState::ok(HostMilestone::Built)
         } else {
-            FinalHostState::Failed
+            FinalHostState::new(HostMilestone::None, HostQualifier::Failed(None))
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FinalHostState {
-    BuildUnconfirmed,
-    BuildNotStarted,
-    BuildFailed,
-    Skipped,
-    Interrupted,
-    OptionalRollbackFailed,
-    OptionalSnapshotSkipped,
-    OptionalRolledBack,
-    RollbackFailed,
-    HealthRollbackFailed,
-    HealthRolledBack,
-    HealthFailed,
-    DeployRollbackFailed,
-    SnapshotFailed,
-    DeployRolledBack,
-    DeployFailed,
-    RolledBack,
-    DeploySkipped,
-    Ok,
+pub enum HostMilestone {
+    None,
     Built,
-    Failed,
+    Acquired,
+    Deployed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostStage {
+    Build,
+    Snapshot,
+    Acquire,
+    Deploy,
+    Health,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostQualifier {
+    Ok,
+    Skipped(Option<HostStage>),
+    Deferred(HostStage),
+    OptionalFailed(HostStage),
+    Failed(Option<HostStage>),
+    DryRun,
+    Incomplete(HostStage),
+    Unconfirmed(HostStage),
+    NotStarted(HostStage),
+    Interrupted,
+    OptionalSkipped(HostStage),
+    RolledBack {
+        failed: Option<HostStage>,
+        optional: bool,
+    },
+    RollbackFailed {
+        failed: Option<HostStage>,
+        optional: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FinalHostState {
+    pub milestone: HostMilestone,
+    pub qualifier: HostQualifier,
 }
 
 impl FinalHostState {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::BuildUnconfirmed => "UNCONFIRMED (build)",
-            Self::BuildNotStarted => "not started (build)",
-            Self::BuildFailed => "FAIL (build)",
-            Self::Skipped => "skip",
-            Self::Interrupted => "interrupted",
-            Self::OptionalRollbackFailed => "optional (rollback failed)",
-            Self::OptionalSnapshotSkipped => "optional (snapshot skipped)",
-            Self::OptionalRolledBack => "optional (rolled back)",
-            Self::RollbackFailed => "FAIL (rollback)",
-            Self::HealthRollbackFailed => "FAIL (health; rollback failed)",
-            Self::HealthRolledBack => "FAIL (health; rolled back)",
-            Self::HealthFailed => "FAIL (health)",
-            Self::DeployRollbackFailed => "FAIL (deploy; rollback failed)",
-            Self::SnapshotFailed => "FAIL (snapshot)",
-            Self::DeployRolledBack => "FAIL (deploy; rolled back)",
-            Self::DeployFailed => "FAIL (deploy)",
-            Self::RolledBack => "rolled back",
-            Self::DeploySkipped => "ok (skip)",
-            Self::Ok => "ok",
-            Self::Built => "built",
-            Self::Failed => "FAIL",
+    pub const fn new(milestone: HostMilestone, qualifier: HostQualifier) -> Self {
+        Self {
+            milestone,
+            qualifier,
         }
     }
 
-    pub fn is_failure(self) -> bool {
-        matches!(self, Self::BuildUnconfirmed | Self::BuildNotStarted)
-            || self.label().starts_with("FAIL")
+    pub const fn ok(milestone: HostMilestone) -> Self {
+        Self::new(milestone, HostQualifier::Ok)
+    }
+
+    pub const fn failed(milestone: HostMilestone, stage: HostStage) -> Self {
+        Self::new(milestone, HostQualifier::Failed(Some(stage)))
+    }
+
+    pub const fn skipped(milestone: HostMilestone, stage: Option<HostStage>) -> Self {
+        Self::new(milestone, HostQualifier::Skipped(stage))
     }
 }

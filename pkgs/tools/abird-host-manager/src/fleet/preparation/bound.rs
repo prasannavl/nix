@@ -259,7 +259,7 @@ impl BoundPreparation {
         );
         let selection = select_inventory(&inventory, &self.options)?;
         ensure!(
-            serde_json::to_string(&selection)? == planning.selection,
+            selection.matches_retained(&planning.selection)?,
             "retained native selection differs"
         );
         let catalog = PlanCatalog::from_probe(

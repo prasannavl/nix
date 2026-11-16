@@ -284,6 +284,10 @@ impl Environment {
             options.deploy_jobs
         };
         options.deploy_jobs_per_domain_explicit = jobs_per_domain_explicit;
+        options.deploy_jobs_per_domain_max = self
+            .value("NIXBOT_JOBS_PER_DOMAIN_MAX")
+            .map(|_| self.positive("NIXBOT_JOBS_PER_DOMAIN_MAX", 1usize))
+            .transpose()?;
         options.verify_jobs = self.positive("NIXBOT_VERIFY_JOBS", options.verify_jobs)?;
         options.force = self.boolean("NIXBOT_FORCE", false)?;
         options.restart_managed = self.boolean("NIXBOT_RESTART_MANAGED", false)?;

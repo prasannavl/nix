@@ -1288,6 +1288,9 @@ fn deploy_trigger() -> CiTriggerRequest {
     CiTriggerRequest {
         action: "deploy".to_owned(),
         strategy: None,
+        deploy_jobs: None,
+        deploy_jobs_per_domain: None,
+        deploy_jobs_per_domain_max: None,
         sha: Some(CommitSha::parse("abcdef0").unwrap()),
         clean_mode: CiCleanMode::Auto,
         group: Some("prod".to_owned()),
@@ -1391,6 +1394,9 @@ fn ci_trigger_plans_only_the_remote_contract_and_exact_patch_stdin() {
     let clean = plan_ci_trigger(&CiTriggerRequest {
         action: "clean".to_owned(),
         strategy: None,
+        deploy_jobs: None,
+        deploy_jobs_per_domain: None,
+        deploy_jobs_per_domain_max: None,
         sha: None,
         clean_mode: CiCleanMode::All,
         group: None,

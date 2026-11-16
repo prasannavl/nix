@@ -4,6 +4,7 @@
 //! `nixbot` shell script. Pure inventory, selection, and planning code remains
 //! separate from adapters that execute Git, Nix, SSH, systemd, and OpenTofu.
 
+pub(crate) mod admission;
 pub mod bootstrap;
 pub mod build;
 pub mod build_backend;
@@ -34,6 +35,7 @@ pub mod run_state;
 pub mod runtime;
 pub mod selection;
 pub mod signal;
+pub mod source_identity;
 pub mod system;
 pub mod system_identity;
 mod system_route;

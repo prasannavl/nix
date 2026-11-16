@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 use crate::progress::{VerboseView, command_reporter};
 use crate::terminal_mode;
 
+use crate::progress::{ConcurrencyChange, FeedbackKey};
+
 /// The live reader, or a dead handle once the last owner dropped it. Exactly one
 /// reader owns stdin at a time; further acquisitions share it, and the last drop
 /// restores the terminal so ownership can be re-acquired later in the process.
@@ -105,6 +107,7 @@ pub fn install() -> Option<Arc<InteractiveVerbose>> {
 /// One recognised verbose key from stdin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum VerboseKey {
+    Concurrency(ConcurrencyChange),
     /// `v`/`V`: show or hide the log section.
     Toggle,
     /// `ctrl-r`/`ctrl-e`: switch the section to a view, opening it if hidden.
@@ -138,6 +141,19 @@ impl VerboseInput {
     /// in the burst wins, and `v` collapses to a single toggle.
     fn record(&mut self, key: VerboseKey) {
         match key {
+            VerboseKey::Toggle => command_reporter().key_pressed(FeedbackKey::Verbose),
+            VerboseKey::View(VerboseView::Run) => command_reporter().key_pressed(FeedbackKey::Run),
+            VerboseKey::View(VerboseView::Errors) => {
+                command_reporter().key_pressed(FeedbackKey::Errors)
+            }
+            _ => {}
+        }
+        match key {
+            // Preserve order, including a + immediately followed by -; never
+            // collapse a burst into a net zero before the scheduler sees it.
+            VerboseKey::Concurrency(adjustment) => {
+                command_reporter().adjust_concurrency(adjustment)
+            }
             VerboseKey::Toggle => self.toggle = true,
             VerboseKey::View(view) => self.view = Some(view),
             VerboseKey::Lines(delta) => self.lines = self.lines.saturating_add(delta),
@@ -201,6 +217,7 @@ fn spawn_reader(stop: Arc<AtomicBool>) -> std::io::Result<std::thread::JoinHandl
         .spawn(move || {
             let mut alt = AltPrefix::default();
             while !stop.load(Ordering::Acquire) {
+                command_reporter().expire_input_feedback();
                 let mut input = if stdin_ready() {
                     drain_verbose_keys(&mut alt)
                 } else {
@@ -270,6 +287,8 @@ fn drain_verbose_keys(alt: &mut AltPrefix) -> VerboseInput {
 /// `ctrl-l` scroll by half-viewport pages, and `ctrl-g` returns to the newest.
 fn verbose_key(byte: u8) -> Option<VerboseKey> {
     match byte {
+        b'+' | b'=' => Some(VerboseKey::Concurrency(ConcurrencyChange::Increase)),
+        b'-' => Some(VerboseKey::Concurrency(ConcurrencyChange::Decrease)),
         0x05 => Some(VerboseKey::View(VerboseView::Errors)), // ctrl-e
         0x12 => Some(VerboseKey::View(VerboseView::Run)),    // ctrl-r
         0x0b => Some(VerboseKey::Lines(1)),                  // ctrl-k
@@ -304,6 +323,21 @@ fn alt_verbose_key(byte: u8) -> Option<VerboseKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrency_keys_change_admission_not_log_views() {
+        for key in [b'+', b'='] {
+            assert_eq!(
+                verbose_key(key),
+                Some(VerboseKey::Concurrency(ConcurrencyChange::Increase))
+            );
+        }
+        assert_eq!(
+            verbose_key(b'-'),
+            Some(VerboseKey::Concurrency(ConcurrencyChange::Decrease))
+        );
+        assert_eq!(verbose_key(b't'), None);
+    }
 
     #[test]
     fn verbose_keys_map_control_bytes_and_the_letter_v() {

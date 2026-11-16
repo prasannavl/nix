@@ -647,7 +647,6 @@ fn levels_and_domain_capacity_are_deterministic() {
         &SelectionOptions {
             groups: vec!["prod".to_owned()],
             hosts: Some("controller,parent,app-a,app-b,-excluded-dep".to_owned()),
-            deploy_jobs_per_domain: 1,
             ..SelectionOptions::default()
         },
     )
@@ -662,7 +661,6 @@ fn levels_and_domain_capacity_are_deterministic() {
             vec!["app-b".to_owned()],
         ]
     );
-    assert_eq!(selected.waves, selected.levels);
 }
 
 #[test]

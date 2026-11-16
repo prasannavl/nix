@@ -147,7 +147,7 @@ fn cached_plan_requires_a_valid_present_derivation() {
 #[test]
 fn local_and_development_build_commands_preserve_extra_args_logs_and_links() {
     let drv = NixStorePath::derivation("/nix/store/abc-system.drv").unwrap();
-    let args = BuildArgs::for_concurrency(4, true).unwrap();
+    let args = BuildArgs::for_parallelism(true, true);
     assert_eq!(args.nix_args, strings(&["--option", "eval-cache", "false"]));
 
     let local = local_build_command(
@@ -194,7 +194,7 @@ fn local_and_development_build_commands_preserve_extra_args_logs_and_links() {
 #[test]
 fn remote_build_is_unrooted_and_preserves_build_arguments() {
     let drv = NixStorePath::derivation("/nix/store/abc-system.drv").unwrap();
-    let args = BuildArgs::for_concurrency(2, true).unwrap();
+    let args = BuildArgs::for_parallelism(true, true);
     let command = remote_build_command("nix", &drv, &args);
     assert_eq!(command.args[0], "build");
     assert!(
@@ -385,12 +385,9 @@ fn host_key_signal_and_ordinary_failures_never_retry() {
 fn build_schedule_places_control_plane_hosts_behind_serial_barriers() {
     let schedule = BuildSchedule::new(
         strings(&["app-a", "app-b", "controller", "registry"]),
-        3,
         &strings(&["controller", "registry"]),
     )
-    .unwrap()
-    .with_build_logs(true);
-    assert_eq!(schedule.max_in_flight, 3);
+    .unwrap();
     assert_eq!(
         schedule.batches,
         [
@@ -399,28 +396,26 @@ fn build_schedule_places_control_plane_hosts_behind_serial_barriers() {
             BuildBatch::Serial("registry".to_owned()),
         ]
     );
-    assert_eq!(
-        schedule.build_args().nix_args,
-        strings(&["--option", "eval-cache", "false"])
-    );
-    assert!(schedule.build_args().build_logs);
-
     let serial = BuildSchedule::new(
         strings(&["controller", "registry", "app"]),
-        1,
         &strings(&["controller", "registry"]),
     )
     .unwrap();
     assert_eq!(
         serial.batches,
-        [BuildBatch::Parallel(strings(&[
-            "controller",
-            "registry",
-            "app"
-        ]))]
+        [
+            BuildBatch::Serial("controller".to_owned()),
+            BuildBatch::Serial("registry".to_owned()),
+            BuildBatch::Parallel(strings(&["app"])),
+        ]
     );
-    assert!(serial.build_args().nix_args.is_empty());
-    assert!(BuildSchedule::new(strings(&["app"]), 0, &[]).is_err());
+    assert!(BuildSchedule::new(strings(&["app", "app"]), &[]).is_err());
+    assert!(BuildArgs::for_parallelism(false, false).nix_args.is_empty());
+    assert_eq!(
+        BuildArgs::for_parallelism(true, true).nix_args,
+        strings(&["--option", "eval-cache", "false"])
+    );
+    assert!(BuildArgs::for_parallelism(true, true).build_logs);
 }
 
 #[test]

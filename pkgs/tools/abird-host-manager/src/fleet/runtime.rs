@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
+use abird_host_agent::build_executor::strategy::ExecutionStrategy;
 use anyhow::{Context, Result, bail};
 
 use super::inventory_overlay;
@@ -34,45 +35,13 @@ use super::run_state::{
     SystemProcessProbe,
 };
 use super::selection::Selection;
+use super::source_identity::SourceIdentity;
 use super::terraform::{
     AutomaticTfvars, BackendValues, plan_tofu_wrapper_command, validate_tofu_wrapper_invocation,
 };
+use crate::terminal_style::{TerminalStyle, Tone};
 
 pub const FLEET_VERSION: &str = "2026.07.23";
-pub const USAGE: &str = r#"Usage:
-  nixbot
-  nixbot <deps|check-deps|version>
-  nixbot repo sync
-  nixbot --list-hosts [selection/config options]
-  nixbot --list-groups [config options]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/PROJECT|check-bootstrap|clean> [options]
-  nixbot --clean[=auto|all] [--dry] [--ci-trigger]
-  nixbot tofu <tofu-args...>
-
-Canonical surface:
-  abird-host-manager fleet <hosts|groups|run|deploy|build|dev-build|check-bootstrap|clean>
-  abird-host-manager fleet terraform <all|dns|platform|apps|project NAME>
-  abird-host-manager fleet repo sync
-  abird-host-manager fleet owned <submit|status|attach|cancel|consume|retire|events|logs|help>
-  abird-host-manager fleet tofu <tofu-args...>
-
-Selection: --group, --host, --hosts, --require-hosts, --nix-config, --sha, --control-plane-first
-Build: --build-host, --build-host-deploy-mode, --build-cache-url,
-       --build-cache-host, --build-plan-jobs, --build-jobs, --build-logs
-       --strategy=auto|nix|agent (or NIXBOT_STRATEGY; CLI wins; agent is
-       experimental; requires installed caller/builder profiles)
-       auto currently selects nix
-Deploy: --goal, --deploy-jobs, --deploy-jobs-per-domain, --verify-jobs,
-        --bootstrap, --no-rollback, --no-verify, --restart-managed
-Repository: --dirty, --dirty-staged, --repo-url, --repo-path, --ci-trigger
-Behavior: --dry, --force, --skip-global-lock,
-          --config-override, --no-override, --route=auto|default|cf|ts,
-          --prefix-host-logs, --verbose, --quiet, --log-format
-Authentication: --user, --ssh-key, --operator-user, --operator-key,
-                --bootstrap-key, --known-hosts, --age-key-file,
-                --discover-keys, --config
-"#;
-
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
     pub nix_program: PathBuf,
@@ -259,15 +228,16 @@ fn reject_managed_overlay_before_dispatch(invocation: &Invocation) -> Result<()>
 }
 
 pub fn run(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
+    invocation.validate_execution_support()?;
     super::build_backend::run(invocation, runtime)
 }
 
 pub(super) fn run_nix(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
-    let strategy = if invocation.options.ci_trigger {
-        None // The controller, not the forwarding client, resolves availability.
-    } else {
-        invocation.require_nix_pipeline()?
-    };
+    invocation.validate_execution_support()?;
+    if !invocation.options.ci_trigger {
+        // The controller, not the forwarding client, resolves CI availability.
+        invocation.require_nix_pipeline()?;
+    }
     reject_managed_overlay_before_dispatch(&invocation)?;
     super::signal::install()?;
     // Seed the verbose section once, before any phase or host builds a view over
@@ -277,13 +247,6 @@ pub(super) fn run_nix(invocation: Invocation, runtime: RuntimeConfig) -> Result<
         return run_auxiliary_step(&invocation, "Trigger remote fleet command", || {
             run_ci_trigger(&invocation, &runtime)
         });
-    }
-    if let Some(strategy) = strategy {
-        FleetProgress::from_options(&invocation.options).message(format!(
-            "Build strategy: {} (requested {})",
-            strategy.as_str(),
-            invocation.options.strategy.as_str()
-        ));
     }
     let _mutex = action_mutex(&invocation)?;
     run_unlocked(invocation, runtime)
@@ -353,10 +316,7 @@ fn acquire_action_mutex(path: &Path, action: &str) -> Result<super::run_state::A
 
 fn run_unlocked(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
     match &invocation.action {
-        Action::Help => {
-            print!("{USAGE}");
-            Ok(())
-        }
+        Action::Help => super::cli::print_help(),
         Action::Deps | Action::CheckDeps => {
             run_auxiliary_phase(&invocation, Phase::DependencyCheck, || {
                 let missing = missing_programs(&runtime.search_paths)?;
@@ -495,6 +455,7 @@ fn action_name(action: &Action) -> &str {
         Action::ListGroups => "list-groups",
         Action::Run => "run",
         Action::Deploy => "deploy",
+        Action::Prepare => "prepare",
         Action::Build => "build",
         Action::DevBuild => "dev-build",
         Action::TerraformAll => "tf",
@@ -509,6 +470,7 @@ fn action_name(action: &Action) -> &str {
 }
 
 fn run_ci_trigger(invocation: &Invocation, runtime: &RuntimeConfig) -> Result<()> {
+    invocation.validate_execution_support()?;
     if matches!(
         invocation.action,
         Action::Help
@@ -526,6 +488,7 @@ fn run_ci_trigger(invocation: &Invocation, runtime: &RuntimeConfig) -> Result<()
             invocation.action
         );
     }
+    let (action, clean_mode) = ci_action(&invocation.action)?;
     let repository_root = repository_root(&runtime.git_program, &env::current_dir()?)?;
     let pinned_inventory = pin_inventory_input(
         invocation,
@@ -539,7 +502,6 @@ fn run_ci_trigger(invocation: &Invocation, runtime: &RuntimeConfig) -> Result<()
         true,
         &pinned_inventory,
     )?;
-    let (action, clean_mode) = ci_action(&invocation.action)?;
     let mut source =
         ProcessCiRepositorySource::new(runtime.git_program.clone(), ProcessCommandRunner);
     let prepared = prepare_ci_trigger(
@@ -646,6 +608,15 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
         inventory_overlay::OverlayPolicy::Allowed,
     )?;
     if matches!(invocation.action, Action::DevBuild) {
+        let identity = SourceIdentity::development(&runtime.git_program, &source_root)?;
+        announce_execution_metadata(
+            &invocation,
+            identity.display(),
+            invocation
+                .action
+                .uses_build_strategy()
+                .then_some(ExecutionStrategy::Nix),
+        );
         let state = allocate_run_state(&runtime)?;
         let inventory = load_inventory_from_pinned(
             &invocation,
@@ -664,7 +635,8 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
             Some(&state.layout().diagnostic_dir),
         )?;
         let started = Instant::now();
-        let action = super::engine::execute(&invocation, &mut effects);
+        let action = effects.execute();
+        let _ = identity.record(&state.layout().diagnostic_dir);
         effects.report_summary(&action, started.elapsed());
         drop(effects);
         return finish_run_state(state, action);
@@ -678,7 +650,13 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
         .inherited_worktree_root
         .clone()
         .unwrap_or(execution_root);
-    let staged_patch = staged_patch(&invocation, &source_root, &runtime)?;
+    // Re-exec consumes the already-patched execution tree, never stdin or a
+    // newly observed caller index for a second time.
+    let staged_patch = if inherited {
+        None
+    } else {
+        staged_patch(&invocation, &source_root, &runtime)?
+    };
     let configured_repo_url = if invocation.options.repo_url.is_none() && source_root.is_dir() {
         load_inventory_from_pinned(
             &invocation,
@@ -745,10 +723,20 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
                     &runtime,
                     &source_root,
                     &workspace.root,
+                    &workspace.commit,
                     &pinned_inventory,
                 )
             } else {
                 (|| {
+                    let identity = SourceIdentity::execution(&runtime.git_program, &workspace)?;
+                    announce_execution_metadata(
+                        &invocation,
+                        identity.display(),
+                        invocation
+                            .action
+                            .uses_build_strategy()
+                            .then_some(ExecutionStrategy::Nix),
+                    );
                     let inventory = load_inventory_from_pinned(
                         &invocation,
                         &runtime,
@@ -757,7 +745,6 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
                         &pinned_inventory,
                     )?;
                     let selection = select_inventory(&inventory, &invocation)?;
-                    print_hosts(&inventory, &selection);
                     let mut effects = NativeFleetEffects::new_with_diagnostics(
                         &invocation,
                         &runtime.nix_program,
@@ -766,8 +753,10 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
                         &selection,
                         Some(&diagnostic_dir),
                     )?;
+                    print_hosts(&inventory, &selection);
                     let started = Instant::now();
-                    let action = super::engine::execute(&invocation, &mut effects);
+                    let action = effects.execute();
+                    let _ = identity.record(&diagnostic_dir);
                     effects.report_summary(&action, started.elapsed());
                     action
                 })()
@@ -783,6 +772,22 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
         Err(error) => Err(error),
     };
     finish_run_state(state, action)
+}
+
+pub(crate) fn announce_execution_metadata(
+    invocation: &Invocation,
+    identity: &str,
+    strategy: Option<ExecutionStrategy>,
+) {
+    let progress = FleetProgress::from_options(&invocation.options);
+    progress.execution_source(identity);
+    if let Some(strategy) = strategy {
+        progress.message_field_with_metadata(
+            "Build strategy",
+            invocation.options.strategy.as_str(),
+            Some(strategy.as_str()),
+        );
+    }
 }
 
 /// Capture the interactive `v` verbose reader unless terminal input belongs to
@@ -812,18 +817,15 @@ fn reexec_from_workspace(
     runtime: &RuntimeConfig,
     source_root: &Path,
     workspace: &Path,
+    commit: &CommitSha,
     pinned_inventory: &PinnedInventoryInput,
 ) -> Result<()> {
-    if runtime.repo_reexec_arguments.is_empty() {
-        bail!("--use-repo-script requires the invoking binary to preserve its arguments");
-    }
-    let mut reexec_arguments = super::inventory_overlay::normalize_reexec_arguments(
+    let reexec_arguments = workspace_reexec_arguments(
+        invocation,
         &runtime.repo_reexec_arguments,
+        commit,
         pinned_inventory.overlay.as_deref(),
-    );
-    if let Some(strategy) = invocation.options.forwarded_strategy() {
-        reexec_arguments.extend(["--strategy".to_owned(), strategy.wire_name().to_owned()]);
-    }
+    )?;
     let executor_kind = if inventory_routing::managed_execution_context()? {
         "managed"
     } else {
@@ -852,6 +854,28 @@ fn reexec_from_workspace(
         return Err(super::signal::Interrupted::from_status(code).into());
     }
     bail!("repository worktree fleet command failed with {status}")
+}
+
+fn workspace_reexec_arguments(
+    invocation: &Invocation,
+    original: &[String],
+    commit: &CommitSha,
+    overlay: Option<&Path>,
+) -> Result<Vec<String>> {
+    if original.is_empty() {
+        bail!("--use-repo-script requires the invoking binary to preserve its arguments");
+    }
+    let mut arguments = inventory_overlay::normalize_reexec_arguments(original, overlay);
+    // Last value wins: pin the resolved workspace, not the caller's branch or
+    // absent --sha. Explicit forwarding also covers environment-only maxima.
+    arguments.extend(["--sha".to_owned(), commit.as_str().to_owned()]);
+    if let Some(strategy) = invocation.options.forwarded_strategy() {
+        arguments.extend(["--strategy".to_owned(), strategy.wire_name().to_owned()]);
+    }
+    if let Some(max) = invocation.options.deploy_jobs_per_domain_max {
+        arguments.extend(["--deploy-jobs-per-domain-max".to_owned(), max.to_string()]);
+    }
+    Ok(arguments)
 }
 
 fn repository_lock(git_program: &Path, root: &Path, timeout_seconds: u64) -> Result<DirectoryLock> {
@@ -1290,30 +1314,119 @@ fn print_groups(inventory: &Inventory) {
 }
 
 fn print_hosts(inventory: &Inventory, selection: &Selection) {
+    let style = TerminalStyle::for_stderr();
     eprintln!("Hosts:");
-    for name in &selection.ordered {
-        let host = &inventory.hosts[name];
+    for line in host_tree_lines(inventory, &selection.ordered, style) {
+        eprintln!("{line}");
+    }
+}
+
+/// Render the selected inventory as its actual parent tree. Parentage is
+/// structural; endpoint/routing facts remain compact secondary metadata.
+fn host_tree_lines(inventory: &Inventory, ordered: &[String], style: TerminalStyle) -> Vec<String> {
+    let selected = ordered.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let mut roots = Vec::new();
+    let mut children = BTreeMap::<&str, Vec<&str>>::new();
+    for name in ordered.iter().map(String::as_str) {
+        let parent = inventory.hosts[name]
+            .parent
+            .as_deref()
+            .filter(|parent| selected.contains(parent));
+        if let Some(parent) = parent {
+            children.entry(parent).or_default().push(name);
+        } else {
+            roots.push(name);
+        }
+    }
+
+    let mut renderer = HostTreeRenderer {
+        inventory,
+        children,
+        style,
+        visited: BTreeSet::new(),
+        lines: Vec::with_capacity(ordered.len()),
+    };
+    for root in roots {
+        renderer.render_root(root);
+    }
+    // Inventory validation should make every selected node reachable from a
+    // root, but never silently omit a host if malformed retained input slips in.
+    for name in ordered.iter().map(String::as_str) {
+        if !renderer.visited.contains(name) {
+            renderer.render_root(name);
+        }
+    }
+    renderer.lines
+}
+
+struct HostTreeRenderer<'a> {
+    inventory: &'a Inventory,
+    children: BTreeMap<&'a str, Vec<&'a str>>,
+    style: TerminalStyle,
+    visited: BTreeSet<&'a str>,
+    lines: Vec<String>,
+}
+
+impl<'a> HostTreeRenderer<'a> {
+    fn render_root(&mut self, name: &'a str) {
+        if !self.visited.insert(name) {
+            return;
+        }
+        self.render_line("  - ", name);
+        self.render_children(name, "    ");
+    }
+
+    fn render_child(&mut self, name: &'a str, prefix: &str, last: bool) {
+        if !self.visited.insert(name) {
+            return;
+        }
+        self.render_line(
+            &format!("{prefix}{}", if last { "└─ " } else { "├─ " }),
+            name,
+        );
+        let child_prefix = format!("{prefix}{}", if last { "   " } else { "│  " });
+        self.render_children(name, &child_prefix);
+    }
+
+    fn render_children(&mut self, name: &'a str, prefix: &str) {
+        let Some(child_nodes) = self.children.get(name).cloned() else {
+            return;
+        };
+        for (index, child) in child_nodes.iter().copied().enumerate() {
+            self.render_child(child, prefix, index + 1 == child_nodes.len());
+        }
+    }
+
+    fn render_line(&mut self, guide: &str, name: &str) {
+        let metadata = self
+            .metadata(name)
+            .map(|metadata| self.style.paint(Tone::Muted, format!(" ({metadata})")))
+            .unwrap_or_default();
+        self.lines.push(format!(
+            "{}{}{}",
+            self.style.paint(Tone::Muted, guide),
+            self.style.paint_host(name),
+            metadata
+        ));
+    }
+
+    fn metadata(&self, name: &str) -> Option<String> {
+        let host = &self.inventory.hosts[name];
         let target = host.target.as_deref().unwrap_or(name);
-        let mut annotations = vec![format!("target: {target}")];
-        if host.deploy != super::inventory::DeployMode::Strict {
-            annotations.push(format!("deploy: {:?}", host.deploy).to_ascii_lowercase());
-        }
-        if host.wait != 0 {
-            annotations.push(format!("wait: {}s", host.wait));
-        }
-        if let Some(parent) = &host.parent {
-            annotations.push(format!("parent: {parent}"));
-        }
         let proxy = host.proxy_jump.as_deref().or_else(|| {
             host.proxy_command
                 .as_deref()
                 .filter(|command| !command.is_empty())
                 .map(|_| "proxy-command")
         });
-        let via = proxy
-            .map(|proxy| format!(" via {proxy}"))
-            .unwrap_or_default();
-        eprintln!("  - {name} ({}){via}", annotations.join(", "));
+        let mut fields = Vec::with_capacity(2);
+        if target != name {
+            fields.push(target.to_owned());
+        }
+        if let Some(proxy) = proxy {
+            fields.push(format!("via {proxy}"));
+        }
+        (!fields.is_empty()).then(|| fields.join(" "))
     }
 }
 
@@ -1322,7 +1435,55 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::symlink;
 
-    use super::same_file;
+    use super::{TerminalStyle, host_tree_lines, same_file};
+
+    #[test]
+    fn host_tree_makes_parentage_structural_and_keeps_route_metadata_compact() {
+        use super::super::inventory::{Host, Inventory};
+
+        let mut inventory = Inventory::default();
+        inventory.hosts.insert("root".into(), Host::default());
+        inventory.hosts.insert(
+            "child".into(),
+            Host {
+                target: Some("10.0.0.2".into()),
+                parent: Some("root".into()),
+                proxy_jump: Some("root".into()),
+                ..Host::default()
+            },
+        );
+        inventory.hosts.insert(
+            "grand".into(),
+            Host {
+                target: Some("10.0.0.3".into()),
+                parent: Some("child".into()),
+                proxy_jump: Some("child".into()),
+                ..Host::default()
+            },
+        );
+        inventory.hosts.insert(
+            "other".into(),
+            Host {
+                target: Some("10.0.0.4".into()),
+                ..Host::default()
+            },
+        );
+        let ordered = ["root", "child", "grand", "other"].map(str::to_owned);
+
+        assert_eq!(
+            host_tree_lines(
+                &inventory,
+                &ordered,
+                TerminalStyle::from_capabilities(false, false)
+            ),
+            [
+                "  - root",
+                "    └─ child (10.0.0.2 via root)",
+                "       └─ grand (10.0.0.3 via child)",
+                "  - other (10.0.0.4)",
+            ]
+        );
+    }
 
     #[test]
     fn relative_inventory_root_is_resolved_before_explicit_context() {
@@ -1432,6 +1593,42 @@ mod tests {
 
         assert!(super::ensure_explicit_named_route_effective(&inventory, ["internal"]).is_err());
         super::ensure_explicit_named_route_effective(&inventory, ["internal", "gateway"]).unwrap();
+    }
+
+    #[test]
+    fn reexec_pins_workspace_commit_and_environment_maximum() {
+        use super::super::cli::Options;
+        let invocation = super::Invocation {
+            action: super::Action::Prepare,
+            options: Options {
+                strategy: abird_host_agent::build_executor::strategy::Strategy::Nix,
+                strategy_explicit: true,
+                deploy_jobs_per_domain_max: Some(16),
+                ..Options::default()
+            },
+        };
+        let commit = super::CommitSha::parse("a".repeat(40)).unwrap();
+        let arguments = super::workspace_reexec_arguments(
+            &invocation,
+            &[
+                "prepare".into(),
+                "--sha=old-branch".into(),
+                "--use-repo-script".into(),
+            ],
+            &commit,
+            None,
+        )
+        .unwrap();
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["--strategy", "legacy"])
+        );
+        let forwarded = super::Invocation::parse_legacy(arguments).unwrap();
+        assert_eq!(forwarded.action, super::Action::Prepare);
+        assert_eq!(forwarded.options.sha.as_deref(), Some(commit.as_str()));
+        assert_eq!(forwarded.options.deploy_jobs_per_domain_max, Some(16));
+        assert!(super::workspace_reexec_arguments(&invocation, &[], &commit, None).is_err());
     }
 
     #[test]

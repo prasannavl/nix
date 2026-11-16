@@ -748,6 +748,10 @@ pub enum DirtyForwarding {
 pub struct CiTriggerRequest {
     pub action: String,
     pub strategy: Option<abird_host_agent::build_executor::strategy::Strategy>,
+    /// Forward concurrency only when requested; old invocations keep exact argv.
+    pub deploy_jobs: Option<usize>,
+    pub deploy_jobs_per_domain: Option<usize>,
+    pub deploy_jobs_per_domain_max: Option<usize>,
     pub sha: Option<CommitSha>,
     pub clean_mode: CiCleanMode,
     pub group: Option<String>,
@@ -774,6 +778,25 @@ pub struct CiTriggerPlan {
 pub fn plan_ci_trigger(request: &CiTriggerRequest) -> Result<CiTriggerPlan> {
     validate_ci_action(&request.action)?;
     let clean = request.action == "clean";
+    for jobs in [
+        request.deploy_jobs,
+        request.deploy_jobs_per_domain,
+        request.deploy_jobs_per_domain_max,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        anyhow::ensure!(jobs > 0, "CI job limits must be positive");
+    }
+    if let (Some(initial), Some(max)) = (
+        request.deploy_jobs_per_domain,
+        request.deploy_jobs_per_domain_max,
+    ) {
+        anyhow::ensure!(
+            max >= initial,
+            "CI per-domain maximum is below the initial job limit"
+        );
+    }
     if clean && !matches!(request.dirty, DirtyForwarding::Clean) {
         bail!("clean CI trigger does not accept dirty repository forwarding");
     }
@@ -835,6 +858,18 @@ pub fn plan_ci_trigger(request: &CiTriggerRequest) -> Result<CiTriggerPlan> {
     if let Some(strategy) = request.strategy {
         argv.extend(["--strategy".to_owned(), strategy.wire_name().to_owned()]);
     }
+    for (flag, value) in [
+        ("--deploy-jobs", request.deploy_jobs),
+        ("--deploy-jobs-per-domain", request.deploy_jobs_per_domain),
+        (
+            "--deploy-jobs-per-domain-max",
+            request.deploy_jobs_per_domain_max,
+        ),
+    ] {
+        if let Some(value) = value {
+            argv.extend([flag.to_owned(), value.to_string()]);
+        }
+    }
     match request.log_format {
         CiLogFormat::Auto => {}
         CiLogFormat::GithubActions => {
@@ -895,7 +930,10 @@ pub fn plan_ci_trigger(request: &CiTriggerRequest) -> Result<CiTriggerPlan> {
     })
 }
 
-fn validate_ci_action(action: &str) -> Result<()> {
+pub(super) fn validate_ci_action(action: &str) -> Result<()> {
+    if action == "prepare" {
+        bail!("prepare is not supported through --ci-trigger; run it directly on the controller");
+    }
     let supported = matches!(
         action,
         "run"

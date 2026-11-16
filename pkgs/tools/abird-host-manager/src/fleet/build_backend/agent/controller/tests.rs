@@ -97,6 +97,21 @@ fn invocation() -> Invocation {
     .unwrap()
 }
 
+#[test]
+fn native_preparation_preserves_maximum_for_inventory_validation() {
+    let mut invocation = invocation();
+    invocation.options.deploy_jobs_per_domain_max = Some(16);
+    let projected = preparation_invocation(&invocation);
+    assert_eq!(projected.options.deploy_jobs_per_domain_max, Some(16));
+}
+
+#[test]
+fn installed_prepare_rejects_before_profile_or_signal_effects() {
+    let invocation = Invocation::parse_legacy(["prepare", "--strategy=agent"]).unwrap();
+    let error = run_installed(invocation).unwrap_err();
+    assert!(error.to_string().contains("prepare is not supported"));
+}
+
 fn source() -> CapturedSource {
     let revision = CommitSha::parse("a".repeat(40)).unwrap();
     CapturedSource::new(

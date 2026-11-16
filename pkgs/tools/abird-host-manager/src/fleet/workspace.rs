@@ -40,11 +40,10 @@ pub fn prepare_execution_workspace<R: CommandRunner>(
                 request.execution_root.display()
             );
         }
-        let commit = request
-            .target
-            .clone()
-            .context("inherited execution worktree requires its resolved commit")
-            .and_then(CommitSha::parse)?;
+        let commit = manager.resolve_commit(&request.execution_root, "HEAD")?;
+        if let Some(target) = &request.target {
+            manager.validate_staged_base(&request.execution_root, target, &commit)?;
+        }
         return Ok(ExecutionWorkspace {
             source_root: request.source_root.clone(),
             root: request.execution_root.clone(),
@@ -83,7 +82,7 @@ pub fn prepare_execution_workspace<R: CommandRunner>(
 
     let apply = (|| -> Result<()> {
         if let Some(patch) = &request.staged_patch {
-            manager.validate_staged_base(&request.source_root, target, &patch.base)?;
+            manager.validate_staged_base(&detached.path, detached.commit.as_str(), &patch.base)?;
             manager.apply_staged_patch(&detached.path, patch)?;
         }
         Ok(())

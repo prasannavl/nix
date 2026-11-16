@@ -404,6 +404,7 @@ pub fn preparation_invocation(invocation: &Invocation) -> Invocation {
             build_plan_jobs: source.build_plan_jobs,
             build_jobs: source.build_jobs,
             deploy_jobs_per_domain: source.deploy_jobs_per_domain,
+            deploy_jobs_per_domain_max: source.deploy_jobs_per_domain_max,
             deploy_jobs_per_domain_explicit: source.deploy_jobs_per_domain_explicit,
             dirty: source.dirty,
             dirty_staged: source.dirty_staged,
@@ -940,6 +941,7 @@ fn admit_with_service(
 /// Normal native entry, reached only after the unchanged availability guard.
 /// No legacy workspace/inventory/source preparation occurs before this parent.
 pub(in crate::fleet) fn run_installed(invocation: Invocation) -> Result<()> {
+    invocation.validate_execution_support()?;
     crate::fleet::signal::install()?;
     // Reject what this backend cannot complete before any lock/state effect.
     // The forwarding operator has already resolved the CI revision/patch.
@@ -1452,6 +1454,18 @@ impl Controller {
             .context("unknown consumer attempt")?
             .request
             .controller())
+    }
+
+    /// Presentation from the original captured planning, never caller Git state.
+    pub(crate) fn source_identity(
+        &self,
+        attempt: &str,
+    ) -> Result<crate::fleet::source_identity::SourceIdentity> {
+        let planning = self
+            .run
+            .retained_planning(attempt)?
+            .context("planning not retained")?;
+        crate::fleet::source_identity::SourceIdentity::retained(&planning.request.source)
     }
 
     /// The caller's original invocation, captured before admission.

@@ -524,7 +524,7 @@ esac
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "");
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
-        "Hosts:\n  - parent (target: 10.0.0.1)\n  - app (target: 10.0.0.2, parent: parent)\n"
+        "Hosts:\n  - parent (10.0.0.1)\n    └─ app (10.0.0.2)\n"
     );
 }
 
@@ -570,15 +570,15 @@ esac
 
     assert_eq!(
         list("default"),
-        "Hosts:\n  - edge (target: 10.9.9.9)\n  - guest (target: 10.0.0.20) via edge\n"
+        "Hosts:\n  - edge (10.9.9.9)\n  - guest (10.0.0.20 via edge)\n"
     );
     assert_eq!(
         list("cf"),
-        "Hosts:\n  - edge (target: edge.example) via proxy-command\n  - guest (target: 10.0.0.20) via edge\n"
+        "Hosts:\n  - edge (edge.example via proxy-command)\n  - guest (10.0.0.20 via edge)\n"
     );
     assert_eq!(
         list("ts"),
-        "Hosts:\n  - edge (target: edge)\n  - guest (target: 10.0.0.20) via edge\n"
+        "Hosts:\n  - edge\n  - guest (10.0.0.20 via edge)\n"
     );
 
     let inherited = Command::new(env!("CARGO_BIN_EXE_nixbot"))
@@ -598,7 +598,7 @@ esac
     );
     assert_eq!(
         String::from_utf8(inherited.stderr).unwrap(),
-        "Hosts:\n  - edge (target: edge.example) via proxy-command\n  - guest (target: 10.0.0.20) via edge\n"
+        "Hosts:\n  - edge (edge.example via proxy-command)\n  - guest (10.0.0.20 via edge)\n"
     );
 }
 

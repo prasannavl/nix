@@ -3,20 +3,24 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::progress::{ProgressReporter, command_reporter, format_duration};
+use crate::progress::{HostOperation, ProgressReporter, command_reporter, format_duration};
 use crate::terminal_style::Tone;
 
-use super::cli::{LogFormat, Options};
+use super::cli::{Action, LogFormat, Options};
 use super::host_runtime::{ProcessCompletion, ProcessRecorder, ProcessStream};
+use super::orchestration::{
+    FinalHostState, HostMilestone, HostQualifier, HostStage, PhaseResult, PhaseResultKind,
+};
 use super::plan::Phase;
 use super::task::{StepSpecSource, Task, TaskOutcome, TaskScope};
 
+static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 static FLEET_FAILURE_PRESENTED: AtomicBool = AtomicBool::new(false);
 static FLEET_WARNING_PRESENTED: AtomicBool = AtomicBool::new(false);
 
@@ -54,10 +58,82 @@ impl WorkflowResult {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostStatus {
+    BuildDone,
+    BuildSkip,
+    BuildBlocked,
+    SnapshotDone,
+    SnapshotSkip,
+    SnapshotUnavailable,
+    AcquireDone,
+    AcquireSkip,
+    AcquireBlocked,
+    AcquireDeferred,
+    DeployDone,
+    DeploySkip,
+    DeployBlocked,
+    HealthDone,
+    HealthSkip,
+    HealthBlocked,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostStatusKind {
+    Done,
+    Skip,
+    Warning,
+}
+
+impl HostStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::BuildDone => "build done",
+            Self::BuildSkip => "build skip",
+            Self::BuildBlocked => "build blocked",
+            Self::SnapshotDone => "snapshot done",
+            Self::SnapshotSkip => "snapshot skip",
+            Self::SnapshotUnavailable => "snapshot unavailable",
+            Self::AcquireDone => "acquire done",
+            Self::AcquireSkip => "acquire skip",
+            Self::AcquireBlocked => "acquire blocked",
+            Self::AcquireDeferred => "acquire deferred",
+            Self::DeployDone => "deploy done",
+            Self::DeploySkip => "deploy skip",
+            Self::DeployBlocked => "deploy blocked",
+            Self::HealthDone => "health done",
+            Self::HealthSkip => "health skip",
+            Self::HealthBlocked => "health blocked",
+        }
+    }
+
+    fn kind(self) -> HostStatusKind {
+        match self {
+            Self::BuildDone
+            | Self::SnapshotDone
+            | Self::AcquireDone
+            | Self::DeployDone
+            | Self::HealthDone => HostStatusKind::Done,
+            Self::BuildSkip
+            | Self::SnapshotSkip
+            | Self::AcquireSkip
+            | Self::DeploySkip
+            | Self::HealthSkip => HostStatusKind::Skip,
+            Self::BuildBlocked
+            | Self::SnapshotUnavailable
+            | Self::AcquireBlocked
+            | Self::AcquireDeferred
+            | Self::DeployBlocked
+            | Self::HealthBlocked => HostStatusKind::Warning,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct FleetProgress {
     reporter: ProgressReporter,
     prefix_process_logs: bool,
+    auto_prefix: bool,
     github_actions: bool,
     diagnostics: Option<Arc<DiagnosticSink>>,
     build_heartbeat: Option<Duration>,
@@ -74,6 +150,7 @@ impl FleetProgress {
     /// of those may close a section the operator opened or discard its history.
     pub fn begin_command(options: &Options) {
         let reporter = command_reporter();
+        reporter.begin_workflow();
         reporter.reset_verbose_history();
         reporter.set_verbose_open(options.verbose || options.build_logs);
     }
@@ -87,18 +164,57 @@ impl FleetProgress {
             std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true"),
         );
         let reporter = if github_actions {
-            command_reporter().clone().without_color()
+            command_reporter().clone().without_terminal()
         } else {
             command_reporter().clone().with_recent_updates(10)
         };
         Self {
             reporter,
             prefix_process_logs: options.prefix_host_logs,
+            auto_prefix: !options.prefix_host_logs_explicit,
             github_actions,
             diagnostics: None,
             build_heartbeat: None,
             activation_heartbeat: None,
         }
+    }
+
+    pub(crate) fn concurrency_handler(
+        &self,
+        handler: impl Fn(crate::progress::ConcurrencyChange) -> bool + Send + Sync + 'static,
+    ) -> crate::progress::ConcurrencyGuard {
+        self.reporter.concurrency_handler(handler)
+    }
+
+    fn prefix_logs(&self) -> bool {
+        self.prefix_process_logs
+            || (self.auto_prefix && self.reporter.host_log_attribution_needed())
+    }
+
+    /// Exact source identity comes from the workflow's source authority and is
+    /// emitted once as invocation metadata, never repeated in phase headers.
+    pub fn execution_source(&self, identity: &str) {
+        self.reporter
+            .message_field("Source", safe_host_summary(identity));
+    }
+
+    /// Actual scheduler slots, not the number of hosts displaying a running step.
+    pub fn phase_admission(
+        &self,
+        running: usize,
+        target: usize,
+        adjustable: bool,
+        constraint: Option<&str>,
+    ) {
+        let constraint = constraint.map(safe_host_summary);
+        self.reporter
+            .phase_admission(running, target, adjustable, constraint.as_deref());
+    }
+
+    /// Hold for one admitted operation, including readiness, retries and settling.
+    /// Drop before requeueing a separately admitted operation (eval → build).
+    pub fn host_operation(&self, host: &str) -> HostOperation {
+        self.reporter.host_operation(host)
     }
 
     pub fn with_heartbeat_intervals(mut self, build_seconds: u64, activation_seconds: u64) -> Self {
@@ -118,10 +234,18 @@ impl FleetProgress {
         self.reporter.begin_task_scope();
         if self.github_actions {
             self.reporter.message(format!("::group::{label}"));
+            self.reporter.started_silent(label);
         } else {
             self.reporter.started(label);
-            self.reporter.begin_host_dashboard(hosts);
         }
+        let stage = compact_phase_label(phase).to_owned();
+        let title = match position {
+            Some((current, total)) => {
+                format!("{} · phase {current}/{total}", sentence_title(&stage))
+            }
+            None => sentence_title(&stage),
+        };
+        self.reporter.begin_fleet_dashboard(hosts, &title);
     }
 
     pub fn phase_schedule(
@@ -145,12 +269,23 @@ impl FleetProgress {
 
     pub fn host_unconfirmed(&self, host: &str, summary: impl Into<String>) {
         self.reporter
-            .host_unconfirmed(host, safe_error_excerpt(&summary.into()));
+            .host_unconfirmed(host, safe_host_summary(&summary.into()));
     }
 
     pub fn host_skipped(&self, host: &str, summary: impl Into<String>) {
         self.reporter
             .host_skipped(host, safe_host_summary(&summary.into()));
+    }
+
+    pub fn host_status(&self, host: &str, status: HostStatus) {
+        match status.kind() {
+            HostStatusKind::Done => {
+                self.reporter
+                    .host_finished(host, true, None, status.label());
+            }
+            HostStatusKind::Skip => self.reporter.host_skipped(host, status.label()),
+            HostStatusKind::Warning => self.reporter.host_warning(host, status.label()),
+        }
     }
 
     pub fn phase_completed(
@@ -160,13 +295,15 @@ impl FleetProgress {
         position: Option<(usize, usize)>,
         elapsed: Duration,
     ) {
+        self.record_phase(phase, "done", "✓", Tone::Success, elapsed);
         let label = phase_label(phase, hosts, position);
         if self.github_actions {
+            self.reporter.end_silent_phase();
             self.reporter
                 .message(format!("✓ {label}  {}", format_duration(elapsed)));
             self.reporter.message("::endgroup::");
         } else {
-            self.reporter.completed(label, elapsed);
+            self.reporter.host_phase_completed(label, elapsed);
         }
         self.reporter.end_task_scope();
     }
@@ -179,6 +316,7 @@ impl FleetProgress {
         elapsed: Duration,
         error: &str,
     ) {
+        self.record_phase(phase, "failed", "✗", Tone::Failure, elapsed);
         let error = safe_error_excerpt(error);
         let label = if self.reporter.shows_recent_updates() {
             format!(
@@ -200,6 +338,7 @@ impl FleetProgress {
                 github_command_value(&error)
             ));
             self.reporter.report_failure_output();
+            self.reporter.end_silent_phase();
             self.reporter.message("::endgroup::");
         } else {
             self.reporter.fail_active(label, &error);
@@ -216,6 +355,7 @@ impl FleetProgress {
         elapsed: Duration,
         warning: &str,
     ) {
+        self.record_phase(phase, "warnings", "◇", Tone::Warning, elapsed);
         let warning = safe_error_excerpt(warning);
         let label = format!(
             "{} · completed with warnings · elapsed {}",
@@ -229,6 +369,7 @@ impl FleetProgress {
                 github_command_value(&warning)
             ));
             self.reporter.report_failure_output();
+            self.reporter.end_silent_phase();
             self.reporter.message("::endgroup::");
         } else {
             self.reporter.warning_active(label, &warning);
@@ -244,6 +385,7 @@ impl FleetProgress {
         position: Option<(usize, usize)>,
         elapsed: Duration,
     ) {
+        self.record_phase(phase, "interrupted", "⊘", Tone::Warning, elapsed);
         let label = if self.reporter.shows_recent_updates() {
             format!(
                 "{} · interrupted · elapsed {}",
@@ -259,11 +401,25 @@ impl FleetProgress {
         };
         if self.github_actions {
             self.reporter.message(format!("::warning::{label}"));
+            self.reporter.end_silent_phase();
             self.reporter.message("::endgroup::");
         } else {
             self.reporter.interrupt_active(label);
         }
         self.reporter.end_task_scope();
+    }
+
+    fn record_phase(
+        &self,
+        phase: Phase,
+        status: &str,
+        marker: &'static str,
+        tone: Tone,
+        elapsed: Duration,
+    ) {
+        let key = compact_phase_label(phase);
+        self.reporter
+            .record_host_phase(key, &format!("{key} {status}"), marker, tone, elapsed);
     }
 
     pub fn step_started(&self, label: impl Into<String>) {
@@ -293,89 +449,81 @@ impl FleetProgress {
         self.reporter.message(message);
     }
 
+    pub fn message_field_with_metadata(
+        &self,
+        label: &str,
+        value: impl std::fmt::Display,
+        metadata: Option<impl std::fmt::Display>,
+    ) {
+        self.reporter
+            .message_field_with_metadata(label, value, metadata);
+    }
+
     pub fn workflow_summary<'a>(
         &self,
-        action: &str,
-        phases: impl IntoIterator<Item = (&'a str, &'a str)>,
-        hosts: impl IntoIterator<Item = (&'a str, &'a str)>,
+        action: &Action,
+        phases: impl IntoIterator<Item = (Phase, Option<PhaseResult>)>,
+        hosts: impl IntoIterator<Item = (&'a str, FinalHostState)>,
         terraform: impl IntoIterator<Item = (&'a str, &'a str)>,
         result: WorkflowResult,
         elapsed: Duration,
     ) {
+        let elapsed = self.reporter.workflow_elapsed().unwrap_or(elapsed);
+        self.reporter.finish_workflow();
         let result = result.label();
-        let heading = if self.reporter.shows_recent_updates() {
-            format!(
-                "Summary · {action} · {result} · total elapsed {}",
-                format_duration(elapsed)
-            )
+        let heading = format!("Summary · {} · {result}", summary_action_label(action));
+        let metadata = [if self.reporter.shows_recent_updates() {
+            format!("total elapsed {}", format_duration(elapsed))
         } else {
-            format!(
-                "Summary · {action} · {result} · {}",
-                format_duration(elapsed)
-            )
-        };
+            format_duration(elapsed)
+        }];
         if self.github_actions {
-            self.reporter.message(format!("::notice::{heading}"));
+            self.reporter
+                .message(format!("::notice::{heading} · {}", metadata.join(" · ")));
         } else {
-            self.reporter.heading(heading);
+            self.reporter.heading_with_metadata(heading, metadata);
         }
         let phases = phases.into_iter().collect::<Vec<_>>();
         if !phases.is_empty() {
             self.reporter.message("Phases:");
         }
-        for (phase, status) in phases {
-            let tone = if status.starts_with("FAIL") {
-                Tone::Failure
-            } else if status.starts_with("WARN") || status.starts_with("interrupted") {
-                Tone::Warning
-            } else if status.starts_with("ok") {
-                Tone::Success
-            } else {
-                Tone::Neutral
-            };
-            self.reporter
-                .message_primary_with_metadata("  ", tone, phase, format!(" · {status}"));
+        for &(phase, result) in &phases {
+            let (tone, status) = phase_summary_status(result);
+            let counts = self
+                .reporter
+                .phase_outcome_counts(compact_phase_label(phase))
+                .map(|counts| format!(" · {counts}"))
+                .unwrap_or_default();
+            self.reporter.message_primary_with_metadata(
+                "  ",
+                tone,
+                phase_label(phase, 0, None),
+                format!(" · {status}{counts}"),
+            );
         }
         let hosts = hosts.into_iter().collect::<Vec<_>>();
-        if !hosts.is_empty() {
+        let host_names = hosts.iter().map(|(host, _)| *host).collect::<Vec<_>>();
+        let mut durations = self.reporter.host_duration_summaries(&host_names);
+        if !hosts.is_empty() || !durations.is_empty() {
             self.reporter.message("Hosts:");
         }
-        for (host, status) in hosts {
-            if status.contains("FAIL")
-                || status.contains("failed")
-                || status.contains("rollback failed")
-            {
-                self.reporter.message_primary_with_metadata(
-                    "  ",
-                    Tone::Failure,
-                    format!("{host} · {status}"),
-                    "",
-                );
-            } else if status.contains("skip") || status.contains("optional") {
-                let tone = if status.contains("optional") {
-                    Tone::Warning
-                } else {
-                    Tone::Neutral
-                };
-                self.reporter.message_primary_with_metadata(
-                    "  ",
-                    tone,
-                    format!("{host} · {status}"),
-                    "",
-                );
-            } else {
-                let tone = if matches!(status, "ok" | "built") {
-                    Tone::Success
-                } else {
-                    Tone::Neutral
-                };
-                self.reporter.message_primary_with_metadata(
-                    format!("  {host} · "),
-                    tone,
-                    status,
-                    "",
-                );
-            }
+        for &(host, status) in &hosts {
+            let display = host_summary_status(action, status);
+            self.reporter.message_host_summary(
+                host,
+                display
+                    .parts
+                    .into_iter()
+                    .flatten()
+                    .map(|part| (part.tone, part.text)),
+                durations.remove(host).as_deref(),
+                display.muted_row,
+            );
+        }
+        // Keep observations outside the final selection without inventing a status.
+        for (host, timing) in durations {
+            self.reporter
+                .message_host_summary(&host, std::iter::empty(), Some(&timing), false);
         }
         let terraform = terraform.into_iter().collect::<Vec<_>>();
         if !terraform.is_empty() {
@@ -394,7 +542,7 @@ impl FleetProgress {
                 subject,
                 None,
                 line,
-                self.prefix_process_logs,
+                self.prefix_logs(),
                 true,
             );
         }
@@ -414,7 +562,7 @@ impl FleetProgress {
         Arc::new(HostScope {
             reporter: self.reporter.clone(),
             target,
-            prefix: self.prefix_process_logs,
+            prefix: self.prefix_logs(),
             build_heartbeat: self.build_heartbeat,
             activation_heartbeat: self.activation_heartbeat,
         })
@@ -474,6 +622,11 @@ impl TaskScope for HostScope {
             target: self.target.clone(),
             heartbeat,
             prefix: self.prefix,
+            key: format!(
+                "{}#{}",
+                spec.name,
+                NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed)
+            ),
             name: spec.name,
             running: spec.running,
             done: spec.done,
@@ -490,6 +643,7 @@ pub struct ProgressTask {
     target: TaskTarget,
     heartbeat: Option<Duration>,
     prefix: bool,
+    key: String,
     name: String,
     running: String,
     done: String,
@@ -528,12 +682,12 @@ impl ProgressTask {
     /// Retain and render one semantic line for this step.
     fn publish_line(&self, line: String) {
         self.reporter
-            .task_output(self.name.clone(), &self.running, line.clone());
+            .task_output(self.key.clone(), &self.running, line.clone());
         match &self.target {
-            TaskTarget::Host(host) => self.reporter.host_task_output(host, &self.name, line),
+            TaskTarget::Host(host) => self.reporter.host_task_output(host, &self.key, line),
             TaskTarget::Phase => {
                 self.reporter
-                    .task_live_output(self.name.clone(), &self.running, line)
+                    .task_live_output(self.key.clone(), &self.running, line)
             }
         }
     }
@@ -548,11 +702,11 @@ impl Task for ProgressTask {
         match &self.target {
             TaskTarget::Host(host) => {
                 self.reporter
-                    .host_task_started(host, &self.name, &self.running, self.heartbeat)
+                    .host_task_started(host, &self.key, &self.running, self.heartbeat)
             }
             TaskTarget::Phase => self
                 .reporter
-                .task_started(self.name.clone(), self.running.clone()),
+                .task_started(self.key.clone(), self.running.clone()),
         }
     }
 
@@ -583,11 +737,11 @@ impl Task for ProgressTask {
         match &self.target {
             TaskTarget::Host(host) => {
                 self.reporter
-                    .host_task_heartbeat(host, &self.name, &self.running)
+                    .host_task_heartbeat(host, &self.key, &self.running)
             }
             TaskTarget::Phase => {
                 self.reporter
-                    .task_heartbeat(self.name.clone(), &self.running, elapsed)
+                    .task_heartbeat(self.key.clone(), &self.running, elapsed)
             }
         }
     }
@@ -597,16 +751,16 @@ impl Task for ProgressTask {
             TaskTarget::Host(host) => match outcome {
                 TaskOutcome::Unconfirmed => {
                     self.reporter
-                        .host_task_unconfirmed(host, &self.name, &self.running, elapsed)
+                        .host_task_unconfirmed(host, &self.key, &self.running, elapsed)
                 }
                 TaskOutcome::Interrupted => {
                     self.reporter
-                        .host_task_interrupted(host, &self.name, &self.running, elapsed)
+                        .host_task_interrupted(host, &self.key, &self.running, elapsed)
                 }
                 TaskOutcome::Succeeded if self.finalizing => {
                     self.reporter.host_task_finalizing(
                         host,
-                        &self.name,
+                        &self.key,
                         &self.running,
                         &self.done,
                         elapsed,
@@ -615,7 +769,7 @@ impl Task for ProgressTask {
                 TaskOutcome::Succeeded => {
                     self.reporter.host_task_finished(
                         host,
-                        &self.name,
+                        &self.key,
                         &self.running,
                         &self.done,
                         elapsed,
@@ -626,7 +780,7 @@ impl Task for ProgressTask {
                     self.publish_line(FAILURE_HINT.to_owned());
                     self.reporter.host_task_finished(
                         host,
-                        &self.name,
+                        &self.key,
                         &self.running,
                         &self.done,
                         elapsed,
@@ -636,19 +790,16 @@ impl Task for ProgressTask {
             },
             TaskTarget::Phase => match outcome {
                 TaskOutcome::Unconfirmed => self.reporter.task_interrupted(
-                    self.name.clone(),
+                    self.key.clone(),
                     format!("{} · remote execution unconfirmed", self.running),
                     elapsed,
                 ),
                 TaskOutcome::Interrupted => {
-                    self.reporter.task_interrupted(
-                        self.name.clone(),
-                        self.running.clone(),
-                        elapsed,
-                    );
+                    self.reporter
+                        .task_interrupted(self.key.clone(), self.running.clone(), elapsed);
                 }
                 TaskOutcome::Succeeded => self.reporter.task_finished(
-                    self.name.clone(),
+                    self.key.clone(),
                     self.running.clone(),
                     elapsed,
                     true,
@@ -656,7 +807,7 @@ impl Task for ProgressTask {
                 TaskOutcome::Failed => {
                     self.publish_line(FAILURE_HINT.to_owned());
                     self.reporter.task_finished(
-                        self.name.clone(),
+                        self.key.clone(),
                         self.running.clone(),
                         elapsed,
                         false,
@@ -797,6 +948,279 @@ fn diagnostic_name(label: &str) -> String {
         "command".to_owned()
     } else {
         name
+    }
+}
+
+fn phase_summary_status(result: Option<PhaseResult>) -> (Tone, String) {
+    let Some(result) = result else {
+        return (Tone::Neutral, "not run".to_owned());
+    };
+    let (tone, label) = match result.kind {
+        PhaseResultKind::Succeeded => (Tone::Success, "ok"),
+        PhaseResultKind::Warning => (Tone::Warning, "WARN"),
+        PhaseResultKind::Failed => (Tone::Failure, "FAIL"),
+        PhaseResultKind::Interrupted => (Tone::Warning, "interrupted"),
+    };
+    (
+        tone,
+        format!("{label} · {}", format_duration(result.elapsed)),
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HostSummaryPart {
+    tone: Tone,
+    text: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HostSummaryStatus {
+    parts: [Option<HostSummaryPart>; 3],
+    muted_row: bool,
+}
+
+fn host_summary_status(action: &Action, status: FinalHostState) -> HostSummaryStatus {
+    let muted_row = successful_skip_before_goal(action, status);
+    let mut rendered = Vec::with_capacity(3);
+
+    if let Some(text) = milestone_text(action, status) {
+        rendered.push(HostSummaryPart {
+            tone: Tone::Success,
+            text,
+        });
+    }
+    match status.qualifier {
+        HostQualifier::Ok => {
+            if rendered.is_empty() {
+                rendered.push(HostSummaryPart {
+                    tone: Tone::Success,
+                    text: "ok",
+                });
+            }
+        }
+        HostQualifier::Skipped(stage) => rendered.push(HostSummaryPart {
+            tone: Tone::Muted,
+            text: stage.map_or("skip", skip_stage_text),
+        }),
+        HostQualifier::Deferred(stage) => rendered.push(HostSummaryPart {
+            tone: Tone::Warning,
+            text: defer_stage_text(stage),
+        }),
+        HostQualifier::OptionalFailed(stage) => rendered.push(HostSummaryPart {
+            tone: Tone::Warning,
+            text: fail_stage_text(stage),
+        }),
+        HostQualifier::Failed(stage) => rendered.push(HostSummaryPart {
+            tone: Tone::Failure,
+            text: stage.map_or("fail", fail_stage_text),
+        }),
+        HostQualifier::DryRun => rendered.push(HostSummaryPart {
+            tone: Tone::Muted,
+            text: "dry run",
+        }),
+        HostQualifier::Incomplete(stage) => rendered.push(HostSummaryPart {
+            tone: Tone::Warning,
+            text: incomplete_stage_text(stage),
+        }),
+        HostQualifier::Unconfirmed(stage) => rendered.push(HostSummaryPart {
+            tone: Tone::Warning,
+            text: unconfirmed_stage_text(stage),
+        }),
+        HostQualifier::NotStarted(stage) => rendered.push(HostSummaryPart {
+            tone: Tone::Warning,
+            text: not_started_stage_text(stage),
+        }),
+        HostQualifier::Interrupted => rendered.push(HostSummaryPart {
+            tone: Tone::Warning,
+            text: "interrupted",
+        }),
+        HostQualifier::OptionalSkipped(stage) => rendered.push(HostSummaryPart {
+            tone: Tone::Warning,
+            text: optional_skipped_stage_text(stage),
+        }),
+        HostQualifier::RolledBack { failed, optional } => {
+            if let Some(stage) = failed {
+                rendered.push(HostSummaryPart {
+                    tone: if optional {
+                        Tone::Warning
+                    } else {
+                        Tone::Failure
+                    },
+                    text: fail_stage_text(stage),
+                });
+                rendered.push(HostSummaryPart {
+                    tone: Tone::Muted,
+                    text: "rolled back",
+                });
+            } else {
+                rendered.push(HostSummaryPart {
+                    tone: Tone::Warning,
+                    text: "rolled back",
+                });
+            }
+        }
+        HostQualifier::RollbackFailed { failed, optional } => {
+            let tone = if optional {
+                Tone::Warning
+            } else {
+                Tone::Failure
+            };
+            if let Some(stage) = failed {
+                rendered.push(HostSummaryPart {
+                    tone,
+                    text: fail_stage_text(stage),
+                });
+            }
+            rendered.push(HostSummaryPart {
+                tone,
+                text: "rollback fail",
+            });
+        }
+    }
+    let mut parts = [None, None, None];
+    for (slot, part) in parts.iter_mut().zip(rendered) {
+        *slot = Some(part);
+    }
+    HostSummaryStatus { parts, muted_row }
+}
+
+fn milestone_text(action: &Action, status: FinalHostState) -> Option<&'static str> {
+    if status.qualifier == HostQualifier::DryRun {
+        return None;
+    }
+    match (status.milestone, status.qualifier) {
+        (HostMilestone::None, _) => None,
+        (HostMilestone::Built, HostQualifier::Ok)
+            if matches!(action, Action::Build | Action::DevBuild) =>
+        {
+            Some("built")
+        }
+        (HostMilestone::Acquired, HostQualifier::Ok) if *action == Action::Prepare => {
+            Some("acquired")
+        }
+        (HostMilestone::Deployed, HostQualifier::Ok) => Some("ok"),
+        (HostMilestone::Built, _) => Some("built"),
+        (HostMilestone::Acquired, HostQualifier::RolledBack { failed: None, .. })
+        | (HostMilestone::Acquired, HostQualifier::RollbackFailed { failed: None, .. }) => None,
+        (HostMilestone::Acquired, _) => Some("acquired"),
+        // Health/deploy failure phrases already imply the later milestone; avoid
+        // adding redundant `deployed` noise to the compact final row.
+        (HostMilestone::Deployed, _) => None,
+    }
+}
+
+fn fail_stage_text(stage: HostStage) -> &'static str {
+    match stage {
+        HostStage::Build => "fail build",
+        HostStage::Snapshot => "fail snapshot",
+        HostStage::Acquire => "fail acquire",
+        HostStage::Deploy => "fail deploy",
+        HostStage::Health => "fail health",
+    }
+}
+
+fn skip_stage_text(stage: HostStage) -> &'static str {
+    match stage {
+        HostStage::Build => "skip build",
+        HostStage::Snapshot => "skip snapshot",
+        HostStage::Acquire => "skip acquire",
+        HostStage::Deploy => "skip deploy",
+        HostStage::Health => "skip health",
+    }
+}
+
+fn defer_stage_text(stage: HostStage) -> &'static str {
+    match stage {
+        HostStage::Acquire => "defer acquire",
+        _ => "deferred",
+    }
+}
+
+fn incomplete_stage_text(stage: HostStage) -> &'static str {
+    match stage {
+        HostStage::Acquire => "no acquire",
+        _ => "incomplete",
+    }
+}
+
+fn unconfirmed_stage_text(stage: HostStage) -> &'static str {
+    match stage {
+        HostStage::Build => "build unconfirmed",
+        _ => "unconfirmed",
+    }
+}
+
+fn not_started_stage_text(stage: HostStage) -> &'static str {
+    match stage {
+        HostStage::Build => "build not started",
+        _ => "not started",
+    }
+}
+
+fn optional_skipped_stage_text(stage: HostStage) -> &'static str {
+    match stage {
+        HostStage::Snapshot => "snapshot unavailable",
+        _ => "unavailable",
+    }
+}
+
+/// A deliberately skipped host that still satisfies the command's outcome is
+/// supporting information, not an exception. Mute the whole final row. Warning
+/// and failure skip-like states remain visually prominent.
+fn successful_skip_before_goal(action: &Action, status: FinalHostState) -> bool {
+    final_host_goal(action).is_some() && matches!(status.qualifier, HostQualifier::Skipped(_))
+}
+
+fn final_host_goal(action: &Action) -> Option<HostStage> {
+    match action {
+        Action::Deploy | Action::Run => Some(HostStage::Deploy),
+        Action::Prepare => Some(HostStage::Acquire),
+        Action::Build | Action::DevBuild => Some(HostStage::Build),
+        _ => None,
+    }
+}
+
+fn summary_action_label(action: &Action) -> &'static str {
+    match action {
+        Action::Run => "run",
+        Action::Deploy => "deploy",
+        Action::Prepare => "prepare",
+        Action::Build => "build",
+        Action::DevBuild => "dev-build",
+        Action::TerraformAll => "tf",
+        Action::TerraformDns => "tf-dns",
+        Action::TerraformPlatform => "tf-platform",
+        Action::TerraformApps => "tf-apps",
+        Action::TerraformProject(_) => "tf/project",
+        Action::CheckBootstrap => "check-bootstrap",
+        _ => "fleet",
+    }
+}
+
+fn sentence_title(value: &str) -> String {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .map(|first| first.to_uppercase().collect::<String>() + characters.as_str())
+        .unwrap_or_default()
+}
+
+fn compact_phase_label(phase: Phase) -> &'static str {
+    match phase {
+        Phase::TerraformDns => "dns",
+        Phase::TerraformPlatform => "platform",
+        Phase::TerraformApps => "apps",
+        Phase::Tofu => "infrastructure",
+        Phase::Build => "build",
+        Phase::Snapshot => "snapshot",
+        Phase::Acquire => "acquire",
+        Phase::Deploy => "deploy",
+        Phase::Health => "health",
+        Phase::DevelopmentBuild => "development build",
+        Phase::BootstrapCheck => "bootstrap",
+        Phase::Clean => "clean",
+        Phase::RepositorySync => "repository",
+        Phase::DependencyCheck => "dependencies",
     }
 }
 
@@ -1626,6 +2050,192 @@ mod tests {
     }
 
     #[test]
+    fn automatic_log_prefix_tracks_multi_host_attribution_not_input_controls() {
+        let mut progress = FleetProgress::from_options(&Options::default());
+        progress.reporter = ProgressReporter::new(true);
+        assert!(!progress.prefix_logs());
+        let guard = progress.reporter.concurrency_handler(|_| true);
+        assert!(!progress.prefix_logs());
+
+        progress.phase_started(Phase::Build, &["app".into(), "db".into()], None);
+        assert!(progress.prefix_logs());
+        progress.phase_admission(1, 1, false, Some("exclusive"));
+        assert!(progress.prefix_logs());
+        progress.phase_admission(1, 2, false, Some("closed"));
+        assert!(progress.prefix_logs());
+        drop(guard);
+        assert!(progress.prefix_logs());
+
+        let disabled = FleetProgress {
+            auto_prefix: false,
+            ..progress.clone()
+        };
+        assert!(!disabled.prefix_logs());
+        let explicit = FleetProgress {
+            prefix_process_logs: true,
+            ..progress.clone()
+        };
+        assert!(explicit.prefix_logs());
+
+        progress.reporter.end_silent_phase();
+        assert!(!progress.prefix_logs());
+        progress.phase_started(Phase::Build, &["app".into()], None);
+        progress.phase_admission(1, 2, true, None);
+        assert!(!progress.prefix_logs());
+    }
+
+    #[test]
+    fn phase_summary_formats_typed_outcomes_and_keeps_not_run_distinct() {
+        for (kind, tone, label) in [
+            (PhaseResultKind::Succeeded, Tone::Success, "ok"),
+            (PhaseResultKind::Warning, Tone::Warning, "WARN"),
+            (PhaseResultKind::Failed, Tone::Failure, "FAIL"),
+            (PhaseResultKind::Interrupted, Tone::Warning, "interrupted"),
+        ] {
+            assert_eq!(
+                phase_summary_status(Some(PhaseResult {
+                    kind,
+                    elapsed: Duration::from_secs(2)
+                })),
+                (tone, format!("{label} · 2.0s"))
+            );
+        }
+        assert_eq!(
+            phase_summary_status(None),
+            (Tone::Neutral, "not run".to_owned())
+        );
+        assert_eq!(compact_phase_label(Phase::Acquire), "acquire");
+    }
+
+    #[test]
+    fn final_host_status_is_compact_typed_and_composable() {
+        let parts = |action, status| {
+            host_summary_status(action, status)
+                .parts
+                .into_iter()
+                .flatten()
+                .map(|part| (part.tone, part.text))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            parts(
+                &Action::Prepare,
+                FinalHostState::ok(HostMilestone::Acquired)
+            ),
+            vec![(Tone::Success, "acquired")]
+        );
+        assert_eq!(
+            parts(
+                &Action::Prepare,
+                FinalHostState::skipped(HostMilestone::Built, Some(HostStage::Acquire))
+            ),
+            vec![(Tone::Success, "built"), (Tone::Muted, "skip acquire")]
+        );
+        assert_eq!(
+            parts(
+                &Action::Deploy,
+                FinalHostState::skipped(HostMilestone::Built, Some(HostStage::Deploy))
+            ),
+            vec![(Tone::Success, "built"), (Tone::Muted, "skip deploy")]
+        );
+        assert_eq!(
+            parts(
+                &Action::Deploy,
+                FinalHostState::failed(HostMilestone::Acquired, HostStage::Deploy)
+            ),
+            vec![(Tone::Success, "acquired"), (Tone::Failure, "fail deploy")]
+        );
+        assert_eq!(
+            parts(
+                &Action::Deploy,
+                FinalHostState::new(
+                    HostMilestone::Built,
+                    HostQualifier::OptionalSkipped(HostStage::Snapshot)
+                )
+            ),
+            vec![
+                (Tone::Success, "built"),
+                (Tone::Warning, "snapshot unavailable")
+            ]
+        );
+        assert_eq!(
+            parts(
+                &Action::Deploy,
+                FinalHostState::new(
+                    HostMilestone::Acquired,
+                    HostQualifier::RollbackFailed {
+                        failed: Some(HostStage::Deploy),
+                        optional: false,
+                    }
+                )
+            ),
+            vec![
+                (Tone::Success, "acquired"),
+                (Tone::Failure, "fail deploy"),
+                (Tone::Failure, "rollback fail")
+            ]
+        );
+        assert_eq!(
+            parts(&Action::Build, FinalHostState::ok(HostMilestone::Built)),
+            vec![(Tone::Success, "built")]
+        );
+        assert_eq!(
+            parts(&Action::Deploy, FinalHostState::ok(HostMilestone::Deployed)),
+            vec![(Tone::Success, "ok")]
+        );
+        assert!(
+            host_summary_status(
+                &Action::Deploy,
+                FinalHostState::skipped(HostMilestone::None, None)
+            )
+            .muted_row
+        );
+        assert!(
+            host_summary_status(
+                &Action::Deploy,
+                FinalHostState::skipped(HostMilestone::Built, Some(HostStage::Deploy))
+            )
+            .muted_row
+        );
+        assert!(
+            host_summary_status(
+                &Action::Prepare,
+                FinalHostState::skipped(HostMilestone::Built, Some(HostStage::Acquire))
+            )
+            .muted_row
+        );
+        assert!(
+            host_summary_status(
+                &Action::Build,
+                FinalHostState::skipped(HostMilestone::None, None)
+            )
+            .muted_row
+        );
+        assert!(
+            !host_summary_status(
+                &Action::Deploy,
+                FinalHostState::new(
+                    HostMilestone::Built,
+                    HostQualifier::OptionalSkipped(HostStage::Snapshot)
+                )
+            )
+            .muted_row
+        );
+        assert!(
+            !host_summary_status(
+                &Action::Deploy,
+                FinalHostState::failed(HostMilestone::Acquired, HostStage::Deploy)
+            )
+            .muted_row
+        );
+        assert_eq!(HostStatus::DeploySkip.kind(), HostStatusKind::Skip);
+        assert_eq!(HostStatus::DeployBlocked.kind(), HostStatusKind::Warning);
+        assert_eq!(HostStatus::AcquireDeferred.kind(), HostStatusKind::Warning);
+        assert_eq!(HostStatus::HealthDone.kind(), HostStatusKind::Done);
+    }
+
+    #[test]
     fn verbose_lines_can_be_plain_or_attributed() {
         assert_eq!(
             format_process_line("build alpha", Some(ProcessStream::Stderr), "copying", false),
@@ -1643,6 +2253,7 @@ mod tests {
             target,
             heartbeat: None,
             prefix: false,
+            key: "build#test".to_owned(),
             name: "build".to_owned(),
             running: running.to_owned(),
             done: "build done".to_owned(),

@@ -9,6 +9,12 @@ use crate::Action;
 use crate::terminal_mode::{HIDE_CURSOR, SHOW_CURSOR};
 use crate::terminal_style::{TerminalStyle, Tone};
 
+mod fleet_timing;
+
+use fleet_timing::{
+    HostOutcome, HostSnapshot, HostTiming, Interval, PhaseSnapshot, WorkflowContext,
+};
+
 static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
 static COMMAND_REPORTER: OnceLock<ProgressReporter> = OnceLock::new();
 
@@ -168,9 +174,66 @@ enum Redraw {
     Stream,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConcurrencyChange {
+    Increase,
+    Decrease,
+}
+
+const INPUT_FEEDBACK_DURATION: Duration = Duration::from_millis(800);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FeedbackKey {
+    Increase,
+    Decrease,
+    Verbose,
+    Run,
+    Errors,
+    Cancel,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct KeyFeedback {
+    key: FeedbackKey,
+    at: Instant,
+}
+
+fn feedback_active(at: Option<Instant>, now: Instant) -> bool {
+    at.is_some_and(|at| now.saturating_duration_since(at) < INPUT_FEEDBACK_DURATION)
+}
+
+#[derive(Clone)]
+struct ConcurrencyHandler(Arc<dyn Fn(ConcurrencyChange) -> bool + Send + Sync>);
+
+impl std::fmt::Debug for ConcurrencyHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConcurrencyHandler")
+    }
+}
+
+pub struct ConcurrencyGuard {
+    reporter: ProgressReporter,
+    previous: Option<ConcurrencyHandler>,
+}
+
+impl Drop for ConcurrencyGuard {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.reporter.state.lock() {
+            state.concurrency_handler = self.previous.take();
+        }
+        self.reporter.refresh();
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct ProgressState {
     stack: Vec<ActiveProgress>,
+    workflow: WorkflowContext,
+    /// Protocol output stays plain even when a key-reader clone refreshes it.
+    suppress_live: bool,
+    concurrency_handler: Option<ConcurrencyHandler>,
+    key_feedback: Option<KeyFeedback>,
+    next_operation_id: u64,
     next_id: u64,
     next_update_id: u64,
     /// What the live region currently on screen is.
@@ -215,6 +278,58 @@ struct ProgressState {
 }
 
 impl ProgressState {
+    fn current_host_dashboard(&self) -> Option<&HostDashboard> {
+        self.stack
+            .iter()
+            .rev()
+            .find_map(|active| active.host_dashboard.as_ref())
+    }
+
+    fn expire_input_feedback(&mut self, now: Instant) -> bool {
+        let mut expired = false;
+        if self
+            .key_feedback
+            .is_some_and(|feedback| !feedback_active(Some(feedback.at), now))
+        {
+            self.key_feedback = None;
+            expired = true;
+        }
+        for active in &mut self.stack {
+            if let Some(admission) = active
+                .host_dashboard
+                .as_mut()
+                .and_then(|dashboard| dashboard.admission.as_mut())
+            {
+                for at in [
+                    &mut admission.running_changed_at,
+                    &mut admission.target_changed_at,
+                ] {
+                    if at.is_some() && !feedback_active(*at, now) {
+                        *at = None;
+                        expired = true;
+                    }
+                }
+            }
+        }
+        expired
+    }
+
+    fn concurrency_available(&self) -> bool {
+        self.concurrency_handler.is_some()
+            && self
+                .current_host_dashboard()
+                .and_then(|dashboard| dashboard.admission.as_ref())
+                .is_some_and(|admission| admission.adjustable)
+    }
+
+    /// Host prefixes are an output-attribution policy, not an input-control
+    /// policy. Keep one shape for a multi-host phase even while one substep is
+    /// exclusive or admission is draining/stopped.
+    fn host_log_attribution_needed(&self) -> bool {
+        self.current_host_dashboard()
+            .is_some_and(|dashboard| dashboard.order.len() > 1)
+    }
+
     /// Whether `live` differs from the size the painted region was laid out for,
     /// so the terminal may have reflowed. An unreadable size after a known one
     /// counts, because the reflow may have happened at a width we cannot see.
@@ -306,20 +421,45 @@ struct ActiveProgress {
 
 #[derive(Clone, Debug, Default)]
 struct HostDashboard {
+    title: Option<String>,
     order: Vec<String>,
     rows: BTreeMap<String, HostRow>,
     stage: Option<String>,
     wave: Option<(usize, usize)>,
     concurrency: usize,
+    admission: Option<AdmissionDisplay>,
+}
+
+#[derive(Clone, Debug)]
+struct AdmissionDisplay {
+    running: usize,
+    target: usize,
+    constraint: Option<String>,
+    adjustable: bool,
+    running_changed_at: Option<Instant>,
+    target_changed_at: Option<Instant>,
+}
+
+#[derive(Clone, Debug)]
+struct SuspendedHostTask {
+    key: String,
+    label: Option<String>,
+    started: Option<Instant>,
+    output: VecDeque<String>,
+    heartbeat_interval: Option<Duration>,
+    last_heartbeat: Option<Instant>,
+    last_output: Option<Instant>,
 }
 
 #[derive(Clone, Debug)]
 struct HostRow {
     state: HostRowState,
+    outcome: Option<HostOutcome>,
+    timing: HostTiming,
+    suspended: Vec<SuspendedHostTask>,
     task_key: Option<String>,
     task: Option<String>,
     task_started: Option<Instant>,
-    elapsed: Option<Duration>,
     summary: Option<String>,
     output: VecDeque<String>,
     failure_output: VecDeque<String>,
@@ -368,15 +508,67 @@ impl HostRow {
 
     /// Interruption is a terminal host state: any later host-level outcome for
     /// the same row keeps it instead of downgrading it to failed or skipped.
-    fn keep_interrupted(&mut self, elapsed: Option<Duration>) -> bool {
+    fn keep_interrupted(&mut self, _elapsed: Option<Duration>) -> bool {
         if self.state != HostRowState::Interrupted {
             return false;
         }
+        self.outcome = Some(HostOutcome::Interrupted);
+        self.timing.stop(Instant::now());
         self.task_started = None;
-        if elapsed.is_some() {
-            self.elapsed = elapsed;
-        }
+        self.suspended.clear();
         true
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        self.timing
+            .observed
+            .then(|| self.timing.elapsed(Instant::now()))
+    }
+
+    fn duration_metadata(&self) -> String {
+        self.duration()
+            .map(|elapsed| format!(" · {}", format_duration(elapsed)))
+            .unwrap_or_default()
+    }
+
+    fn suspend_task(&mut self) {
+        if self.state == HostRowState::Running
+            && let Some(key) = self.task_key.take()
+        {
+            self.suspended.push(SuspendedHostTask {
+                key,
+                label: self.task.take(),
+                started: self.task_started.take(),
+                output: std::mem::take(&mut self.output),
+                heartbeat_interval: self.heartbeat_interval,
+                last_heartbeat: self.last_heartbeat,
+                last_output: self.last_output,
+            });
+        }
+    }
+
+    fn restore_task(&mut self) {
+        if let Some(task) = self.suspended.pop() {
+            self.state = HostRowState::Running;
+            self.task_key = Some(task.key);
+            self.task = task.label;
+            self.task_started = task.started;
+            self.output = task.output;
+            self.heartbeat_interval = task.heartbeat_interval;
+            self.last_heartbeat = task.last_heartbeat;
+            self.last_output = task.last_output;
+        }
+    }
+
+    fn retain_failure(&mut self, lines: VecDeque<String>) {
+        for line in lines {
+            if self.failure_output.back() != Some(&line) {
+                self.failure_output.push_back(line);
+            }
+            while self.failure_output.len() > RETAINED_OUTPUT_LINES_PER_TASK {
+                self.failure_output.pop_front();
+            }
+        }
     }
 }
 
@@ -384,10 +576,12 @@ impl Default for HostRow {
     fn default() -> Self {
         Self {
             state: HostRowState::Pending,
+            outcome: None,
+            timing: HostTiming::default(),
+            suspended: Vec::new(),
             task_key: None,
             task: None,
             task_started: None,
-            elapsed: None,
             summary: None,
             output: VecDeque::new(),
             failure_output: VecDeque::new(),
@@ -407,6 +601,7 @@ enum HostRowState {
     Finalizing,
     Succeeded,
     Skipped,
+    Warning,
     Failed,
     Interrupted,
 }
@@ -484,6 +679,40 @@ pub struct StepProgress {
     pub location: String,
 }
 
+/// One admitted operation, independent of the currently displayed substep.
+/// Nested guards/tasks count once. Dropping a stale guard cannot affect a later phase.
+#[derive(Debug)]
+pub struct HostOperation {
+    reporter: ProgressReporter,
+    host: String,
+    phase_id: Option<u64>,
+    id: u64,
+}
+
+impl Drop for HostOperation {
+    fn drop(&mut self) {
+        if !self.reporter.enabled() {
+            return;
+        }
+        let _output = self.reporter.output.lock().ok();
+        let mut frame = ProgressFrame::new(&self.reporter.destination, self.reporter.interactive);
+        if let Ok(mut state) = self.reporter.state.lock()
+            && let Some(active) = state
+                .stack
+                .iter_mut()
+                .find(|active| Some(active.id) == self.phase_id)
+            && let Some(row) = active
+                .host_dashboard
+                .as_mut()
+                .and_then(|dashboard| dashboard.rows.get_mut(&self.host))
+        {
+            row.timing
+                .finish(&Interval::Operation(self.id), Instant::now(), false);
+        }
+        self.reporter.redraw_current(&mut frame);
+    }
+}
+
 impl ProgressReporter {
     pub fn new(enabled: bool) -> Self {
         let interactive = io::stderr().is_terminal();
@@ -505,6 +734,278 @@ impl ProgressReporter {
     pub fn without_color(mut self) -> Self {
         self.style = TerminalStyle::from_capabilities(false, false);
         self
+    }
+
+    /// GitHub workflow commands are an append-only protocol even on a terminal.
+    pub fn without_terminal(mut self) -> Self {
+        self.interactive = false;
+        if let Ok(mut state) = self.state.lock() {
+            state.suppress_live = true;
+        }
+        self.without_color()
+    }
+
+    /// Start the fleet command clock and discard only fleet presentation history.
+    pub fn begin_workflow(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.workflow = WorkflowContext {
+                started: Some(Instant::now()),
+                ..WorkflowContext::default()
+            };
+            state.concurrency_handler = None;
+            state.key_feedback = None;
+            state.suppress_live = false;
+        }
+    }
+
+    /// Install input handling on this reporter, with scoped restoration.
+    pub fn concurrency_handler(
+        &self,
+        handler: impl Fn(ConcurrencyChange) -> bool + Send + Sync + 'static,
+    ) -> ConcurrencyGuard {
+        let handler = ConcurrencyHandler(Arc::new(handler));
+        let previous = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|mut state| state.concurrency_handler.replace(handler));
+        self.refresh();
+        ConcurrencyGuard {
+            reporter: self.clone(),
+            previous,
+        }
+    }
+
+    pub fn concurrency_available(&self) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|state| state.concurrency_available())
+    }
+
+    pub fn host_log_attribution_needed(&self) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|state| state.host_log_attribution_needed())
+    }
+
+    pub fn adjust_concurrency(&self, change: ConcurrencyChange) {
+        // Call outside the presentation lock: the scheduler may wake a redraw.
+        let request = self.state.lock().ok().and_then(|state| {
+            if !state.concurrency_available() {
+                return None;
+            }
+            let admission = state.current_host_dashboard()?.admission.as_ref()?;
+            Some((
+                state.concurrency_handler.clone()?,
+                (admission.running, admission.target),
+            ))
+        });
+        if let Some((handler, before)) = request
+            && (handler.0)(change)
+        {
+            self.concurrency_key_accepted(change, before);
+        }
+    }
+
+    fn concurrency_key_accepted(&self, change: ConcurrencyChange, before: (usize, usize)) {
+        if !self.interactive || !self.style.enabled() {
+            return;
+        }
+        let at = Instant::now();
+        if let Ok(mut state) = self.state.lock() {
+            state.key_feedback = Some(KeyFeedback {
+                key: match change {
+                    ConcurrencyChange::Increase => FeedbackKey::Increase,
+                    ConcurrencyChange::Decrease => FeedbackKey::Decrease,
+                },
+                at,
+            });
+            // The scheduler can publish between callback return and this lock.
+            // Mark already-updated numbers now; later snapshots see key_feedback.
+            if let Some(admission) = state
+                .stack
+                .iter_mut()
+                .rev()
+                .find_map(|active| active.host_dashboard.as_mut())
+                .and_then(|dashboard| dashboard.admission.as_mut())
+            {
+                if admission.running != before.0 {
+                    admission.running_changed_at = Some(at);
+                }
+                if admission.target != before.1 {
+                    admission.target_changed_at = Some(at);
+                }
+            }
+        }
+        self.refresh();
+    }
+
+    /// Presentation-only acknowledgement; never grants execution authority.
+    pub(crate) fn key_pressed(&self, key: FeedbackKey) {
+        if !self.interactive || !self.style.enabled() {
+            return;
+        }
+        if let Ok(mut state) = self.state.lock() {
+            state.key_feedback = Some(KeyFeedback {
+                key,
+                at: Instant::now(),
+            });
+        }
+        self.refresh();
+    }
+
+    /// Use the existing reader tick, not one timer/thread per press.
+    pub(crate) fn expire_input_feedback(&self) {
+        if !self.interactive || !self.style.enabled() {
+            return;
+        }
+        let expired = self
+            .state
+            .try_lock()
+            .is_ok_and(|mut state| state.expire_input_feedback(Instant::now()));
+        if expired {
+            self.refresh();
+        }
+    }
+
+    pub fn host_operation(&self, host: &str) -> HostOperation {
+        let mut operation = HostOperation {
+            reporter: self.clone(),
+            host: host.to_owned(),
+            phase_id: None,
+            id: 0,
+        };
+        if !self.enabled() {
+            return operation;
+        }
+        if let Ok(mut state) = self.state.lock() {
+            state.next_operation_id = state.next_operation_id.wrapping_add(1);
+            operation.id = state.next_operation_id;
+            if let Some(active) = state
+                .stack
+                .iter_mut()
+                .rev()
+                .find(|active| active.host_dashboard.is_some())
+                && let Some(row) = active
+                    .host_dashboard
+                    .as_mut()
+                    .and_then(|dashboard| dashboard.rows.get_mut(host))
+                && row.outcome.is_none()
+            {
+                operation.phase_id = Some(active.id);
+                row.timing
+                    .start(Interval::Operation(operation.id), Instant::now());
+            }
+        }
+        self.refresh();
+        operation
+    }
+
+    /// Snapshot before the phase's active span is removed. Terminal calls are
+    /// idempotent; unfinished rows retain observed time without claiming success.
+    pub fn record_host_phase(
+        &self,
+        key: &str,
+        label: &str,
+        marker: &'static str,
+        tone: Tone,
+        elapsed: Duration,
+    ) {
+        if let Ok(mut state) = self.state.lock() {
+            let hosts = state
+                .stack
+                .iter_mut()
+                .rev()
+                .find_map(|active| active.host_dashboard.as_mut())
+                .map(|dashboard| {
+                    dashboard
+                        .order
+                        .iter()
+                        .filter_map(|host| {
+                            let row = dashboard.rows.get_mut(host)?;
+                            row.timing.stop(Instant::now());
+                            Some(HostSnapshot {
+                                host: host.clone(),
+                                elapsed: row.duration(),
+                                outcome: row.outcome.or(match row.state {
+                                    HostRowState::Interrupted => Some(HostOutcome::Interrupted),
+                                    HostRowState::Unconfirmed => Some(HostOutcome::Unconfirmed),
+                                    _ => None,
+                                }),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            state.workflow.phases.push(PhaseSnapshot {
+                key: key.to_owned(),
+                label: label.to_owned(),
+                marker,
+                tone,
+                elapsed,
+                hosts,
+            });
+        }
+    }
+
+    /// The retained dashboard owns successful TTY phase lines; logs still append.
+    pub fn host_phase_completed(&self, label: String, elapsed: Duration) {
+        if self.shows_recent_updates()
+            && self
+                .state
+                .lock()
+                .is_ok_and(|state| state.workflow.started.is_some())
+        {
+            self.end_silent_phase();
+        } else {
+            self.completed(label, elapsed);
+        }
+    }
+
+    pub fn workflow_elapsed(&self) -> Option<Duration> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.workflow.started.map(|start| start.elapsed()))
+    }
+
+    pub fn phase_outcome_counts(&self, key: &str) -> Option<String> {
+        let state = self.state.lock().ok()?;
+        let phase = state
+            .workflow
+            .phases
+            .iter()
+            .rev()
+            .find(|phase| phase.key == key)?;
+        (!phase.hosts.is_empty()).then(|| {
+            fleet_timing::outcome_counts(phase.hosts.iter().map(|host| host.outcome)).join(" · ")
+        })
+    }
+
+    /// Retain summary data, but release the run heading/history before final output.
+    pub fn finish_workflow(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.workflow.started = None;
+        }
+        self.refresh();
+    }
+
+    /// Close a silent (GitHub) phase without publishing an extra outcome line.
+    pub fn end_silent_phase(&self) {
+        if !self.enabled() {
+            return;
+        }
+        let _output = self.output.lock().ok();
+        let mut frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.finish_current(&mut frame);
+        self.redraw_current(&mut frame);
+    }
+
+    pub fn host_duration_summaries(&self, hosts: &[&str]) -> BTreeMap<String, String> {
+        self.state
+            .lock()
+            .map(|state| fleet_timing::host_duration_summaries(&state.workflow.phases, hosts))
+            .unwrap_or_default()
     }
 
     /// Keep a bounded, in-place window of recent child activity below the
@@ -537,6 +1038,14 @@ impl ProgressReporter {
     }
 
     pub fn begin_host_dashboard(&self, hosts: &[String]) {
+        self.begin_host_dashboard_named(hosts, None);
+    }
+
+    pub fn begin_fleet_dashboard(&self, hosts: &[String], title: &str) {
+        self.begin_host_dashboard_named(hosts, Some(title));
+    }
+
+    fn begin_host_dashboard_named(&self, hosts: &[String], title: Option<&str>) {
         if !self.enabled() {
             return;
         }
@@ -546,6 +1055,7 @@ impl ProgressReporter {
             && let Some(active) = state.stack.last_mut()
         {
             active.host_dashboard = Some(HostDashboard {
+                title: title.map(str::to_owned),
                 order: hosts.to_vec(),
                 rows: hosts
                     .iter()
@@ -571,14 +1081,70 @@ impl ProgressReporter {
         if let Ok(mut state) = self.state.lock()
             && let Some(dashboard) = state
                 .stack
-                .last_mut()
-                .and_then(|active| active.host_dashboard.as_mut())
+                .iter_mut()
+                .rev()
+                .find_map(|active| active.host_dashboard.as_mut())
         {
             dashboard.stage = Some(stage.into());
             dashboard.wave = wave;
             dashboard.concurrency = concurrency;
         }
         self.redraw_current(&mut output_frame);
+    }
+
+    /// Actual scheduler occupancy. Never infer slots from the visible task row.
+    pub fn phase_admission(
+        &self,
+        running: usize,
+        target: usize,
+        adjustable: bool,
+        constraint: Option<&str>,
+    ) {
+        if !self.enabled() {
+            return;
+        }
+        let _output = self.output.lock().ok();
+        let mut frame = ProgressFrame::new(&self.destination, self.interactive);
+        if let Ok(mut state) = self.state.lock() {
+            let pressed_at = state
+                .key_feedback
+                .filter(|feedback| {
+                    matches!(feedback.key, FeedbackKey::Increase | FeedbackKey::Decrease)
+                        && feedback_active(Some(feedback.at), Instant::now())
+                })
+                .map(|feedback| feedback.at);
+            if let Some(dashboard) = state
+                .stack
+                .iter_mut()
+                .rev()
+                .find_map(|active| active.host_dashboard.as_mut())
+            {
+                let previous = dashboard.admission.as_ref();
+                let running_changed_at = previous.and_then(|old| {
+                    if old.running != running && pressed_at.is_some() {
+                        pressed_at
+                    } else {
+                        old.running_changed_at
+                    }
+                });
+                let target_changed_at = previous.and_then(|old| {
+                    if old.target != target && pressed_at.is_some() {
+                        pressed_at
+                    } else {
+                        old.target_changed_at
+                    }
+                });
+                dashboard.admission = Some(AdmissionDisplay {
+                    running,
+                    target,
+                    constraint: constraint.map(str::to_owned),
+                    adjustable,
+                    running_changed_at,
+                    target_changed_at,
+                });
+            }
+        }
+        self.redraw_current(&mut frame);
     }
 
     pub fn host_task_started(
@@ -589,22 +1155,34 @@ impl ProgressReporter {
         heartbeat_interval: Option<Duration>,
     ) {
         self.start_task_tail(key);
-        if !self.shows_recent_updates() {
-            self.detail(format!("{host} · {label} · running"));
-            return;
-        }
         self.update_host_row(host, Redraw::Immediate, |row| {
+            if row.outcome.is_some()
+                || matches!(
+                    row.state,
+                    HostRowState::Interrupted | HostRowState::Unconfirmed
+                )
+            {
+                return;
+            }
+            let interval = Interval::Task(key.to_owned());
+            if row.task_key.as_deref() == Some(key) && row.state == HostRowState::Running {
+                return;
+            }
+            row.suspend_task();
+            row.timing.start(interval, Instant::now());
             row.state = HostRowState::Running;
             row.task_key = Some(key.to_owned());
             row.task = Some(label.to_owned());
             row.task_started = Some(Instant::now());
-            row.elapsed = None;
             row.summary = None;
             row.output.clear();
             row.heartbeat_interval = heartbeat_interval;
             row.last_heartbeat = None;
             row.last_output = Some(Instant::now());
         });
+        if !self.shows_recent_updates() {
+            self.detail(format!("{host} · {label} · running"));
+        }
     }
 
     pub fn host_task_heartbeat(&self, host: &str, key: &str, label: &str) {
@@ -615,16 +1193,27 @@ impl ProgressReporter {
             if row.task_key.as_deref() == Some(key) {
                 row.task = Some(label.to_owned());
                 row.last_heartbeat = Some(Instant::now());
+            } else if let Some(task) = row.suspended.iter_mut().find(|task| task.key == key) {
+                task.last_heartbeat = Some(Instant::now());
             }
         });
     }
 
     pub fn host_task_output(&self, host: &str, key: &str, line: String) {
-        if !self.shows_recent_updates() || line.is_empty() {
+        if line.is_empty() {
             return;
         }
         self.update_host_row(host, Redraw::Stream, |row| {
             if row.task_key.as_deref() != Some(key) {
+                if let Some(task) = row.suspended.iter_mut().find(|task| task.key == key) {
+                    if task.output.back() != Some(&line) {
+                        task.output.push_back(line);
+                    }
+                    while task.output.len() > LIVE_OUTPUT_LINES_PER_TASK {
+                        task.output.pop_front();
+                    }
+                    task.last_output = Some(Instant::now());
+                }
                 return;
             }
             if row.output.back() != Some(&line) {
@@ -696,9 +1285,16 @@ impl ProgressReporter {
     pub fn host_unconfirmed(&self, host: &str, summary: impl Into<String>) {
         let summary = summary.into();
         self.update_host_row(host, Redraw::Immediate, |row| {
+            if row.outcome.is_some() {
+                return;
+            }
+            row.outcome = Some(HostOutcome::Unconfirmed);
+            row.timing.stop(Instant::now());
+            row.suspended.clear();
             row.state = HostRowState::Unconfirmed;
             row.summary = Some(summary);
             row.task_started = None;
+            row.retain_failure(row.output.clone());
             row.output.clone_from(&row.failure_output);
         });
     }
@@ -721,6 +1317,56 @@ impl ProgressReporter {
             ),
             succeeded,
         );
+        self.update_host_row(host, Redraw::Immediate, |row| {
+            if row.outcome.is_some() {
+                return;
+            }
+            row.timing.finish(
+                &Interval::Task(key.to_owned()),
+                Instant::now(),
+                outcome == HostTaskOutcome::Finalizing,
+            );
+            if row.task_key.as_deref() != Some(key) {
+                if let Some(index) = row.suspended.iter().position(|task| task.key == key) {
+                    let task = row.suspended.remove(index);
+                    if !succeeded {
+                        row.retain_failure(task.output);
+                    }
+                }
+                return;
+            }
+            row.task = Some(done.to_owned());
+            row.task_started = None;
+            match outcome {
+                HostTaskOutcome::Done | HostTaskOutcome::Finalizing => {
+                    row.state = if outcome == HostTaskOutcome::Finalizing {
+                        HostRowState::Finalizing
+                    } else {
+                        HostRowState::Completed
+                    };
+                    row.output.clear();
+                }
+                HostTaskOutcome::Failed
+                | HostTaskOutcome::Interrupted
+                | HostTaskOutcome::Unconfirmed => {
+                    row.state = match outcome {
+                        HostTaskOutcome::Unconfirmed => HostRowState::Unconfirmed,
+                        HostTaskOutcome::Interrupted => HostRowState::Interrupted,
+                        _ => HostRowState::Failed,
+                    };
+                    row.retain_failure(row.output.clone());
+                }
+            }
+            if matches!(
+                outcome,
+                HostTaskOutcome::Interrupted | HostTaskOutcome::Unconfirmed
+            ) {
+                row.timing.stop(Instant::now());
+                row.suspended.clear();
+            } else {
+                row.restore_task();
+            }
+        });
         if !self.shows_recent_updates() {
             let line = format!(
                 "{host} · {} · {}",
@@ -742,45 +1388,7 @@ impl ProgressReporter {
             } else {
                 self.detail(line);
             }
-            return;
         }
-        self.update_host_row(host, Redraw::Immediate, |row| {
-            if row.task_key.as_deref() != Some(key) {
-                return;
-            }
-            row.task = Some(done.to_owned());
-            row.task_started = None;
-            row.elapsed = Some(elapsed);
-            match outcome {
-                HostTaskOutcome::Done => {
-                    row.state = HostRowState::Completed;
-                    row.output.clear();
-                }
-                HostTaskOutcome::Finalizing => {
-                    row.state = HostRowState::Finalizing;
-                    row.output.clear();
-                }
-                HostTaskOutcome::Failed
-                | HostTaskOutcome::Interrupted
-                | HostTaskOutcome::Unconfirmed => {
-                    row.state = if outcome == HostTaskOutcome::Unconfirmed {
-                        HostRowState::Unconfirmed
-                    } else if outcome == HostTaskOutcome::Interrupted {
-                        HostRowState::Interrupted
-                    } else {
-                        HostRowState::Failed
-                    };
-                    for line in row.output.clone() {
-                        if row.failure_output.back() != Some(&line) {
-                            row.failure_output.push_back(line);
-                        }
-                        while row.failure_output.len() > RETAINED_OUTPUT_LINES_PER_TASK {
-                            row.failure_output.pop_front();
-                        }
-                    }
-                }
-            }
-        });
     }
 
     pub fn host_finished(
@@ -792,19 +1400,31 @@ impl ProgressReporter {
     ) {
         let summary = summary.into();
         self.update_host_row(host, Redraw::Immediate, |row| {
-            if row.state == HostRowState::Unconfirmed || row.keep_interrupted(elapsed) {
+            if row.outcome.is_some() || row.keep_interrupted(elapsed) {
                 return;
             }
+            row.timing.stop(Instant::now());
+            row.suspended.clear();
+            if row.state == HostRowState::Unconfirmed {
+                row.outcome = Some(HostOutcome::Unconfirmed);
+                return;
+            }
+            row.outcome = Some(if succeeded {
+                HostOutcome::Succeeded
+            } else {
+                HostOutcome::Failed
+            });
             row.state = if succeeded {
                 HostRowState::Succeeded
             } else {
                 HostRowState::Failed
             };
-            // Preserve the elapsed time recorded by the host's last task when
-            // the terminal outcome does not carry its own duration, so a
-            // completed row still reports how long the host actually took.
-            if elapsed.is_some() {
-                row.elapsed = elapsed;
+            // Legacy callers can provide a duration when no task/operation was observed.
+            if !row.timing.observed
+                && let Some(elapsed) = elapsed
+            {
+                row.timing.observed = true;
+                row.timing.total = elapsed;
             }
             row.summary = (!summary.is_empty()).then_some(summary);
             row.task_started = None;
@@ -812,18 +1432,33 @@ impl ProgressReporter {
                 row.output.clear();
                 row.failure_output.clear();
             } else {
+                row.retain_failure(row.output.clone());
                 row.output.clone_from(&row.failure_output);
             }
         });
     }
 
     pub fn host_skipped(&self, host: &str, summary: impl Into<String>) {
-        let summary = summary.into();
+        self.host_nonfatal(host, summary.into(), HostRowState::Skipped);
+    }
+
+    pub fn host_warning(&self, host: &str, summary: impl Into<String>) {
+        self.host_nonfatal(host, summary.into(), HostRowState::Warning);
+    }
+
+    fn host_nonfatal(&self, host: &str, summary: String, state: HostRowState) {
         self.update_host_row(host, Redraw::Immediate, |row| {
-            if row.state == HostRowState::Unconfirmed || row.keep_interrupted(None) {
+            if row.outcome.is_some() || row.keep_interrupted(None) {
                 return;
             }
-            row.state = HostRowState::Skipped;
+            row.timing.stop(Instant::now());
+            row.suspended.clear();
+            if row.state == HostRowState::Unconfirmed {
+                row.outcome = Some(HostOutcome::Unconfirmed);
+                return;
+            }
+            row.outcome = Some(HostOutcome::Skipped);
+            row.state = state;
             row.summary = (!summary.is_empty()).then_some(summary);
             row.task_started = None;
             row.output.clear();
@@ -832,13 +1467,17 @@ impl ProgressReporter {
     }
 
     fn update_host_row(&self, host: &str, redraw: Redraw, update: impl FnOnce(&mut HostRow)) {
+        if !self.enabled() {
+            return;
+        }
         let _output = self.output.lock().ok();
         let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         if let Ok(mut state) = self.state.lock()
             && let Some(dashboard) = state
                 .stack
-                .last_mut()
-                .and_then(|active| active.host_dashboard.as_mut())
+                .iter_mut()
+                .rev()
+                .find_map(|active| active.host_dashboard.as_mut())
             && let Some(row) = dashboard.rows.get_mut(host)
         {
             update(row);
@@ -1237,10 +1876,17 @@ impl ProgressReporter {
     }
 
     pub fn started(&self, label: impl Into<String>) {
+        self.start_span(label.into(), true);
+    }
+
+    pub fn started_silent(&self, label: impl Into<String>) {
+        self.start_span(label.into(), false);
+    }
+
+    fn start_span(&self, label: String, announce: bool) {
         if !self.enabled() {
             return;
         }
-        let label = label.into();
         let _output = self.output.lock().ok();
         let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         let mut active_id = None;
@@ -1264,7 +1910,7 @@ impl ProgressReporter {
             if let Some(active_id) = active_id {
                 self.start_heartbeat(active_id);
             }
-        } else {
+        } else if announce {
             output_frame.write(&format!(
                 "{}\n",
                 self.style.paint(Tone::Active, format!("● {label}"))
@@ -1447,6 +2093,7 @@ impl ProgressReporter {
                                         "failed".to_owned()
                                     }
                                 });
+                            let summary = format!("{summary}{}", row.duration_metadata());
                             (host, summary, row.output.iter().cloned().collect())
                         })
                     })
@@ -1480,6 +2127,34 @@ impl ProgressReporter {
         output_frame.write(&format!(
             "{}\n",
             self.style.semantic_text(&message.to_string())
+        ));
+        self.redraw_current(&mut output_frame);
+    }
+
+    pub fn message_field(&self, label: &str, value: impl std::fmt::Display) {
+        self.message_field_with_metadata(label, value, Option::<&str>::None);
+    }
+
+    pub fn message_field_with_metadata(
+        &self,
+        label: &str,
+        value: impl std::fmt::Display,
+        metadata: Option<impl std::fmt::Display>,
+    ) {
+        if !self.enabled() {
+            return;
+        }
+        let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.clear_line(&mut output_frame);
+        let metadata = metadata
+            .map(|metadata| self.style.paint(Tone::Muted, format!(" ({metadata})")))
+            .unwrap_or_default();
+        output_frame.write(&format!(
+            "{}: {}{}\n",
+            self.style.paint(Tone::Label, label),
+            value,
+            metadata
         ));
         self.redraw_current(&mut output_frame);
     }
@@ -1784,6 +2459,48 @@ impl ProgressReporter {
         self.redraw_current(&mut output_frame);
     }
 
+    pub fn message_host_summary<'a>(
+        &self,
+        host: &str,
+        status: impl IntoIterator<Item = (Tone, &'a str)>,
+        timing: Option<&str>,
+        muted_row: bool,
+    ) {
+        if !self.enabled() {
+            return;
+        }
+        let _output = self.output.lock().ok();
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.clear_line(&mut output_frame);
+
+        let mut rendered_status = String::new();
+        for (index, (tone, text)) in status.into_iter().enumerate() {
+            if index != 0 {
+                rendered_status.push_str(", ");
+            }
+            rendered_status.push_str(
+                &self
+                    .style
+                    .paint(if muted_row { Tone::Muted } else { tone }, text),
+            );
+        }
+        let host = if muted_row {
+            self.style.paint_host_muted(host)
+        } else {
+            self.style.paint_host(host)
+        };
+        let timing = timing
+            .map(|timing| self.style.paint(Tone::Muted, format!("[{timing}]")))
+            .unwrap_or_default();
+        let separator = if rendered_status.is_empty() || timing.is_empty() {
+            ""
+        } else {
+            " "
+        };
+        output_frame.write(&format!("  {host}  {rendered_status}{separator}{timing}\n"));
+        self.redraw_current(&mut output_frame);
+    }
+
     pub fn heading(&self, heading: impl std::fmt::Display) {
         if !self.enabled() {
             return;
@@ -1795,6 +2512,35 @@ impl ProgressReporter {
             "{}\n",
             self.style.paint(Tone::Emphasis, heading.to_string())
         ));
+        self.redraw_current(&mut output_frame);
+    }
+
+    pub fn heading_with_metadata(
+        &self,
+        heading: impl std::fmt::Display,
+        metadata: impl IntoIterator<Item = String>,
+    ) {
+        if !self.enabled() {
+            return;
+        }
+        let _output = self.output.lock().ok();
+        let width = self
+            .layout_viewport()
+            .map(|(_, columns)| columns.max(1))
+            .unwrap_or(usize::MAX);
+        let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.clear_line(&mut output_frame);
+        output_frame.write(&format!(
+            "{}\n",
+            self.style.paint(Tone::Emphasis, heading.to_string())
+        ));
+        let fields = metadata
+            .into_iter()
+            .map(|field| self.style.paint(Tone::Muted, field))
+            .collect::<Vec<_>>();
+        for line in wrap_metadata_fields(self.style, &fields, width, "  ") {
+            output_frame.write(&format!("{line}\n"));
+        }
         self.redraw_current(&mut output_frame);
     }
 
@@ -1917,7 +2663,10 @@ impl ProgressReporter {
     }
 
     fn redraw_current(&self, output_frame: &mut ProgressFrame<'_>) {
-        if !self.interactive {
+        if !self.enabled()
+            || !self.interactive
+            || self.state.lock().is_ok_and(|state| state.suppress_live)
+        {
             return;
         }
         let notice = self.cancel_notice();
@@ -2008,19 +2757,19 @@ impl ProgressReporter {
         // keys only while the section is open. Each key also has an `alt` form,
         // because a terminal that consumes the control bytes would otherwise
         // take the shortcut with them.
-        let mut groups = vec![vec!["v: verbose".to_owned()]];
-        if state.verbose_active {
-            groups.push(vec![
-                "ctrl/alt-r: run".to_owned(),
-                "ctrl/alt-e: errors".to_owned(),
-            ]);
-        }
-        groups.push(vec![format!("ctrl-c: {cancel}")]);
         let width = viewport.map(|(_, columns)| columns.saturating_sub(1));
-        Some(
-            self.style
-                .paint(Tone::Muted, join_key_hints(&groups, width)),
-        )
+        let pressed = state
+            .key_feedback
+            .filter(|feedback| feedback_active(Some(feedback.at), Instant::now()))
+            .map(|feedback| feedback.key);
+        Some(footer_hints(
+            self.style,
+            state.verbose_active,
+            state.concurrency_available(),
+            cancel,
+            width,
+            pressed,
+        ))
     }
 
     /// The next Ctrl-C action, read from the signal coordinator's escalation.
@@ -2137,15 +2886,104 @@ fn dashboard_update_line_count(updates: &VecDeque<RecentUpdate>) -> usize {
 /// escalates as the cancel is armed, so a narrow terminal must not cut it
 /// mid-word, and a group such as the view pair stays together rather than one of
 /// the two vanishing.
-fn join_key_hints(groups: &[Vec<String>], width: Option<usize>) -> String {
-    let mut kept = groups.to_vec();
+struct KeyHint<'a> {
+    keys: &'static [(FeedbackKey, &'static str)],
+    action: &'a str,
+}
+
+impl KeyHint<'_> {
+    fn width(&self) -> usize {
+        self.keys
+            .iter()
+            .map(|(_, label)| label.chars().count())
+            .sum::<usize>()
+            + self.keys.len().saturating_sub(1)
+            + 2
+            + self.action.chars().count()
+    }
+
+    fn render(&self, style: TerminalStyle, pressed: Option<FeedbackKey>) -> String {
+        let keys = self
+            .keys
+            .iter()
+            .map(|(key, label)| {
+                style.paint(
+                    if pressed == Some(*key) {
+                        Tone::InputFeedback
+                    } else {
+                        Tone::Muted
+                    },
+                    label,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(&style.paint(Tone::Muted, "/"));
+        format!(
+            "{keys}{}",
+            style.paint(Tone::Muted, format!(": {}", self.action))
+        )
+    }
+}
+
+fn footer_hints(
+    style: TerminalStyle,
+    verbose: bool,
+    concurrency: bool,
+    cancel: &str,
+    width: Option<usize>,
+    pressed: Option<FeedbackKey>,
+) -> String {
+    let mut groups = vec![vec![KeyHint {
+        keys: &[(FeedbackKey::Verbose, "v")],
+        action: "verbose",
+    }]];
+    if verbose {
+        groups.push(vec![
+            KeyHint {
+                keys: &[(FeedbackKey::Run, "ctrl/alt-r")],
+                action: "run",
+            },
+            KeyHint {
+                keys: &[(FeedbackKey::Errors, "ctrl/alt-e")],
+                action: "errors",
+            },
+        ]);
+    }
+    if concurrency {
+        groups.push(vec![KeyHint {
+            keys: &[(FeedbackKey::Increase, "+"), (FeedbackKey::Decrease, "-")],
+            action: "concurrency",
+        }]);
+    }
+    groups.push(vec![KeyHint {
+        keys: &[(FeedbackKey::Cancel, "ctrl-c")],
+        action: cancel,
+    }]);
     loop {
-        let hints = kept.iter().flatten().cloned().collect::<Vec<_>>();
-        let text = format!("keys: {}", hints.join(" · "));
-        if width.is_none_or(|width| text.chars().count() <= width) || kept.len() <= 1 {
-            return text;
+        let hints = groups.iter().flatten().collect::<Vec<_>>();
+        let columns = 6
+            + hints.iter().map(|hint| hint.width()).sum::<usize>()
+            + hints.len().saturating_sub(1) * 3;
+        if width.is_none_or(|width| columns <= width) || groups.len() <= 1 {
+            return format!(
+                "{}{}",
+                style.paint(Tone::Muted, "keys: "),
+                hints
+                    .iter()
+                    .map(|hint| hint.render(style, pressed))
+                    .collect::<Vec<_>>()
+                    .join(&style.paint(Tone::Muted, " · "))
+            );
         }
-        kept.remove(kept.len() - 2);
+        let removable = (0..groups.len() - 1)
+            .rev()
+            .find(|index| {
+                !groups[*index]
+                    .iter()
+                    .any(|hint| hint.keys.iter().any(|(key, _)| Some(*key) == pressed))
+            })
+            .unwrap_or(groups.len() - 2);
+        groups.remove(removable);
     }
 }
 
@@ -2385,6 +3223,7 @@ fn live_region_lines(
     dashboard: bool,
 ) -> Option<Vec<String>> {
     let active = state.stack.last();
+    let context = workflow_lines(style, &state.workflow);
     // A blank separator row, an optional cancelling notice, and the footer row.
     let footer_rows = if footer.is_some() {
         2 + usize::from(notice.is_some())
@@ -2402,7 +3241,8 @@ fn live_region_lines(
     // Leave the final viewport row unused so a full region never scrolls.
     let room = viewport
         .map(|(rows, _)| rows.saturating_sub(1))
-        .unwrap_or(DEFAULT_VIEWPORT_ROWS.saturating_sub(1));
+        .unwrap_or(DEFAULT_VIEWPORT_ROWS.saturating_sub(1))
+        .saturating_sub(context.len());
 
     let mut lines = if verbose {
         // Reserve roughly half the room for the dashboard and stream the rest
@@ -2455,21 +3295,29 @@ fn live_region_lines(
         streamed
     } else if let Some(active) = active {
         if dashboard {
-            dashboard_lines_with_viewport(
+            dashboard_lines_with_viewport_mode(
                 style,
                 active,
                 active.started.elapsed(),
-                viewport.map(|(rows, columns)| (rows.saturating_sub(footer_rows), columns)),
+                viewport.map(|(rows, columns)| {
+                    (rows.saturating_sub(footer_rows + context.len()), columns)
+                }),
+                RosterPolicy::Full,
             )
         } else {
             let detail = heartbeat_detail(active.detail.as_deref(), active.started.elapsed());
             vec![active_line(style, &active.label, Some(&detail))]
         }
+    } else if !context.is_empty() {
+        Vec::new()
     } else {
-        // Nothing to draw: no span and no open verbose section.
+        // Nothing to draw: no span, workflow or open verbose section.
         return None;
     };
 
+    if !context.is_empty() {
+        lines.splice(0..0, context);
+    }
     if let Some(footer) = footer {
         // Keep one blank row between the dashboard and the footer so the keys
         // read as chrome rather than another host row, then show the cancelling
@@ -2493,6 +3341,24 @@ fn live_region_lines(
     Some(lines)
 }
 
+fn workflow_lines(style: TerminalStyle, workflow: &WorkflowContext) -> Vec<String> {
+    if workflow.started.is_none() {
+        return Vec::new();
+    }
+    workflow
+        .phases
+        .iter()
+        .map(|phase| {
+            let compact = phase.compact();
+            let label = compact
+                .strip_prefix(phase.marker)
+                .unwrap_or(&compact)
+                .trim_start();
+            styled_outcome_line(style, phase.marker, phase.tone, label)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 fn dashboard_lines(
     style: TerminalStyle,
@@ -2502,6 +3368,7 @@ fn dashboard_lines(
     dashboard_lines_with_viewport(style, active, elapsed, None)
 }
 
+#[cfg(test)]
 fn dashboard_lines_with_viewport(
     style: TerminalStyle,
     active: &ActiveProgress,
@@ -2562,69 +3429,75 @@ fn host_dashboard_lines(
     // The quiet-heartbeat pulse alternates once per second; the dashboard
     // redraws on the same cadence, so only silent rows visibly blink.
     let blink_on = elapsed.as_secs().is_multiple_of(2);
-    let running = dashboard
-        .rows
-        .values()
-        .filter(|row| row.state == HostRowState::Running)
-        .count();
-    let done = dashboard
-        .rows
-        .values()
-        .filter(|row| {
-            matches!(
-                row.state,
-                HostRowState::Succeeded
-                    | HostRowState::Skipped
-                    | HostRowState::Failed
-                    | HostRowState::Interrupted
-            )
-        })
-        .count();
     let mut metadata = Vec::new();
-    if let Some(stage) = &dashboard.stage {
-        metadata.push(format!("stage {stage}"));
+    if let Some(stage) = &dashboard.stage
+        && !dashboard
+            .title
+            .as_deref()
+            .unwrap_or(&active.label)
+            .to_ascii_lowercase()
+            .starts_with(&stage.to_ascii_lowercase())
+    {
+        metadata.push(style.paint(Tone::Muted, format!("stage {stage}")));
     }
     if let Some((current, total)) = dashboard.wave
         && total > 1
     {
-        metadata.push(format!("wave {current}/{total}"));
+        metadata.push(style.paint(Tone::Muted, format!("wave {current}/{total}")));
     }
-    if dashboard.concurrency > 0 {
-        metadata.push(format!("{running}/{} running", dashboard.concurrency));
-    } else {
-        metadata.push(format!("{running} running"));
+    if let Some(admission) = &dashboard.admission {
+        let now = Instant::now();
+        let number = |value: usize, at: Option<Instant>| {
+            style.paint(
+                if feedback_active(at, now) {
+                    Tone::InputFeedback
+                } else {
+                    Tone::Muted
+                },
+                value.to_string(),
+            )
+        };
+        metadata.push(format!(
+            "{}{}{}",
+            number(admission.running, admission.running_changed_at),
+            style.paint(Tone::Muted, " running · limit "),
+            number(admission.target, admission.target_changed_at)
+        ));
+        if let Some(constraint) = &admission.constraint {
+            metadata.push(style.paint(Tone::Muted, constraint));
+        }
+    } else if dashboard.concurrency > 0 {
+        metadata.push(style.paint(Tone::Muted, format!("slots —/{}", dashboard.concurrency)));
     }
-    metadata.push(format!("done {done}/{}", dashboard.rows.len()));
-    metadata.push(format!("elapsed {}", format_duration(elapsed)));
+    metadata.extend(
+        fleet_timing::outcome_counts(dashboard.rows.values().map(|row| row.outcome))
+            .into_iter()
+            .map(|field| style.paint(Tone::Muted, field)),
+    );
+    metadata.push(style.paint(Tone::Muted, format!("elapsed {}", format_duration(elapsed))));
     let max_lines = viewport
         .map(|(rows, _)| rows.saturating_sub(1).max(1))
         .unwrap_or(usize::MAX);
     let max_columns = viewport.map(|(_, columns)| columns.max(1));
-    let heading = format!("● {}", active.label);
-    let metadata = format!("· {}", metadata.join(" · "));
-    let metadata_width = max_columns
-        .map(|columns| columns.saturating_sub(heading.chars().count() + 1))
-        .unwrap_or(usize::MAX);
+    let heading = format!("● {}", dashboard.title.as_deref().unwrap_or(&active.label));
     let heading = truncate_text(&heading, max_columns.unwrap_or(usize::MAX));
-    let metadata = truncate_text(&metadata, metadata_width);
-    let mut lines = vec![if metadata.is_empty() {
-        style.paint(Tone::Emphasis, heading)
-    } else {
-        format!(
-            "{} {}",
-            style.paint(Tone::Emphasis, heading),
-            style.paint(Tone::Muted, metadata)
-        )
-    }];
+    let mut lines = vec![style.paint(Tone::Emphasis, heading)];
+    lines.extend(
+        wrap_metadata_fields(style, &metadata, max_columns.unwrap_or(usize::MAX), "  ")
+            .into_iter()
+            .take(max_lines.saturating_sub(1)),
+    );
+    let header_rows = lines.len();
 
     // Window an oversized roster to its last rows so the bottom of the roster
     // stays visible, naming how many rows were dropped above. The marker is
     // only emitted when there is a row budgeted for it, so the result never
     // exceeds `max_lines`.
-    let roster_overflow = roster == RosterPolicy::Windowed && 1 + dashboard.order.len() > max_lines;
-    let marker_rows = usize::from(roster_overflow && max_lines > 1);
+    let roster_overflow =
+        roster == RosterPolicy::Windowed && header_rows + dashboard.order.len() > max_lines;
+    let marker_rows = usize::from(roster_overflow && max_lines > header_rows);
     let shown_hosts = if roster_overflow {
-        max_lines.saturating_sub(1 + marker_rows)
+        max_lines.saturating_sub(header_rows + marker_rows)
     } else {
         dashboard.order.len()
     };
@@ -2637,7 +3510,7 @@ fn host_dashboard_lines(
         ));
     }
 
-    let base_lines = 1 + marker_rows + shown_order.len();
+    let base_lines = header_rows + marker_rows + shown_order.len();
     let available_detail_lines = max_lines.saturating_sub(base_lines);
     let detailed_hosts = shown_order
         .iter()
@@ -2712,22 +3585,25 @@ fn host_dashboard_lines(
                         .as_deref()
                         .unwrap_or("remote execution unconfirmed")
                 ),
-                String::new(),
+                row.duration_metadata(),
             ),
-            HostRowState::Pending => (Tone::Muted, "○ pending".to_owned(), String::new()),
+            HostRowState::Pending => (Tone::Muted, "○ pending".to_owned(), row.duration_metadata()),
             HostRowState::Completed | HostRowState::Finalizing => (
                 Tone::Muted,
                 format!("○ {}", row.task.as_deref().unwrap_or("done")),
-                row.elapsed
-                    .map(|elapsed| format!(" · {}", format_duration(elapsed)))
-                    .unwrap_or_default(),
+                row.duration_metadata(),
             ),
             HostRowState::Running => {
                 let elapsed = row
                     .task_started
                     .map(|started| started.elapsed())
                     .unwrap_or_default();
-                let mut metadata = format!(" · task elapsed {}", format_duration(elapsed));
+                let total = row.duration().unwrap_or(elapsed);
+                let mut metadata = format!(" · {}", format_duration(total));
+                // Subsecond differences are rounding noise, not useful context.
+                if total.saturating_sub(elapsed) >= Duration::from_secs(1) {
+                    metadata.push_str(&format!(" · step {}", format_duration(elapsed)));
+                }
                 let (tone, glyph) = match heartbeat_state(row) {
                     Heartbeat::Live if row.is_quiet() => {
                         (Tone::Active, if blink_on { "●" } else { "○" })
@@ -2752,45 +3628,61 @@ fn host_dashboard_lines(
             HostRowState::Succeeded => (
                 Tone::Success,
                 format!("✓ {}", row.summary.as_deref().unwrap_or("complete")),
-                row.elapsed
-                    .map(|elapsed| format!(" · {}", format_duration(elapsed)))
-                    .unwrap_or_default(),
+                row.duration_metadata(),
             ),
             HostRowState::Skipped => (
-                Tone::Neutral,
+                Tone::Muted,
                 format!("◇ {}", row.summary.as_deref().unwrap_or("skipped")),
-                String::new(),
+                row.duration_metadata(),
+            ),
+            HostRowState::Warning => (
+                Tone::Warning,
+                format!("◇ {}", row.summary.as_deref().unwrap_or("warning")),
+                row.duration_metadata(),
             ),
             HostRowState::Failed => (
                 Tone::Failure,
                 format!("✗ {}", row.summary.as_deref().unwrap_or("failed")),
-                String::new(),
+                row.duration_metadata(),
             ),
             HostRowState::Interrupted => (
                 Tone::Warning,
                 format!("⊘ {}", row.summary.as_deref().unwrap_or("interrupted")),
-                row.elapsed
-                    .map(|elapsed| format!(" · {}", format_duration(elapsed)))
-                    .unwrap_or_default(),
+                row.duration_metadata(),
             ),
         };
         let host_width = max_columns
-            .map(|columns| columns.saturating_sub(4).min(host.chars().count()))
+            .map(|columns| {
+                columns
+                    .saturating_sub(4 + metadata.chars().count() + 3)
+                    .min(host.chars().count())
+            })
             .unwrap_or_else(|| host.chars().count());
         let host = truncate_text(host, host_width);
         let available_status_width = max_columns
             .map(|columns| columns.saturating_sub(host.chars().count() + 4))
             .unwrap_or(usize::MAX);
-        let status = truncate_text(&status, available_status_width);
-        let metadata = truncate_text(
-            &metadata,
-            available_status_width.saturating_sub(status.chars().count()),
+        // Reserve timing before shortening a verbose stage/failure label.
+        let metadata = truncate_text(&metadata, available_status_width.saturating_sub(2));
+        let status = truncate_text(
+            &status,
+            available_status_width.saturating_sub(metadata.chars().count()),
         );
+        let skipped = row.state == HostRowState::Skipped;
+        let host = if skipped {
+            style.paint_host_muted(&host)
+        } else {
+            style.paint_host(&host)
+        };
         lines.push(format!(
             "  {}  {}{}",
-            style.paint_host(&host),
+            host,
             style.paint(tone, status),
-            paint_if_nonempty(style, Tone::Neutral, &metadata)
+            paint_if_nonempty(
+                style,
+                if skipped { Tone::Muted } else { Tone::Neutral },
+                &metadata
+            )
         ));
         if matches!(
             row.state,
@@ -2832,6 +3724,74 @@ fn truncate_text(value: &str, max_columns: usize) -> String {
     let mut truncated = value.chars().take(max_columns - 1).collect::<String>();
     truncated.push('…');
     truncated
+}
+
+fn wrap_metadata_fields(
+    style: TerminalStyle,
+    fields: &[String],
+    max_columns: usize,
+    indent: &str,
+) -> Vec<String> {
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    let indent_width = indent.chars().count();
+    let content_width = max_columns.saturating_sub(indent_width).max(1);
+    let separator = style.paint(Tone::Muted, " · ");
+    let separator_width: usize = 3;
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+
+    for field in fields {
+        let field_width = ansi_visible_width(field);
+        let extra = if current.is_empty() {
+            field_width
+        } else {
+            separator_width.saturating_add(field_width)
+        };
+        if !current.is_empty() && current_width.saturating_add(extra) > content_width {
+            lines.push(format!(
+                "{indent}{}",
+                truncate_ansi(&current, content_width)
+            ));
+            current.clear();
+            current_width = 0;
+        }
+        if !current.is_empty() {
+            current.push_str(&separator);
+            current_width = current_width.saturating_add(separator_width);
+        }
+        current.push_str(field);
+        current_width = current_width.saturating_add(field_width);
+    }
+    if !current.is_empty() {
+        lines.push(format!(
+            "{indent}{}",
+            truncate_ansi(&current, content_width)
+        ));
+    }
+    lines
+}
+
+fn ansi_visible_width(value: &str) -> usize {
+    let mut visible = 0usize;
+    let mut characters = value.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\x1b' {
+            if characters.peek() == Some(&'[') {
+                characters.next();
+                for control in characters.by_ref() {
+                    if ('@'..='~').contains(&control) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        visible += 1;
+    }
+    visible
 }
 
 /// Truncate a possibly styled line to `max_columns` visible columns, copying
@@ -3106,6 +4066,253 @@ pub fn format_duration(duration: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn poisoned_presentation_lock_does_not_panic_or_install_keyboard_authority() {
+        let reporter = super::ProgressReporter::new(false);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _state = reporter.state.lock().unwrap();
+            panic!("fixture: presentation failed");
+        }));
+        let guard = reporter.concurrency_handler(|_| panic!("poisoned handler was invoked"));
+        assert!(!reporter.concurrency_available());
+        reporter.adjust_concurrency(super::ConcurrencyChange::Increase);
+        drop(guard);
+    }
+
+    #[test]
+    fn invocation_handler_serves_new_pools_but_only_active_work_advertises_controls() {
+        use crate::fleet::admission::{self, Adjustment, AdmissionControl, AdmissionLimits};
+        let reporter = interactive_reporter();
+        let control = AdmissionControl::new(
+            AdmissionLimits {
+                global: 1,
+                per_domain: 1,
+                hard_domain_max: None,
+            },
+            8,
+        )
+        .unwrap();
+        let input = control.input();
+        let guard = reporter.concurrency_handler(move |change| {
+            input.adjust(match change {
+                ConcurrencyChange::Increase => Adjustment::Increase,
+                ConcurrencyChange::Decrease => Adjustment::Decrease,
+            })
+        });
+        assert!(!reporter.concurrency_available());
+        reporter.adjust_concurrency(ConcurrencyChange::Increase);
+        assert_eq!(control.snapshot().target, 1);
+        for (global, expected) in [(4, 4), (2, 5)] {
+            reporter.begin_host_dashboard(&["app".into()]);
+            let pool = control
+                .with_limits(AdmissionLimits {
+                    global,
+                    per_domain: global,
+                    hard_domain_max: None,
+                })
+                .unwrap();
+            let mut first = true;
+            admission::dispatch(
+                vec![(None, ()); 8],
+                &pool,
+                |_| {},
+                |_| false,
+                |_, _| {},
+                |snapshot| {
+                    reporter.phase_admission(
+                        snapshot.running,
+                        snapshot.target,
+                        snapshot.adjustable(),
+                        None,
+                    );
+                    assert_eq!(reporter.concurrency_available(), snapshot.adjustable());
+                    if first {
+                        first = false;
+                        assert_eq!(snapshot.target, expected);
+                        if global == 4 {
+                            reporter.adjust_concurrency(ConcurrencyChange::Increase);
+                            assert_eq!(pool.snapshot().target, 5);
+                        }
+                    }
+                },
+            )
+            .unwrap();
+            assert!(!reporter.concurrency_available());
+            assert!(reporter.state.lock().unwrap().concurrency_handler.is_some());
+            reporter.adjust_concurrency(ConcurrencyChange::Decrease);
+            assert_eq!(pool.snapshot().target, 5);
+        }
+        // An exclusive build or a non-host phase must not inherit a live hint.
+        reporter.phase_admission(1, 1, false, Some("exclusive"));
+        assert!(!reporter.concurrency_available());
+        reporter.phase_admission(1, 2, true, None);
+        assert!(reporter.concurrency_available());
+        reporter.end_silent_phase();
+        reporter.started("Apply infrastructure");
+        assert!(!reporter.concurrency_available());
+        drop(guard);
+        assert!(reporter.state.lock().unwrap().concurrency_handler.is_none());
+    }
+
+    #[test]
+    fn input_feedback_marks_only_changed_numbers_and_expires_without_new_work() {
+        let mut reporter = interactive_reporter();
+        reporter.style = TerminalStyle::from_capabilities(true, false);
+        reporter.begin_host_dashboard(&["app".into()]);
+        reporter.phase_admission(2, 2, true, None);
+        {
+            let _rejected = reporter.concurrency_handler(|_| false);
+            reporter.adjust_concurrency(ConcurrencyChange::Increase);
+            assert!(reporter.state.lock().unwrap().key_feedback.is_none());
+            assert!(!host_frame(&reporter).contains("\x1b[38;5;204m"));
+        }
+        let _guard = reporter.concurrency_handler(|_| true);
+        reporter.adjust_concurrency(ConcurrencyChange::Increase);
+        // An accepted press without a changed snapshot flashes the hint, not the values.
+        assert!(!host_frame(&reporter).contains("\x1b[38;5;204m"));
+        reporter.phase_admission(2, 3, true, None);
+        let header = host_frame(&reporter);
+        assert!(header.contains("\x1b[38;5;204m3\x1b[0m"));
+        assert!(!header.contains("\x1b[38;5;204m2\x1b[0m"));
+        reporter.phase_admission(3, 3, true, None);
+        reporter.phase_admission(3, 3, true, Some("waiting"));
+        assert_eq!(
+            host_frame(&reporter)
+                .matches("\x1b[38;5;204m3\x1b[0m")
+                .count(),
+            2
+        );
+        reporter.adjust_concurrency(ConcurrencyChange::Decrease);
+        reporter.phase_admission(3, 2, true, Some("draining"));
+        assert!(host_frame(&reporter).contains("\x1b[38;5;204m2\x1b[0m"));
+        let expired = Instant::now() + INPUT_FEEDBACK_DURATION;
+        {
+            let mut state = reporter.state.lock().unwrap();
+            assert!(state.expire_input_feedback(expired));
+            assert!(!state.expire_input_feedback(expired));
+            assert!(state.key_feedback.is_none());
+        }
+        assert!(!host_frame(&reporter).contains("\x1b[38;5;204m"));
+        // Unprompted occupancy updates don't create distracting flashes.
+        reporter.phase_admission(1, 2, true, None);
+        assert!(!host_frame(&reporter).contains("\x1b[38;5;204m"));
+        let redirected = reporter.clone().without_terminal();
+        redirected.key_pressed(FeedbackKey::Verbose);
+        assert!(reporter.state.lock().unwrap().key_feedback.is_none());
+        reporter.style = TerminalStyle::from_capabilities(true, true);
+        reporter.key_pressed(FeedbackKey::Verbose);
+        assert!(reporter.state.lock().unwrap().key_feedback.is_none());
+        assert!(!host_frame(&reporter).contains('\x1b'));
+    }
+
+    #[test]
+    fn accepted_concurrency_feedback_catches_a_snapshot_published_inside_the_callback() {
+        let mut reporter = interactive_reporter();
+        reporter.style = TerminalStyle::from_capabilities(true, false);
+        reporter.begin_host_dashboard(&["app".into()]);
+        reporter.phase_admission(2, 2, true, None);
+        let publisher = reporter.clone();
+        let _guard = reporter.concurrency_handler(move |_| {
+            publisher.phase_admission(3, 3, true, None);
+            true
+        });
+
+        reporter.adjust_concurrency(ConcurrencyChange::Increase);
+
+        let header = host_frame(&reporter);
+        assert_eq!(header.matches("\x1b[38;5;204m3\x1b[0m").count(), 2);
+    }
+
+    #[test]
+    fn footer_feedback_is_key_specific_and_width_is_independent_of_ansi() {
+        let strip_ansi = |text: &str| {
+            text.replace("\x1b[2m", "")
+                .replace("\x1b[38;5;204m", "")
+                .replace("\x1b[0m", "")
+        };
+        let color = TerminalStyle::from_capabilities(true, false);
+        let plain = TerminalStyle::from_capabilities(true, true);
+        for (key, label) in [
+            (FeedbackKey::Increase, "+"),
+            (FeedbackKey::Decrease, "-"),
+            (FeedbackKey::Verbose, "v"),
+            (FeedbackKey::Run, "ctrl/alt-r"),
+            (FeedbackKey::Errors, "ctrl/alt-e"),
+            (FeedbackKey::Cancel, "ctrl-c"),
+        ] {
+            let text = footer_hints(color, true, true, "cancel", Some(180), Some(key));
+            assert_eq!(text.matches("\x1b[38;5;204m").count(), 1);
+            assert!(text.contains(&color.paint(Tone::InputFeedback, label)));
+            assert_eq!(
+                strip_ansi(&text),
+                footer_hints(plain, true, true, "cancel", Some(180), Some(key))
+            );
+        }
+        let narrow = footer_hints(
+            color,
+            true,
+            true,
+            "cancel",
+            Some(60),
+            Some(FeedbackKey::Increase),
+        );
+        assert!(narrow.contains(&color.paint(Tone::InputFeedback, "+")));
+        assert!(strip_ansi(&narrow).ends_with("ctrl-c: cancel"));
+        assert!(strip_ansi(&narrow).chars().count() <= 60);
+    }
+
+    #[test]
+    fn concurrency_guard_releases_registration_on_success_error_and_unwind() {
+        for exit in 0..3 {
+            let reporter = interactive_reporter();
+            reporter.begin_host_dashboard(&["app".into()]);
+            reporter.phase_admission(1, 2, true, None);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = reporter.concurrency_handler(|_| true);
+                assert!(reporter.concurrency_available());
+                match exit {
+                    0 => Ok(()),
+                    1 => Err("fixture: workflow error"),
+                    _ => panic!("fixture: workflow panic"),
+                }
+            }));
+            assert!(!reporter.concurrency_available());
+            assert!(reporter.state.lock().unwrap().concurrency_handler.is_none());
+            match exit {
+                0 => assert!(result.unwrap().is_ok()),
+                1 => assert!(result.unwrap().is_err()),
+                _ => assert!(result.is_err()),
+            }
+        }
+    }
+
+    #[test]
+    fn concurrency_callbacks_are_scoped_reporter_local_and_invoked_without_its_lock() {
+        let reporter = interactive_reporter();
+        reporter.begin_host_dashboard(&["app".into()]);
+        reporter.phase_admission(1, 2, true, None);
+        let other = super::ProgressReporter::new(false);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let clone = reporter.clone();
+        let guard = reporter.concurrency_handler(move |_| {
+            assert!(clone.concurrency_available());
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            true
+        });
+        assert!(!other.concurrency_available());
+        reporter.adjust_concurrency(super::ConcurrencyChange::Increase);
+        {
+            let _nested = reporter.concurrency_handler(|_| true);
+            reporter.adjust_concurrency(super::ConcurrencyChange::Decrease);
+        }
+        reporter.adjust_concurrency(super::ConcurrencyChange::Decrease);
+        drop(guard);
+        reporter.adjust_concurrency(super::ConcurrencyChange::Increase);
+        assert!(!reporter.concurrency_available());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
     use super::*;
 
     #[test]
@@ -3198,6 +4405,41 @@ mod tests {
                 "  │ [Build plan err] warning: dirty tree\n",
                 "  abird-gondor-ci · ok\n",
                 "\x1b[1mSummary · deploy · success\x1b[0m\n",
+            )
+        );
+    }
+
+    #[test]
+    fn summary_metadata_and_labeled_values_use_secondary_lines_and_tone() {
+        set_json_output(false);
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: false,
+            recent_update_limit: 0,
+            style: TerminalStyle::from_capabilities(true, false),
+            destination: ProgressDestination::Buffer(Arc::clone(&buffer)),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+
+        reporter.message_field("Source", "d968b388 + staged:abc");
+        reporter.message_field_with_metadata("Build strategy", "auto", Some("nix"));
+        reporter.heading_with_metadata(
+            "Summary · deploy · success",
+            [
+                "d968b388 + staged:abc".to_owned(),
+                "total elapsed 23.8s".to_owned(),
+            ],
+        );
+
+        assert_eq!(
+            String::from_utf8(buffer.lock().unwrap().clone()).unwrap(),
+            concat!(
+                "\x1b[34mSource\x1b[0m: d968b388 + staged:abc\n",
+                "\x1b[34mBuild strategy\x1b[0m: auto\x1b[2m (nix)\x1b[0m\n",
+                "\x1b[1mSummary · deploy · success\x1b[0m\n",
+                "  \x1b[2md968b388 + staged:abc\x1b[0m\x1b[2m · \x1b[0m\x1b[2mtotal elapsed 23.8s\x1b[0m\n",
             )
         );
     }
@@ -3572,26 +4814,19 @@ mod tests {
 
     #[test]
     fn the_footer_drops_hints_before_cutting_the_interrupt_label() {
-        let groups = vec![
-            vec!["v: verbose".to_owned()],
-            vec![
-                "ctrl/alt-r: run".to_owned(),
-                "ctrl/alt-e: errors".to_owned(),
-            ],
-            vec!["ctrl-c: confirm cancel".to_owned()],
-        ];
-        let wide = join_key_hints(&groups, Some(120));
+        let plain = TerminalStyle::from_capabilities(false, false);
+        let wide = footer_hints(plain, true, false, "confirm cancel", Some(120), None);
         assert!(wide.contains("ctrl/alt-e: errors"), "{wide}");
         assert!(wide.ends_with("ctrl-c: confirm cancel"), "{wide}");
 
         // The view pair drops as a unit, and the interrupt label, which escalates
         // as the cancel is armed, survives intact instead of being cut mid-word.
         assert_eq!(
-            join_key_hints(&groups, Some(60)),
+            footer_hints(plain, true, false, "confirm cancel", Some(60), None),
             "keys: v: verbose · ctrl-c: confirm cancel"
         );
         assert_eq!(
-            join_key_hints(&groups, Some(20)),
+            footer_hints(plain, true, false, "confirm cancel", Some(20), None),
             "keys: ctrl-c: confirm cancel"
         );
     }
@@ -4551,7 +5786,7 @@ mod tests {
         .join("\n");
 
         assert!(
-            lines.contains("▲ 15 hosts above"),
+            lines.contains("▲ 16 hosts above"),
             "the hidden count is exact: {lines:?}"
         );
         assert!(
@@ -4983,6 +6218,23 @@ mod tests {
         assert!(lines.iter().any(|line| line == "    two"), "{lines:?}");
     }
 
+    fn age_host_task(reporter: &ProgressReporter, host: &str, seconds: u64) {
+        let mut state = reporter.state.lock().unwrap();
+        let row = state
+            .stack
+            .last_mut()
+            .unwrap()
+            .host_dashboard
+            .as_mut()
+            .unwrap()
+            .rows
+            .get_mut(host)
+            .unwrap();
+        let started = Instant::now() - Duration::from_secs(seconds);
+        row.task_started = Some(started);
+        row.timing.since = Some(started);
+    }
+
     #[test]
     fn host_dashboard_shows_schedule_full_inventory_and_bounded_failure_tail() {
         set_json_output(false);
@@ -5002,6 +6254,7 @@ mod tests {
         reporter.started("Deploy systems · 11 hosts");
         reporter.begin_host_dashboard(&hosts);
         reporter.host_schedule("activate", Some((2, 3)), 4);
+        reporter.phase_admission(0, 4, true, None);
         reporter.host_task_started("host-1", "activation-host-1", "Activation", None);
         for index in 0..6 {
             reporter.host_task_output("host-1", "activation-host-1", format!("line-{index}"));
@@ -5040,7 +6293,7 @@ mod tests {
             Duration::from_secs(3),
         );
         let rendered = lines.join("\n");
-        assert!(rendered.contains("stage activate · wave 2/3 · 0/4 running"));
+        assert!(rendered.contains("stage activate · wave 2/3 · 0 running · limit 4"));
         assert!(
             hosts.iter().all(|host| rendered.contains(host)),
             "{rendered}"
@@ -5052,6 +6305,267 @@ mod tests {
         assert!(!rendered.contains("temporary success output"), "{rendered}");
         assert!(!rendered.contains("rollback completed"), "{rendered}");
         assert!(rendered.contains("host-2  ✓ deployed"), "{rendered}");
+    }
+
+    fn host_row(reporter: &ProgressReporter, host: &str) -> HostRow {
+        reporter
+            .state
+            .lock()
+            .unwrap()
+            .stack
+            .last()
+            .unwrap()
+            .host_dashboard
+            .as_ref()
+            .unwrap()
+            .rows[host]
+            .clone()
+    }
+
+    fn host_frame(reporter: &ProgressReporter) -> String {
+        dashboard_lines(
+            reporter.style,
+            reporter.state.lock().unwrap().stack.last().unwrap(),
+            Duration::from_secs(12),
+        )
+        .join("\n")
+    }
+
+    #[test]
+    fn stage_counts_wait_for_host_outcomes_and_repeated_outcomes_freeze_time() {
+        let reporter = interactive_reporter();
+        reporter.begin_host_dashboard(&["app".to_owned()]);
+        reporter.phase_admission(1, 2, true, None);
+        reporter.host_task_started("app", "eval", "evaluate", None);
+        age_host_task(&reporter, "app", 2);
+        reporter.host_task_finished(
+            "app",
+            "eval",
+            "evaluate",
+            "evaluate done",
+            Duration::from_secs(2),
+            true,
+        );
+        let evaluated = host_row(&reporter, "app").duration().unwrap();
+        assert!(host_frame(&reporter).contains("done 0/1"));
+        assert!(
+            host_frame(&reporter).contains("1 running · limit 2"),
+            "completed substeps still occupy their admitted slot"
+        );
+        reporter.host_task_started("app", "build", "build", None);
+        assert!(host_row(&reporter, "app").duration().unwrap() >= evaluated);
+        assert!(
+            host_frame(&reporter).contains(" · step "),
+            "prior work makes the step time meaningful"
+        );
+        reporter.host_task_output("app", "build", "retryable failure".to_owned());
+        reporter.host_task_finished("app", "build", "build", "build done", Duration::ZERO, false);
+        assert!(host_frame(&reporter).contains("done 0/1"));
+        assert_eq!(host_row(&reporter, "app").outcome, None);
+        reporter.host_finished("app", false, None, "build failed");
+        let finished = host_row(&reporter, "app").duration();
+        assert!(host_frame(&reporter).contains("done 1/1"));
+        assert!(host_frame(&reporter).contains("✗ build failed · 2.0s"));
+        reporter.host_finished("app", false, Some(Duration::from_secs(900)), "duplicate");
+        reporter.host_skipped("app", "duplicate skip");
+        assert_eq!(host_row(&reporter, "app").duration(), finished);
+        assert_eq!(
+            host_row(&reporter, "app").summary.as_deref(),
+            Some("build failed")
+        );
+        assert!(host_frame(&reporter).contains("retryable failure"));
+    }
+
+    #[test]
+    fn nested_task_identity_restores_parent_timer_and_rejects_stale_completion() {
+        let reporter = interactive_reporter();
+        reporter.begin_host_dashboard(&["app".to_owned()]);
+        reporter.host_task_started("app", "same#1", "parent", None);
+        age_host_task(&reporter, "app", 8);
+        let started = host_row(&reporter, "app").task_started;
+        reporter.host_task_output("app", "same#1", "parent output".to_owned());
+        reporter.host_task_started("app", "same#2", "child", None);
+        reporter.host_task_finished(
+            "app",
+            "unrelated",
+            "stale",
+            "stale done",
+            Duration::from_secs(99),
+            true,
+        );
+        assert_eq!(
+            host_row(&reporter, "app").task_key.as_deref(),
+            Some("same#2")
+        );
+        reporter.host_task_finished("app", "same#2", "child", "child done", Duration::ZERO, true);
+        let row = host_row(&reporter, "app");
+        assert_eq!(row.task_key.as_deref(), Some("same#1"));
+        assert_eq!(row.task_started, started);
+        assert_eq!(row.output.back().map(String::as_str), Some("parent output"));
+        reporter.host_task_finished(
+            "app",
+            "same#1",
+            "parent",
+            "parent done",
+            Duration::from_secs(8),
+            true,
+        );
+        let row = host_row(&reporter, "app");
+        assert_eq!(format_duration(row.duration().unwrap()), "8.0s");
+        assert_eq!(row.state, HostRowState::Completed);
+    }
+
+    #[test]
+    fn operation_guards_cover_finalizing_and_cannot_touch_a_later_phase() {
+        let reporter = interactive_reporter();
+        reporter.begin_host_dashboard(&["app".to_owned()]);
+        let operation = reporter.host_operation("app");
+        reporter.host_task_started("app", "activation", "activation", None);
+        age_host_task(&reporter, "app", 10);
+        reporter.host_task_finalizing(
+            "app",
+            "activation",
+            "activation",
+            "activation done, finalizing",
+            Duration::from_secs(10),
+        );
+        assert!(host_row(&reporter, "app").timing.since.is_some());
+        reporter.host_finished("app", true, None, "deploy done");
+        let elapsed = host_row(&reporter, "app").duration();
+        reporter.record_host_phase(
+            "deploy",
+            "deploy done",
+            "✓",
+            Tone::Success,
+            Duration::from_secs(10),
+        );
+        reporter.end_silent_phase();
+        reporter.started_silent("Health");
+        reporter.begin_host_dashboard(&["app".to_owned()]);
+        drop(operation);
+        assert_eq!(host_row(&reporter, "app").duration(), None);
+        let state = reporter.state.lock().unwrap();
+        assert_eq!(state.workflow.phases[0].hosts[0].elapsed, elapsed);
+    }
+
+    #[test]
+    fn phase_history_survives_transition_and_begin_workflow_resets_context() {
+        let reporter = interactive_reporter();
+        reporter.begin_workflow();
+        reporter.begin_host_dashboard(&["app".to_owned(), "later".to_owned()]);
+        reporter.host_task_started("app", "build", "build", None);
+        age_host_task(&reporter, "app", 3);
+        reporter.host_finished("app", true, None, "build done");
+        reporter.record_host_phase(
+            "build",
+            "build done",
+            "✓",
+            Tone::Success,
+            Duration::from_secs(5),
+        );
+        reporter.host_phase_completed("Build".to_owned(), Duration::from_secs(5));
+        let between = reporter.state.lock().unwrap();
+        assert!(
+            live_region_lines(reporter.style, None, None, &between, Some((24, 100)), true)
+                .unwrap()
+                .join("\n")
+                .contains("✓ build done")
+        );
+        drop(between);
+        reporter.started_silent("Acquire");
+        reporter.begin_fleet_dashboard(&["app".to_owned(), "later".to_owned()], "Acquire");
+        let state = reporter.state.lock().unwrap();
+        let lines = live_region_lines(reporter.style, None, None, &state, Some((24, 160)), true)
+            .unwrap()
+            .join("\n");
+        assert!(!lines.contains("source "), "{lines}");
+        assert!(!lines.contains("Run · elapsed"));
+        assert_eq!(lines.matches("elapsed").count(), 1);
+        assert!(lines.contains("✓ build done · done 1/2 · 5.0s"), "{lines}");
+        assert!(lines.contains("● Acquire"));
+        assert!(lines.contains("done 0/2"));
+        drop(state);
+        let summary = reporter
+            .host_duration_summaries(&["app", "later"])
+            .into_values()
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(summary, "b3.0s");
+        reporter.end_silent_phase();
+        reporter.finish_workflow();
+        let state = reporter.state.lock().unwrap();
+        assert!(
+            live_region_lines(reporter.style, None, None, &state, Some((24, 100)), true).is_none()
+        );
+        drop(state);
+        reporter.begin_workflow();
+        assert!(reporter.state.lock().unwrap().workflow.phases.is_empty());
+    }
+
+    #[test]
+    fn scheduler_snapshot_is_independent_of_steps_and_advertises_controls_only_when_active() {
+        let reporter = interactive_reporter();
+        reporter.begin_host_dashboard(&["app".to_owned()]);
+        reporter.host_schedule("build", None, 4);
+        reporter.host_task_started("app", "build", "build", None);
+        assert!(!host_frame(&reporter).contains("1 running · limit 4"));
+        reporter.phase_admission(3, 2, true, Some("domain limit"));
+        let frame = host_frame(&reporter);
+        assert!(
+            frame.contains("3 running · limit 2 · domain limit"),
+            "{frame}"
+        );
+        assert!(
+            !frame.contains("draining"),
+            "renderer must not infer scheduler policy"
+        );
+        reporter.phase_admission(3, 2, true, Some("draining"));
+        assert_eq!(host_frame(&reporter).matches("draining").count(), 1);
+        assert!(!footer_hints(reporter.style, false, false, "cancel", None, None).contains("+/-"));
+        assert!(
+            footer_hints(reporter.style, false, true, "cancel", None, None)
+                .contains("+/-: concurrency")
+        );
+        assert!(!footer_hints(reporter.style, true, true, "cancel", None, None).contains("t: "));
+        assert!(
+            footer_hints(reporter.style, true, true, "force exit", Some(30), None)
+                .ends_with("ctrl-c: force exit")
+        );
+    }
+
+    #[test]
+    fn redirected_fleet_rows_share_accounting_without_terminal_frames() {
+        let reporter = interactive_reporter();
+        reporter.begin_workflow();
+        let key_reader = reporter.clone();
+        let reporter = reporter.without_terminal();
+        reporter.begin_host_dashboard(&["app".to_owned()]);
+        reporter.host_task_started("app", "build", "build", None);
+        age_host_task(&reporter, "app", 4);
+        reporter.host_task_finished(
+            "app",
+            "build",
+            "build",
+            "build done",
+            Duration::from_secs(4),
+            true,
+        );
+        reporter.host_finished("app", true, None, "build done");
+        reporter.record_host_phase(
+            "build",
+            "build done",
+            "✓",
+            Tone::Success,
+            Duration::from_secs(4),
+        );
+        assert_eq!(reporter.host_duration_summaries(&["app"])["app"], "b4.0s");
+        key_reader.refresh();
+        let _keys = key_reader.concurrency_handler(|_| true);
+        let ProgressDestination::Buffer(buffer) = &reporter.destination else {
+            panic!("test buffer")
+        };
+        let output = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(!output.contains('\u{1b}'), "{output:?}");
     }
 
     #[test]
@@ -5075,6 +6589,7 @@ mod tests {
             "activation-app",
             "starting the following units: app.service".to_owned(),
         );
+        age_host_task(&reporter, "app", 11);
         reporter.host_task_finalizing(
             "app",
             "activation-app",
@@ -5102,7 +6617,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_host_success_retains_the_last_task_elapsed() {
+    fn terminal_host_success_retains_the_stage_total() {
         set_json_output(false);
         let reporter = ProgressReporter {
             enabled: true,
@@ -5117,6 +6632,7 @@ mod tests {
         reporter.started("Deploy systems · 1 host");
         reporter.begin_host_dashboard(&["app".to_owned()]);
         reporter.host_task_started("app", "activation-app", "Activation observe app", None);
+        age_host_task(&reporter, "app", 11);
         reporter.host_task_finalizing(
             "app",
             "activation-app",
@@ -5156,6 +6672,7 @@ mod tests {
         reporter.begin_host_dashboard(&["app".to_owned()]);
         reporter.host_task_started("app", "build-app", "build", None);
         reporter.host_task_output("app", "build-app", "[build] compiling".to_owned());
+        age_host_task(&reporter, "app", 3);
         reporter.host_task_finished(
             "app",
             "build-app",
@@ -5233,6 +6750,7 @@ mod tests {
         reporter.begin_host_dashboard(&["app".to_owned()]);
         reporter.host_task_started("app", "activation-app", "activation observe", None);
         reporter.host_task_output("app", "activation-app", "stopping app.service".to_owned());
+        age_host_task(&reporter, "app", 4);
         reporter.host_task_interrupted(
             "app",
             "activation-app",
@@ -5332,8 +6850,8 @@ mod tests {
         };
 
         // Active output keeps the live row steady on both pulse ticks.
-        assert!(render(4).contains("app  ● build · task elapsed"));
-        assert!(render(5).contains("app  ● build · task elapsed"));
+        assert!(render(4).contains("app  ● build · "));
+        assert!(render(5).contains("app  ● build · "));
 
         // Quiet past the pulse window: the live heartbeat blinks.
         {
@@ -5350,8 +6868,8 @@ mod tests {
                 .unwrap();
             row.last_output = Some(Instant::now() - Duration::from_secs(10));
         }
-        assert!(render(4).contains("app  ● build · task elapsed"));
-        assert!(render(5).contains("app  ○ build · task elapsed"));
+        assert!(render(4).contains("app  ● build · "));
+        assert!(render(5).contains("app  ○ build · "));
 
         // Past twice the interval with no beat: warned and explained.
         {
@@ -5369,7 +6887,7 @@ mod tests {
             row.task_started = Some(Instant::now() - Duration::from_secs(70));
         }
         let stalled = render(6);
-        assert!(stalled.contains("app  ● build · task elapsed"), "{stalled}");
+        assert!(stalled.contains("app  ● build · "), "{stalled}");
         assert!(stalled.contains("no heartbeat"), "{stalled}");
     }
 
@@ -5384,6 +6902,14 @@ mod tests {
             stage: Some("build".to_owned()),
             wave: Some((1, 1)),
             concurrency: 1,
+            admission: Some(AdmissionDisplay {
+                running: 1,
+                target: 1,
+                constraint: None,
+                adjustable: true,
+                running_changed_at: None,
+                target_changed_at: None,
+            }),
             ..HostDashboard::default()
         };
         for host in &hosts {
@@ -5407,10 +6933,22 @@ mod tests {
             &active,
             Duration::from_secs(245),
         );
+        assert_eq!(lines[0], "● Build systems · 11 hosts · phase 1/5");
         assert_eq!(
-            lines[0],
-            "● Build systems · 11 hosts · phase 1/5 · stage build · 1/1 running · done 0/11 · elapsed 4m 05s"
+            lines[1],
+            "  1 running · limit 1 · done 0/11 · elapsed 4m 05s"
         );
+
+        let narrow = dashboard_lines_with_viewport(
+            TerminalStyle::from_capabilities(false, false),
+            &active,
+            Duration::from_secs(245),
+            Some((24, 44)),
+        );
+        assert_eq!(narrow[0], "● Build systems · 11 hosts · phase 1/5");
+        assert_eq!(narrow[1], "  1 running · limit 1 · done 0/11");
+        assert_eq!(narrow[2], "  elapsed 4m 05s");
+        assert!(narrow.iter().all(|line| line.chars().count() <= 44));
     }
 
     #[test]
@@ -5423,6 +6961,14 @@ mod tests {
             stage: Some("activate".to_owned()),
             wave: Some((1, 2)),
             concurrency: 11,
+            admission: Some(AdmissionDisplay {
+                running: 11,
+                target: 11,
+                constraint: None,
+                adjustable: true,
+                running_changed_at: None,
+                target_changed_at: None,
+            }),
             ..HostDashboard::default()
         };
         for host in &hosts {
@@ -5454,7 +7000,7 @@ mod tests {
         assert!(lines.iter().all(|line| line.chars().count() <= 80));
         assert!(hosts.iter().all(|host| rendered.contains(host)));
         assert!(rendered.contains("wave 1/2"));
-        assert!(rendered.contains("11/11 running"));
+        assert!(rendered.contains("11 running · limit 11"));
     }
 
     #[test]
@@ -5753,22 +7299,74 @@ mod tests {
     }
 
     #[test]
-    fn host_dashboard_uses_gray_for_skips_and_success_only_for_primary_status() {
+    fn final_host_summary_uses_identity_color_compact_segments_and_muted_timing() {
+        set_json_output(false);
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let style = TerminalStyle::from_capabilities(true, false);
+        let reporter = ProgressReporter {
+            enabled: true,
+            interactive: false,
+            recent_update_limit: 10,
+            style,
+            destination: ProgressDestination::Buffer(Arc::clone(&buffer)),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            output: Arc::new(Mutex::new(())),
+        };
+
+        reporter.message_host_summary(
+            "gap3-gondor",
+            [(Tone::Success, "acquired"), (Tone::Failure, "fail deploy")],
+            Some("b2.8s s327ms a23s d11s"),
+            false,
+        );
+        reporter.message_host_summary(
+            "abird-gondor-data",
+            [(Tone::Success, "built"), (Tone::Muted, "skip deploy")],
+            Some("b48s s900ms"),
+            true,
+        );
+
+        let output = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains(&style.paint_host("gap3-gondor")),
+            "{output:?}"
+        );
+        assert!(output.contains("\x1b[32macquired\x1b[0m, \x1b[31mfail deploy\x1b[0m"));
+        assert!(output.contains("\x1b[2m[b2.8s s327ms a23s d11s]\x1b[0m"));
+        assert!(
+            output.contains(&style.paint_host_muted("abird-gondor-data")),
+            "{output:?}"
+        );
+        assert!(output.contains("\x1b[2mbuilt\x1b[0m, \x1b[2mskip deploy\x1b[0m"));
+        assert!(output.contains("\x1b[2m[b48s s900ms]\x1b[0m"));
+    }
+
+    #[test]
+    fn host_dashboard_mutes_skips_and_uses_success_only_for_primary_status() {
         let active = ActiveProgress {
             id: 1,
-            label: "Deploy systems · 2 hosts".to_owned(),
+            label: "Deploy systems · 3 hosts".to_owned(),
             detail: None,
             detail_emitted_at: None,
             recent_updates: VecDeque::new(),
             host_dashboard: Some(HostDashboard {
-                order: vec!["app".to_owned(), "external".to_owned()],
+                order: vec![
+                    "app".to_owned(),
+                    "external".to_owned(),
+                    "blocked".to_owned(),
+                ],
                 rows: BTreeMap::from([
                     (
                         "app".to_owned(),
                         HostRow {
                             state: HostRowState::Succeeded,
                             summary: Some("deployed".to_owned()),
-                            elapsed: Some(Duration::from_secs(12)),
+                            timing: {
+                                let mut timing = HostTiming::default();
+                                timing.observed = true;
+                                timing.total = Duration::from_secs(12);
+                                timing
+                            },
                             ..HostRow::default()
                         },
                     ),
@@ -5777,6 +7375,15 @@ mod tests {
                         HostRow {
                             state: HostRowState::Skipped,
                             summary: Some("deployment skipped".to_owned()),
+                            ..HostRow::default()
+                        },
+                    ),
+                    (
+                        "blocked".to_owned(),
+                        HostRow {
+                            state: HostRowState::Warning,
+                            outcome: Some(HostOutcome::Skipped),
+                            summary: Some("deploy blocked".to_owned()),
                             ..HostRow::default()
                         },
                     ),
@@ -5796,11 +7403,22 @@ mod tests {
             rendered.contains("\x1b[32m✓ deployed\x1b[0m\x1b[90m · 12.0s\x1b[0m"),
             "{rendered:?}"
         );
+        let style = TerminalStyle::from_capabilities(true, false);
         assert!(
-            rendered.contains("\x1b[90m◇ deployment skipped\x1b[0m"),
+            rendered.contains(&style.paint_host_muted("external")),
+            "{rendered:?}"
+        );
+        assert!(
+            rendered.contains("\x1b[2m◇ deployment skipped\x1b[0m"),
             "{rendered:?}"
         );
         assert!(!rendered.contains("\x1b[33m◇ deployment skipped"));
+        assert!(
+            rendered.contains(&style.paint_host("blocked")),
+            "{rendered:?}"
+        );
+        assert!(rendered.contains("\x1b[33m◇ deploy blocked\x1b[0m"));
+        assert!(!rendered.contains(&style.paint_host_muted("blocked")));
     }
 
     #[test]

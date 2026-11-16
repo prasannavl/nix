@@ -120,6 +120,8 @@ pub fn prepare_ci_trigger<R: CiRepositorySource>(
     input: &CiRequestInput<'_>,
     repository: &mut R,
 ) -> Result<PreparedCiTrigger> {
+    // Reject unsupported actions before resolving Git or reading a staged patch.
+    super::repository::validate_ci_action(input.action)?;
     let clean = input.action == "clean";
     let (sha, revision_source) = if clean {
         (None, CiRevisionSource::NotRequired)
@@ -180,6 +182,19 @@ pub fn prepare_ci_trigger<R: CiRepositorySource>(
     let plan = plan_ci_trigger(&CiTriggerRequest {
         action: input.action.to_owned(),
         strategy: input.options.forwarded_strategy(),
+        // Preserve old argv when no maximum was requested. With a maximum,
+        // carry the initial/global limits too, not just a detached ceiling.
+        deploy_jobs: input
+            .options
+            .deploy_jobs_per_domain_max
+            .map(|_| input.options.deploy_jobs),
+        deploy_jobs_per_domain: input.options.deploy_jobs_per_domain_max.and_then(|_| {
+            input
+                .options
+                .deploy_jobs_per_domain_explicit
+                .then_some(input.options.deploy_jobs_per_domain)
+        }),
+        deploy_jobs_per_domain_max: input.options.deploy_jobs_per_domain_max,
         sha,
         clean_mode: input.clean_mode,
         group: selection.group,

@@ -46,6 +46,7 @@ impl WorkflowPlan {
                 Phase::Deploy,
                 Phase::Health,
             ],
+            Action::Prepare => vec![Phase::Build, Phase::Acquire],
             Action::Build => vec![Phase::Build],
             Action::DevBuild => vec![Phase::DevelopmentBuild],
             Action::TerraformAll => vec![
