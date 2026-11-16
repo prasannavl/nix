@@ -14,7 +14,8 @@ GCP platform phase for managed projects.
 
 ## Runtime
 
-- `nixbot tf-platform`
+- `nixbot tf-platform` covers this project only once it is enabled in `nixbot`'s
+  `TF_PROJECT_NAMES`
 - `nixbot tofu -chdir=tf/gcp-platform plan`
 
 ## Backend
@@ -36,4 +37,3 @@ GCP platform phase for managed projects.
 - non-secret shared values: [`globals.auto.tfvars`](./globals.auto.tfvars)
 - dev project naming: [`project-dev.auto.tfvars`](./project-dev.auto.tfvars)
 - provider secrets: `data/secrets/globals/tf/gcp/`
-- project secrets: `data/secrets/globals/tf/gcp-platform/`

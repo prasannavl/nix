@@ -1,6 +1,6 @@
-# Terraform
+# OpenTofu
 
-`tf/` contains the repo's OpenTofu projects and shared Terraform modules.
+`tf/` contains the repo's OpenTofu projects and shared modules.
 
 ## Active Projects
 
@@ -23,7 +23,7 @@
 
 ## Secret Loading
 
-Terraform secret tfvars are discovered by convention:
+Secret tfvars are discovered by convention:
 
 - provider-wide secrets: `data/secrets/globals/tf/<provider>/`
 - project-specific secrets: `data/secrets/globals/tf/<project>/`
@@ -32,12 +32,12 @@ Project-specific values override provider-wide values.
 
 ## Package Build Convention
 
-Apps phases may also have a matching package namespace at `pkgs/<project>/`.
+Apps phases may also have a matching package namespace under `pkgs/`.
 
-When `pkgs/<project>/flake.nix` exists, `nixbot` prepares that project with:
+For app preparation, `nixbot` builds the canonical package definition directly:
 
 ```sh
-nix build ./pkgs/<project>#build --no-link
+nix build --file <package-dir>/default.nix --no-link
 ```
 
 This keeps app build logic next to the app sources instead of encoding it in the
@@ -49,16 +49,14 @@ deploy script.
 
 1. `tf/cloudflare-dns/`
 2. `tf/cloudflare-platform/`
-3. `tf/gcp-platform/`
-4. `tf/cloudflare-apps/`
+3. `tf/cloudflare-apps/`
 
 `nixbot run`:
 
 1. `tf/cloudflare-dns/`
 2. `tf/cloudflare-platform/`
-3. `tf/gcp-platform/`
-4. host build and deploy
-5. `tf/cloudflare-apps/`
+3. host build and deploy
+4. `tf/cloudflare-apps/`
 
 ## Shared Modules
 
@@ -95,12 +93,11 @@ Runnable projects follow the naming convention `tf/<provider>-<phase>/`.
 - `nixbot tf-apps` runs the projects listed under the `apps` phase
 - `nixbot tf/<project>` runs just that configured project
 
-Normal editing flow:
+Today that means:
 
-- comment or uncomment a project name in the single `TF_PROJECT_NAMES` array in
-  the packaged nixbot source
-- keep the directory name in `tf/<provider>-<phase>/` form so provider/phase
-  conventions still work
+- `tf-platform` covers only `cloudflare-platform`
+- `gcp-platform` is manual: enable it in `nixbot`'s `TF_PROJECT_NAMES` first,
+  then `nixbot tf/gcp-platform` runs it
 
 ## Modules
 

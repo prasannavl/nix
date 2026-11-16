@@ -18,10 +18,11 @@ Run this once with organization-level credentials.
 - `cd tf/gcp-bootstrap`
 - `tofu init` with the same R2 backend settings used by the other Terraform
   projects, or use the wrapper: `nixbot tofu -chdir=tf/gcp-bootstrap init`
-- `tofu plan -var-file=../../data/secrets/globals/tf/gcp/globals.tfvars -var-file=../../data/secrets/globals/tf/gcp-bootstrap/globals.tfvars`
-- `tofu apply -var-file=../../data/secrets/globals/tf/gcp/globals.tfvars -var-file=../../data/secrets/globals/tf/gcp-bootstrap/globals.tfvars`
 - or use the wrapper so encrypted tfvars are auto-loaded:
   `nixbot tofu -chdir=tf/gcp-bootstrap plan`
+- the manual `-var-file` forms need decrypted copies of
+  `data/secrets/globals/tf/gcp/globals.tfvars.age` and
+  `data/secrets/globals/tf/gcp-bootstrap/globals.tfvars.age`
 
 ## Notes
 

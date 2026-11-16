@@ -76,7 +76,7 @@ resource "cloudflare_worker" "worker" {
         var.cloudflare_account_id != null
         && trimspace(var.cloudflare_account_id) != ""
       )
-      error_message = "Cloudflare Workers require `cloudflare_account_id` to be set, typically via an encrypted tfvars file under data/secrets/tf/cloudflare/."
+      error_message = "Cloudflare Workers require `cloudflare_account_id` to be set, typically via an encrypted tfvars file under data/secrets/globals/tf/cloudflare/."
     }
   }
 }
