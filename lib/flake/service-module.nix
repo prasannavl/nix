@@ -907,8 +907,11 @@ rec {
               if moduleStack != null && moduleStack ? srv
               then (moduleStack.srv.mkIdentity package) (builtins.removeAttrs args ["drv"])
               else {ageSecrets = ageSecrets;};
+            # Deep derivation equality: `elem` forces every package's attributes,
+            # and config-derived values recurse into `age.secrets`. Match names.
+            installedNames = map (p: p.name or p.pname) config.environment.systemPackages;
           in {
-            age.secrets = lib.mkIf (builtins.elem package config.environment.systemPackages) moduleIdentity.ageSecrets;
+            age.secrets = lib.mkIf (builtins.elem (package.name or package.pname) installedNames) moduleIdentity.ageSecrets;
           };
       flakeExtraNixosModules.clientIdentity = nixosModule;
     };
