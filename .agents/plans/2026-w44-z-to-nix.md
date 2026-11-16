@@ -10,8 +10,9 @@ Author: pvl Owner: @pvl
 - User approval of 08–09 resolved the formatter prerequisite for docs-only 10.
   Event 0027 supersedes earlier held/integration-blocked status; raw evidence
   and historical reports remain unchanged.
-- Batch delivery is complete. Global compatibility/carry-back remains the next
-  phase; no blanket parity, rollback-safety or deployment-readiness claim.
+- Batch delivery is complete. Global compatibility/carry-back was ported as
+  seven signed units after `7723150f5` (event 0028) with a shared-tree parity
+  audit; no blanket parity, rollback-safety or deployment-readiness claim.
 
 ## Contract
 

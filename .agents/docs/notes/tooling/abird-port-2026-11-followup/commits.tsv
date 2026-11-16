@@ -1,0 +1,65 @@
+commit	date	subject	disposition	shared	total	units/reason
+6768d7f37	2026-11-12	feat(context): define bounded context contracts	skipped	1	24	Abird product unit (agent/web/bots/labs/hosts/secrets)
+0889fba9d	2026-11-12	feat(context): retain source-linked history views	skipped	0	11	Abird product unit (agent/web/bots/labs/hosts/secrets)
+7c77fc84f	2026-11-12	feat(context): compact selected-provider history	skipped	0	20	Abird product unit (agent/web/bots/labs/hosts/secrets)
+e700f14e5	2026-11-12	fix(context): fit conversation and workflow calls	skipped	0	23	Abird product unit (agent/web/bots/labs/hosts/secrets)
+993154da7	2026-11-12	fix(context): preserve privacy and recovery	skipped	0	13	Abird product unit (agent/web/bots/labs/hosts/secrets)
+305f4b34a	2026-11-12	feat(context): report preparation clearly	skipped	0	16	Abird product unit (agent/web/bots/labs/hosts/secrets)
+095a2b56b	2026-11-12	fix(context): authorize pre-seal provider leases	skipped	0	9	Abird product unit (agent/web/bots/labs/hosts/secrets)
+b879f4955	2026-11-12	test(agent): repair legacy VM fixtures	skipped	0	5	Abird product unit (agent/web/bots/labs/hosts/secrets)
+4905dff55	2026-11-12	fix(context): fit exact instruction extracts	skipped	0	8	Abird product unit (agent/web/bots/labs/hosts/secrets)
+ccdde2bf2	2026-11-12	docs(context): correct recall experiment evidence	skipped	0	2	Abird plan/docs record
+277da6507	2026-11-12	fix(context): keep original preparation deadlines	skipped	0	5	Abird product unit (agent/web/bots/labs/hosts/secrets)
+8f14b7cec	2026-11-12	fix(context): version bounded repair guidance	skipped	0	5	Abird product unit (agent/web/bots/labs/hosts/secrets)
+cdeaaada9	2026-11-12	fix(context): recover unavailable recall results	skipped	0	6	Abird product unit (agent/web/bots/labs/hosts/secrets)
+b7df9f482	2026-11-12	chore(backup): retain context release recovery	skipped	0	13	Abird abird-agent recovery secrets and host wiring
+65f92caf8	2026-11-12	fix(context): withhold stalled recall resume	skipped	0	4	Abird product unit (agent/web/bots/labs/hosts/secrets)
+786436258	2026-11-12	fix(context): clarify controller action roles	skipped	0	6	Abird product unit (agent/web/bots/labs/hosts/secrets)
+07692189c	2026-11-12	test(codex): cover context schemas in real cells	skipped	0	4	Abird product unit (agent/web/bots/labs/hosts/secrets)
+134ac1306	2026-11-12	fix(context): close ineffective prompt experiment	skipped	0	6	Abird product unit (agent/web/bots/labs/hosts/secrets)
+6f7240bda	2026-11-12	fix(workflow): explain required-set errors	skipped	0	4	Abird product unit (agent/web/bots/labs/hosts/secrets)
+2614f0fe1	2026-11-12	fix(workflow): classify invalid gap feedback	skipped	0	4	Abird product unit (agent/web/bots/labs/hosts/secrets)
+e2caa5fed	2026-11-12	fix(context): inspect supplied facts before recall	skipped	0	5	Abird product unit (agent/web/bots/labs/hosts/secrets)
+c3aab2691	2026-11-13	fix(context): bound workflow handoff authority	skipped	0	8	Abird product unit (agent/web/bots/labs/hosts/secrets)
+e19a622ac	2026-11-13	fix(context): offer exact User source indices	skipped	0	9	Abird product unit (agent/web/bots/labs/hosts/secrets)
+3625b3a22	2026-11-13	fix(provider): replay empty repair frames	skipped	0	6	Abird product unit (agent/web/bots/labs/hosts/secrets)
+1a3588f2b	2026-11-13	fix(context): reserve cloud reasoning output	skipped	0	8	Abird product unit (agent/web/bots/labs/hosts/secrets)
+8d9c973af	2026-11-13	fix(agent): reject unoffered task tools	skipped	0	5	Abird product unit (agent/web/bots/labs/hosts/secrets)
+cb193d32c	2026-11-13	fix(workflow): honor required user questions	skipped	0	4	Abird product unit (agent/web/bots/labs/hosts/secrets)
+821052989	2026-11-13	fix(context): bind the current turn selection	skipped	0	8	Abird product unit (agent/web/bots/labs/hosts/secrets)
+2a207b711	2026-11-13	fix(context): preserve the final assistant call	skipped	0	11	Abird product unit (agent/web/bots/labs/hosts/secrets)
+f5d6e5ede	2026-11-13	fix(workflow): allow typed scope questions	skipped	0	5	Abird product unit (agent/web/bots/labs/hosts/secrets)
+b5ad822a2	2026-11-13	fix(context): fence unsafe native resumes	skipped	0	4	Abird product unit (agent/web/bots/labs/hosts/secrets)
+83654964e	2026-11-13	fix(context): constrain exact recall targets	skipped	0	7	Abird product unit (agent/web/bots/labs/hosts/secrets)
+894456995	2026-11-13	fix(conversation): align retained parsing	skipped	0	6	Abird product unit (agent/web/bots/labs/hosts/secrets)
+fbbafa6ba	2026-11-13	fix(context): freeze the controller clock	skipped	0	4	Abird product unit (agent/web/bots/labs/hosts/secrets)
+aa4649e17	2026-11-13	fix(context): repair repeated recall decisions	skipped	0	5	Abird product unit (agent/web/bots/labs/hosts/secrets)
+83ec43513	2026-11-13	fix(conversation): bind native task intent	skipped	0	4	Abird product unit (agent/web/bots/labs/hosts/secrets)
+aa49ba8e8	2026-11-13	fix(conversation): explain receipt execution	skipped	0	4	Abird product unit (agent/web/bots/labs/hosts/secrets)
+10535739c	2026-11-13	refactor(context): keep one current contract	skipped	1	24	Abird product unit (agent/web/bots/labs/hosts/secrets)
+597d75b02	2026-11-13	fix(repository): reject malformed native paths	skipped	0	8	Abird product unit (agent/web/bots/labs/hosts/secrets)
+b95ca36a7	2026-11-13	fix(conversation): describe controller actions	skipped	0	3	Abird product unit (agent/web/bots/labs/hosts/secrets)
+d9a21ea53	2026-11-13	fix(context): validate checkpoints after restore	skipped	0	8	Abird product unit (agent/web/bots/labs/hosts/secrets)
+8fc9a5309	2026-11-13	fix(context): fence expired preparation leases	skipped	0	5	Abird product unit (agent/web/bots/labs/hosts/secrets)
+39c71ec81	2026-11-13	fix(codex): expose bounded workflow proposals	skipped	0	13	Abird product unit (agent/web/bots/labs/hosts/secrets)
+0ebdcf3a8	2026-11-14	docs(context): record qualified 4f.1 release	skipped	1	9	Abird plan/docs record
+df8941601	2026-11-14	chore: merge reviewed 4f.1 release	skipped	1	1	Abird plan/docs record
+868c42c4b	2026-11-14	docs(plan): close qualified 4f.1	skipped	1	10	Abird plan/docs record
+94661d3f8	2026-11-14	docs(plan): record 4f.1 and plan 4h	skipped	1	17	Abird plan/docs record
+434958031	2026-11-14	docs(plan): add detailed 4g implementation plan	skipped	1	13	Abird plan/docs record
+994cf7705	2026-11-15	refactor(lint): restore native full checks	adopted-part	2	7	scripts/lint.sh,lib/tests/lint-root-flake.nix removal; z .agents notes skipped
+0e9ede4ee	2026-11-15	refactor(ai): centralize consumer bindings	adopted	2	2	lib/services/ai/consumer.nix,lib/services/ai/tests/consumer.nix
+fe75077b8	2026-11-15	refactor(ai): migrate service inference wiring	adopted-part	1	40	z host inference wiring skipped (no abird-* hosts here)
+c53f4b869	2026-11-15	refactor(ai): simplify consumer contracts	adopted-part	2	32	z host inference wiring skipped (no abird-* hosts here)
+32569a629	2026-11-15	docs(plan): plan retired backup removal	skipped	1	8	Abird plan/docs record
+75d0f2c08	2026-11-15	fix(fleet): gate agent work before effects	already-adopted	14	14	reverse port of nix 161587584,51e7fa088,78a47d653 (14/14 paths byte-equal)
+acc97b70a	2026-11-15	fix(cloudflare): reject invalid stable keys	adopted-part	7	7	tf/tests/*,lib/tests/default.nix registration; tf variable files unchanged (nix already hardened), z-only interfaces skipped
+59657b847	2026-11-15	fix(graphiti): require paired embed bindings	already-adopted	4	4	reverse port of nix 15d6c7f49 (4/4 paths byte-equal)
+b81e28f9d	2026-11-15	feat(ext): adopt pvl package units	already-adopted	26	29	reverse port of nix ext units (26/29 paths byte-equal); z product manifest entries skipped
+efa3cd017	2026-11-15	fix(boot): load RTC module in initrd	already-adopted	1	1	reverse port of nix 09e7dcb8
+3f52a57eb	2026-11-15	docs: refresh guidance and record port	already-adopted	2	8	reverse-port audit of nix 7723150f; CONTRIBUTING private-licence text skipped
+b29f43ebd	2026-11-15	refactor(ext): place units by management style	already-adopted	16	19	reverse port of nix 48b56e1d; z-only overlay/README/doc lines adopted, z app notes skipped
+c487a61ee	2026-11-16	fix(age): select identity secrets by name	adopted	1	1	lib/flake/service-module.nix
+de655c9b9	2026-11-16	fix(backup): stop pinning retired readers by store path	skipped	0	10	Abird abird-agent backup runtime + encrypted recovery secrets
+4eff47212	2026-11-16	fix(stalwart): build from upstream opentelemetry source	adopted	3	3	pkgs/ext/stalwart-server/*
+c735a7247	2026-11-16	chore(lint): reject literal store-path pins	adopted	1	1	scripts/lint.sh

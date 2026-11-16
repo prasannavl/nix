@@ -12,8 +12,10 @@ Plan: [contract](../../2026-w44-z-to-nix.md)
 - User approval of 08–09 resolved the formatter prerequisite for docs-only 10.
   Event 0027 supersedes earlier held/integration-blocked status; raw evidence
   and historical reports remain unchanged.
-- Batch delivery is complete. Global compatibility/carry-back remains the next
-  phase; no blanket parity, rollback-safety or deployment-readiness claim.
+- Batch delivery is complete. Global compatibility/carry-back was completed by
+  the forward port in event 0028: seven signed units after `7723150f5`, `lib/`
+  548/563 and `pkgs/` 488/505 shared paths equal. No blanket parity,
+  rollback-safety or deployment-readiness claim.
 
 | Batch | Reverse rows | Global rows | State                                   |
 | ----- | ------------ | ----------- | --------------------------------------- |
