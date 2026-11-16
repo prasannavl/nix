@@ -718,6 +718,31 @@ check_self_reference_fetcher() {
 	return 1
 }
 
+# Raw store-path literal: substitutable, never rebuildable; `path = true` turns a
+# missing object into an eval failure; plain string leaves a dangling binary.
+# Pins must be derivations. tests/ and fixtures/ hold the only allowed literals.
+check_store_path_pins() {
+	local file=""
+	local -a offenders=()
+
+	while IFS= read -r -d $'\0' file; do
+		case "${file}" in
+		*/tests/* | */fixtures/*) continue ;;
+		esac
+		if grep -qE '/nix/store/[0-9a-df-np-sv-z]{32}-' "${file}"; then
+			offenders+=("${file}")
+		fi
+	done < <(collect_files '*.nix' '*.sh')
+
+	if [ "${#offenders[@]}" -eq 0 ]; then
+		return 0
+	fi
+
+	printf 'Replace raw /nix/store pins with a derivation (pinned source build or fixed-output fetch):\n' >&2
+	printf '  - %s\n' "${offenders[@]}" >&2
+	return 1
+}
+
 run_lint_action() {
 	local nix_file=""
 	local -a deno_files=()
@@ -840,6 +865,8 @@ run_lint_action() {
 		fi
 
 		run_step self-reference-fetcher 'Checking repository self-reference flake fetcher' check_self_reference_fetcher
+
+		run_step store-path-pins 'Checking for raw store-path pins' check_store_path_pins
 
 		run_step actionlint 'Linting GitHub Actions workflows' actionlint
 
