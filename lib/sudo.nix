@@ -2,7 +2,7 @@
   security.sudo = {
     enable = true;
     configFile = ''
-      # Add this line to set timeout to 10 minutes (e.g.)
+      # 12-hour sudo timeout (value is minutes).
       Defaults timestamp_timeout=720
     '';
   };
