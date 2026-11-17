@@ -20,6 +20,11 @@ Plan: [contract](../../2026-w44-z-to-nix.md)
   nothing to port; one shared guidance file aligned. Fresh snapshot `lib/`
   547/561, `pkgs/` 486/503, 38 shared files differing, all classified. Both
   forward receipts leave parity, rollback-safety and deployment unclaimed.
+- Event 0030 ports the next tail `d968b3885..f20876d35` (9 commits): two code
+  units (excalidash bundled-Prisma migration, host-manager activation-failure
+  diagnostics) and two documentation units; three commits already adopted, three
+  skipped. Snapshot `lib/` 548/563, `pkgs/` 492/509, 1125/1192 common paths
+  equal.
 
 | Batch | Reverse rows | Global rows | State                                   |
 | ----- | ------------ | ----------- | --------------------------------------- |

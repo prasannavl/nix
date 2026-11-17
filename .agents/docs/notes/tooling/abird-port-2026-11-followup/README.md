@@ -2,7 +2,10 @@
 
 Forward port of the Abird (`z`) work created after the previous shared port.
 Status: integrated into `master` as seven signed logical commits. No push or
-deployment.
+deployment. The later tails are recorded in
+[tail-audit-2026-11-16](tail-audit-2026-11-16.md) (`c735a7247..d968b3885`, one
+shared guidance file) and [tail-port-2026-11-17](tail-port-2026-11-17.md)
+(`d968b3885..f20876d35`, two code units and two documents).
 
 ## Boundaries
 
