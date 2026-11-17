@@ -25,6 +25,10 @@ Plan: [contract](../../2026-w44-z-to-nix.md)
   diagnostics) and two documentation units; three commits already adopted, three
   skipped. Snapshot `lib/` 548/563, `pkgs/` 492/509, 1125/1192 common paths
   equal.
+- Event 0031 ports the following tail `f20876d35..46c3b6298` (5 commits): NVIDIA
+  driver branch tracking, exact Go toolchains for Tailscale with the
+  `go-overlay` input, and toolchain cache trust; two host-local pin commits
+  skipped. Snapshot `lib/` 546/561, `pkgs/` 492/509, 1123/1190 equal.
 
 | Batch | Reverse rows | Global rows | State                                   |
 | ----- | ------------ | ----------- | --------------------------------------- |

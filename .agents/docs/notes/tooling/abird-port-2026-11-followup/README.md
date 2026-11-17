@@ -5,7 +5,9 @@ Status: integrated into `master` as seven signed logical commits. No push or
 deployment. The later tails are recorded in
 [tail-audit-2026-11-16](tail-audit-2026-11-16.md) (`c735a7247..d968b3885`, one
 shared guidance file) and [tail-port-2026-11-17](tail-port-2026-11-17.md)
-(`d968b3885..f20876d35`, two code units and two documents).
+(`d968b3885..f20876d35`, two code units and two documents), then
+[tail-port-2026-11-17b](tail-port-2026-11-17b.md) (`f20876d35..46c3b6298`,
+NVIDIA branch tracking, exact Go toolchains and toolchain cache trust).
 
 ## Boundaries
 
