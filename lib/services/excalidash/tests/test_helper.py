@@ -40,7 +40,7 @@ else:
     status = int(os.environ.get('TEST_PODMAN_STATUS', '0'))
 sys.exit(status)
 """
-        for name in ["openssl", "podman"]:
+        for name in ["openssl", "podman", "su-exec"]:
             path = self.bin / name
             path.write_text(stub)
             path.chmod(0o755)
@@ -61,6 +61,13 @@ sys.exit(status)
     def run_helper(self, command, **extra):
         return subprocess.run(
             ["sh", str(HELPER), command], env={**self.env, **extra},
+            capture_output=True, text=True, timeout=15,
+        )
+
+    def run_helper_function(self, function, **extra):
+        return subprocess.run(
+            ["sh", "-c", '. "$1"; "$2"', "sh", str(HELPER), function],
+            env={**self.env, "EXCALIDASH_HELPER_NO_MAIN": "1", **extra},
             capture_output=True, text=True, timeout=15,
         )
 
@@ -114,6 +121,20 @@ sys.exit(status)
         self.ready_env()
         result = self.run_helper("migrate", TEST_PODMAN_STATUS="47")
         self.assertEqual(result.returncode, 47, result.stderr)
+
+    def test_prisma_migration_uses_bundled_cli_without_npx(self):
+        result = self.run_helper_function("run_prisma_migrate")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [command] = self.commands()
+        self.assertEqual(command, [
+            "su-exec",
+            "nodejs",
+            "node",
+            "/app/node_modules/prisma/build/index.js",
+            "migrate",
+            "deploy",
+            "--schema=/app/prisma/schema.prisma",
+        ])
 
     def test_prepare_env_is_private_and_idempotent(self):
         result = self.run_helper("prepare-env")

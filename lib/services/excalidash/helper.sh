@@ -100,13 +100,19 @@ fix_prisma_permissions() {
 	fi
 }
 
+run_prisma_migrate() {
+	# Prisma is a runtime dependency; 0.6.9+ images drop npm/npx.
+	su-exec nodejs node /app/node_modules/prisma/build/index.js \
+		migrate deploy --schema=/app/prisma/schema.prisma
+}
+
 container_migrate() {
 	remove_legacy_migration_lock
 	validate_database_provider
 	prepare_prisma_files
 	fix_prisma_permissions
 	echo "Running database migrations..."
-	su-exec nodejs npx prisma migrate deploy --schema=/app/prisma/schema.prisma
+	run_prisma_migrate
 }
 
 require_migration_inputs() {
