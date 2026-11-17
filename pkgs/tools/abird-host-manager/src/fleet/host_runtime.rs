@@ -1667,6 +1667,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             return Ok(ActivationExecution::Failed {
                 status: command_status(submitted.status),
                 admitted: false,
+                diagnostics: Vec::new(),
             });
         }
 
@@ -1751,6 +1752,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
             return Ok(ActivationExecution::Failed {
                 status: observer_command_status,
                 admitted: false,
+                diagnostics: Vec::new(),
             });
         }
         let failure = deploy::classify_deploy_failure(
@@ -1764,14 +1766,22 @@ impl<R: ProcessRunner> HostRuntime<R> {
             return Ok(ActivationExecution::Failed {
                 status: observer_command_status,
                 admitted: false,
+                diagnostics: Vec::new(),
             });
         }
+        let diagnostics = super::health_runtime::activation_failure_excerpts(
+            self,
+            target,
+            &observer_status.combined_output(),
+            &task,
+        );
         if matches!(observer_status.status, ProcessStatus::Signal(_))
             || failure != deploy::DeployFailureAction::VerifyTarget
         {
             return Ok(ActivationExecution::Failed {
                 status: observer_command_status,
                 admitted: marker_admitted.unwrap_or(true),
+                diagnostics,
             });
         }
 
@@ -1792,6 +1802,7 @@ impl<R: ProcessRunner> HostRuntime<R> {
         Ok(ActivationExecution::Failed {
             status: observer_command_status,
             admitted: marker_admitted.unwrap_or(true),
+            diagnostics,
         })
     }
 
@@ -1877,12 +1888,14 @@ impl<R: ProcessRunner> HostRuntime<R> {
             ActivationExecution::Failed {
                 status,
                 admitted: false,
+                ..
             } => {
                 return Ok(DeployOutcome::FailedBeforeActivation(status));
             }
             ActivationExecution::Failed {
                 status,
                 admitted: true,
+                ..
             } => status,
         };
         let (Some(rollback_factory), Some(rollback_generation)) =
@@ -1972,7 +1985,7 @@ fn require_success(output: &ProcessOutput, label: &str) -> Result<()> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ActivationExecution {
     DryRun,
     Succeeded,
@@ -1980,6 +1993,7 @@ pub enum ActivationExecution {
     Failed {
         status: CommandStatus,
         admitted: bool,
+        diagnostics: Vec<String>,
     },
 }
 

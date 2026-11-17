@@ -3037,13 +3037,20 @@ impl<'a> NativeFleetEffects<'a> {
                 self.successful.insert(host.to_owned());
             }
             ActivationExecution::DryRun => {}
-            ActivationExecution::Failed { admitted, status } => {
+            ActivationExecution::Failed {
+                admitted,
+                status,
+                diagnostics,
+            } => {
                 self.deploy_failed.insert(host.to_owned());
                 if admitted {
                     self.activated.insert(host.to_owned());
                     self.pending_rollback.insert(host.to_owned());
                 }
-                bail!("activation failed for {host}: {status:?}");
+                bail!(
+                    "activation failed for {host}: {}",
+                    activation_failure_message(status, &diagnostics)
+                );
             }
         }
         // Merge activation evidence before observing withdrawal. Never abandon
@@ -3338,8 +3345,7 @@ impl<'a> NativeFleetEffects<'a> {
                 },
                 |_, outcome| {
                     if let Err(error) = &outcome.result {
-                        progress
-                            .host_failed(&outcome.host, format!("activation failed: {error:#}"));
+                        progress.host_failed(&outcome.host, format!("{error:#}"));
                     } else if outcome.successful {
                         progress.host_status(&outcome.host, HostStatus::DeployDone);
                     }
@@ -3714,8 +3720,15 @@ impl<'a> NativeFleetEffects<'a> {
                         ActivationExecution::Succeeded
                         | ActivationExecution::SucceededAfterVerification
                         | ActivationExecution::DryRun => Ok(()),
-                        ActivationExecution::Failed { status, .. } => {
-                            bail!("rollback activation failed: {status:?}")
+                        ActivationExecution::Failed {
+                            status,
+                            diagnostics,
+                            ..
+                        } => {
+                            bail!(
+                                "rollback activation failed: {}",
+                                activation_failure_message(status, &diagnostics)
+                            )
                         }
                     }
                 })();
@@ -3773,6 +3786,15 @@ fn process_outcome(output: &ProcessOutput) -> TaskOutcome {
     } else {
         TaskOutcome::Failed
     }
+}
+
+fn activation_failure_message(status: CommandStatus, diagnostics: &[String]) -> String {
+    let mut rendered = format!("{status:?}");
+    for diagnostic in diagnostics.iter().take(4) {
+        rendered.push_str(" · ");
+        rendered.push_str(diagnostic);
+    }
+    rendered
 }
 
 fn activation_outcome(execution: &ActivationExecution) -> TaskOutcome {

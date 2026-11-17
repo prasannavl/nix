@@ -73,7 +73,7 @@ struct HoldProbe {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum FailedUnitScope {
     System,
-    User(String),
+    User(Option<String>),
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -509,13 +509,156 @@ fn failed_units(observation: &Observation) -> Vec<FailedUnit> {
                 .filter(|unit| !unit.is_empty())
             {
                 units.insert(FailedUnit {
-                    scope: FailedUnitScope::User(user.clone()),
+                    scope: FailedUnitScope::User(Some(user.clone())),
                     unit: unit.to_owned(),
                 });
             }
         }
     }
     units.into_iter().take(MAX_FAILURE_UNITS).collect()
+}
+
+fn valid_failure_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-' | '@')
+        })
+}
+
+fn valid_failure_unit_name(value: &str) -> bool {
+    valid_failure_name(value)
+        && [
+            ".service", ".socket", ".target", ".mount", ".timer", ".path", ".scope", ".slice",
+        ]
+        .iter()
+        .any(|suffix| value.ends_with(suffix))
+}
+
+fn insert_activation_failure_units(
+    units: &mut BTreeSet<FailedUnit>,
+    scope: FailedUnitScope,
+    value: &str,
+) {
+    for raw in value.split(',') {
+        let raw = raw
+            .trim()
+            .trim_matches(|character| matches!(character, '"' | '\'' | '`'));
+        let unit = if valid_failure_unit_name(raw) {
+            raw
+        } else {
+            raw.strip_suffix('.')
+                .filter(|unit| valid_failure_unit_name(unit))
+                .unwrap_or("")
+        };
+        if !unit.is_empty() {
+            units.insert(FailedUnit {
+                scope: scope.clone(),
+                unit: unit.to_owned(),
+            });
+        }
+    }
+}
+
+fn activation_failed_units(value: &str) -> Vec<FailedUnit> {
+    let mut units = BTreeSet::new();
+    let mut users = BTreeSet::new();
+    for raw_line in value.lines() {
+        let line = terminal_safe_health_line(raw_line);
+        if let Some(value) = line
+            .find("Failed to start user unit ")
+            .map(|index| &line[index + "Failed to start user unit ".len()..])
+        {
+            insert_activation_failure_units(&mut units, FailedUnitScope::User(None), value);
+        } else if let Some(value) = line
+            .find("Failed to start unit ")
+            .map(|index| &line[index + "Failed to start unit ".len()..])
+        {
+            insert_activation_failure_units(&mut units, FailedUnitScope::System, value);
+        }
+        if let Some(value) = line
+            .find("warning: the following user units failed:")
+            .map(|index| &line[index + "warning: the following user units failed:".len()..])
+        {
+            insert_activation_failure_units(&mut units, FailedUnitScope::User(None), value);
+        } else if let Some(value) = line
+            .find("warning: the following units failed:")
+            .map(|index| &line[index + "warning: the following units failed:".len()..])
+        {
+            insert_activation_failure_units(&mut units, FailedUnitScope::System, value);
+        }
+        if let Some(user) = line
+            .find("warning: user activation for ")
+            .map(|index| &line[index + "warning: user activation for ".len()..])
+            .and_then(|value| value.strip_suffix(" failed"))
+            .filter(|user| valid_failure_name(user))
+        {
+            users.insert(user.to_owned());
+        }
+    }
+    if users.len() == 1 {
+        let user = users
+            .into_iter()
+            .next()
+            .expect("checked one activation user");
+        units = units
+            .into_iter()
+            .map(|mut failed| {
+                if failed.scope == FailedUnitScope::User(None) {
+                    failed.scope = FailedUnitScope::User(Some(user.clone()));
+                }
+                failed
+            })
+            .collect();
+    }
+    units.into_iter().take(MAX_FAILURE_UNITS).collect()
+}
+
+pub(crate) fn activation_failure_excerpts<R: ProcessRunner>(
+    runtime: &mut HostRuntime<R>,
+    target: &HostExecutionTarget,
+    activation_output: &str,
+    parent: &Arc<dyn Task>,
+) -> Vec<String> {
+    let units = activation_failed_units(activation_output);
+    if units.is_empty() {
+        return Vec::new();
+    }
+    let fallback = units
+        .iter()
+        .filter_map(|unit| {
+            let line = match &unit.scope {
+                FailedUnitScope::System => format!("system unit={}", unit.unit),
+                FailedUnitScope::User(Some(user)) => {
+                    format!("user={user} unit={}", unit.unit)
+                }
+                FailedUnitScope::User(None) => format!("user unit={}", unit.unit),
+            };
+            format_health_failure_line(&line)
+        })
+        .collect::<Vec<_>>();
+    let command = failure_diagnostics_command(&units);
+    let task = InternalTask::child(
+        format!(
+            "activation-failure-diagnostics-{}",
+            target.route.endpoint.node
+        ),
+        Arc::clone(parent),
+    );
+    let Ok(output) =
+        runtime.execute_remote_root_command_bounded(target, &command, EffectKind::ReadOnly, task)
+    else {
+        return fallback;
+    };
+    if !output.succeeded() {
+        return fallback;
+    }
+    let excerpts = parse_failure_excerpts(&output.stdout).unwrap_or_default();
+    if excerpts.is_empty() {
+        fallback
+    } else {
+        excerpts
+    }
 }
 
 fn collect_failure_excerpts<R: ProcessRunner>(
@@ -557,7 +700,11 @@ fn failure_diagnostics_command(units: &[FailedUnit]) -> CommandSpec {
                 args.extend(["system".to_owned(), String::new(), unit.unit.clone()]);
             }
             FailedUnitScope::User(user) => {
-                args.extend(["user".to_owned(), user.clone(), unit.unit.clone()]);
+                args.extend([
+                    "user".to_owned(),
+                    user.clone().unwrap_or_default(),
+                    unit.unit.clone(),
+                ]);
             }
         }
     }
@@ -1163,26 +1310,30 @@ emit() {
     done
     printf '\n'
 }
-while [ "$#" -ge 3 ]; do
-    scope="$1"
-    user="$2"
-    unit="$3"
-    shift 3
+diagnose() {
+    local scope="$1" user="$2" unit="$3" uid gid runtime_dir state load result code status restarts
+    local -a ctl journal user_env
     if [ "$scope" = system ]; then
         ctl=(systemctl)
         journal=(journalctl)
     else
         uid="$(id -u "$user" 2>/dev/null || true)"
         gid="$(id -g "$user" 2>/dev/null || true)"
-        [ -n "$uid" ] && [ -n "$gid" ] || continue
+        [ -n "$uid" ] && [ -n "$gid" ] || return 0
+        runtime_dir="/run/user/$uid"
+        [ -S "$runtime_dir/bus" ] || return 0
         user_env=(setpriv --reuid="$user" --regid="$gid" --init-groups env \
-            XDG_RUNTIME_DIR="/run/user/$uid" \
-            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus")
+            XDG_RUNTIME_DIR="$runtime_dir" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime_dir/bus")
         ctl=("${user_env[@]}" systemctl --user)
         journal=("${user_env[@]}" journalctl --user)
     fi
     state="$("${ctl[@]}" show "$unit" \
-        --property=Result,ExecMainCode,ExecMainStatus,NRestarts 2>/dev/null || true)"
+        --property=LoadState,Result,ExecMainCode,ExecMainStatus,NRestarts 2>/dev/null || true)"
+    load="$(printf '%s\n' "$state" | sed -n 's/^LoadState=//p')"
+    if [ "$scope" != system ] && { [ -z "$load" ] || [ "$load" = not-found ]; }; then
+        return 0
+    fi
     result="$(printf '%s\n' "$state" | sed -n 's/^Result=//p')"
     code="$(printf '%s\n' "$state" | sed -n 's/^ExecMainCode=//p')"
     status="$(printf '%s\n' "$state" | sed -n 's/^ExecMainStatus=//p')"
@@ -1193,6 +1344,26 @@ while [ "$#" -ge 3 ]; do
         [ -n "$line" ] || continue
         emit failed-log "$scope" "$user" "$unit" "$line"
     done < <("${journal[@]}" -u "$unit" -b -n 3 --no-pager -o cat 2>/dev/null || true)
+}
+while [ "$#" -ge 3 ]; do
+    scope="$1"
+    user="$2"
+    unit="$3"
+    shift 3
+    if [ "$scope" = system ]; then
+        diagnose system "" "$unit"
+    elif [ -n "$user" ]; then
+        diagnose user "$user" "$unit"
+    else
+        for runtime_dir in /run/user/[0-9]*; do
+            [ -S "$runtime_dir/bus" ] || continue
+            uid="${runtime_dir##*/}"
+            [[ "$uid" =~ ^[0-9]+$ ]] || continue
+            resolved_user="$(id -nu "$uid" 2>/dev/null || true)"
+            [ -n "$resolved_user" ] || continue
+            diagnose user "$resolved_user" "$unit"
+        done
+    fi
 done
 "#;
 
@@ -1304,6 +1475,47 @@ mod tests {
         assert_eq!(command.args[2], HEALTH_COLLECTOR_ARGV0);
         assert_eq!(command.args[3], "app\tapp.service");
         assert_eq!(command.args.len(), 4);
+    }
+
+    #[test]
+    fn activation_failure_units_are_validated_and_bound_to_single_user() {
+        let units = activation_failed_units(
+            "Failed to start user unit abird-excalidash-stage.service\n\
+warning: the following user units failed: abird-excalidash-stage.service, ../../escape.service\n\
+warning: user activation for abird failed\n",
+        );
+        assert_eq!(
+            units,
+            vec![FailedUnit {
+                scope: FailedUnitScope::User(Some("abird".to_owned())),
+                unit: "abird-excalidash-stage.service".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn activation_failure_diagnostics_can_discover_unnamed_user_owner() {
+        let units = activation_failed_units(
+            "warning: the following user units failed: abird-excalidash-stage.service",
+        );
+        assert_eq!(
+            units,
+            vec![FailedUnit {
+                scope: FailedUnitScope::User(None),
+                unit: "abird-excalidash-stage.service".to_owned(),
+            }]
+        );
+        let command = failure_diagnostics_command(&units);
+        assert_eq!(
+            &command.args[command.args.len() - 3..],
+            &[
+                "user".to_owned(),
+                String::new(),
+                "abird-excalidash-stage.service".to_owned(),
+            ]
+        );
+        assert!(HEALTH_FAILURE_DIAGNOSTICS.contains("/run/user/[0-9]*"));
+        assert!(HEALTH_FAILURE_DIAGNOSTICS.contains("LoadState"));
     }
 
     #[test]

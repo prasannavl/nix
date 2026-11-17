@@ -1539,6 +1539,7 @@ fn explicit_pre_admission_failure_does_not_trigger_verification_or_rollback() {
         ActivationExecution::Failed {
             status: CommandStatus::Exit(1),
             admitted: false,
+            diagnostics: Vec::new(),
         }
     );
     let requests = runtime.into_runner().requests;
@@ -1553,6 +1554,72 @@ fn explicit_pre_admission_failure_does_not_trigger_verification_or_rollback() {
             .iter()
             .any(|request| request.task.name().contains("rollback"))
     );
+}
+
+#[test]
+fn activation_failure_collects_failed_user_unit_diagnostics_before_returning() {
+    let diagnostics = format!(
+        "{}{}",
+        health_record(
+            "failed-status",
+            &[
+                "user",
+                "abird",
+                "abird-excalidash-stage.service",
+                "exit-code",
+                "exited",
+                "127",
+                "0",
+            ],
+        ),
+        health_record(
+            "failed-log",
+            &[
+                "user",
+                "abird",
+                "abird-excalidash-stage.service",
+                "npx: not found",
+            ],
+        ),
+    );
+    let runner = FakeRunner::with_outputs([
+        success(""),
+        failure(
+            4,
+            "Failed to start user unit abird-excalidash-stage.service\nwarning: user activation for abird failed",
+        ),
+        success(&diagnostics),
+    ]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+
+    assert_eq!(
+        runtime
+            .activate(
+                &target(),
+                &activation(ActivationGoal::Switch),
+                &generation("new"),
+                ActivationGoal::Switch,
+                InternalTask::new("activation"),
+            )
+            .unwrap(),
+        ActivationExecution::Failed {
+            status: CommandStatus::Exit(4),
+            admitted: true,
+            diagnostics: vec![
+                "user=abird unit=abird-excalidash-stage.service result=exit-code exit=exited/127 restarts=0".to_owned(),
+                "user=abird unit=abird-excalidash-stage.service log=npx: not found".to_owned(),
+            ],
+        }
+    );
+    let runner = runtime.into_runner();
+    assert_eq!(runner.requests.len(), 3);
+    assert!(
+        runner.requests[2]
+            .task
+            .name()
+            .starts_with("activation-failure-diagnostics-")
+    );
+    assert_eq!(runner.requests[2].effect, EffectKind::ReadOnly);
 }
 
 #[test]
