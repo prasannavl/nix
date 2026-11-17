@@ -100,10 +100,14 @@
   assert builtins.head repoRegistryConfig.nix.settings.extra-substituters == repoRegistry.nix.url;
   assert builtins.fromJSON repoRegistryConfig.environment.etc."repo-registry-test".text == repositoryNix;
   assert builtins.head repoRegistryConfig.nix.settings.extra-trusted-public-keys == builtins.head repositoryNix.trustedPublicKeys;
-  assert builtins.length repoRegistryConfig.nix.settings.extra-trusted-public-keys == 4;
-  assert builtins.length defaultRepoRegistryConfig.nix.settings.extra-substituters == 3;
+  assert builtins.length repoRegistryConfig.nix.settings.extra-trusted-public-keys == 6;
+  assert builtins.length defaultRepoRegistryConfig.nix.settings.extra-substituters == 5;
   assert builtins.elem "https://cache.numtide.com" defaultRepoRegistryConfig.nix.settings.extra-substituters;
   assert builtins.elem "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=" defaultRepoRegistryConfig.nix.settings.extra-trusted-public-keys;
+  assert builtins.elem "https://go-overlay.cachix.org" defaultRepoRegistryConfig.nix.settings.extra-substituters;
+  assert builtins.elem "https://fenix.cachix.org" defaultRepoRegistryConfig.nix.settings.extra-substituters;
+  assert builtins.elem "go-overlay.cachix.org-1:rJ155O3K6WUyUcoKE4MqcC6JcLlK2vPXnP5/76BxWD8=" defaultRepoRegistryConfig.nix.settings.extra-trusted-public-keys;
+  assert builtins.elem "fenix.cachix.org-1:ecJhr+RdYEdcVgUkjruiYhjbBloIEGov7bos90cZi0Q=" defaultRepoRegistryConfig.nix.settings.extra-trusted-public-keys;
     pkgs.runCommand "nix-repo-registry-test" {} ''
       touch "$out"
     '';

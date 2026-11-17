@@ -26,6 +26,8 @@ in {
           "https://nix-community.cachix.org"
           "https://numtide.cachix.org"
           "https://cache.numtide.com"
+          "https://go-overlay.cachix.org"
+          "https://fenix.cachix.org"
         ]
       );
       extra-trusted-public-keys = lib.unique (
@@ -35,6 +37,8 @@ in {
           "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
           "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
           "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
+          "go-overlay.cachix.org-1:rJ155O3K6WUyUcoKE4MqcC6JcLlK2vPXnP5/76BxWD8="
+          "fenix.cachix.org-1:ecJhr+RdYEdcVgUkjruiYhjbBloIEGov7bos90cZi0Q="
         ]
       );
     };
