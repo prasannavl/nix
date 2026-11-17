@@ -4,8 +4,8 @@
     package = "@gotgenes/pi-anthropic-auth";
     owner = "gotgenes";
     repo = "pi-anthropic-auth";
-    version = "3.5.0";
-    srcHash = "sha256-24cHF/GcZNDy9Xub9Z4QPPphZ/qXHzatoZKWEaTeElQ=";
+    version = "3.6.0";
+    srcHash = "sha256-qww+guEay2rVWhENXcxIObZSPeGo6XIURg1R88iiJE4=";
   };
 
   "pi-diff" = {
@@ -23,8 +23,8 @@
     package = "@narumitw/pi-goal";
     owner = "narumiruna";
     repo = "pi-extensions";
-    version = "0.55.2";
-    srcHash = "sha256-VfNxpTCfXXX906+Vwyh5Ra0hSxvytwtogfIm1QwK8WE=";
+    version = "0.55.3";
+    srcHash = "sha256-sq+pVG2pLMi9pUaZERG5HickyxzEmRAO4ExjjJrW2A8=";
     depsResolver = "registry";
     deps = {
       "@narumitw/pi-tui-kit" = {
@@ -320,10 +320,10 @@
     package = "@agegr/pi-web";
     owner = "agegr";
     repo = "pi-web";
-    version = "0.16.0";
-    srcHash = "sha256-A1eUpkGvCiFfYTolU1oEeCBMvVg+ROK7DFsCcFGw2YE=";
-    releaseHash = "sha256-46agQfK0336I4FbrOCnwd3dQ348IN1QiRvWqe+zcfW0=";
-    npmDepsHash = "sha256-1EdISR8fLVs/x7SHiMAv3nQzeJk7+X6ocqdi2pYpEmc=";
+    version = "0.17.0";
+    srcHash = "sha256-EZxPQ5lbxV6yviDhw8F/ce8PP99DKxHj4wP6YLGYXNU=";
+    releaseHash = "sha256-OLQ9RzT7/OMV7x4AO5BuEqk8WvqbTwzB6yeaoUQRid8=";
+    npmDepsHash = "sha256-jJsx6o5aLdSAZx49uMZmLC1w/RlZgQTL8zf29CONq3k=";
   };
 
   "rpiv-advisor" = {
