@@ -3,9 +3,16 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: lib/ext/nvidia/update.sh [--version VERSION] [--file PATH] [--force] [--report] [--ansi|--color=WHEN]
+Usage: lib/ext/nvidia/update.sh [--branch BRANCH] [--version VERSION] [--file PATH] [--force] [--report] [--ansi|--color=WHEN]
+
+Branches (default: the branch recorded in the target file, else production):
+  production   Latest Production Branch Version
+  new-feature  Latest New Feature Branch Version
+  beta         Latest Beta Version
+
 Examples:
   lib/ext/nvidia/update.sh
+  lib/ext/nvidia/update.sh --branch new-feature
   lib/ext/nvidia/update.sh --version 580.126.09
   lib/ext/nvidia/update.sh --force
   lib/ext/nvidia/update.sh --file lib/ext/nvidia/sources.nix
@@ -20,8 +27,11 @@ die() {
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
 	BASE_INDEX_URL="https://download.nvidia.com/XFree86/Linux-x86_64/"
-	UNIX_DRIVER_ARCHIVE_MD_URL="https://www.nvidia.com/en-us/drivers/unix.md"
+	# Same lookup used by NVIDIA's PB/NFB/BETA archive.
+	DRIVER_LOOKUP_URL="https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php?func=DriverManualLookup&psid=120&lid=1&isWHQL=0&numberOfResults=25&sort1=1&languageCode=1033&osID=12&pfid=985"
 	TARGET_FILE="${REPO_ROOT}/lib/ext/nvidia/sources.nix"
+	BRANCH=""
+	REQUESTED_BRANCH=""
 	REQUESTED_VERSION=""
 	FORCE=0
 	REPORT=0
@@ -42,6 +52,11 @@ init_vars() {
 parse_args() {
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
+		--branch | -b)
+			[[ $# -ge 2 ]] || die "Missing value for $1"
+			REQUESTED_BRANCH="$2"
+			shift 2
+			;;
 		--version | -v)
 			[[ $# -ge 2 ]] || die "Missing value for $1"
 			REQUESTED_VERSION="$2"
@@ -143,19 +158,39 @@ get_current_version() {
 	sed -nE 's/^[[:space:]]*version = "([^"]+)";.*/\1/p' "$TARGET_FILE" | head -n1
 }
 
-parse_unix_markdown_production_version() {
-	awk -v want='Linux x86_64' '
-		/^\*\*/ {
-			header = $0
-			gsub(/\\/, "", header)
-			in_section = index(header, want) > 0
-		}
-		in_section && !found && /Latest Production Branch Version/ {
-			if (match($0, /\[[0-9]+(\.[0-9]+)+\]/)) {
-				print substr($0, RSTART + 1, RLENGTH - 2)
-				found = 1
-			}
-		}
+get_recorded_branch() {
+	[[ -f "$TARGET_FILE" ]] || return 0
+	sed -nE 's/^[[:space:]]*branch = "([^"]+)";.*/\1/p' "$TARGET_FILE" | head -n1
+}
+
+normalize_branch() {
+	case "$1" in
+	production | prod) echo "production" ;;
+	new-feature | new_feature | nfb) echo "new-feature" ;;
+	beta) echo "beta" ;;
+	*) die "--branch must be one of: production, new-feature, beta" ;;
+	esac
+}
+
+resolve_branch() {
+	local branch="$REQUESTED_BRANCH"
+
+	[[ -n "$branch" ]] || branch="$(get_recorded_branch)"
+	[[ -n "$branch" ]] || branch="production"
+	BRANCH="$(normalize_branch "$branch")"
+}
+
+parse_lookup_branch_version() {
+	local branch="$1"
+
+	# Entries are newest first; flags identify PB/NFB/BETA.
+	jq -r --arg branch "$branch" '
+		[.IDS[].downloadInfo | select(
+			if $branch == "production" then .IsRecommended == "1"
+			elif $branch == "new-feature" then .IsRecommended != "1" and .IsFeaturePreview == "1"
+			else .IsRecommended != "1" and .IsFeaturePreview != "1" and .IsBeta == "1"
+			end
+		)] | .[0].DisplayVersion // empty
 	'
 }
 
@@ -167,19 +202,21 @@ get_version() {
 		return
 	fi
 
-	version="$(curl -fsSL "$UNIX_DRIVER_ARCHIVE_MD_URL" | parse_unix_markdown_production_version)"
-	[[ -n "$version" ]] || die "Could not parse the latest Linux x86_64 production branch version from $UNIX_DRIVER_ARCHIVE_MD_URL"
+	version="$(curl -fsSL "$DRIVER_LOOKUP_URL" | parse_lookup_branch_version "$BRANCH")"
+	[[ -n "$version" ]] || die "Could not resolve the latest ${BRANCH} driver version from the NVIDIA driver lookup service"
 	echo "$version"
 }
 
 print_report() {
 	local current_version="$1"
 	local latest_version="$2"
+	local label="nvidia"
 
+	[[ "$BRANCH" == "production" ]] || label="nvidia/${BRANCH}"
 	if [[ "$current_version" == "$latest_version" ]]; then
-		echo "- nvidia: ${current_version} [latest]"
+		echo "- ${label}: ${current_version} [latest]"
 	else
-		print_update_line "nvidia: ${current_version} -> ${latest_version}" "$current_version" "$latest_version"
+		print_update_line "${label}: ${current_version} -> ${latest_version}" "$current_version" "$latest_version"
 	fi
 }
 
@@ -260,6 +297,11 @@ update_file() {
 		-e "s#(^[[:space:]]*settingsSha256 = \").*(\";)#\\1${SETTINGS_SHA256}\\2#" \
 		-e "s|(^[[:space:]]*persistencedSha256 = )[^;]+(;[[:space:]]*(\\#.*)?)|\\1\"${PERSISTENCED_SHA256}\"\\2|" \
 		"$tmp_file"
+	if grep -qE '^[[:space:]]*branch = "' "$tmp_file"; then
+		sed -E -i "s#(^[[:space:]]*branch = \").*(\";)#\\1${BRANCH}\\2#" "$tmp_file"
+	else
+		sed -E -i "s#^([[:space:]]*)(version = \")#\\1branch = \"${BRANCH}\";\n\\1\\2#" "$tmp_file"
+	fi
 	alejandra "$tmp_file" >/dev/null
 	chmod 0644 "$tmp_file"
 	mv "$tmp_file" "$TARGET_FILE"
@@ -269,6 +311,7 @@ print_summary() {
 	local version="$1"
 
 	echo "Updated $(basename "$TARGET_FILE")"
+	echo "  branch=$BRANCH"
 	echo "  version=$version"
 	echo "  sha256_64bit=$SHA256_64BIT"
 	echo "  openSha256=$OPEN_SHA256"
@@ -310,10 +353,15 @@ main() {
 	ensure_runtime_shell "$@"
 	init_vars
 	parse_args "$@"
+	resolve_branch
 
 	current_version="$(get_current_version)"
 	selected_version="$(get_version)"
 	if ((REPORT)); then
+		if [[ -z "$REQUESTED_VERSION" ]]; then
+			build_urls "$selected_version"
+			assert_url_exists "NVIDIA runfile" "$RUNFILE_URL"
+		fi
 		print_report "$current_version" "$selected_version"
 		return
 	fi
