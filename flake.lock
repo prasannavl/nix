@@ -194,6 +194,22 @@
         "type": "github"
       }
     },
+    "go-overlay": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794837763,
+        "narHash": "sha256-90zoQpHXQz6sNE7y/q2m80zhAAwlutXf3RNjzwN1dPg=",
+        "owner": "purpleclay",
+        "repo": "go-overlay",
+        "rev": "3207e98943b9ceb2c207d6e0958f2239c8f210db",
+        "type": "github"
+      },
+      "original": {
+        "owner": "purpleclay",
+        "repo": "go-overlay",
+        "type": "github"
+      }
+    },
     "home-manager": {
       "inputs": {
         "nixpkgs": [
@@ -637,6 +653,7 @@
         "disko": "disko",
         "dotlink": "dotlink",
         "flake-utils": "flake-utils",
+        "go-overlay": "go-overlay",
         "home-manager": "home-manager",
         "llm-agents": "llm-agents",
         "nix-alien": "nix-alien",

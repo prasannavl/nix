@@ -14,28 +14,37 @@ Tailscale package and selecting it as `pkgs.tailscale` in the root overlay.
 
 ## Package source
 
-- Current pinned version: `1.104.1`.
-- Source: Tailscale GitHub release tag `v1.104.1`.
+- Current pinned version: `1.104.7`.
+- Source: Tailscale GitHub release tag `v1.104.7`.
 - The updater treats GitHub Releases `latest` as the stable Tailscale source of
   truth and resolves it through the normal GitHub release redirect, avoiding the
   unauthenticated GitHub API rate limit.
 - The package reuses the upstream nixpkgs Tailscale build, wrapper, completions,
   derper output, and systemd unit handling.
-- The override pins only the release `src`, `vendorHash`, `version`, and
-  version-stamp linker flags.
+- The override pins the release `src`, `vendorHash`, `version`, version-stamp
+  linker flags, and the Go toolchain it needs.
 
 ## Go toolchain pin
 
-- Tailscale 1.104+ requires Go >= 1.27.1, while the pinned nixpkgs default Go is
-  older.
-- The base package is `pkgs.unstable.tailscale`, whose nixpkgs Tailscale already
-  builds with `buildGo127Module`; neither `default.nix` nor `update.sh` names
-  the Go builder argument. A `tailscale.override { … }` on an argument the
-  upstream constructor no longer takes fails host evaluation before any build
-  starts.
-- Keep both files in that shape: the vendor-hash probe must build the same way
-  the final package does, or the updater fails before any hash mismatch is
-  reported.
+- Tailscale 1.104.7 declares Go 1.27.4 in `go.mod`, while the pinned Nixpkgs Go
+  1.27 line can temporarily lag at an earlier patch level.
+- The root flake pins `purpleclay/go-overlay` as a non-flake source input and
+  applies its overlay directly. Its own flake dependency graph is not used.
+- `sources.nix` records only the exact `goVersion` required by Tailscale.
+  `default.nix` selects `pkgs.go-bin.versions.<version>` and injects it into
+  generic Nixpkgs `buildGoModule`. Upstream Tailscale currently names its
+  constructor argument `buildGo127Module`; that name remains only at the
+  override boundary.
+- `go-overlay` provides pure, reproducible binary Go toolchains across many
+  historical/current versions and updates them automatically after go.dev
+  releases. This is the Go equivalent of consuming a dedicated Rust toolchain
+  provider rather than rebuilding compiler releases locally.
+- `update.sh` derives the required Go version from the release's `go.mod` and
+  checks that the pinned `go-overlay` contains that exact version. If it does
+  not, the Tailscale release is held until the `go-overlay` input is updated.
+- The vendor-hash probe imports `lib/ext/tailscale/default.nix` with the same
+  `goBin` source and candidate Tailscale metadata, so probe and final package
+  share the exact package/toolchain construction.
 
 ## Updater source ref
 

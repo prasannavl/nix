@@ -29,6 +29,8 @@ init_vars() {
 	RELEASE_URL=""
 	SRC_HASH=""
 	VENDOR_HASH=""
+	GO_VERSION=""
+	HOLD_REASON=""
 }
 
 parse_args() {
@@ -140,18 +142,25 @@ get_current_version() {
 
 has_current_hashes() {
 	grep -Eq '^[[:space:]]*srcHash = "sha256-[^"]+";' "$RESOLVED_TARGET_FILE" &&
-		grep -Eq '^[[:space:]]*vendorHash = "sha256-[^"]+";' "$RESOLVED_TARGET_FILE"
+		grep -Eq '^[[:space:]]*vendorHash = "sha256-[^"]+";' "$RESOLVED_TARGET_FILE" &&
+		grep -Eq '^[[:space:]]*goVersion = "[^"]+";' "$RESOLVED_TARGET_FILE"
 }
 
 print_report() {
 	local current_version="$1"
 	local latest_version="$2"
+	local suffix="${3:-}"
 
 	if [[ "$current_version" == "$latest_version" ]]; then
 		echo "- tailscale: ${current_version} [latest]"
 	else
-		print_update_line "tailscale: ${current_version} -> ${latest_version}" "$current_version" "$latest_version"
+		print_update_line "tailscale: ${current_version} -> ${latest_version}${suffix}" "$current_version" "$latest_version"
 	fi
+}
+
+print_hold() {
+	print_update_line "tailscale: ${1} -> ${RESOLVED_VERSION} held; ${HOLD_REASON}" "$1" "$RESOLVED_VERSION"
+	echo "Update the pinned go-overlay input, then rerun the Tailscale updater."
 }
 
 print_no_update() {
@@ -182,6 +191,51 @@ get_release_metadata() {
 	[[ -n "$RESOLVED_VERSION" ]] || die "Could not resolve latest Tailscale version"
 }
 
+fetch_go_requirement() {
+	local gomod
+	gomod="$(curl -fsSL "https://raw.githubusercontent.com/tailscale/tailscale/v${RESOLVED_VERSION}/go.mod")" || return 1
+	awk '$1 == "go" {print $2; exit}' <<<"$gomod"
+}
+
+go_overlay_has_version() {
+	local version="$1"
+	nix eval --impure --raw --expr "
+let
+  flake = import ${REPO_ROOT}/lib/flake/repo-flake.nix { repoRoot = ${REPO_ROOT}; };
+  pkgs = import flake.inputs.nixpkgs {
+    system = builtins.currentSystem;
+    overlays = import ${REPO_ROOT}/overlays/default.nix { inputs = flake.inputs; };
+  };
+in
+  if pkgs.go-bin.hasVersion \"${version}\" then \"yes\" else \"\"" 2>/dev/null
+}
+
+resolve_go_version() {
+	local required available
+
+	HOLD_REASON=""
+	GO_VERSION=""
+
+	required="$(fetch_go_requirement)" || {
+		HOLD_REASON="cannot read go.mod for v${RESOLVED_VERSION}"
+		return 1
+	}
+	if [[ -z "$required" ]]; then
+		HOLD_REASON="go.mod for v${RESOLVED_VERSION} declares no go directive"
+		return 1
+	fi
+
+	GO_VERSION="$required"
+	available="$(go_overlay_has_version "$required")" || {
+		HOLD_REASON="cannot evaluate Go ${required} from the pinned go-overlay"
+		return 1
+	}
+	if [[ -z "$available" ]]; then
+		HOLD_REASON="needs Go ${required}; the pinned go-overlay does not provide it"
+		return 1
+	fi
+}
+
 prefetch_source_hash() {
 	local url
 
@@ -192,7 +246,16 @@ prefetch_source_hash() {
 	)"
 }
 
+render_go_version() {
+	printf '    goVersion = "%s";\n' "$GO_VERSION"
+}
+
+# Build the package exactly as default.nix does, with a candidate source, so
+# the probe and the real build can never drift apart.
 render_fake_vendor_expr() {
+	local go_version
+	go_version="$(render_go_version)"
+
 	cat <<EOF
 let
   flake = import ${REPO_ROOT}/lib/flake/repo-flake.nix { repoRoot = ${REPO_ROOT}; };
@@ -201,31 +264,20 @@ let
     config.allowUnfree = true;
     overlays = import ${REPO_ROOT}/overlays/default.nix { inputs = flake.inputs; };
   };
-  version = "${RESOLVED_VERSION}";
-in
-  # base package comes from unstable (buildGo127Module; tailscale 1.104+ needs
-  # Go >= 1.27.1, the pinned nixpkgs Go is older), we only pin the source.
-  pkgs.unstable.tailscale.overrideAttrs (finalAttrs: old: {
-    version = version;
-    src = pkgs.fetchFromGitHub {
-      owner = "tailscale";
-      repo = "tailscale";
-      tag = "v\${version}";
-      hash = "${SRC_HASH}";
-    };
+  source = {
+    kind = "github-release";
+    owner = "tailscale";
+    repo = "tailscale";
+    tagPrefix = "v";
+    version = "${RESOLVED_VERSION}";
+    srcHash = "${SRC_HASH}";
     vendorHash = pkgs.lib.fakeHash;
-    ldflags =
-      builtins.map
-      (flag:
-        if pkgs.lib.hasPrefix "-X tailscale.com/version." flag
-        then
-          pkgs.lib.replaceStrings
-          [old.version]
-          [finalAttrs.version]
-          flag
-        else flag)
-      old.ldflags;
-  })
+${go_version}  };
+in
+  import ${REPO_ROOT}/lib/ext/tailscale/default.nix {
+    inherit pkgs source;
+    tailscale = pkgs.unstable.tailscale;
+  }
 EOF
 }
 
@@ -247,16 +299,20 @@ compute_vendor_hash() {
 		die "Expected fake vendorHash build to fail, but it succeeded"
 	fi
 
+	# Anything but a vendor-hash mismatch is a real build failure.
 	VENDOR_HASH="$(awk '/got:[[:space:]]+sha256-/ {print $2}' <<<"$build_output" | tail -n1)"
 	if [[ -z "$VENDOR_HASH" ]]; then
 		echo "--- nix build output ---" >&2
 		echo "$build_output" >&2
 		echo "------------------------" >&2
-		die "Could not parse vendorHash from nix build output"
+		die "Tailscale fake vendorHash build failed; see the log above"
 	fi
 }
 
 render_file() {
+	local go_version
+	go_version="$(render_go_version)"
+
 	cat <<EOF
 {
   tailscale = {
@@ -267,7 +323,7 @@ render_file() {
     version = "${RESOLVED_VERSION}";
     srcHash = "${SRC_HASH}";
     vendorHash = "${VENDOR_HASH}";
-  };
+${go_version}  };
 }
 EOF
 }
@@ -289,6 +345,7 @@ Updated $(basename "$RESOLVED_TARGET_FILE")
   version=$RESOLVED_VERSION
   srcHash=$SRC_HASH
   vendorHash=$VENDOR_HASH
+  go=$GO_VERSION
   releaseUrl=$RELEASE_URL
 EOF
 }
@@ -318,7 +375,7 @@ ensure_runtime_shell() {
 }
 
 main() {
-	local current_version
+	local current_version hold_suffix
 
 	ensure_runtime_shell "$@"
 	init_vars
@@ -327,11 +384,19 @@ main() {
 	get_release_metadata
 	current_version="$(get_current_version)"
 	if ((REPORT)); then
-		print_report "$current_version" "$RESOLVED_VERSION"
+		hold_suffix=""
+		if [[ "$current_version" != "$RESOLVED_VERSION" ]] && ! resolve_go_version; then
+			hold_suffix=" (held: ${HOLD_REASON})"
+		fi
+		print_report "$current_version" "$RESOLVED_VERSION" "$hold_suffix"
 		return
 	fi
 	if ((!FORCE)) && [[ "$current_version" == "$RESOLVED_VERSION" ]] && has_current_hashes; then
 		print_no_update "$current_version"
+		return
+	fi
+	if ! resolve_go_version; then
+		print_hold "$current_version"
 		return
 	fi
 

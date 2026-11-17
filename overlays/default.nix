@@ -1,6 +1,7 @@
 {inputs}: [
   # (import ./unstable-sys.nix {inherit inputs; })
   (import ./unstable.nix {inherit inputs;})
+  (import inputs.go-overlay)
   # (import ./sway.nix {inherit inputs;})
   (import ./gdm.nix {inherit inputs;})
   (import ./niri.nix)
