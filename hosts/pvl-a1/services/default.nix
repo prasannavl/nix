@@ -2,6 +2,7 @@
   imports = [
     ./ai.nix
     ./dotlink.nix
+    ./kache.nix
     ./llama-router.nix
     ./ollama.nix
     ./openwebui.nix

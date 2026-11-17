@@ -9,6 +9,7 @@
     ./feishin
     ./immich
     ./jellyfin
+    ./kache.nix
     ./kavita
     ./librechat.nix
     ./llama-router.nix

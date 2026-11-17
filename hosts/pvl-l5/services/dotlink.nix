@@ -12,6 +12,8 @@
   systemd.tmpfiles.rules = [
     "d /home/pvl/spaces/abird 0755 pvl pvl -"
     "d /home/pvl/.cache/abird 0700 pvl pvl -"
+    # mount source for the sandbox kache store below
+    "d /home/pvl/.cache/kache 0700 pvl pvl -"
   ];
 
   services.dotlink = {
@@ -46,8 +48,11 @@
         "uv:rw"
         "yarn:rw"
       ];
-      # Host abird cache → sandbox XDG cache; shell-only.
-      DOTLINK_MOUNTS = "/home/pvl/.cache/abird:/tmp/home/.cache/abird:rw";
+      # host caches → sandbox XDG cache; kache daemon socket stays host-side
+      DOTLINK_MOUNTS = lib.concatStringsSep "," [
+        "/home/pvl/.cache/abird:/tmp/home/.cache/abird:rw"
+        "/home/pvl/.cache/kache:/tmp/home/.cache/kache:rw"
+      ];
     };
 
     # Profile mode: PATH/groups not derivable; declare here.

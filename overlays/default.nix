@@ -30,6 +30,7 @@
       # Upstream-following external units that are not agent tooling; the
       # agent-facing ones live in overlays/agent-tools.nix.
       tuicr = final.callPackage ../lib/ext/tuicr {};
+      kache = final.callPackage ../lib/ext/kache {};
       nvidiaCustomForKernel = kernelPackages:
         final.callPackage ../lib/ext/nvidia {inherit kernelPackages;};
       nvidia-custom = final.nvidiaCustomForKernel final.linuxPackages;
