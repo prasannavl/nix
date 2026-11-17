@@ -278,13 +278,51 @@ live in the shared progress state so the key reader's reporter clone redraws the
 same region, the heartbeat renders through the same builder so it can never
 clear a different region, the footer only shows when a key reader owns stdin,
 and every writer holds the output lock across its region redraw so two writers
-cannot each append a region while `rendered_lines` tracks only one. Every region
-line is truncated ANSI-aware to the terminal width so it stays on a single row,
-because `rendered_lines` counts rows and a wrapped line would leave its extra
-rows uncleared on hide. Nothing is printed after the run summary. Native fleet
-runs capture the `v` key on an interactive terminal, streaming the tail at
-runtime without restarting the command. Verbose attribution drops the duplicate
-host when a step already names its executor (`build via pvl-x2`, not
+cannot each append a region while `rendered_lines` tracks only one. Each logical
+update buffers its terminal changes under that lock, then flushes once.
+Interactive frames use DEC synchronized-output markers so supporting terminals
+wait for the complete frame even when its bytes arrive in separate chunks.
+Ordinary updates retain the last painted rows and overwrite only changed rows,
+erasing stale suffixes after their replacements. Identical frames emit nothing;
+shrinking clears obsolete rows, and growth reserves only the added rows. Full
+clears remain for permanent output, resize recovery, and snapshot replacement,
+not every streamed line. This avoids blanking the dashboard even when a terminal
+ignores synchronized-output markers. Redirected output remains immediate, plain,
+and unframed; panicking frame construction publishes nothing.
+
+Live frames hide the text cursor: vertical row rewrites preserve the last edited
+column, which otherwise leaves a moving block beside the footer. Permanent
+messages keep it hidden while a live region remains; completion or region
+release makes it visible again. Only actual terminal writes publish cursor
+ownership. Normal return, failure, panic (including a held output lock), and
+forced interruption restore visibility through shared terminal cleanup, even
+without a key reader. Emergency cleanup closes a possibly interrupted
+synchronized frame before showing the cursor, using atomics and `write(2)`
+without reporter/stdio locks. Real-PTY tests cover these exit paths and raw-mode
+restoration. Redirected output and empty refreshes emit no cursor controls.
+
+Host tails, phase tails, and verbose output share one 50 ms redraw budget. All
+input still updates bounded state and failure evidence; only painting is
+coalesced. Lifecycle changes and operator input repaint immediately. The
+existing heartbeat flushes the newest state when a burst goes quiet.
+
+The October 29 build-only flicker follow-up verified that the running Nix
+package already contained the batched-frame fix. That fix was insufficient:
+semantic build lines bypassed the verbose-only throttle, and 1,000 lines still
+caused 1,000 full clear/repaint writes (677,476 bytes in the twelve-host
+regression). Routing/reconciliation had not changed those producer paths. Shared
+throttling and changed-row rewriting remove the demonstrated repaint storm; the
+precise reason it became perceptible in later runs was not established.
+Regression coverage includes burst retention, unchanged rows, immediate
+lifecycle flushes, and 392 modeled transitions covering growth, shrinkage, and
+bottom scrolling.
+
+Every region line is truncated ANSI-aware to the terminal width so it stays on a
+single row, because `rendered_lines` counts rows and a wrapped line would leave
+its extra rows uncleared on hide. Nothing is printed after the run summary.
+Native fleet runs capture the `v` key on an interactive terminal, streaming the
+tail at runtime without restarting the command. Verbose attribution drops the
+duplicate host when a step already names its executor (`build via pvl-x2`, not
 `build via pvl-x2 pvl-x2`). The reporter owns the single open/closed state, so
 the key reader and `--verbose`/`--build-logs` drive one source of truth that
 nested in-process workers share. The command seeds it once, at startup
