@@ -347,3 +347,29 @@ The later cutover gate additionally enables the Rust compatibility package,
 switches in-process move deployments to `fleet::runtime`, updates callers and
 documentation, and removes the Bash/Python files. No live deployment is part of
 either code-validation gate.
+
+## November 2026 activation-failure excerpts
+
+Native fleet activation failures now preserve a concise root-cause excerpt at
+the point where the activation observer still has authoritative failure output.
+Before rollback can clear or stop the failed unit, the host manager recognizes
+only validated systemd unit names from switch-to-configuration lifecycle lines,
+including failed managed user units. When the lifecycle output names the user,
+the diagnostic query is scoped to that manager; otherwise it probes only live
+`/run/user/<uid>` managers and accepts a unit only when systemd reports it as
+loaded.
+
+The diagnostic query is bounded and read-only and reuses the managed-health
+failure diagnostic format: `Result`, `ExecMainCode`, `ExecMainStatus`,
+`NRestarts`, plus the last three journal lines. The same terminal sanitization,
+secret redaction, per-line 500-character cap, and three-unit input cap apply.
+The ordinary host failure renders at most four excerpts after the activation
+status, so a failure can read like
+`Exit(4) · user=abird unit=abird-excalidash-stage.service result=exit-code exit=exited/127 · ... log=npx: not found`
+without requiring the operator to open the retained raw command logs. Invalid or
+unrecognized unit text never becomes a diagnostic command argument; if the
+bounded query cannot run, the summary falls back to the validated unit identity.
+
+This is diagnostic enrichment only. Activation admission, rollback eligibility,
+transport-loss verification, and deployment safety decisions are unchanged. No
+live deployment was performed as part of this repair.
