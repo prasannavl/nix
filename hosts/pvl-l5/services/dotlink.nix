@@ -8,8 +8,10 @@
 
   # Launch directory is the access root for relative grants; keep it present
   # even before the first checkout exists.
+  # Cache mount source: required, else the mount is skipped with a warning.
   systemd.tmpfiles.rules = [
     "d /home/pvl/spaces/abird 0755 pvl pvl -"
+    "d /home/pvl/.cache/abird 0700 pvl pvl -"
   ];
 
   services.dotlink = {
@@ -44,6 +46,8 @@
         "uv:rw"
         "yarn:rw"
       ];
+      # Host abird cache → sandbox XDG cache; shell-only.
+      DOTLINK_MOUNTS = "/home/pvl/.cache/abird:/tmp/home/.cache/abird:rw";
     };
 
     # Profile mode: PATH/groups not derivable; declare here.
