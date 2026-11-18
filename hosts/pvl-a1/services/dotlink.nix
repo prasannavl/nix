@@ -14,6 +14,7 @@
     "d /home/pvl/.cache/abird 0700 pvl pvl -"
     # mount source for the sandbox kache store below
     "d /home/pvl/.cache/kache 0700 pvl pvl -"
+    "d /home/pvl/src 0755 pvl pvl -"
   ];
 
   services.dotlink = {
@@ -51,6 +52,8 @@
       DOTLINK_MOUNTS = lib.concatStringsSep "," [
         "/home/pvl/.cache/abird:/tmp/home/.cache/abird:rw"
         "/home/pvl/.cache/kache:/tmp/home/.cache/kache:rw"
+        # user source tree, read-write
+        "/home/pvl/src:/tmp/home/src:rw"
       ];
     };
 
