@@ -12,6 +12,7 @@
   (import ./pvl.nix {inherit inputs;})
   (import ./pkgs.nix {inherit inputs;})
   (import ./agent-tools.nix)
+  (import ./voice.nix {inherit inputs;})
   (
     final: prev: {
       handbrake-wrapped = final.callPackage ../lib/ext/handbrake.nix {};
