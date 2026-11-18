@@ -351,18 +351,23 @@ mod tests {
     fn local_interruption_does_not_replace_remote_uncertainty() {
         let task = Arc::new(InterruptedTask::default());
         let scope: Arc<dyn TaskScope> = Arc::new(Scope(task.clone()));
-        let result =
-            run_step(
-                &scope,
-                BuildStep::Realize {
-                    builder: "builder".into(),
-                },
-                |_| {
-                    crate::fleet::build_runtime::validate_remote_build_output(
-                        &CommandAttempt::failure(255, "partial output", "lost observation"),
+        let result = run_step(
+            &scope,
+            BuildStep::Realize {
+                builder: "builder".into(),
+            },
+            |_| {
+                crate::fleet::build_runtime::validate_remote_build_output(
+                    &CommandAttempt::failure(255, "partial output", "lost observation"),
+                    &crate::fleet::build_runtime::BuildReceipt::new(
+                        "0123456789abcdef0123456789abcdef",
+                        crate::fleet::build::NixStorePath::derivation("/nix/store/abc-system.drv")
+                            .unwrap(),
                     )
-                },
-            );
+                    .unwrap(),
+                )
+            },
+        );
         assert!(result.is_err());
         assert_eq!(*task.0.lock().unwrap(), Some(TaskOutcome::Unconfirmed));
     }

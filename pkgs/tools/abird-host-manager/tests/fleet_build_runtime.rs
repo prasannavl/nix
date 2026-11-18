@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -30,9 +31,29 @@ use build_lease::{
     LeaseRetryClock, LeaseRetryPolicy, SystemLeaseConnector,
 };
 use build_runtime::{
-    ProtectedBuilder, RemoteBuildTools, execute_remote_command, plan_remote_build,
-    realize_protected, validate_remote_build_output,
+    BuildReceipt, FailedBuild, ProtectedBuilder, RemoteBuildTools, execute_remote_command,
+    plan_remote_build, realize_protected, validate_remote_build_output,
 };
+
+fn receipt() -> BuildReceipt {
+    BuildReceipt::new(
+        "0123456789abcdef0123456789abcdef",
+        NixStorePath::derivation("/nix/store/abc-system.drv").unwrap(),
+    )
+    .unwrap()
+}
+
+fn frame(exit: u8, output: &str) -> String {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let result = if exit == 0 {
+        STANDARD.encode(output)
+    } else {
+        "-".to_owned()
+    };
+    format!(
+        "abird-build-result-v1\t0123456789abcdef0123456789abcdef\t/nix/store/abc-system.drv\t{exit}\t{result}\n"
+    )
+}
 
 #[test]
 fn command_plan_is_unrooted_and_preserves_nix_arguments() {
@@ -59,9 +80,11 @@ fn command_plan_is_unrooted_and_preserves_nix_arguments() {
     assert_eq!(commands.build.args[3], "run");
     assert_eq!(commands.build.args[4], "/run/current-system/sw/bin/flock");
     assert_eq!(commands.build.args[5], "/nix/var/nix");
-    assert_eq!(commands.build.args[6], "/run/current-system/sw/bin/nix");
+    assert_eq!(commands.build.args[6].len(), 32);
+    assert_eq!(commands.build.args[7], "/nix/store/abc-system.drv");
+    assert_eq!(commands.build.args[8], "/run/current-system/sw/bin/nix");
     assert_eq!(
-        &commands.build.args[7..],
+        &commands.build.args[9..],
         [
             "build",
             "--option",
@@ -82,20 +105,130 @@ fn command_plan_is_unrooted_and_preserves_nix_arguments() {
             .any(|arg| arg.contains("abird-nix-build-lease"))
     );
     assert!(!commands.build.args.contains(&"-o".to_owned()));
+    assert!(commands.build.args[1].contains("abird-build-result-v1"));
+    assert!(commands.build.args[1].contains("mktemp"));
 }
 
 #[test]
 fn build_output_must_be_one_exact_store_path() {
-    let built = CommandAttempt::success("/nix/store/output-system\n");
+    let built = CommandAttempt::success(frame(0, "/nix/store/output-system\n"));
     assert_eq!(
-        validate_remote_build_output(&built).unwrap().path.as_str(),
+        validate_remote_build_output(&built, &receipt())
+            .unwrap()
+            .path
+            .as_str(),
         "/nix/store/output-system"
     );
     assert!(
-        validate_remote_build_output(&CommandAttempt::success("/nix/store/a\n/nix/store/b\n"))
+        validate_remote_build_output(
+            &CommandAttempt::success(frame(0, "/nix/store/a\n/nix/store/b\n")),
+            &receipt()
+        )
+        .is_err()
+    );
+    let failed = validate_remote_build_output(
+        &CommandAttempt::failure(101, frame(101, ""), "compile failed"),
+        &receipt(),
+    )
+    .unwrap_err();
+    assert_eq!(failed.downcast_ref::<FailedBuild>().unwrap().status(), 101);
+    for (client, receipt_status) in [(0, 101), (1, 101), (101, 0)] {
+        let attempt = CommandAttempt {
+            status: if client == 0 {
+                build::CommandStatus::Success
+            } else {
+                build::CommandStatus::Exit(client)
+            },
+            stdout: frame(receipt_status, "/nix/store/output-system\n"),
+            stderr: "synthetic build output".to_owned(),
+        };
+        assert!(
+            validate_remote_build_output(&attempt, &receipt())
+                .unwrap_err()
+                .downcast_ref::<build_runtime::UnconfirmedBuild>()
+                .is_some()
+        );
+    }
+    assert!(
+        validate_remote_build_output(&CommandAttempt::failure(1, "", "build failed"), &receipt())
             .is_err()
     );
-    assert!(validate_remote_build_output(&CommandAttempt::failure(1, "", "build failed")).is_err());
+    for output in [
+        frame(0, "/nix/store/a\n").replace("abc-system.drv", "other.drv"),
+        frame(0, "/nix/store/a\n").replace("0123456789abcdef", "ffffffffffffffff"),
+        format!("{}\n", frame(0, "/nix/store/a\n")),
+        "unframed Nix output\n".to_owned(),
+    ] {
+        assert!(
+            validate_remote_build_output(&CommandAttempt::success(output), &receipt()).is_err()
+        );
+    }
+}
+
+#[test]
+fn launcher_receipt_proves_completion_without_replaying_a_failed_nix_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock = dir.path().join("gc-lock");
+    let flock = dir.path().join("flock");
+    std::fs::write(&lock, "").unwrap();
+    std::fs::write(&flock, "#!/bin/sh\nexit 0\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&flock, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let tools = RemoteBuildTools::new(
+        "/usr/bin/nix",
+        "/usr/bin/bash",
+        flock.to_string_lossy(),
+        lock.to_string_lossy(),
+    )
+    .unwrap();
+    let drv = NixStorePath::derivation("/nix/store/abc-system.drv").unwrap();
+    let build = BuildArgs::new(vec![], false);
+    for (shell, want_status) in [
+        ("printf '/nix/store/test-system\\n'", 0),
+        ("printf 'oniguruma missing\\n' >&2; exit 101", 101),
+    ] {
+        let mut commands = plan_remote_build(&tools, &drv, &build);
+        commands.build.args.truncate(8);
+        commands
+            .build
+            .args
+            .extend(["bash".to_owned(), "-c".to_owned(), shell.to_owned()]);
+        let output = Command::new("bash")
+            .args(&commands.build.args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(want_status),
+            "launcher: {output:?}"
+        );
+        let attempt = CommandAttempt {
+            status: if want_status == 0 {
+                build::CommandStatus::Success
+            } else {
+                build::CommandStatus::Exit(want_status)
+            },
+            stdout: String::from_utf8(output.stdout).unwrap(),
+            stderr: String::from_utf8(output.stderr).unwrap(),
+        };
+        let result = validate_remote_build_output(&attempt, &commands.receipt);
+        if want_status == 0 {
+            assert_eq!(result.unwrap().path.as_str(), "/nix/store/test-system");
+        } else {
+            let failure = result.unwrap_err();
+            assert_eq!(failure.downcast_ref::<FailedBuild>().unwrap().status(), 101);
+            assert!(
+                failure
+                    .downcast_ref::<FailedBuild>()
+                    .unwrap()
+                    .observation()
+                    .stderr
+                    .contains("oniguruma")
+            );
+        }
+    }
 }
 
 #[derive(Default)]

@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use crate::progress::{HostOperation, ProgressReporter, command_reporter, format_duration};
 use crate::terminal_style::Tone;
 
+use super::build_runtime::{FailedBuild, UnconfirmedBuild};
 use super::cli::{Action, LogFormat, Options};
 use super::host_runtime::{ProcessCompletion, ProcessRecorder, ProcessStream};
 use super::orchestration::{
@@ -270,6 +271,19 @@ impl FleetProgress {
     pub fn host_unconfirmed(&self, host: &str, summary: impl Into<String>) {
         self.reporter
             .host_unconfirmed(host, safe_host_summary(&summary.into()));
+    }
+
+    pub fn build_diagnostic_path(&self, host: &str, builder: &str) -> Result<Option<String>> {
+        let name = if builder == "local" {
+            format!("build-{host}")
+        } else {
+            format!("build-{host}-via-{builder}")
+        };
+        self.diagnostics
+            .as_ref()
+            .map(|sink| sink.build_log(&name))
+            .transpose()
+            .map(|path| path.flatten().map(|path| path.display().to_string()))
     }
 
     pub fn host_skipped(&self, host: &str, summary: impl Into<String>) {
@@ -721,7 +735,13 @@ impl Task for ProgressTask {
                 self.prefix,
                 verbose_line_eligible(policy, line),
             );
-            if let Some(dashboard_line) = format_process_dashboard_line(policy, stream, line) {
+            let dashboard_line =
+                format_process_dashboard_line(policy, stream, line).or_else(|| {
+                    (stream == ProcessStream::Stderr && self.running.starts_with("build"))
+                        .then(|| format_build_error_activity(line))
+                        .flatten()
+                });
+            if let Some(dashboard_line) = dashboard_line {
                 self.publish_line(dashboard_line);
             }
         }
@@ -895,6 +915,20 @@ impl ProcessRecorder for DiagnosticSink {
 }
 
 impl DiagnosticSink {
+    fn build_log(&self, name: &str) -> Result<Option<PathBuf>> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("diagnostic recorder lock poisoned"))?;
+        if state.disabled {
+            anyhow::bail!("diagnostic recorder write failed");
+        }
+        let path = self
+            .directory
+            .join(format!("{}.stderr.log", diagnostic_name(name)));
+        Ok(path.is_file().then_some(path))
+    }
+
     fn close_command_files(&self, name: &str) {
         let Ok(mut state) = self.state.lock() else {
             return;
@@ -1310,6 +1344,14 @@ fn format_process_dashboard_line(
         OutputPolicy::Curated => format_dashboard_line(line),
         OutputPolicy::Activation => format_activation_dashboard_line(line, stream),
     }
+}
+
+fn format_build_error_activity(line: &str) -> Option<String> {
+    let line = line.trim();
+    if !line.starts_with("error: Cannot build ") && !line.starts_with("error[") {
+        return None;
+    }
+    format_failure_line(line).map(|line| format!("[error] {line}"))
 }
 
 fn format_operation_dashboard_line(line: &str) -> Option<String> {
@@ -1793,6 +1835,47 @@ fn safe_error_excerpt(value: &str) -> String {
     }
 }
 
+/// Display-only explanation; result certainty remains at the build boundary.
+pub(crate) fn build_error_summary(error: &anyhow::Error) -> String {
+    let (title, stderr) = if let Some(failed) = error.downcast_ref::<FailedBuild>() {
+        (
+            format!("Nix build failed (exit {})", failed.status()),
+            failed.observation().stderr.as_str(),
+        )
+    } else if let Some(unknown) = error.downcast_ref::<UnconfirmedBuild>() {
+        (
+            format!(
+                "remote build unconfirmed ({}); remote work may still be running; realization was not retried",
+                unknown.reason()
+            ),
+            unknown
+                .observation()
+                .map_or("", |attempt| attempt.stderr.as_str()),
+        )
+    } else {
+        return safe_error_excerpt(&format!("{error:#}")).replace('\n', "; ");
+    };
+    match build_root_cause(stderr) {
+        Some(cause) => format!("{title}: {cause}"),
+        None => title,
+    }
+}
+
+fn build_root_cause(stderr: &str) -> Option<String> {
+    let mut best: Option<(u8, String)> = None;
+    for raw in stderr.lines() {
+        let line = raw.trim().trim_start_matches('>').trim();
+        let priority = super::build_runtime::build_error_priority(line);
+        if priority == 0 || best.as_ref().is_some_and(|(score, _)| *score >= priority) {
+            continue;
+        }
+        if let Some(safe) = format_failure_line(line) {
+            best = Some((priority, safe));
+        }
+    }
+    best.map(|(_, line)| line)
+}
+
 fn safe_host_summary(value: &str) -> String {
     value
         .lines()
@@ -2028,6 +2111,57 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    #[test]
+    fn build_failure_digest_prefers_cause_over_cascading_nix_errors() {
+        use super::super::build::{CommandAttempt, NixStorePath};
+        use super::super::build_runtime::{BuildReceipt, validate_remote_build_output};
+        let expected = BuildReceipt::new(
+            "0123456789abcdef0123456789abcdef",
+            NixStorePath::derivation("/nix/store/abc-system.drv").unwrap(),
+        )
+        .unwrap();
+        let stderr = "error: Cannot build '/nix/store/abc-voxtype-onnx.drv'.\n\
+        Reason: builder failed with exit code 101.\n\
+        >   Unable to find oniguruma in pkg-config\n\
+        >   The system library `oniguruma` required by `onig_sys` was not found.\n\
+        error: Cannot build '/nix/store/other-home-manager.drv'.\n";
+        let attempt = CommandAttempt {
+            status: super::super::build::CommandStatus::Exit(101),
+            stdout: "abird-build-result-v1\t0123456789abcdef0123456789abcdef\t/nix/store/abc-system.drv\t101\t-\n".to_owned(),
+            stderr: stderr.to_owned(),
+        };
+        let error = validate_remote_build_output(&attempt, &expected).unwrap_err();
+        let summary = build_error_summary(&error);
+        assert!(summary.contains("Nix build failed (exit 101)"), "{summary}");
+        assert!(summary.contains("oniguruma"), "{summary}");
+        assert!(!summary.contains("home-manager"), "{summary}");
+
+        let unknown =
+            validate_remote_build_output(&CommandAttempt::failure(1, "", stderr), &expected)
+                .unwrap_err();
+        let summary = build_error_summary(&unknown);
+        assert!(summary.contains("unconfirmed"), "{summary}");
+        assert!(summary.contains("oniguruma"), "{summary}");
+    }
+
+    #[test]
+    fn diagnostic_paths_are_reported_only_when_recording_is_healthy() {
+        let root = tempfile::tempdir().unwrap();
+        let recorder = DiagnosticSink::new(root.path()).unwrap();
+        let step = "build-app-via-builder";
+        assert_eq!(recorder.build_log(step).unwrap(), None);
+
+        recorder.output(step, ProcessStream::Stderr, "error: unavailable\n");
+        let path = recorder.build_log(step).unwrap().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "error: unavailable\n");
+
+        recorder.close_command_files(&diagnostic_name(step));
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir_all(&recorder.directory).unwrap();
+        recorder.output(step, ProcessStream::Stderr, "another error\n");
+        assert!(recorder.build_log(step).is_err());
+    }
 
     #[test]
     fn phase_labels_are_short_and_include_fanout_size() {

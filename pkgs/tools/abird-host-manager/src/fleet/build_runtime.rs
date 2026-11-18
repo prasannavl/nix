@@ -2,7 +2,8 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use super::build::{
     BuildArgs, CommandAttempt, CommandExecutor, CommandSpec, CommandStatus, NixStorePath,
@@ -48,6 +49,9 @@ impl RemoteBuildTools {
     }
 }
 
+const BUILD_RESULT_VERSION: &str = "abird-build-result-v1";
+const MAX_BUILD_PATH_BYTES: usize = 4096;
+
 const BUILD_LEASE_SCRIPT: &str = r#"set -Eeuo pipefail
 mode="$1"
 flock_program="$2"
@@ -65,8 +69,31 @@ hold)
     done
     ;;
 run)
-    [ "$#" -gt 0 ] || exit 2
-    exec "$@"
+    [ "$#" -ge 3 ] || exit 2
+    nonce="$1"
+    derivation="$2"
+    shift 2
+    # Fixed NixOS system tools; never depend on an SSH login-shell PATH.
+    coreutils=/run/current-system/sw/bin
+    output_file="$("$coreutils/mktemp")" || exit 2
+    trap '"$coreutils/rm" -f -- "$output_file"' EXIT
+    if "$@" > "$output_file"; then
+        result=0
+    else
+        result=$?
+    fi
+    path="-"
+    if [ "$result" -eq 0 ]; then
+        size="$("$coreutils/wc" -c < "$output_file")"
+        if [ "$size" -le 4096 ]; then
+            path="$("$coreutils/base64" -w0 "$output_file")"
+        else
+            path="!"
+        fi
+    fi
+    printf 'abird-build-result-v1\t%s\t%s\t%s\t%s\n' \
+        "$nonce" "$derivation" "$result" "$path"
+    exit "$result"
     ;;
 *) exit 2 ;;
 esac"#;
@@ -95,6 +122,24 @@ pub fn builder_lease_hold_command(tools: &RemoteBuildTools) -> CommandSpec {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoteBuildCommands {
     pub build: CommandSpec,
+    pub receipt: BuildReceipt,
+}
+
+/// One-time expectation for the SSH launcher, not a remote state store.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuildReceipt {
+    nonce: String,
+    derivation: NixStorePath,
+}
+
+impl BuildReceipt {
+    pub fn new(nonce: impl Into<String>, derivation: NixStorePath) -> Result<Self> {
+        let nonce = nonce.into();
+        if nonce.len() != 32 || !nonce.bytes().all(|b| b.is_ascii_hexdigit()) {
+            bail!("remote build receipt nonce must be 32 hexadecimal characters");
+        }
+        Ok(Self { nonce, derivation })
+    }
 }
 
 pub fn plan_remote_build(
@@ -102,28 +147,78 @@ pub fn plan_remote_build(
     drv: &NixStorePath,
     build: &BuildArgs,
 ) -> RemoteBuildCommands {
+    let receipt = BuildReceipt::new(uuid::Uuid::new_v4().simple().to_string(), drv.clone())
+        .expect("UUID v4 simple form is 32 hexadecimal characters");
     let build = remote_build_command(&tools.nix, drv, build);
     RemoteBuildCommands {
         build: lease_command(
             tools,
             "run",
-            std::iter::once(build.program).chain(build.args),
+            [
+                receipt.nonce.clone(),
+                drv.as_str().to_owned(),
+                build.program,
+            ]
+            .into_iter()
+            .chain(build.args),
         ),
+        receipt,
     }
 }
+
+/// The trusted launcher observed Nix exit; unlike an SSH status, this is a
+/// terminal observation of the build command.
+pub struct FailedBuild {
+    status: u8,
+    observation: CommandAttempt,
+}
+
+impl FailedBuild {
+    pub fn status(&self) -> u8 {
+        self.status
+    }
+
+    pub fn observation(&self) -> &CommandAttempt {
+        &self.observation
+    }
+}
+
+impl std::fmt::Debug for FailedBuild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FailedBuild")
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for FailedBuild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "remote Nix build failed (exit {})", self.status)
+    }
+}
+
+impl std::error::Error for FailedBuild {}
 
 /// Lost client observation is not proof that native workers settled.
 pub struct UnconfirmedBuild {
     observation: Option<CommandAttempt>,
+    reason: &'static str,
 }
 
 impl UnconfirmedBuild {
     pub(super) fn unobserved() -> Self {
-        Self { observation: None }
+        Self {
+            observation: None,
+            reason: "no SSH observation",
+        }
     }
 
     pub fn observation(&self) -> Option<&CommandAttempt> {
         self.observation.as_ref()
+    }
+
+    pub fn reason(&self) -> &'static str {
+        self.reason
     }
 }
 
@@ -146,23 +241,87 @@ impl std::fmt::Display for UnconfirmedBuild {
         }
         write!(
             f,
-            "; remote work may still be running; realization was not retried"
+            "; {}; remote work may still be running; realization was not retried",
+            self.reason
         )
     }
 }
 
 impl std::error::Error for UnconfirmedBuild {}
 
-pub fn validate_remote_build_output(build: &CommandAttempt) -> Result<RemoteBuildOutput> {
-    if build.status != CommandStatus::Success {
-        return Err(UnconfirmedBuild {
-            observation: Some(build.clone()),
+/// Display-only error ranking, shared by bounded capture and presentation.
+/// This never decides whether a remote build settled.
+pub(crate) fn build_error_priority(raw: &str) -> u8 {
+    let line = raw.trim().trim_start_matches('>').trim();
+    if line.starts_with("The system library ") || line.starts_with("Unable to find ") {
+        5
+    } else if line.starts_with("error[") || line.contains("panicked at ") {
+        4
+    } else if line.starts_with("error: ") && !line.contains("Cannot build") {
+        3
+    } else if line.starts_with("Reason: ") {
+        2
+    } else if line.starts_with("error: Cannot build ") {
+        1
+    } else {
+        0
+    }
+}
+
+pub fn validate_remote_build_output(
+    build: &CommandAttempt,
+    expected: &BuildReceipt,
+) -> Result<RemoteBuildOutput> {
+    let unconfirmed = |reason| UnconfirmedBuild {
+        observation: Some(build.clone()),
+        reason,
+    };
+    let client_exit = match build.status {
+        CommandStatus::Success => 0,
+        CommandStatus::Exit(code) if (1..=255).contains(&code) => code,
+        _ => return Err(unconfirmed("SSH client did not confirm the launcher result").into()),
+    };
+    let Some(frame) = build.stdout.strip_suffix('\n') else {
+        return Err(unconfirmed("missing or invalid remote completion receipt").into());
+    };
+    let fields = frame.split('\t').collect::<Vec<_>>();
+    if fields.len() != 5
+        || fields[0] != BUILD_RESULT_VERSION
+        || fields[1] != expected.nonce
+        || fields[2] != expected.derivation.as_str()
+        || frame.contains('\r')
+        || fields[3].contains(['\n', '\r'])
+        || fields[4].contains(['\n', '\r'])
+    {
+        return Err(unconfirmed("missing or invalid remote completion receipt").into());
+    }
+    let status = fields[3]
+        .parse::<u8>()
+        .map_err(|_| unconfirmed("invalid remote build exit status"))?;
+    if i32::from(status) != client_exit {
+        return Err(unconfirmed("SSH exit status disagrees with remote completion receipt").into());
+    }
+    if status != 0 {
+        if fields[4] != "-" {
+            return Err(unconfirmed("failed build receipt contains unexpected output").into());
+        }
+        return Err(FailedBuild {
+            status,
+            observation: build.clone(),
         }
         .into());
     }
-    RemoteBuildOutput::validate(&build.stdout).with_context(|| UnconfirmedBuild {
-        observation: Some(build.clone()),
-    })
+    if fields[4].len() > MAX_BUILD_PATH_BYTES.div_ceil(3) * 4 {
+        return Err(unconfirmed("remote build path exceeds output limit").into());
+    }
+    let path = STANDARD
+        .decode(fields[4])
+        .map_err(|_| unconfirmed("invalid remote build path encoding"))?;
+    let path =
+        std::str::from_utf8(&path).map_err(|_| unconfirmed("remote build path is not UTF-8"))?;
+    let path = RemoteBuildOutput::validate(path)
+        .map_err(|_| unconfirmed("missing or invalid remote build output path"))?;
+    Ok(path)
 }
 
 pub fn execute_remote_command(

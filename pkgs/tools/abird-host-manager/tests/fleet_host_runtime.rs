@@ -86,9 +86,10 @@ use deploy::{
 use health::{HealthDecision, HealthEvidence};
 use host_runtime::{
     ActivationExecution, DeployOutcome, DryRun, EffectKind, HealthEvaluator, HostExecutionTarget,
-    HostRuntime, ProcessCancellation, ProcessExecutor, ProcessOutput, ProcessRequest,
-    ProcessRunner, ProcessStream, SystemHealthProbe, SystemProcessRunner, build_ssh_request,
-    build_ssh_upload_request, builder_lease_process_spec, control_master_exit_request,
+    HostRuntime, ProcessCancellation, ProcessCompletion, ProcessExecutor, ProcessOutput,
+    ProcessRecorder, ProcessRequest, ProcessRunner, ProcessStream, SystemHealthProbe,
+    SystemProcessRunner, build_ssh_request, build_ssh_upload_request, builder_lease_process_spec,
+    control_master_exit_request,
 };
 use system::ResolvedHost;
 use task::{InternalTask, Task, TaskOutcome};
@@ -889,6 +890,115 @@ fn build_plan_then_local_build_preserves_order_cwd_and_parsing() {
     );
 }
 
+fn commands() -> build_runtime::RemoteBuildCommands {
+    build_runtime::RemoteBuildCommands {
+        build: CommandSpec::new("nix", strings(&["build", "drv^out"])),
+        receipt: build_runtime::BuildReceipt::new(
+            "0123456789abcdef0123456789abcdef",
+            NixStorePath::derivation("/nix/store/abc-system.drv").unwrap(),
+        )
+        .unwrap(),
+    }
+}
+
+#[derive(Default)]
+struct CountingBuildLog(AtomicUsize);
+
+impl ProcessRecorder for CountingBuildLog {
+    fn started(&self, _: &str) {}
+    fn output(&self, _: &str, stream: ProcessStream, chunk: &str) {
+        if stream == ProcessStream::Stderr {
+            self.0.fetch_add(chunk.len(), Ordering::Relaxed);
+        }
+    }
+    fn finished(&self, _: &str, _: Duration, _: ProcessCompletion) {}
+}
+
+#[test]
+fn large_build_output_is_streamed_but_retained_in_bounded_memory() {
+    let recorder = Arc::new(CountingBuildLog::default());
+    let mut runner = ProcessExecutor::new(Some(recorder.clone()));
+    let request = ProcessRequest {
+        program: "bash".to_owned(),
+        args: strings(&[
+            "-c",
+            "printf '/nix/store/one-output\\n'; printf -v large '%*s' 524288 ''; printf '%s' \"$large\" >&2",
+        ]),
+        environment: Vec::new(),
+        clear_git_repository_environment: false,
+        cwd: std::env::current_dir().unwrap(),
+        stdin: None,
+        effect: EffectKind::Build,
+        task: InternalTask::new("bounded-build"),
+    };
+    let output = runner.run(&request).unwrap();
+    assert!(output.succeeded());
+    assert!(output.stdout.contains("/nix/store/one-output"));
+    assert!(
+        output
+            .stderr
+            .starts_with("[earlier build stderr omitted; see diagnostics]")
+    );
+    assert!(output.stderr.len() <= 128 * 1024 + 60);
+    assert_eq!(recorder.0.load(Ordering::Relaxed), 524288);
+}
+
+#[test]
+fn bounded_build_capture_keeps_root_cause_before_large_followup_output() {
+    let mut runner = ProcessExecutor::new(None);
+    let request = ProcessRequest {
+        program: "bash".to_owned(),
+        args: strings(&[
+            "-c",
+            "printf 'error: primary compiler failure\\n' >&2; printf -v noise '%*s' 524288 ''; printf '%s' \"$noise\" >&2",
+        ]),
+        environment: Vec::new(),
+        clear_git_repository_environment: false,
+        cwd: std::env::current_dir().unwrap(),
+        stdin: None,
+        effect: EffectKind::Build,
+        task: InternalTask::new("root-cause-capture"),
+    };
+    let output = runner.run(&request).unwrap();
+    assert!(output.succeeded());
+    assert!(
+        output
+            .stderr
+            .starts_with("[retained build error]\nerror: primary compiler failure")
+    );
+    assert!(output.stderr.contains("[earlier build stderr omitted"));
+    assert!(output.stderr.len() <= 128 * 1024 + 8192 + 80);
+}
+
+#[test]
+fn failed_remote_style_command_records_failed_not_successful_completion() {
+    #[derive(Default)]
+    struct CompletionRecorder(Mutex<Option<ProcessCompletion>>);
+    impl ProcessRecorder for CompletionRecorder {
+        fn started(&self, _: &str) {}
+        fn output(&self, _: &str, _: ProcessStream, _: &str) {}
+        fn finished(&self, _: &str, _: Duration, outcome: ProcessCompletion) {
+            *self.0.lock().unwrap() = Some(outcome);
+        }
+    }
+
+    let recorder = Arc::new(CompletionRecorder::default());
+    let mut runner = ProcessExecutor::new(Some(recorder.clone()));
+    let request = ProcessRequest {
+        program: "bash".to_owned(),
+        args: strings(&["-c", "echo 'error: compiler failed' >&2; exit 101"]),
+        environment: Vec::new(),
+        clear_git_repository_environment: false,
+        cwd: std::env::current_dir().unwrap(),
+        stdin: None,
+        effect: EffectKind::Build,
+        task: InternalTask::new("failed-remote-build"),
+    };
+    let output = runner.run(&request).unwrap();
+    assert_eq!(output.status, ProcessStatus::Code(101));
+    assert_eq!(*recorder.0.lock().unwrap(), Some(ProcessCompletion::Failed));
+}
+
 #[test]
 fn remote_build_transport_loss_never_replays_realization() {
     for code in [124, 255] {
@@ -900,7 +1010,7 @@ fn remote_build_transport_loss_never_replays_realization() {
         let error = runtime
             .run_remote_build(
                 &target(),
-                &CommandSpec::new("nix", strings(&["build", "drv^out"])),
+                &commands(),
                 InternalTask::new("original-incident"),
             )
             .unwrap_err();
@@ -931,7 +1041,7 @@ fn remote_build_daemon_disconnect_does_not_retry_or_claim_settlement() {
     let error = runtime
         .run_remote_build(
             &target(),
-            &CommandSpec::new("nix", strings(&["build", "drv^out"])),
+            &commands(),
             InternalTask::new("build-app-via-builder"),
         )
         .unwrap_err();
@@ -962,7 +1072,7 @@ fn remote_build_retains_client_failure_without_inferring_remote_settlement() {
     let error = runtime
         .run_remote_build(
             &target(),
-            &CommandSpec::new("nix", strings(&["build", "drv^out"])),
+            &commands(),
             InternalTask::new("build-app-via-builder"),
         )
         .unwrap_err();
@@ -984,7 +1094,7 @@ fn remote_build_preserves_failure_evidence_without_cleanup_side_effects() {
     let error = runtime
         .run_remote_build(
             &target(),
-            &CommandSpec::new("nix", strings(&["build", "drv^out"])),
+            &commands(),
             InternalTask::new("build-app-via-builder"),
         )
         .unwrap_err();
@@ -1010,7 +1120,7 @@ fn remote_client_signal_is_not_a_remote_cancellation_receipt() {
     let error = runtime
         .run_remote_build(
             &target(),
-            &CommandSpec::new("nix", strings(&["build", "drv^out"])),
+            &commands(),
             InternalTask::new("build-app-via-builder"),
         )
         .unwrap_err();
@@ -1033,7 +1143,7 @@ fn remote_build_missing_or_ambiguous_success_output_stays_unconfirmed() {
         let error = runtime
             .run_remote_build(
                 &target(),
-                &CommandSpec::new("nix", strings(&["build", "drv^out"])),
+                &commands(),
                 InternalTask::new("build-app-via-builder"),
             )
             .unwrap_err();
@@ -1050,15 +1160,17 @@ fn remote_build_missing_or_ambiguous_success_output_stays_unconfirmed() {
 
 #[test]
 fn dry_run_executes_remote_builder_store_effects() {
-    let runner = FakeRunner::with_outputs([success("/nix/store/def-nixos-system-new\n")]);
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let frame = format!(
+        "abird-build-result-v1\t0123456789abcdef0123456789abcdef\t/nix/store/abc-system.drv\t0\t{}\n",
+        STANDARD.encode("/nix/store/def-nixos-system-new\n"),
+    );
+    let runner = FakeRunner::with_outputs([success(&frame)]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::Yes).unwrap();
     let result = runtime
         .run_remote_build(
             &target(),
-            &CommandSpec::new(
-                "nix",
-                strings(&["build", "--no-link", "--print-out-paths", "drv^out"]),
-            ),
+            &commands(),
             InternalTask::new("build-app-via-builder"),
         )
         .unwrap();

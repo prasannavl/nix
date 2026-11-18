@@ -200,10 +200,28 @@ fn publish_build_result<T>(progress: &FleetProgress, host: &str, result: &Result
     match result {
         Ok(_) => progress.host_status(host, HostStatus::BuildDone),
         Err(error) if error.downcast_ref::<UnconfirmedBuild>().is_some() => {
-            progress.host_unconfirmed(host, format!("{error:#}"));
+            progress.host_unconfirmed(host, super::presentation::build_error_summary(error));
         }
-        Err(error) => progress.host_failed(host, format!("build failed: {error:#}")),
+        Err(error) => progress.host_failed(host, super::presentation::build_error_summary(error)),
     }
+}
+
+fn build_failure_report(
+    progress: &FleetProgress,
+    host: &str,
+    builder: &str,
+    error: &anyhow::Error,
+) -> String {
+    let mut report = format!(
+        "build {host} on {builder}: {}",
+        super::presentation::build_error_summary(error)
+    );
+    match progress.build_diagnostic_path(host, builder) {
+        Ok(Some(path)) => report.push_str(&format!("\n  diagnostics: {path}")),
+        Ok(None) => {}
+        Err(_) => report.push_str("\n  full diagnostics unavailable (recorder write failed)"),
+    }
+    report
 }
 
 pub struct NativeFleetEffects<'a> {
@@ -1058,12 +1076,25 @@ impl<'a> NativeFleetEffects<'a> {
                         .cloned()
                         .with_context(|| format!("missing evaluated derivation for {host}"))?;
                     self.unstarted_builds.remove(&host);
+                    let builder = if development {
+                        "local".to_owned()
+                    } else {
+                        self.build_host()
+                    };
                     let result = self
                         .build_one(&host, development, &derivation, &build_args)
                         .with_context(|| format!("build {host}"));
                     publish_build_result(&self.progress, &host, &result);
-                    let closure =
-                        result.inspect_err(|error| self.record_build_error(&host, error))?;
+                    let closure = result
+                        .inspect_err(|error| self.record_build_error(&host, error))
+                        .map_err(|error| {
+                            anyhow::anyhow!(build_failure_report(
+                                &self.progress,
+                                &host,
+                                &builder,
+                                &error
+                            ))
+                        })?;
                     self.closures.insert(host.clone(), closure);
                 }
             }
@@ -1114,6 +1145,11 @@ impl<'a> NativeFleetEffects<'a> {
             |index, result| publish_build_result(&progress, &ordered_hosts[index], result),
         )?;
         let mut failures = Vec::new();
+        let builder = if development {
+            "local".to_owned()
+        } else {
+            self.build_host()
+        };
         // Results retain input order; None means no worker was admitted.
         for (host, result) in ordered_hosts.into_iter().zip(built) {
             if result.is_some() {
@@ -1128,7 +1164,12 @@ impl<'a> NativeFleetEffects<'a> {
                 }
                 Some(Err(error)) => {
                     self.record_build_error(&host, &error);
-                    failures.push(format!("{error:#}"));
+                    failures.push(build_failure_report(
+                        &self.progress,
+                        &host,
+                        &builder,
+                        &error,
+                    ));
                 }
                 None => self.progress.host_status(&host, HostStatus::BuildBlocked),
             }
@@ -1474,8 +1515,7 @@ impl<'a> NativeFleetEffects<'a> {
             Ok(())
         })?;
         let output = run_step(&scope, BuildStep::Realize { builder }, |task| {
-            self.host_runtime
-                .run_remote_build(target, &commands.build, task)
+            self.host_runtime.run_remote_build(target, &commands, task)
         })?;
         Ok(output.path)
     }

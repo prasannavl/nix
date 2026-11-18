@@ -5,7 +5,7 @@
 // a login-shell command. The only exception is the intentionally restricted
 // forced-command readiness probe, whose arguments are validated first.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, Read, Write};
 #[cfg(not(unix))]
 use std::io::{BufRead, BufReader};
@@ -31,7 +31,8 @@ use super::build::{
 };
 use super::build_lease::LeaseProcessSpec;
 use super::build_runtime::{
-    RemoteBuildTools, UnconfirmedBuild, builder_lease_hold_command, validate_remote_build_output,
+    RemoteBuildCommands, RemoteBuildTools, UnconfirmedBuild, builder_lease_hold_command,
+    validate_remote_build_output,
 };
 use super::deploy::{
     self, ActivationGoal, ActivationSample, DeployDecision, GenerationSnapshot, RemoteCommand,
@@ -57,6 +58,9 @@ const UNIX_SOCKET_PATH_LIMIT_BYTES: usize = 108;
 const BOUNDED_READ_KILL_AFTER: Duration = Duration::from_secs(5);
 /// Exit status reported for a bounded read that exceeded its deadline.
 const TIMEOUT_EXIT_CODE: i32 = 124;
+const BUILD_STDOUT_LIMIT: usize = 8 * 1024;
+const BUILD_STDERR_LIMIT: usize = 128 * 1024;
+const STREAM_LINE_LIMIT: usize = 8 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DryRun {
@@ -372,12 +376,14 @@ fn run_process(
     let child_exited = Arc::new(AtomicBool::new(false));
     let stdout_sink = sink.clone();
     let stdout_child_exited = Arc::clone(&child_exited);
+    let bounded = request.effect == EffectKind::Build;
     let stdout_thread = std::thread::spawn(move || {
         observe_stream(
             stdout,
             ProcessStream::Stdout,
             stdout_sink,
             &stdout_child_exited,
+            bounded,
         )
     });
     let stderr_sink = sink.clone();
@@ -388,6 +394,7 @@ fn run_process(
             ProcessStream::Stderr,
             stderr_sink,
             &stderr_child_exited,
+            bounded,
         )
     });
     let heartbeat_interval = sink.task.heartbeat_interval();
@@ -497,10 +504,15 @@ fn observe_stream(
     stream: ProcessStream,
     sink: ProcessSink,
     child_exited: &AtomicBool,
+    bounded: bool,
 ) -> io::Result<String> {
     const POLL_INTERVAL_MILLIS: i32 = 50;
     let mut bytes = Vec::new();
+    let mut stderr_tail = VecDeque::new();
     let mut emitted = 0;
+    let mut pending = Vec::new();
+    let mut retained_error: Option<(u8, String)> = None;
+    let mut truncated = false;
     let mut buffer = [0_u8; 8192];
     let mut descriptor = libc::pollfd {
         fd: reader.as_raw_fd(),
@@ -523,13 +535,35 @@ fn observe_stream(
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(count) => {
-                    bytes.extend_from_slice(&buffer[..count]);
-                    while let Some(relative) =
-                        bytes[emitted..].iter().position(|byte| *byte == b'\n')
-                    {
-                        let end = emitted + relative + 1;
-                        sink.output(stream, &String::from_utf8_lossy(&bytes[emitted..end]));
-                        emitted = end;
+                    let chunk = &buffer[..count];
+                    if bounded {
+                        let limit = if stream == ProcessStream::Stdout {
+                            BUILD_STDOUT_LIMIT
+                        } else {
+                            BUILD_STDERR_LIMIT
+                        };
+                        if stream == ProcessStream::Stdout {
+                            let take = limit.saturating_sub(bytes.len()).min(count);
+                            bytes.extend_from_slice(&chunk[..take]);
+                            truncated |= take != count;
+                        } else {
+                            stderr_tail.extend(chunk.iter().copied());
+                            let excess = stderr_tail.len().saturating_sub(limit);
+                            if excess != 0 {
+                                truncated = true;
+                                stderr_tail.drain(..excess);
+                            }
+                        }
+                        emit_bounded_lines(&sink, stream, &mut pending, &mut retained_error, chunk);
+                    } else {
+                        bytes.extend_from_slice(chunk);
+                        while let Some(relative) =
+                            bytes[emitted..].iter().position(|byte| *byte == b'\n')
+                        {
+                            let end = emitted + relative + 1;
+                            sink.output(stream, &String::from_utf8_lossy(&bytes[emitted..end]));
+                            emitted = end;
+                        }
                     }
                     continue;
                 }
@@ -541,10 +575,72 @@ fn observe_stream(
             break;
         }
     }
+    if bounded {
+        if !pending.is_empty() {
+            sink.output(stream, &String::from_utf8_lossy(&pending));
+            capture_build_error(stream, &pending, &mut retained_error);
+        }
+        if truncated && stream == ProcessStream::Stdout {
+            return Ok("[remote build stdout exceeds capture limit]".to_owned());
+        }
+        let output = if stream == ProcessStream::Stderr {
+            String::from_utf8_lossy(stderr_tail.make_contiguous())
+        } else {
+            String::from_utf8_lossy(&bytes)
+        };
+        return Ok(if truncated {
+            let cause = retained_error.map_or_else(String::new, |(_, line)| {
+                format!("[retained build error]\n{line}\n")
+            });
+            format!("{cause}[earlier build stderr omitted; see diagnostics]\n{output}")
+        } else {
+            output.into_owned()
+        });
+    }
     if emitted < bytes.len() {
         sink.output(stream, &String::from_utf8_lossy(&bytes[emitted..]));
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[cfg(unix)]
+fn emit_bounded_lines(
+    sink: &ProcessSink,
+    stream: ProcessStream,
+    pending: &mut Vec<u8>,
+    retained_error: &mut Option<(u8, String)>,
+    mut chunk: &[u8],
+) {
+    while !chunk.is_empty() {
+        let take = chunk
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(chunk.len(), |index| index + 1)
+            .min(STREAM_LINE_LIMIT - pending.len());
+        pending.extend_from_slice(&chunk[..take]);
+        chunk = &chunk[take..];
+        if pending.last() == Some(&b'\n') || pending.len() == STREAM_LINE_LIMIT {
+            sink.output(stream, &String::from_utf8_lossy(pending));
+            capture_build_error(stream, pending, retained_error);
+            pending.clear();
+        }
+    }
+}
+
+#[cfg(unix)]
+fn capture_build_error(
+    stream: ProcessStream,
+    line: &[u8],
+    retained_error: &mut Option<(u8, String)>,
+) {
+    if stream != ProcessStream::Stderr {
+        return;
+    }
+    let line = String::from_utf8_lossy(line);
+    let rank = super::build_runtime::build_error_priority(&line);
+    if rank > retained_error.as_ref().map_or(0, |(rank, _)| *rank) {
+        *retained_error = Some((rank, line.trim().to_owned()));
+    }
 }
 
 #[cfg(not(unix))]
@@ -553,6 +649,7 @@ fn observe_stream(
     stream: ProcessStream,
     sink: ProcessSink,
     _child_exited: &AtomicBool,
+    _bounded: bool,
 ) -> io::Result<String> {
     let mut reader = BufReader::new(reader);
     let mut bytes = Vec::new();
@@ -1507,14 +1604,15 @@ impl<R: ProcessRunner> HostRuntime<R> {
     pub fn run_remote_build(
         &mut self,
         target: &HostExecutionTarget,
-        command: &CommandSpec,
+        commands: &RemoteBuildCommands,
         task: Arc<dyn Task>,
     ) -> Result<RemoteBuildOutput> {
-        let process = self.remote_command_request(target, command, EffectKind::Build, task)?;
+        let process =
+            self.remote_command_request(target, &commands.build, EffectKind::Build, task)?;
         // Once dispatched, neither a transport error nor a local exit proves
         // remote settlement. Never turn another SSH execution into observation.
         let output = self.run(process).context(UnconfirmedBuild::unobserved())?;
-        validate_remote_build_output(&command_attempt(&output))
+        validate_remote_build_output(&command_attempt(&output), &commands.receipt)
     }
 
     pub fn cache_pull(

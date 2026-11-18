@@ -80,6 +80,26 @@ fn control_paths(log: &str) -> Vec<String> {
         .collect()
 }
 
+/// Synthetic SSH tests must return a launcher receipt, not bare Nix stdout.
+fn mock_build_receipt(tools: &Path) {
+    let script = tools.join("mock-build-receipt");
+    write_executable(
+        &script,
+        r#"#!/bin/sh
+set -eu
+input="$(cat)"
+payload="$(printf '%s\n' "$input" | sed -n "/^done <<.*NIXBOT_ARGV/,/^NIXBOT_ARGV$/p")"
+nonce="$(printf '%s\n' "$payload" | sed -n '9p' | base64 -d)"
+derivation="$(printf '%s\n' "$payload" | sed -n '10p' | base64 -d)"
+test "${#nonce}" -eq 32
+case "$derivation" in /nix/store/*.drv) ;; *) exit 93 ;; esac
+result="$(printf '%s\n' "$1" | base64 -w0)"
+printf 'abird-build-result-v1\t%s\t%s\t0\t%s\n' "$nonce" "$derivation" "$result"
+"#,
+    )
+    .unwrap();
+}
+
 #[test]
 fn owned_ci_uses_ordinary_operator_preprocessing_before_receiver_admission() {
     let directory = tempdir();
@@ -1047,6 +1067,7 @@ esac
 "#,
     )
     .unwrap();
+    mock_build_receipt(&tools);
     let ssh = tools.join("ssh");
     write_executable(
         &ssh,
@@ -1067,9 +1088,9 @@ case "$*" in
     exit 0
     ;;
 esac
-cat >/dev/null
 case "$count" in
-  2) printf '%s\n' /nix/store/bbbbbbbb-system ;;
+  2) mock-build-receipt /nix/store/bbbbbbbb-system ;;
+  *) cat >/dev/null ;;
 esac
 "#,
     )
@@ -1222,6 +1243,7 @@ esac
 "#,
     )
     .unwrap();
+    mock_build_receipt(&tools);
     let ssh = tools.join("ssh");
     write_executable(
         &ssh,
@@ -1245,10 +1267,9 @@ case "$*" in
     exit 0
     ;;
 esac
-cat >/dev/null
 case "$*" in
-  *'-O exit'*) exit 0 ;;
-  *) printf '%s\n' /nix/store/cccccccc-system ;;
+  *'-O exit'*) cat >/dev/null; exit 0 ;;
+  *) mock-build-receipt /nix/store/cccccccc-system ;;
 esac
 "#,
     )
@@ -2183,6 +2204,7 @@ esac
 "#,
     )
     .unwrap();
+    mock_build_receipt(&tools);
     let ssh = tools.join("ssh");
     write_executable(
         &ssh,
@@ -2203,9 +2225,9 @@ case "$*" in
     [ ! -f "$NATIVE_FLEET_BUILDER_COUNT" ] || count=$(cat "$NATIVE_FLEET_BUILDER_COUNT")
     count=$((count + 1))
     printf '%s\n' "$count" > "$NATIVE_FLEET_BUILDER_COUNT"
-    cat >/dev/null
     case "$count" in
-      1) printf '%s\n' /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-nixos-system-app ;;
+      1) mock-build-receipt /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-nixos-system-app ;;
+      *) cat >/dev/null ;;
     esac
     ;;
   *'root@app.invalid'*) cat >/dev/null; echo 'Permission denied (publickey).' >&2; exit 255 ;;
