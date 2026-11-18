@@ -18,6 +18,8 @@
   };
   wlrCfg = wlrDefaults // lib.attrByPath [hostName] {} wlrByHost;
 in {
+  i18n.inputMethod.ibus.waylandFrontend = true;
+
   programs.sway = {
     enable = true;
     wrapperFeatures.gtk = true;

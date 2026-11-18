@@ -35,6 +35,7 @@ in rec {
     ./kanshi
     ./wm
     ./noctalia
+    ./voice
     ./sway
     ./niri
     ./gnome

@@ -37,6 +37,8 @@ in {
     # Keep only config-emitted Home Manager options here; systemd.variables also
     # renders into the generated Sway config rather than changing the wrapper.
     systemd.variables = ["--all"];
+    systemd.xdgAutostart = true;
+
     config = {
       modifier = mod;
       terminal = foot;

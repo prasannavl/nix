@@ -39,11 +39,27 @@ in {
     };
   };
 
-  home = {pkgs, ...}: let
+  home = {
+    osConfig,
+    pkgs,
+    ...
+  }: let
     wallpaper = ../../../data/backgrounds/sw.png;
     wmServices = import ./services.nix {};
     wmScripts = wmServices.mkWmScripts pkgs;
+    ibus = "${osConfig.i18n.inputMethod.package}/bin/ibus";
   in {
+    # Override NixOS's IBus autostart command for both Wayland sessions.
+    # GNOME retains its own IBus service.
+    xdg.configFile."autostart/ibus-daemon.desktop".text = ''
+      [Desktop Entry]
+      Type=Application
+      Name=IBus Wayland
+      Exec=${ibus} start --type wayland
+      OnlyShowIn=niri;sway;
+      NoDisplay=true
+    '';
+
     systemd.user = {
       targets."${wmServices.readyTargets.niri}".Unit = {
         Description = "WM session display-ready target";
