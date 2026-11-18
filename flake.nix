@@ -87,8 +87,22 @@
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    voxtype = {
+      url = "github:peteonrails/voxtype/v1.2.2";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+    };
+    whisrs = {
+      url = "github:y0sif/whisrs/v0.2.1";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+    };
+    vocalinux = {
+      url = "github:VocaHQ/vocalinux/v0.18.6";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     dotlink = {
-      url = "github:abird-ai/dotlink/v0.17.3";
+      url = "github:abird-ai/dotlink/v0.17.4";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         crane.follows = "crane";

@@ -124,16 +124,16 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1794835782,
-        "narHash": "sha256-OphPAClZf1SiC6U2YY7j6+6nGIy4p+my3jwGAJ4DJYA=",
+        "lastModified": 1794985800,
+        "narHash": "sha256-+kIDyFYbdnakJyZ3U7/SGof48+76+Dnfa2bmF9YkxxA=",
         "owner": "abird-ai",
         "repo": "dotlink",
-        "rev": "acb40441ca0fc28ce3a03369c084718dc1ab3141",
+        "rev": "887401398da297c458ffa2a152a07e1b85870c35",
         "type": "github"
       },
       "original": {
         "owner": "abird-ai",
-        "ref": "v0.17.3",
+        "ref": "v0.17.4",
         "repo": "dotlink",
         "type": "github"
       }
@@ -665,7 +665,10 @@
         "systems": "systems",
         "treefmt-nix": "treefmt-nix",
         "unstable": "unstable",
-        "vscode-ext": "vscode-ext"
+        "vocalinux": "vocalinux",
+        "voxtype": "voxtype",
+        "vscode-ext": "vscode-ext",
+        "whisrs": "whisrs"
       }
     },
     "rust-overlay": {
@@ -740,6 +743,51 @@
         "type": "github"
       }
     },
+    "vocalinux": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794178334,
+        "narHash": "sha256-Hb+TmB0ZRTsxjM0KNM3WBE0lBHuafTww2+Pz5jhZ5iw=",
+        "owner": "VocaHQ",
+        "repo": "vocalinux",
+        "rev": "56487857c07575c9d16bdca2756afda800e6e320",
+        "type": "github"
+      },
+      "original": {
+        "owner": "VocaHQ",
+        "ref": "v0.18.6",
+        "repo": "vocalinux",
+        "type": "github"
+      }
+    },
+    "voxtype": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794677928,
+        "narHash": "sha256-9gXDvLS35we9aSqHoFYcG4Yby9mNRlKxjG+c4hGQqIM=",
+        "owner": "peteonrails",
+        "repo": "voxtype",
+        "rev": "ba059d31e42512e7db26175cfaaa60197c0d7f10",
+        "type": "github"
+      },
+      "original": {
+        "owner": "peteonrails",
+        "ref": "v1.2.2",
+        "repo": "voxtype",
+        "type": "github"
+      }
+    },
     "vscode-ext": {
       "inputs": {
         "nixpkgs": [
@@ -757,6 +805,30 @@
       "original": {
         "owner": "nix-community",
         "repo": "nix-vscode-extensions",
+        "type": "github"
+      }
+    },
+    "whisrs": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794657658,
+        "narHash": "sha256-m1IAzPE9+lUFDUrcYEUjbpnswBhGm64G/8F7LmR9OnY=",
+        "owner": "y0sif",
+        "repo": "whisrs",
+        "rev": "5f5be26e8886e575caa1464133e961b449561fa3",
+        "type": "github"
+      },
+      "original": {
+        "owner": "y0sif",
+        "ref": "v0.2.1",
+        "repo": "whisrs",
         "type": "github"
       }
     }
