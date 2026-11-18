@@ -151,8 +151,17 @@ services.harmonia = {
   enable = true;
   signKeyPaths = [ "/run/secrets/nix-builder-signing-key" ];
   settings.bind = "0.0.0.0:5000";
+  settings.enable_compression = true;
 };
 ```
+
+`enable_compression` is opt-in upstream (default `false`):
+
+- zstd NARs on the fly (level 1 + long-distance matching, requested via
+  `Accept-Encoding: zstd`), typically ~3x fewer bytes.
+- The cost is that NAR range/resume responses are disabled.
+- Only HTTP cache pulls are compressed. A `nix copy --to ssh-ng://` streams the
+  raw NAR through `nix-daemon --stdio` and ignores this setting.
 
 All consumers need:
 

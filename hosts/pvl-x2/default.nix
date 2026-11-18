@@ -41,7 +41,11 @@ in {
       cacheConfig = {
         enable = true;
         signKeyPaths = [signingKey];
-        settings.bind = "0.0.0.0:5000";
+        settings = {
+          bind = "0.0.0.0:5000";
+          # Opt-in upstream: ~3x fewer bytes on HTTP pulls, no range/resume.
+          enable_compression = true;
+        };
       };
     in
       if harmoniaLessThan3 pkgs.harmonia.version || !(options.services.harmonia ? cache)
