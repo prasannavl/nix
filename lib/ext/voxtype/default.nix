@@ -5,6 +5,8 @@
 }: let
   upstream = inputs.voxtype.packages.${system};
 
+  # The GGUF worker stays its own binary: transcribe.cpp and whisper.cpp use
+  # incompatible ggml symbols. Upstream's flake builds only the client.
   mkWorker = vulkan:
     pkgs.callPackage ./gguf-worker.nix {
       src = inputs.voxtype.outPath;
@@ -14,23 +16,64 @@
   workerCpu = mkWorker false;
   workerVulkan = mkWorker true;
 
-  # Upstream links to system SQLite; ONNX additionally needs Oniguruma.
-  # Keep the original upstream wrapper byte-for-byte, changing only its
-  # unwrapped build dependencies.
-  withLibraries = extra: package:
-    package.overrideAttrs (old: {
-      buildInputs = (old.buildInputs or []) ++ [pkgs.sqlite] ++ extra;
-    });
-  patched = extra: wrapper: unwrapped:
-    wrapper.overrideAttrs (_: {
-      paths = [(withLibraries extra unwrapped)];
-    });
-  whisper = patched [];
-  onnx = patched [pkgs.oniguruma];
+  # Upstream ships the ONNX engines, the Whisper backends and the runtime
+  # wrappers as separate binaries, each with its own feature list, inputs and
+  # runtime environment. Read those, never restate them: the engine sets change
+  # with every release.
+  onnxBuilds = {
+    cpu = {
+      src = upstream.voxtype-onnx-unwrapped;
+      wrapper = upstream.onnx;
+    };
+    cuda = {
+      src = upstream.voxtype-onnx-cuda-unwrapped;
+      wrapper = upstream.onnx-cuda;
+    };
+    migraphx = {
+      src = upstream.voxtype-onnx-migraphx-unwrapped;
+      wrapper = upstream.onnx-migraphx;
+    };
+  };
+  whisperBuilds = {
+    cpu = upstream.voxtype-unwrapped;
+    vulkan = upstream.voxtype-vulkan-unwrapped;
+    rocm = upstream.voxtype-rocm-unwrapped;
+  };
 
-  withWorker = package: worker:
+  # One voxtype = a Whisper backend plus upstream's ONNX engine set in the same
+  # binary, so one command serves every engine. Oniguruma is missing from the
+  # ONNX build inputs (onig_sys needs it); SQLite is not needed, rusqlite is
+  # bundled.
+  mk = {
+    whisper ? "vulkan",
+    onnx ? "cpu",
+  }: let
+    base = whisperBuilds.${whisper};
+    o = onnxBuilds.${onnx};
+    label =
+      if onnx == "cpu"
+      then whisper
+      else "${whisper}-${onnx}";
+    unwrapped = base.overrideAttrs (old: {
+      pname = "voxtype-${label}";
+      # Through overrideAttrs only these env attributes reach cargo; the
+      # `buildFeatures` argument is already spent by buildRustPackage.
+      cargoBuildFeatures = (old.cargoBuildFeatures or []) ++ o.src.cargoBuildFeatures;
+      cargoCheckFeatures = (old.cargoCheckFeatures or []) ++ o.src.cargoCheckFeatures;
+      buildInputs = (old.buildInputs or []) ++ o.src.buildInputs ++ [pkgs.oniguruma];
+      ORT_LIB_LOCATION = o.src.ORT_LIB_LOCATION;
+    });
+  in
+    # The worker only comes in a CPU and a Vulkan build; match Whisper's backend.
+    withWorker label (o.wrapper.overrideAttrs (_: {paths = [unwrapped];})) (
+      if whisper == "vulkan"
+      then workerVulkan
+      else workerCpu
+    );
+
+  withWorker = label: package: worker:
     pkgs.symlinkJoin {
-      name = "${package.name}-with-gguf-worker";
+      name = "voxtype-${label}-with-gguf-worker";
       paths = [package worker];
       nativeBuildInputs = [pkgs.makeWrapper];
       postBuild = ''
@@ -40,21 +83,17 @@
       '';
       inherit (package) meta;
     };
-
-  # Alternate engines expose separate commands rather than conflicting
-  # with the standard Whisper daemon binary.
-  asCommand = name: package: worker:
-    pkgs.writeShellScriptBin name ''
-      export VOXTYPE_GGUF_WORKER="''${VOXTYPE_GGUF_WORKER:-${worker}/bin/voxtype-gguf-worker}"
-      exec ${package}/bin/voxtype "$@"
-    '';
 in {
-  cpu = withWorker (whisper upstream.default upstream.voxtype-unwrapped) workerCpu;
-  vulkan = withWorker (whisper upstream.vulkan upstream.voxtype-vulkan-unwrapped) workerVulkan;
-  rocm = withWorker (whisper upstream.rocm upstream.voxtype-rocm-unwrapped) workerCpu;
-  onnxCpu = asCommand "voxtype-onnx" (onnx upstream.onnx upstream.voxtype-onnx-unwrapped) workerVulkan;
-  onnxCuda = asCommand "voxtype-onnx-cuda" (onnx upstream.onnx-cuda upstream.voxtype-onnx-cuda-unwrapped) workerVulkan;
-  onnxMigraphx = asCommand "voxtype-onnx-migraphx" (onnx upstream.onnx-migraphx upstream.voxtype-onnx-migraphx-unwrapped) workerVulkan;
-  ggufWorkerCpu = workerCpu;
-  ggufWorkerVulkan = workerVulkan;
+  inherit mk;
+  # `cuda` has no upstream Whisper build: Whisper stays on Vulkan and only the
+  # ONNX execution provider changes.
+  accel = {
+    cpu = mk {whisper = "cpu";};
+    vulkan = mk {};
+    cuda = mk {onnx = "cuda";};
+    rocm = mk {
+      whisper = "rocm";
+      onnx = "migraphx";
+    };
+  };
 }

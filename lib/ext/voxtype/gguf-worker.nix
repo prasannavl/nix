@@ -9,7 +9,6 @@
   spirv-headers,
   vulkan-headers,
   vulkan-loader,
-  binutils,
   src,
   cargoDeps,
   version,
@@ -22,11 +21,13 @@ rustPlatform.buildRustPackage {
   # transcribe.cpp and whisper.cpp use incompatible ggml symbols; the
   # companion must remain its own Cargo package, not a Voxtype bin target.
   cargoBuildFlags = ["-p" "voxtype-gguf-worker"];
+  # An argument, not an overrideAttrs attribute: buildRustPackage turns it into
+  # the cargoBuildFeatures env var the cargo hooks read.
   buildFeatures = lib.optional vulkan "vulkan";
   doCheck = false;
 
   nativeBuildInputs =
-    [cmake pkg-config clang llvmPackages.libclang binutils]
+    [cmake pkg-config clang llvmPackages.libclang]
     ++ lib.optionals vulkan [shaderc];
   buildInputs =
     lib.optionals vulkan [spirv-headers vulkan-headers vulkan-loader];
@@ -44,10 +45,6 @@ rustPlatform.buildRustPackage {
 
   postInstall = ''
     test -x "$out/bin/voxtype-gguf-worker"
-  '';
-  postFixup = lib.optionalString vulkan ''
-    ${binutils}/bin/objdump -p "$out/bin/voxtype-gguf-worker" |
-      grep -E 'NEEDED +libvulkan\.so\.1$'
   '';
 
   meta = {
