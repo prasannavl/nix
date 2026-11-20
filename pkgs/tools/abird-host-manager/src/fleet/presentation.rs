@@ -1325,12 +1325,9 @@ fn format_dashboard_line(line: &str) -> Option<String> {
         "[switch] activating configuration" => "[switch] activating configuration",
         "[switch] updating /etc" => "[switch] updating /etc",
         line if format_agenix_status_line(line).is_some() => line,
-        line if format_structured_status_line(line).is_some() => {
-            return format_structured_status_line(line);
-        }
         line if line.starts_with("reconciled ") || line.starts_with("re-applied ") => line,
         line if line.starts_with("Deploy duration: ") => line,
-        _ => return None,
+        line => return format_structured_status_line(line),
     };
     Some(normalized.to_owned())
 }
@@ -1566,6 +1563,12 @@ fn format_structured_status_line(line: &str) -> Option<String> {
     if let Some(rest) = line.strip_prefix("[store] ") {
         return valid_store_basename(rest).then(|| format!("[store] {rest}"));
     }
+    if let Some(rest) = line.strip_prefix("[user-jobs] ") {
+        return Some(
+            format_user_jobs_status(rest)
+                .unwrap_or_else(|| "[user-jobs] activity; see diagnostics".to_owned()),
+        );
+    }
     for (prefix, label) in [
         ("[system-units] ", "[system-units]"),
         ("[user-units] ", "[user-units]"),
@@ -1579,6 +1582,91 @@ fn format_structured_status_line(line: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn format_user_jobs_status(value: &str) -> Option<String> {
+    const MAX_SAMPLE_NAMES: usize = 3;
+    const SAMPLE_DISPLAY_BYTES: usize = 120;
+
+    let (user, value) = value.strip_prefix("user=")?.split_once(' ')?;
+    let (action, value) = value.strip_prefix("action=")?.split_once(" count=")?;
+    let (count, units) = value.split_once(" units=")?;
+    if !safe_name(user)
+        || !matches!(action, "start" | "stop" | "restart" | "reload")
+        || !ascii_digits(count)
+    {
+        return None;
+    }
+    let count = count.parse::<usize>().ok().filter(|&count| count > 0)?;
+    let units = units.strip_prefix('"')?.strip_suffix('"')?;
+    if units.contains('"') {
+        return None;
+    }
+
+    let noun = if count == 1 { "job" } else { "jobs" };
+    let mut rendered = format!("[user-jobs] {user} user manager: {count} pending {action} {noun}");
+    let header_len = rendered.len();
+    let mut displayed = 0;
+    for unit in units.split(',') {
+        if displayed == count.min(MAX_SAMPLE_NAMES) {
+            break;
+        }
+        let separator = if displayed == 0 { ": " } else { ", " };
+        if rendered.len() - header_len + separator.len() + unit.len() > SAMPLE_DISPLAY_BYTES
+            || !valid_user_job_unit_name(unit)
+        {
+            continue;
+        }
+        rendered.push_str(separator);
+        rendered.push_str(unit);
+        displayed += 1;
+    }
+    // With no displayable sample, the total alone tells the whole story.
+    if displayed > 0 && displayed < count {
+        let remaining = count - displayed;
+        rendered.push_str(&format!(" (+{remaining})"));
+    }
+    Some(rendered)
+}
+
+fn valid_user_job_unit_name(unit: &str) -> bool {
+    let Some((stem, kind)) = unit.rsplit_once('.') else {
+        return false;
+    };
+    if stem.is_empty()
+        || stem.starts_with('@')
+        || !matches!(
+            kind,
+            "service"
+                | "socket"
+                | "target"
+                | "device"
+                | "mount"
+                | "automount"
+                | "swap"
+                | "timer"
+                | "path"
+                | "slice"
+                | "scope"
+        )
+    {
+        return false;
+    }
+    let mut bytes = stem.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'\\' {
+            // Keep systemd's literal escape spelling; never decode it.
+            if bytes.next() != Some(b'x')
+                || !(0..2).all(|_| bytes.next().is_some_and(|digit| digit.is_ascii_hexdigit()))
+            {
+                return false;
+            }
+        } else if !byte.is_ascii_alphanumeric() && !matches!(byte, b'.' | b'_' | b'-' | b':' | b'@')
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn ascii_digits(value: &str) -> bool {
@@ -2454,14 +2542,6 @@ mod tests {
             format_dashboard_line("[prefetch-podman-image] pulled=3 skipped=1"),
             Some("[prefetch-podman-image] activity; see diagnostics".to_owned())
         );
-        assert_eq!(
-            format_dashboard_line(
-                "[system-units] action=restarting count=1 units=\"dbus-broker.service\""
-            ),
-            Some(
-                "[system-units] action=restarting count=1 units=\"dbus-broker.service\"".to_owned()
-            )
-        );
         for prefix in [
             "[generation-admission]",
             "[prefetch-podman-image]",
@@ -2469,6 +2549,7 @@ mod tests {
             "[pre-switch]",
             "[system-units]",
             "[user-units]",
+            "[user-jobs]",
         ] {
             let rendered =
                 format_dashboard_line(&format!("{prefix} signing material=sk-live-value")).unwrap();
@@ -2493,6 +2574,156 @@ mod tests {
             None
         );
         assert_eq!(format_dashboard_line("\t\r"), None);
+    }
+
+    #[test]
+    fn dashboard_preserves_legacy_unit_lifecycle_lines() {
+        for line in [
+            r#"[system-units] action=restarting count=1 units="dbus-broker.service""#,
+            r#"[system-units] action=restart count=0 units="a.service""#,
+            r#"[user-units] user=pvl action=starting count=18 units="a.service,b.service,c.service""#,
+            r#"[user-units] user=pvl action=stopping count=2 units="a.service, b.service""#,
+            "[user-units] user=pvl reload",
+        ] {
+            assert_eq!(format_dashboard_line(line).as_deref(), Some(line));
+        }
+        for (label, payload) in [
+            (
+                "[user-units]",
+                r#"user=pvl action=start count=1 units="a.service""#,
+            ),
+            (
+                "[user-units]",
+                r#"user=pvl action=starting count=1 units="a:b.service""#,
+            ),
+            ("[user-units]", "user=bad user reload"),
+            (
+                "[system-units]",
+                r#"action=restarting count=1 units="a\x2db.service""#,
+            ),
+            ("[system-units]", r#"action=starting count=1 units="""#),
+        ] {
+            assert_eq!(
+                format_dashboard_line(&format!("{label} {payload}")),
+                Some(format!("{label} activity; see diagnostics")),
+                "{payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn activation_dashboard_labels_each_pending_user_manager_job_kind() {
+        for action in ["start", "stop", "restart", "reload"] {
+            let line = format!(r#"[user-jobs] user=pvl action={action} count=1 units="a.service""#);
+            assert_eq!(
+                format_activation_dashboard_line(&line, ProcessStream::Stdout),
+                Some(format!(
+                    "[user-jobs] pvl user manager: 1 pending {action} job: a.service"
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_preserves_exact_user_job_names_and_caps_the_sample() {
+        assert_eq!(
+            format_dashboard_line(
+                r#"[user-jobs] user=pvl action=start count=5 units="podman:pvl--app.service,podman:pvl-app.service,worker@foo\x2Dbar\x1b.service,other.slice""#
+            ).as_deref(),
+            Some(r"[user-jobs] pvl user manager: 5 pending start jobs: podman:pvl--app.service, podman:pvl-app.service, worker@foo\x2Dbar\x1b.service (+2)")
+        );
+        assert_eq!(
+            format_dashboard_line(
+                r#"[user-jobs] user=pvl action=start count=3 units="my.automount,my.device,my.swap""#
+            ).as_deref(),
+            Some("[user-jobs] pvl user manager: 3 pending start jobs: my.automount, my.device, my.swap")
+        );
+        assert_eq!(
+            format_dashboard_line(
+                r#"[user-jobs] user=pvl action=start count=1 units="a.service,b.service""#
+            )
+            .as_deref(),
+            Some("[user-jobs] pvl user manager: 1 pending start job: a.service")
+        );
+    }
+
+    #[test]
+    fn dashboard_skips_oversized_user_job_names_without_truncating() {
+        let oversized = format!("{}.service", "x".repeat(240));
+        let shown = format!("{}.service", "a".repeat(60));
+        let over_budget = format!("{}.service", "b".repeat(50));
+        let line = format!(
+            r#"[user-jobs] user=pvl action=reload count=6 units="{oversized},{shown},{over_budget},ok.timer,last.target""#
+        );
+        assert_eq!(
+            format_dashboard_line(&line),
+            Some(format!(
+                "[user-jobs] pvl user manager: 6 pending reload jobs: {shown}, ok.timer, last.target (+3)"
+            ))
+        );
+    }
+
+    #[test]
+    fn dashboard_skips_malformed_user_job_names_and_supports_count_only() {
+        assert_eq!(
+            format_dashboard_line(
+                r#"[user-jobs] user=pvl action=restart count=14 units="bad name.service, a.service,bad%name.service,foo/bar.service,💥.service,.service,@bad.service,wrong.suffix,bad\a.service,bad\x1.service,bad\xQ2.service,,ok.path""#
+            ).as_deref(),
+            Some("[user-jobs] pvl user manager: 14 pending restart jobs: ok.path (+13)")
+        );
+        let oversized = format!("{}.service", "x".repeat(240));
+        for sample in ["", "bad name.service", oversized.as_str()] {
+            let line = format!(r#"[user-jobs] user=pvl action=stop count=7 units="{sample}""#);
+            assert_eq!(
+                format_dashboard_line(&line).as_deref(),
+                Some("[user-jobs] pvl user manager: 7 pending stop jobs")
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_rejects_malformed_user_job_fields() {
+        let overflow = format!(r#"user=pvl action=start count={}0 units="""#, usize::MAX);
+        for payload in [
+            "user=pvl",
+            r#"action=start count=1 units="a.service""#,
+            r#"user= action=start count=1 units="a.service""#,
+            r#"user=bad user action=start count=1 units="a.service""#,
+            r#"user=pvl:dev action=start count=1 units="a.service""#,
+            r#"user=pvl\x2ddev action=start count=1 units="a.service""#,
+            r#"user=pvl action=starting count=1 units="a.service""#,
+            r#"user=pvl action=try-restart count=1 units="a.service""#,
+            r#"user=pvl action=start count=0 units="""#,
+            r#"user=pvl action=start count=-1 units="a.service""#,
+            r#"user=pvl action=start count=+1 units="a.service""#,
+            r#"user=pvl action=start count=1x units="a.service""#,
+            r#"user=pvl action=start count= units="a.service""#,
+            &overflow,
+            "user=pvl action=start count=1",
+            "user=pvl action=start count=1 units=a.service",
+            r#"user=pvl action=start count=1 units="a.service" extra="field""#,
+        ] {
+            assert_eq!(
+                format_dashboard_line(&format!("[user-jobs] {payload}")).as_deref(),
+                Some("[user-jobs] activity; see diagnostics"),
+                "{payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_keeps_user_job_lines_subject_to_the_output_prefilter() {
+        let line =
+            r#"[user-jobs] user=pvl action=start count=2 units="ok.service,cookie:demo.service""#;
+        assert_eq!(format_dashboard_line(line), None);
+        assert_eq!(
+            format_activation_dashboard_line(line, ProcessStream::Stdout),
+            None
+        );
+        assert_eq!(
+            format_verbose_line(line).as_deref(),
+            Some("[sensitive output redacted]")
+        );
     }
 
     #[test]
