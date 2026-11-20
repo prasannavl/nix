@@ -15,14 +15,26 @@ const CURRENT_SYSTEM: &str = "/run/current-system";
 const SYSTEM_PROFILE: &str = "/nix/var/nix/profiles/system";
 const SYSTEM_BASH: &str = "/run/current-system/sw/bin/bash";
 const SYSTEM_CAT: &str = "/run/current-system/sw/bin/cat";
+const SYSTEM_ENV: &str = "/run/current-system/sw/bin/env";
 const SYSTEM_FLOCK: &str = "/run/current-system/sw/bin/flock";
+const SYSTEM_GETENT: &str = "/run/current-system/sw/bin/getent";
 const SYSTEM_INSTALL: &str = "/run/current-system/sw/bin/install";
 const SYSTEM_MV: &str = "/run/current-system/sw/bin/mv";
 const SYSTEM_READLINK: &str = "/run/current-system/sw/bin/readlink";
+const SYSTEM_SETPRIV: &str = "/run/current-system/sw/bin/setpriv";
 const SYSTEM_SLEEP: &str = "/run/current-system/sw/bin/sleep";
 const SYSTEM_SYSTEMCTL: &str = "/run/current-system/sw/bin/systemctl";
 const SYSTEM_TAIL: &str = "/run/current-system/sw/bin/tail";
+const SYSTEM_TIMEOUT: &str = "/run/current-system/sw/bin/timeout";
 const SYSTEM_TEE: &str = "/run/current-system/sw/bin/tee";
+/// Bounds for the observational user-unit progress lines: one line per user
+/// and action per interval, a bounded name sample and a bounded line count,
+/// so a host with many user stacks cannot flood the deployment log.
+const PROGRESS_EMIT_TICKS: usize = 6;
+const PROGRESS_LINE_BUDGET: usize = 16;
+const PROGRESS_UNIT_NAMES: usize = 3;
+const PROGRESS_SAMPLE_INTERVAL: &str = "0.5";
+const PROGRESS_SAMPLE_SECONDS: usize = 3;
 const ACTIVATION_RESULT_DIR: &str = "/var/lib/nixbot/activation-results";
 const ACTIVATION_LOCK: &str = "/run/nixos/switch-to-configuration.lock";
 pub(super) const HOST_LOCAL_ACTIVATION_LOCK: &str = "/dev/shm/nixbot-host-local.lock.d";
@@ -949,6 +961,7 @@ fn activation_observer_script(unit: &str, max_wait: Duration) -> String {
     // The extra ten seconds matches nixbot's allowance for unit collection and
     // final marker publication after RuntimeMaxSec plus TimeoutStopSec.
     let max_polls = (max_wait.as_secs() + 10).saturating_mul(10);
+    let progress_functions = activation_user_jobs_functions();
     format!(
         r#"result_file={result}
 log_file={log}
@@ -985,6 +998,7 @@ wait_for_change() {{
     [ "$polls" -lt {max_polls} ] || return 1
     {SYSTEM_SLEEP} 0.1
 }}
+{progress_functions}
 while ! read_result; do
     if unit_is_terminal || ! wait_for_change; then
         read_result || exit 255
@@ -1011,6 +1025,9 @@ while [ ! -e "$log_file" ] && [ "$result" = running ]; do
     fi
 done
 if [ -e "$log_file" ]; then
+    if [ "$result" = running ]; then
+        progress_start
+    fi
     if [ "$main_pid" -gt 0 ]; then
         emitted_lines=0
         while IFS= read -r line; do
@@ -1051,8 +1068,131 @@ if [ -e "$log_file" ]; then
         [ "$line_number" -le "${{emitted_lines:-0}}" ] || printf '%s\n' "$line"
     done < "$log_file"
 fi
+progress_stop
 printf '%s\nOutcomeSource=marker\nResult=%s\nExecMainStatus=%s\nAdmitted=%s\n%s\n' '{ACTIVATION_MARKER_BEGIN}' "$result" "$exec_main_status" "$admitted" '{ACTIVATION_MARKER_END}' >&2
 case "$exec_main_status" in ''|*[!0-9]*) exit 255 ;; *) exit "$exec_main_status" ;; esac
+"#
+    )
+}
+
+fn activation_user_jobs_functions() -> String {
+    format!(
+        r#"user_runtime_root=/run/user
+observer_pid=$BASHPID
+progress_pid=
+progress_start() {{
+    # Bash sets the background job's process group before returning its PID.
+    set -m
+    progress_pid=launching
+    progress_monitor </dev/null 2>/dev/null &
+    progress_pid=$!
+    set +m
+}}
+progress_stop() {{
+    # A signal between launch and PID assignment can still use Bash's $!.
+    [ "$progress_pid" != launching ] || progress_pid=$!
+    [ -n "$progress_pid" ] || return 0
+    kill -KILL -- "-$progress_pid" 2>/dev/null || true
+    wait "$progress_pid" 2>/dev/null || true
+    progress_pid=
+}}
+trap progress_stop EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 141' PIPE
+trap 'exit 143' TERM
+
+progress_monitor() {{
+    set +m
+    local LC_ALL=C
+    export LC_ALL
+    local job_group=$BASHPID tick=0 deadline
+    local -A seen=() emitted=() reported=()
+    while kill -0 "$observer_pid" && read_result && [ "$result" = running ]; do
+        if [ "$admitted" = 1 ]; then
+            tick=$((tick + 1))
+            deadline=$((SECONDS + {PROGRESS_SAMPLE_SECONDS}))
+            progress_sample
+        fi
+        {SYSTEM_SLEEP} {PROGRESS_SAMPLE_INTERVAL}
+    done
+}}
+progress_query() {{
+    local status
+    (( SECONDS < deadline )) || return 1
+    # Keep descendants in our group, not a nested timeout group.
+    {SYSTEM_TIMEOUT} --foreground --kill-after=0.2 1 "$@"
+    status=$?
+    case "$status" in
+        # Stop telemetry on timeout; descendants may still hold the capture pipe.
+        124|137) kill -KILL -- "-$job_group" ;;
+    esac
+    return "$status"
+}}
+progress_sample() {{
+    local unit_file user key entry uid gid jobs id unit kind state count names
+    local -A users=() counts=() samples=()
+    local unit_pattern='^([A-Za-z0-9:._@-]|\\x[0-9A-Fa-f]{{2}})+$'
+    for unit_file in /etc/systemd/user/*-managed.target; do
+        (( SECONDS < deadline )) || break
+        [ -f "$unit_file" ] || continue
+        user=
+        while IFS='=' read -r key entry; do
+            [ "$key" = ConditionUser ] || continue
+            user="$entry"
+            break
+        done < "$unit_file"
+        [[ "$user" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || continue
+        [ -z "${{users[$user]-}}" ] || continue
+        users[$user]=1
+        entry="$(progress_query {SYSTEM_GETENT} passwd "$user")" || continue
+        IFS=: read -r _ _ uid gid _ <<<"$entry"
+        [[ "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || continue
+        [ -S "$user_runtime_root/$uid/systemd/private" ] || continue
+        jobs="$(progress_query {SYSTEM_SETPRIV} --reuid="$uid" --regid="$gid" --init-groups {SYSTEM_ENV} \
+            XDG_RUNTIME_DIR="$user_runtime_root/$uid" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime_root/$uid/bus" \
+            SYSTEMD_COLORS=0 SYSTEMD_URLIFY=0 \
+            {SYSTEM_SYSTEMCTL} --user list-jobs --no-legend --no-pager --full --plain)" || continue
+        counts=()
+        samples=()
+        while read -r id unit kind state; do
+            [[ "$id" =~ ^[0-9]+$ ]] || continue
+            case "$kind" in start|stop|restart|reload) ;; *) continue ;; esac
+            case "$state" in waiting|running) ;; *) continue ;; esac
+            counts[$kind]=$((${{counts[$kind]-0}} + 1))
+            names="${{samples[$kind]-}}"
+            # Sample the first three jobs, keeping valid unit names intact.
+            if [ "${{counts[$kind]}}" -le {PROGRESS_UNIT_NAMES} ] &&
+                [ "${{#unit}}" -le 255 ] && [[ "$unit" =~ $unit_pattern ]]; then
+                samples[$kind]="${{names:+$names,}}$unit"
+            fi
+        done <<<"$jobs"
+        for kind in stop restart reload start; do
+            count="${{counts[$kind]-0}}"
+            names="${{samples[$kind]-}}"
+            progress_emit "$user" "$kind" "$count" "$names"
+        done
+    done
+}}
+progress_emit() {{
+    local user="$1" kind="$2" count="$3" names="$4"
+    local key="$user/$kind" signature="$count|$names"
+    if [ "$count" -eq 0 ]; then
+        unset 'seen[$key]'
+        return 0
+    fi
+    [ "${{reported[$key]-0}}" -lt {PROGRESS_LINE_BUDGET} ] || return 0
+    [ "$signature" != "${{seen[$key]-}}" ] || return 0
+    if [ -n "${{emitted[$key]-}}" ] &&
+        [ $((tick - ${{emitted[$key]}})) -lt {PROGRESS_EMIT_TICKS} ]; then
+        return 0
+    fi
+    seen[$key]="$signature"
+    emitted[$key]="$tick"
+    reported[$key]=$((${{reported[$key]-0}} + 1))
+    printf '[user-jobs] user=%s action=%s count=%s units="%s"\n' "$user" "$kind" "$count" "$names"
+}}
 "#
     )
 }

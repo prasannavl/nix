@@ -9,9 +9,12 @@ mod transport;
 use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::UnixListener;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 use deploy::{
     ActivationAdmissionMode, ActivationCommand, ActivationExecutor, ActivationGoal,
@@ -408,7 +411,11 @@ esac
         )
         .replace("/run/current-system/sw/bin/tail", &tool("tail"))
         .replace("/run/current-system/sw/bin/sleep", &tool("sleep"))
-        .replace("/run/current-system/sw/bin/cat", &tool("cat"));
+        .replace("/run/current-system/sw/bin/cat", &tool("cat"))
+        .replace(
+            "/etc/systemd/user/*-managed.target",
+            "/nonexistent-managed/*-managed.target",
+        );
     let mut observer = Command::new("bash")
         .arg("-c")
         .arg(observer)
@@ -525,7 +532,11 @@ esac
             "/run/current-system/sw/bin/tail",
             &fake_tail.display().to_string(),
         )
-        .replace("/run/current-system/sw/bin/sleep", sleep.trim());
+        .replace("/run/current-system/sw/bin/sleep", sleep.trim())
+        .replace(
+            "/etc/systemd/user/*-managed.target",
+            "/nonexistent-managed/*-managed.target",
+        );
     let mut observer = Command::new("bash")
         .arg("-c")
         .arg(observer_script)
@@ -554,6 +565,388 @@ esac
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("Result=success"));
     assert!(stderr.contains("ExecMainStatus=0"));
+}
+
+const OBSERVER_TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn wait_for_observer_fixture(mut ready: impl FnMut() -> bool, what: &str) {
+    let deadline = Instant::now() + OBSERVER_TEST_TIMEOUT;
+    while !ready() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+struct UserJobsObserver {
+    root: tempfile::TempDir,
+    _manager: UnixListener,
+    script: String,
+}
+
+impl UserJobsObserver {
+    fn new() -> Self {
+        let command = activation_command(ActivationCommand {
+            run_id: "user-jobs".into(),
+            host: "gap3".into(),
+            attempt: 1,
+            generation: generation("new"),
+            goal: ActivationGoal::Switch,
+            boot_environment: BootEnvironment::Physical,
+            restart_managed: false,
+            runtime_max: Duration::from_secs(5),
+            stop_timeout: Duration::from_secs(1),
+            lock_wait: Duration::from_secs(1),
+            acquire_host_lock: true,
+        });
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path();
+        let runtime = path.join("run/1234/systemd");
+        fs::create_dir_all(&runtime).unwrap();
+        let manager = UnixListener::bind(runtime.join("private")).unwrap();
+        fs::write(
+            path.join("test-managed.target"),
+            "[Unit]\nConditionUser=test\n",
+        )
+        .unwrap();
+        fs::write(path.join("log"), "first-line\n").unwrap();
+        let script = command
+            .observer_script
+            .unwrap()
+            .replace(
+                &format!("/var/lib/nixbot/activation-results/{}.result", command.unit),
+                "\"$FIXTURE/result\"",
+            )
+            .replace(
+                &format!("/var/lib/nixbot/activation-results/{}.log", command.unit),
+                "\"$FIXTURE/log\"",
+            )
+            .replace(
+                "/etc/systemd/user/*-managed.target",
+                "\"$FIXTURE\"/*-managed.target",
+            )
+            .replace(
+                "user_runtime_root=/run/user",
+                "user_runtime_root=$FIXTURE/run",
+            )
+            .replace("/run/current-system/sw/bin/", "");
+        let fixture = Self {
+            root,
+            _manager: manager,
+            script,
+        };
+        fixture.marker("running", 255, 1);
+        fixture.tool(
+            "getent",
+            r#"
+[ "$*" = 'passwd test' ] || exit 1
+printf 'test:x:1234:1234::/nonexistent:/bin/sh\n'
+"#,
+        );
+        fixture.tool(
+            "setpriv",
+            r#"
+[ "$1 $2 $3" = '--reuid=1234 --regid=1234 --init-groups' ] || exit 1
+shift 3
+exec "$@"
+"#,
+        );
+        fixture.tool(
+            "systemctl",
+            r#"
+case "$*" in
+  *list-jobs*) exec "$FIXTURE/jobs" ;;
+  *--property=MainPID*) printf '1\n' ;;
+  *--property=LoadState*) printf 'loaded\n' ;;
+  *--property=ActiveState*) printf 'active\n' ;;
+esac
+"#,
+        );
+        fixture.tool("jobs", "exit 0");
+        fixture.tool(
+            "tail",
+            r#"
+printf 'first-line\n'
+for ((i=0; i<250; i++)); do
+    [ ! -f "$FIXTURE/done" ] || exit 0
+    sleep 0.02
+done
+exit 1
+"#,
+        );
+        fixture
+    }
+
+    fn tool(&self, file: &str, body: &str) {
+        executable(
+            &self.root.path().join(file),
+            &format!(
+                "#!/bin/sh\nexec bash -c '{}' -- \"$@\"\n",
+                body.replace('\'', "'\\''")
+            ),
+        );
+    }
+
+    fn marker(&self, result: &str, status: u8, admitted: u8) {
+        let next = self.root.path().join("result.tmp");
+        fs::write(&next, format!("OutcomeSource=marker\nResult={result}\nExecMainStatus={status}\nAdmitted={admitted}\n")).unwrap();
+        fs::rename(next, self.root.path().join("result")).unwrap();
+    }
+
+    fn done(&self) {
+        fs::write(self.root.path().join("log"), "first-line\nfinal-line\n").unwrap();
+        self.marker("success", 0, 1);
+        fs::write(self.root.path().join("done"), "").unwrap();
+    }
+
+    fn spawn(&self) -> ObserverRun {
+        let path = self.root.path();
+        let path_env = std::env::join_paths(
+            std::iter::once(path.to_path_buf())
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let mut child = Command::new("bash")
+            .args(["-c", &self.script])
+            .env("FIXTURE", path)
+            .env("PATH", path_env)
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (send, streams) = mpsc::channel();
+        for (index, mut stream) in [
+            Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>,
+            Box::new(child.stderr.take().unwrap()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let send = send.clone();
+            std::thread::spawn(move || {
+                let mut text = String::new();
+                stream.read_to_string(&mut text).unwrap();
+                let _ = send.send((index, text));
+            });
+        }
+        ObserverRun {
+            child,
+            streams,
+            sampling: None,
+        }
+    }
+
+    fn block_query(&self, tool: &str) {
+        self.tool(
+            tool,
+            r#"
+# Hold the command substitution open even after the direct command is killed.
+trap '' TERM
+sleep 8 &
+printf '%s\n' "$!" > "$FIXTURE/blocked"
+wait
+"#,
+        );
+    }
+}
+
+struct ObserverRun {
+    child: Child,
+    streams: Receiver<(usize, String)>,
+    sampling: Option<(libc::pid_t, libc::pid_t)>,
+}
+
+impl ObserverRun {
+    fn await_blocked_query(&mut self, fixture: &UserJobsObserver) -> libc::pid_t {
+        let pid_file = fixture.root.path().join("blocked");
+        let mut pid = 0;
+        wait_for_observer_fixture(
+            || {
+                pid = fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|text| text.trim().parse().ok())
+                    .unwrap_or(0);
+                pid > 0
+            },
+            "blocked query",
+        );
+        let group = unsafe { libc::getpgid(pid) };
+        assert!(group > 0 && group != unsafe { libc::getpgrp() });
+        self.sampling = Some((pid, group));
+        pid
+    }
+
+    fn terminate(&self) {
+        // Only the observer receives TERM; its trap must clean up the sampler.
+        let id = self.child.id() as libc::pid_t;
+        assert_eq!(unsafe { libc::kill(id, libc::SIGTERM) }, 0);
+    }
+
+    fn finish(&mut self) -> (ExitStatus, String, String) {
+        let mut output = [String::new(), String::new()];
+        for _ in 0..2 {
+            let (index, text) = self
+                .streams
+                .recv_timeout(Duration::from_secs(2))
+                .expect("observer and its descendants must close both output streams promptly");
+            output[index] = text;
+        }
+        let mut status = None;
+        wait_for_observer_fixture(
+            || {
+                status = self.child.try_wait().unwrap();
+                status.is_some()
+            },
+            "observer to exit",
+        );
+        let [stdout, stderr] = output;
+        (status.unwrap(), stdout, stderr)
+    }
+}
+
+impl Drop for ObserverRun {
+    fn drop(&mut self) {
+        if let Some((pid, group)) = self.sampling
+            && unsafe { libc::getpgid(pid) } == group
+        {
+            unsafe { libc::kill(-group, libc::SIGKILL) };
+        }
+        if self.child.try_wait().is_ok_and(|status| status.is_none()) {
+            // Best-effort cleanup after a failing assertion, never signal the test group.
+            unsafe { libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL) };
+            let _ = self.child.wait();
+        }
+    }
+}
+
+#[test]
+fn activation_observer_reports_changed_pending_job_snapshots() {
+    let mut fixture = UserJobsObserver::new();
+    // Advance sample ticks without coupling the test to wall-clock polling.
+    fixture.script = fixture.script.replace("sleep 0.5", "sleep 0.01");
+    fixture.tool(
+        "jobs",
+        r#"
+file=$FIXTURE/sample
+n=0
+[ ! -f "$file" ] || read -r n < "$file"
+n=$((n + 1))
+printf '%s\n' "$n" > "$file"
+case "$n" in
+    9) exit 0 ;;
+    11) : > "$FIXTURE/sampled" ;;
+esac
+if (( n < 11 )); then
+    printf '%s\n' \
+        '1 foo--blue:worker.service restart running' \
+        '2 mnt-data\x2dhold.mount stop waiting' \
+        '3 database.service start waiting' \
+        '4 unexpected/name.service reload running' \
+        '5 not-reported.service verify-active waiting'
+fi
+"#,
+    );
+    let mut observer = fixture.spawn();
+    wait_for_observer_fixture(|| fixture.root.path().join("sampled").exists(), "11th poll");
+    fixture.done();
+    let (status, stdout, stderr) = observer.finish();
+    assert!(status.success(), "{stderr}");
+    assert!(stderr.contains("Result=success"), "{stderr}");
+    assert!(stdout.contains("final-line\n"), "{stdout}");
+    for (kind, units) in [
+        ("restart", "foo--blue:worker.service"),
+        ("stop", r"mnt-data\x2dhold.mount"),
+        ("start", "database.service"),
+        ("reload", ""),
+    ] {
+        let line = format!("[user-jobs] user=test action={kind} count=1 units=\"{units}\"");
+        assert_eq!(stdout.lines().filter(|s| *s == line).count(), 2, "{stdout}");
+    }
+    assert_eq!(stdout.matches("[user-jobs]").count(), 8, "{stdout}");
+}
+
+fn query_process_is_alive(pid: libc::pid_t) -> bool {
+    match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => !stat
+            .rsplit_once(") ")
+            .is_some_and(|(_, fields)| fields.starts_with("Z ")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => panic!("read query process state: {error}"),
+    }
+}
+
+#[test]
+fn activation_observer_kills_in_flight_sampling_on_completion_and_term() {
+    for (tool, cancelled, launching) in [
+        ("getent", false, false),
+        ("jobs", false, false),
+        ("jobs", true, false),
+        ("getent", true, true),
+    ] {
+        let mut fixture = UserJobsObserver::new();
+        if launching {
+            // Widen the launch window while leaving $! untouched.
+            fixture.script = fixture.script.replace(
+                "    progress_pid=$!\n",
+                "    while [ ! -f \"$FIXTURE/assigned\" ]; do sleep 0.02; done\n    progress_pid=$!\n",
+            );
+        }
+        fixture.block_query(tool);
+        let mut observer = fixture.spawn();
+        let pid = observer.await_blocked_query(&fixture);
+        if cancelled {
+            observer.terminate();
+        } else {
+            fixture.done();
+        }
+        let (status, stdout, stderr) = observer.finish();
+        if cancelled {
+            // Release the fake log follower, which did not receive TERM.
+            fixture.done();
+        }
+        assert_eq!(
+            status.code(),
+            Some(if cancelled { 143 } else { 0 }),
+            "{stderr}"
+        );
+        assert_eq!(stderr.contains("Result=success"), !cancelled, "{stderr}");
+        assert!(!stdout.contains("[user-jobs]"), "{stdout}");
+        wait_for_observer_fixture(
+            || !query_process_is_alive(pid),
+            "blocked descendant to exit",
+        );
+    }
+}
+
+#[test]
+fn activation_observer_query_timeout_stops_sampling_not_activation() {
+    let fixture = UserJobsObserver::new();
+    fixture.block_query("jobs");
+    let mut observer = fixture.spawn();
+    let pid = observer.await_blocked_query(&fixture);
+    wait_for_observer_fixture(
+        || !query_process_is_alive(pid),
+        "query timeout to kill its descendants",
+    );
+    assert!(observer.child.try_wait().unwrap().is_none());
+    fixture.done();
+    let (status, stdout, stderr) = observer.finish();
+    assert!(status.success(), "{stderr}");
+    assert_eq!(stdout, "first-line\nfinal-line\n");
+    assert!(stderr.contains("Result=success"), "{stderr}");
+}
+
+#[test]
+fn activation_observer_does_not_sample_terminal_reattachment() {
+    let mut fixture = UserJobsObserver::new();
+    fixture.done();
+    fixture.script = fixture
+        .script
+        .replace("    progress_start\n", "    exit 42\n");
+    let (status, stdout, stderr) = fixture.spawn().finish();
+    assert!(status.success(), "{stderr}");
+    assert_eq!(stdout, "first-line\nfinal-line\n");
+    assert!(stderr.contains("Result=success"), "{stderr}");
 }
 
 #[test]
