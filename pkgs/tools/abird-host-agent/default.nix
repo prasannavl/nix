@@ -1,8 +1,8 @@
 {
-  pkgs ? import <nixpkgs> {},
-  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
+  pkgs,
+  ab,
 }:
-pkgHelper.mkRustDerivation {
+ab.build.rust {
   pkgs = pkgs;
   pname = "abird-host-agent";
   version = "0.1.0";

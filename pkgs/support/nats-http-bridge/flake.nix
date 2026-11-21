@@ -7,6 +7,8 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = inputs:
-    (import ../../../lib/flake/stack/package.nix).mkFlakeOutputs ./default.nix inputs;
+  outputs = declaredInputs: let
+    inputs = declaredInputs // {rustWorkspaceDeps = false;};
+  in
+    (import ../../../nix/project.nix).mkFlakeOutputs ./. inputs;
 }

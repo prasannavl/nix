@@ -2072,18 +2072,25 @@ fn managed_health_runtime_retries_settling_units_then_converges() {
         success(&settling),
         probe_absent(),
         success(&healthy),
+        probe_absent(),
+        success(&healthy),
     ]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let report = health_runtime::check_managed_health(&mut runtime, &target()).unwrap();
     assert!(matches!(report.decision, HealthDecision::Healthy { .. }));
-    assert_eq!(report.attempts, 2);
+    assert_eq!(report.attempts, 3);
     let runner = runtime.into_runner();
-    assert_eq!(runner.waits, [Duration::from_secs(5)]);
-    assert_eq!(runner.requests.len(), 4);
+    assert_eq!(
+        runner.waits,
+        [Duration::from_secs(5), Duration::from_secs(5)]
+    );
+    assert_eq!(runner.requests.len(), 6);
     assert_eq!(runner.requests[0].program, "ssh");
     assert_eq!(
         runner.timeouts,
         [
+            Duration::from_secs(20),
+            Duration::from_secs(20),
             Duration::from_secs(20),
             Duration::from_secs(20),
             Duration::from_secs(20),
@@ -2140,6 +2147,54 @@ fn managed_health_runtime_turns_expired_settling_into_service_failure() {
     ));
     assert_eq!(report.attempts, 2);
     assert_eq!(report.readiness_budget.unwrap().timeout_seconds, 1);
+}
+
+#[test]
+fn managed_health_runtime_does_not_confirm_health_after_its_deadline() {
+    let settling = [
+        health_record("status-absent", &[]),
+        health_record("user", &["app", "1000", "active", "ok", "ok"]),
+        health_record(
+            "user-transition",
+            &["app", "app.service", "activating/start", ""],
+        ),
+        health_record("timeout", &["5"]),
+    ]
+    .concat();
+    let healthy = [
+        health_record("status-absent", &[]),
+        health_record("user", &["app", "1000", "active", "ok", "ok"]),
+        health_record("expected-unit", &["app", "app.service"]),
+        health_record(
+            "unit",
+            &[
+                "app",
+                "expected",
+                "app.service",
+                "loaded",
+                "active",
+                "running",
+                "no",
+                "5",
+            ],
+        ),
+    ]
+    .concat();
+    let runner = FakeRunner::with_outputs([
+        probe_absent(),
+        success(&settling),
+        probe_absent(),
+        success(&healthy),
+    ]);
+    let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
+    let report = health_runtime::check_managed_health(&mut runtime, &target()).unwrap();
+    assert!(matches!(
+        report.decision,
+        HealthDecision::ServiceFailure { .. }
+    ));
+    assert_eq!(report.attempts, 2);
+    assert_eq!(report.readiness_budget.unwrap().timeout_seconds, 5);
+    assert_eq!(runtime.into_runner().waits, [Duration::from_secs(5)]);
 }
 
 struct RecordingTask {

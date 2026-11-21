@@ -6,7 +6,7 @@
 }: let
   userdata = accounts.users.nixbot;
   repoRoot = ./../..;
-  secretsLib = import ../../lib/flake/secrets.nix;
+  secretsLib = (import ../../ab).stack.secrets;
   globals = secretsLib.mkGlobals {
     path = ../../data/secrets/globals;
   };
@@ -21,7 +21,7 @@
     file = secretFile secret;
   };
   mkDeploySecret = key:
-    stack.srv.mkSecret key.file {
+    stack.secrets.ageSecret key.file {
       inherit (key) path;
       owner = "nixbot";
       group = "nixbot";

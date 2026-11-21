@@ -1,6 +1,6 @@
 {
-  pkgs ? import <nixpkgs> {},
-  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
+  pkgs,
+  ab,
 }: let
   build = pkgs.runCommand "llmug-hello-dist" {} ''
     src="${./.}"
@@ -72,7 +72,7 @@
       exec wrangler deploy --assets "$assets_dir" "$@"
     '';
   };
-  drv = pkgHelper.mkWebDerivation {
+  drv = ab.build.web {
     inherit pkgs;
     src = ./.;
     build = build;
@@ -82,7 +82,7 @@
     ];
   };
 in
-  pkgHelper.wirePassthru drv {
+  ab.package.wire drv {
     dev = dev;
     wrangler-deploy = deployWrangler;
   }

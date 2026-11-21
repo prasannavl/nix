@@ -1,7 +1,7 @@
 {lib, ...}: {
   imports = [
     ../common/pvl.nix
-    ../../lib/devices/asus-fa401wv.nix
+    ../../ab/system/hardware/devices/asus-fa401wv.nix
     ./sys.nix
     ./nix-ld.nix
     ./packages.nix

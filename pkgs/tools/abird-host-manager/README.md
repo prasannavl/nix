@@ -844,7 +844,7 @@ backup and never releases or starts the resource. It is not required before
 `backup restore`, whose exact-mirror copy already replaces existing contents
 after creating a pre-restore safety snapshot.
 
-Physical generation uses typed partition sizes and existing `lib/disko`
+Physical generation uses typed partition sizes and reusable `ab-system` Disko
 primitives. Storage and LUKS UUIDs survive forced unrelated updates and rotate
 only with `--fresh-storage-ids --force`. If `--hardware-config` is omitted, the
 manager probes hardware through its narrow privilege adapter. An offline build

@@ -43,6 +43,7 @@
     pkgs.runCommand "nixbot-runtime-test" {
       nativeBuildInputs = [pkgs.gnugrep];
     } ''
+      test -x ${app}/bin/nixbot
       for command in \
         ${pkgs.findutils}/bin/find \
         ${pkgs.util-linux}/bin/flock \

@@ -7,32 +7,32 @@
     osConfig,
     ...
   }: let
-    piModelsDiscovery = pkgs.callPackage ../../../lib/ext/pi/pi-models-discovery {
+    piModelsDiscovery = pkgs.callPackage ../../../nix/ext/pi/pi-models-discovery {
       i18nDefaultLocale = "en-US";
     };
-    piSessionManager = pkgs.callPackage ../../../lib/ext/pi/pi-session-manager {};
-    piSubagents = pkgs.callPackage ../../../lib/ext/pi/pi-subagents {};
-    piTps = pkgs.callPackage ../../../lib/ext/pi/pi-tps {};
-    piWeb = pkgs.callPackage ../../../lib/ext/pi/pi-web {};
-    piDiff = pkgs.callPackage ../../../lib/ext/pi/pi-diff {};
-    piMcpAdapter = pkgs.callPackage ../../../lib/ext/pi/pi-mcp-adapter {};
-    piPattyBgTasks = pkgs.callPackage ../../../lib/ext/pi/pi-patty-bg-tasks {};
-    piUsage = pkgs.callPackage ../../../lib/ext/pi/pi-usage {};
-    piTool = pkgs.callPackage ../../../lib/ext/pi/pi-tool {};
-    piGoal = pkgs.callPackage ../../../lib/ext/pi/pi-goal {};
-    piWait = pkgs.callPackage ../../../lib/ext/pi/pi-wait {};
-    piLoop = pkgs.callPackage ../../../lib/ext/pi/pi-loop {};
-    piUntil = pkgs.callPackage ../../../lib/ext/pi/pi-until {};
-    piNotify = pkgs.callPackage ../../../lib/ext/pi/pi-notify {};
-    piOpenaiToolkit = pkgs.callPackage ../../../lib/ext/pi/pi-openai-toolkit {};
-    piTotalRecall = pkgs.callPackage ../../../lib/ext/pi/pi-total-recall {};
-    rpivVoice = pkgs.callPackage ../../../lib/ext/pi/rpiv-voice {};
-    rpivTodo = pkgs.callPackage ../../../lib/ext/pi/rpiv-todo {};
-    rpivBtw = pkgs.callPackage ../../../lib/ext/pi/rpiv-btw {};
-    rpivAdvisor = pkgs.callPackage ../../../lib/ext/pi/rpiv-advisor {};
-    piStamp = pkgs.callPackage ../../../lib/ext/pi/pi-stamp {};
-    piAnthropicAuth = pkgs.callPackage ../../../lib/ext/pi/pi-anthropic-auth {};
-    piToolManager = pkgs.callPackage ../../../lib/ext/pi/pi-tool-manager {};
+    piSessionManager = pkgs.callPackage ../../../nix/ext/pi/pi-session-manager {};
+    piSubagents = pkgs.callPackage ../../../nix/ext/pi/pi-subagents {};
+    piTps = pkgs.callPackage ../../../nix/ext/pi/pi-tps {};
+    piWeb = pkgs.callPackage ../../../nix/ext/pi/pi-web {};
+    piDiff = pkgs.callPackage ../../../nix/ext/pi/pi-diff {};
+    piMcpAdapter = pkgs.callPackage ../../../nix/ext/pi/pi-mcp-adapter {};
+    piPattyBgTasks = pkgs.callPackage ../../../nix/ext/pi/pi-patty-bg-tasks {};
+    piUsage = pkgs.callPackage ../../../nix/ext/pi/pi-usage {};
+    piTool = pkgs.callPackage ../../../nix/ext/pi/pi-tool {};
+    piGoal = pkgs.callPackage ../../../nix/ext/pi/pi-goal {};
+    piWait = pkgs.callPackage ../../../nix/ext/pi/pi-wait {};
+    piLoop = pkgs.callPackage ../../../nix/ext/pi/pi-loop {};
+    piUntil = pkgs.callPackage ../../../nix/ext/pi/pi-until {};
+    piNotify = pkgs.callPackage ../../../nix/ext/pi/pi-notify {};
+    piOpenaiToolkit = pkgs.callPackage ../../../nix/ext/pi/pi-openai-toolkit {};
+    piTotalRecall = pkgs.callPackage ../../../nix/ext/pi/pi-total-recall {};
+    rpivVoice = pkgs.callPackage ../../../nix/ext/pi/rpiv-voice {};
+    rpivTodo = pkgs.callPackage ../../../nix/ext/pi/rpiv-todo {};
+    rpivBtw = pkgs.callPackage ../../../nix/ext/pi/rpiv-btw {};
+    rpivAdvisor = pkgs.callPackage ../../../nix/ext/pi/rpiv-advisor {};
+    piStamp = pkgs.callPackage ../../../nix/ext/pi/pi-stamp {};
+    piAnthropicAuth = pkgs.callPackage ../../../nix/ext/pi/pi-anthropic-auth {};
+    piToolManager = pkgs.callPackage ../../../nix/ext/pi/pi-tool-manager {};
     bladebro = pkgs.bladebro;
     computerUseLinux = pkgs.computer-use-linux;
     gimpMcp = pkgs.gimp-mcp;

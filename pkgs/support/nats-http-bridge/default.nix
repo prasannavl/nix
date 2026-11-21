@@ -1,17 +1,14 @@
 {
-  pkgs ? import <nixpkgs> {},
-  stack ? import ../../../lib/flake/stack/package.nix,
+  pkgs,
+  ab,
 }: let
-  s = stack;
-  pkg = s.pkg;
-  srv = s.srv;
   lib = pkgs.lib;
   configLib = import ./nix/config.nix {
     lib = lib;
     pkgs = pkgs;
   };
 in
-  pkg.mkRustDerivation {
+  ab.build.rust {
     pkgs = pkgs;
     pname = "nats-http-bridge";
     version = "0.1.0";
@@ -27,12 +24,12 @@ in
     extraPassthru = {
       inherit (configLib) mkConfigText validateConfig;
 
-      nixosModule = srv.mkServicesModule {
+      nixosModule = ab.nixos.service {
         envPrefix = "NATS_HTTP_BRIDGE";
         restart = "always";
         services = [
-          (srv.mkServiceIdentity {})
-          (srv.mkNatsClientService {})
+          (ab.nixos.identity {})
+          (ab.nixos.natsClient {})
         ];
         extraOptions = lib: {
           configPath = lib.mkOption {

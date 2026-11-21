@@ -1,5 +1,5 @@
 {...}: {
-  imports = [../../../lib/services/kache];
+  imports = [../../../ab/services/kache];
 
   services.kache = {
     enable = true;

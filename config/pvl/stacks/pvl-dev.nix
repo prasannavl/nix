@@ -1,4 +1,6 @@
+{accountData}:
 import ../registry.nix {
+  inherit accountData;
   stackName = "pvl-dev";
   env = "dev";
   secretScope = "dev";

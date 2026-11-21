@@ -693,7 +693,7 @@ run_root_flake_check() {
 	fi
 }
 
-# Repository self-reference must use lib/flake/repo-flake.nix (Git fetcher); a
+# Repository self-reference must use ab/repo/self-flake.nix (Git fetcher); a
 # bare builtins.getFlake uses the path fetcher and walks Git-ignored worktrees.
 # Only the helper, offline-install.sh, and this guard may use it.
 check_self_reference_fetcher() {
@@ -702,7 +702,7 @@ check_self_reference_fetcher() {
 
 	while IFS= read -r -d $'\0' file; do
 		case "${file}" in
-		lib/flake/repo-flake.nix | lib/installer/offline-install.sh | scripts/lint.sh) continue ;;
+		ab/repo/self-flake.nix | ab/system/installer/offline-install.sh | scripts/lint.sh) continue ;;
 		esac
 		if grep -q 'builtins\.getFlake' "${file}"; then
 			offenders+=("${file}")
@@ -713,7 +713,7 @@ check_self_reference_fetcher() {
 		return 0
 	fi
 
-	printf 'Use lib/flake/repo-flake.nix instead of builtins.getFlake for repository self-reference:\n' >&2
+	printf 'Use ab/repo/self-flake.nix instead of builtins.getFlake for repository self-reference:\n' >&2
 	printf '  - %s\n' "${offenders[@]}" >&2
 	return 1
 }

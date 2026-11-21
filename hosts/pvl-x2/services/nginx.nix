@@ -3,9 +3,9 @@
   lib,
   ...
 }: let
-  nginxLib = import ../../../lib/services/nginx {inherit lib;};
-  proxyVhosts = config.services.podman-compose.pvl.nginx-proxy-vhosts;
-  nginxRoutes = config.services.podman-compose.pvl.nginxRoutes;
+  nginxLib = import ../../../ab/services/nginx {inherit lib;};
+  proxyVhosts = config.services.podman-compose-nginx-projection.pvl.proxyVhosts;
+  nginxRoutes = config.services.podman-compose-nginx-projection.pvl.routes;
   backendServices = nginxLib.dependencyServices (proxyVhosts // nginxRoutes);
   nginxLogDir = "/var/log/pvl/nginx";
 in {

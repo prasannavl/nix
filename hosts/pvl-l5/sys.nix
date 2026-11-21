@@ -5,11 +5,11 @@
   modulesPath,
   ...
 }: let
-  diskoLib = import ../../lib/disko/lib.nix {lib = lib;};
+  diskoLib = import ../../ab/system/storage/disko.nix {lib = lib;};
 in {
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
-    ../../lib/disko
+    ../../nix/profiles/disko.nix
   ];
 
   disko.devices.disk.main = diskoLib.mkMain {

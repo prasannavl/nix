@@ -1,10 +1,7 @@
 {
-  pkgs ? import <nixpkgs> {},
-  stack ? import ../../../lib/flake/stack/package.nix,
+  pkgs,
+  ab,
 }: let
-  s = stack;
-  pkg = s.pkg;
-  srv = s.srv;
   lib = pkgs.lib;
 
   mkStreamSetInternal = {
@@ -21,7 +18,7 @@
         ensure_stream ${lib.escapeShellArg stream.stream} ${lib.escapeShellArg stream.subject}
       '')
       streams;
-    ensureStreamsScript = pkgs.writeShellScript "${s.stackName}-${serviceName}" ''
+    ensureStreamsScript = pkgs.writeShellScript "${serviceName}-ensure-streams" ''
       set -euo pipefail
 
       nats_url="$1"
@@ -135,7 +132,7 @@
         pname = "nats-streams";
         version = "0.1.0";
       });
-    nixosModule = srv.mkServicesModule {
+    nixosModule = ab.nixos.service {
       package =
         if bindModule
         then build
@@ -148,10 +145,10 @@
       wants = ["network-online.target"];
       services =
         [
-          (srv.mkServiceIdentity {
+          (ab.nixos.identity {
             serviceName = clientServiceName;
           })
-          (srv.mkNatsClientService {
+          (ab.nixos.natsClient {
             requireLocalNats = true;
           })
         ]
@@ -168,7 +165,7 @@
       };
     };
   in
-    pkg.wirePassthru build {
+    ab.package.wire build {
       nixosModule = nixosModule;
       streamSet = {
         inherit clientServiceName envPrefix packageDescription serviceName streams;
@@ -199,6 +196,6 @@
     bindModule = false;
   };
 in
-  pkg.wirePassthru defaultStreamSet {
+  ab.package.wire defaultStreamSet {
     mkStreamSet = mkStreamSet;
   }

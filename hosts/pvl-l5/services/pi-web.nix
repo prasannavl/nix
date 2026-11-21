@@ -1,5 +1,5 @@
 {config, ...}: {
-  imports = [../../../lib/services/pi-web];
+  imports = [../../../ab/services/pi-web/nixos.nix];
 
   services.pi-web = {
     enable = true;

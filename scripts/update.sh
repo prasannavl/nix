@@ -7,16 +7,16 @@ Usage: update.sh [options]
 
 Runs all repo maintenance update scripts:
   flake lock updates
-  external sources under lib/ext/* and pkgs/ext/*
+  external sources under nix/ext/* and pkgs/ext/*
   Podman Compose image pin updates
 
 Options:
   --skip-flake          Do not update flake locks.
   --only-flake          Only update flake locks.
-  --skip-ext            Do not process lib/ext source units.
-  --only-ext            Only process lib/ext source units.
-  --skip-ext-NAME       Skip lib/ext/NAME. May be repeated.
-  --only-ext-NAME       Only process lib/ext/NAME. May be repeated.
+  --skip-ext            Do not process nix/ext source units.
+  --only-ext            Only process nix/ext source units.
+  --skip-ext-NAME       Skip nix/ext/NAME. May be repeated.
+  --only-ext-NAME       Only process nix/ext/NAME. May be repeated.
   --skip-pkgs-ext       Do not process pkgs/ext source units.
   --only-pkgs-ext       Only process pkgs/ext source units.
   --skip-images         Do not process Podman Compose image pins.
@@ -60,9 +60,9 @@ configure_github_nix_access_token() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
-	LIB_EXT_DIR="${REPO_ROOT}/lib/ext"
+	EXT_DIR="${REPO_ROOT}/nix/ext"
 	PKGS_EXT_DIR="${REPO_ROOT}/pkgs/ext"
-	UPDATE_HELPER="${REPO_ROOT}/scripts/support/update-helper.py"
+	UPDATE_HELPER="${REPO_ROOT}/scripts/update/helper.py"
 	SKIP_FLAKE=0
 	ONLY_FLAKE=0
 	SKIP_EXT=0
@@ -296,7 +296,7 @@ source_unit_name() {
 	basename "$(dirname "$sources_file")"
 }
 
-should_run_lib_source() {
+should_run_source_unit() {
 	local sources_file="$1"
 	local name
 	name="$(source_unit_name "$sources_file")"
@@ -321,7 +321,7 @@ find_selected_source_files() {
 	local sources_file
 
 	while IFS= read -r -d '' sources_file; do
-		if [[ "$root" != "$LIB_EXT_DIR" ]] || should_run_lib_source "$sources_file"; then
+		if [[ "$root" != "$EXT_DIR" ]] || should_run_source_unit "$sources_file"; then
 			printf '%s\0' "$sources_file"
 		fi
 	done < <(find_source_files "$root")
@@ -350,11 +350,11 @@ validate_ext_filters() {
 
 	while IFS= read -r -d '' sources_file; do
 		ext_names+=("$(source_unit_name "$sources_file")")
-	done < <(find_source_files "$LIB_EXT_DIR")
+	done < <(find_source_files "$EXT_DIR")
 
 	for requested in "${ONLY_EXT_NAMES[@]}" "${SKIP_EXT_NAMES[@]}"; do
 		contains_name "$requested" "${ext_names[@]}" ||
-			die "No lib/ext source unit found for: ${requested}"
+			die "No nix/ext source unit found for: ${requested}"
 	done
 }
 
@@ -362,11 +362,11 @@ run_external_updates() {
 	local root sources_file update_script
 	local -a update_scripts=()
 
-	((RUN_EXT)) && validate_source_units "$LIB_EXT_DIR"
+	((RUN_EXT)) && validate_source_units "$EXT_DIR"
 	((RUN_PKGS_EXT)) && validate_source_units "$PKGS_EXT_DIR"
 	validate_ext_filters
-	for root in "$LIB_EXT_DIR" "$PKGS_EXT_DIR"; do
-		if [[ "$root" == "$LIB_EXT_DIR" ]] && ((!RUN_EXT)); then
+	for root in "$EXT_DIR" "$PKGS_EXT_DIR"; do
+		if [[ "$root" == "$EXT_DIR" ]] && ((!RUN_EXT)); then
 			continue
 		fi
 		if [[ "$root" == "$PKGS_EXT_DIR" ]] && ((!RUN_PKGS_EXT)); then
@@ -465,8 +465,8 @@ run_report() {
 
 	if ((RUN_EXT)); then
 		((printed_section)) && echo
-		print_section_title "lib/ext:"
-		run_source_report "$REPORT_JOBS" "$LIB_EXT_DIR" || status=$?
+		print_section_title "nix/ext:"
+		run_source_report "$REPORT_JOBS" "$EXT_DIR" || status=$?
 		printed_section=1
 	fi
 
@@ -480,10 +480,10 @@ run_report() {
 	if ((RUN_IMAGES)); then
 		((printed_section)) && echo
 		print_section_title "podman-compose images:"
-		"${REPO_ROOT}/scripts/support/podman-image-updater.py" \
+		"${REPO_ROOT}/scripts/update/podman-images.py" \
 			--report --jobs "$REPORT_JOBS" "--color=${COLOR_MODE}" || {
 			status=$?
-			REPORT_FAILURES+=("scripts/support/podman-image-updater.py (exit $status)")
+			REPORT_FAILURES+=("scripts/update/podman-images.py (exit $status)")
 		}
 	fi
 
@@ -508,7 +508,7 @@ run_updates() {
 	fi
 	if ((RUN_IMAGES)); then
 		echo "Updating podman-compose images:"
-		"${REPO_ROOT}/scripts/support/podman-image-updater.py" \
+		"${REPO_ROOT}/scripts/update/podman-images.py" \
 			--jobs "$REPORT_JOBS" "--color=${COLOR_MODE}"
 	fi
 }

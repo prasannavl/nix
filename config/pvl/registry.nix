@@ -1,10 +1,11 @@
 {
   domain,
+  accountData,
   secretNamespace ? "pvl",
   ...
 } @ stack: let
-  serviceRegistryLib = import ../../lib/flake/service-registry.nix;
-  mkStack = import ./registry.nix;
+  serviceRegistryLib = (import ../../ab).stack.registry;
+  mkStack = args: import ./registry.nix (args // {inherit accountData;});
   subDomain = subdomain: "${subdomain}.${domain}";
   secretsBase = ../../data/secrets + "/${secretNamespace}";
   secretsLabel = "data/secrets/${secretNamespace}";
@@ -20,6 +21,7 @@
     tunnels = {};
     trustedCidrs = ["10.10.0.0/16" "10.89.0.0/16" "127.0.0.0/8"];
     stackBaseArgs = {
+      inherit (accountData) rawUserdata rawGroupData;
       defaultUser = "pvl";
       stackSecretsBasePath = secretsBase;
       stackSecretsLabel = secretsLabel;
@@ -179,4 +181,4 @@
     ];
   };
 in
-  serviceRegistryLib.mkStackRegistry (stack // base // data)
+  serviceRegistryLib.mkStackRegistry (base // data // builtins.removeAttrs stack ["accountData"])

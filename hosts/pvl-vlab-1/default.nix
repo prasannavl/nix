@@ -1,8 +1,8 @@
 {...}: {
   imports = [
     ../common/all.nix
-    ../../lib/incus
-    ../../lib/podman.nix
+    ../../nix/incus.nix
+    ../../ab/runtime/podman/host.nix
     ./incus.nix
     ./packages.nix
     ./firewall.nix

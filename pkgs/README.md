@@ -2,22 +2,29 @@
 
 This directory holds repo-local runnable package source trees.
 
-Canonical package definitions live in package-local `default.nix` files and are
-composed centrally through `lib/flake/packages.nix`.
+Canonical package definitions live in package-local `default.nix` files. Those
+files also own explicit sibling-package dependencies through
+`ab.package.withDeps`.
 
-Child `flake.nix` files are wrapper flakes for local developer UX such as
-package-local `nix run` / `nix develop`.
+`pkgs/manifest.nix` is root publication metadata only: canonical names/paths,
+aliases, root apps and output selectors. It does not restate package dependency
+wiring.
+
+Child `flake.nix` files are mechanical wrappers around `nix/project.nix` for
+package-local `nix run` / `nix develop`. Nix requires the top-level flake and
+its `inputs` to be literal attribute sets, so those standard input declarations
+remain visible in each wrapper; package logic and sibling dependencies still
+live only in `default.nix`.
 
 The root flake now exports repo-local package installables directly from the
-central package tree in `lib/flake/packages.nix`, not by auto-discovering child
-wrapper flakes.
+repository package composition, not by auto-discovering child wrapper flakes.
 
 To add a new package:
 
 - create a package-local `default.nix` under `pkgs/` as the canonical package
   definition
 - add it to `pkgs/manifest.nix` so the root flake exports it through
-  `lib/flake/packages.nix`
+  `pkgs/manifest.nix`
 - optionally add a package-local `flake.nix` as a wrapper flake for local UX and
   focused local commands
 - if you want extra root-flake entrypoints such as `nix run .#<name>`, expose
@@ -26,10 +33,12 @@ To add a new package:
 Example projects live under `pkgs/examples/`. Their root flake package names are
 prefixed with `example-`.
 
-Externally sourced units live under `lib/ext/` when they follow upstream
+Externally sourced units live under `nix/ext/` when they follow upstream
 (unpatched, pinned release) and under `pkgs/ext/` when this repository owns
-their shape (patches, vendored locks, own build logic). Management style decides
-the root; registration in `pkgs/manifest.nix` follows placement. See
+their shape (patches, vendored locks, own build logic). `nix/ext/**` is the
+reserved non-composition exception inside `nix/**`; it owns source recipes,
+pins, and updaters rather than Z assembly. Management style decides the root;
+registration in `pkgs/manifest.nix` follows placement. See
 [external source units](../.agents/docs/design-patterns/external-source-units.md).
 
 ## Current Examples

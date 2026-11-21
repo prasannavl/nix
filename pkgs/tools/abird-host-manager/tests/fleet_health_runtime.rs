@@ -190,7 +190,7 @@ fn ignored_system_unit_does_not_mask_same_name_failed_user_unit() {
 }
 
 #[test]
-fn multiple_ignored_system_units_remain_in_healthy_evidence_across_samples() {
+fn settling_units_require_stable_health_and_preserve_ignored_failures() {
     let first = "first.service loaded failed failed first failure";
     let second = "second.service loaded failed failed second failure";
     let settling = sample(&[
@@ -231,7 +231,14 @@ fn multiple_ignored_system_units_remain_in_healthy_evidence_across_samples() {
         ),
     ]);
     let mut runtime = HostRuntime::new(
-        FakeRunner::samples([probe_absent(), settling, probe_absent(), healthy]),
+        FakeRunner::samples([
+            probe_absent(),
+            settling,
+            probe_absent(),
+            healthy.clone(),
+            probe_absent(),
+            healthy,
+        ]),
         PathBuf::from("/repo"),
         DryRun::No,
     )
@@ -247,9 +254,10 @@ fn multiple_ignored_system_units_remain_in_healthy_evidence_across_samples() {
     .unwrap();
     assert!(matches!(report.decision, HealthDecision::Healthy { .. }));
     assert_eq!(report.ignored_system_failures, [first, second]);
-    assert_eq!(report.attempts, 2);
+    assert_eq!(report.attempts, 3);
     assert!(matches!(progress[0], (1, HealthDecision::Settling { .. })));
-    assert!(matches!(progress[1], (2, HealthDecision::Healthy { .. })));
+    assert!(matches!(progress[1], (2, HealthDecision::Settling { .. })));
+    assert!(matches!(progress[2], (3, HealthDecision::Healthy { .. })));
     assert!(
         runtime
             .runner()
@@ -257,7 +265,10 @@ fn multiple_ignored_system_units_remain_in_healthy_evidence_across_samples() {
             .iter()
             .all(|request| request.task.name().starts_with("post-switch-health"))
     );
-    assert_eq!(runtime.into_runner().waits, [Duration::from_secs(5)]);
+    assert_eq!(
+        runtime.into_runner().waits,
+        [Duration::from_secs(5), Duration::from_secs(5)]
+    );
 }
 
 #[test]

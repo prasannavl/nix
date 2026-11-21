@@ -931,9 +931,11 @@ mod tests {
         );
         caller.check_defaults().unwrap();
         // Another namespace view (new inode, or a newly visible file) differs.
+        let original = std::fs::File::open(&global).unwrap();
         std::fs::remove_file(&global).unwrap();
         std::fs::write(&global, b"[user]\n").unwrap();
         assert!(caller.check_defaults().is_err());
+        drop(original);
         let caller = environment(home.path(), &[]);
         std::fs::create_dir_all(home.path().join(".config/git")).unwrap();
         std::fs::write(home.path().join(".config/git/config"), b"").unwrap();

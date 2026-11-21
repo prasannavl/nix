@@ -1,9 +1,14 @@
 {
-  pkgs ? import <nixpkgs> {},
-  pkgHelper ? import ../../lib/flake/pkg-helper.nix,
-  # Intrinsic dependencies live here, so root and child calls share defaults.
-  nixbot ? pkgs.callPackage ../tools/nixbot/default.nix {pkgHelper = pkgHelper;},
-  llmugHello ? pkgs.callPackage ./llmug-hello/default.nix {pkgHelper = pkgHelper;},
+  pkgs,
+  ab,
+  nixbot ? ../tools/nixbot,
+  llmugHello ? ./llmug-hello,
+}:
+ab.package.withDeps {
+  inherit nixbot llmugHello;
+} ({
+  nixbot,
+  llmugHello,
 }: let
   deploy = pkgs.writeShellApplication {
     name = "cloudflare-apps-deploy";
@@ -19,7 +24,7 @@
     '';
   };
 in
-  pkgHelper.mkAggregateDerivation {
+  ab.build.aggregate {
     inherit pkgs;
     src = ./.;
     pname = "cloudflare-apps";
@@ -32,6 +37,6 @@ in
       deploy = deploy;
     };
     extraApps = {
-      deploy = pkgHelper.mkPackageApp pkgs deploy;
+      deploy = ab.flake.app pkgs deploy;
     };
-  }
+  })

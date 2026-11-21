@@ -1,8 +1,8 @@
 {
-  pkgs ? import <nixpkgs> {},
-  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
+  pkgs,
+  ab,
 }: let
-  drv = pkgHelper.mkStaticWebDerivation {
+  drv = ab.build.staticWeb {
     inherit pkgs;
     devRoot = "site";
     build = pkgs.stdenvNoCC.mkDerivation {

@@ -1,14 +1,14 @@
 {
+  ab,
   config,
   lib,
   stack,
   ...
 }: let
-  tunnelsLib = import ../../lib/services/tunnels {inherit lib stack;};
-  tunnelIngress = config.services.podman-compose.pvl.tunnelIngress.cloudflare;
+  mkHostManagedTunnel = import ../common/host-managed-tunnel.nix {inherit ab config lib stack;};
+  tunnelIngress = config.services.podman-compose-tunnel-projection.pvl.ingress.cloudflare;
 in
-  tunnelsLib.mkHostManagedTunnel {
-    inherit config;
+  mkHostManagedTunnel {
     tunnel = {
       kind = "cloudflare";
       id = "00bbdab6-1509-479f-83cd-24375fc70835";

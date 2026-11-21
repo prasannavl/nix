@@ -1,9 +1,12 @@
 {
-  pkgs ? import <nixpkgs> {},
-  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
+  pkgs,
+  ab,
+  abirdHostAgent ? ../abird-host-agent,
   nativeNix ? pkgs.nix,
-  abirdHostAgent ? pkgs.callPackage ../abird-host-agent/default.nix {pkgHelper = pkgHelper;},
-}: let
+}:
+ab.package.withDeps {
+  inherit abirdHostAgent;
+} ({abirdHostAgent}: let
   fleetRuntimeInputs = with pkgs; [
     cloudflared
     git
@@ -16,7 +19,7 @@
     then import ./native {inherit pkgs nativeNix;}
     else null;
 in
-  pkgHelper.mkRustDerivation {
+  ab.build.rust {
     pkgs = pkgs;
     pname = "abird-host-manager";
     version = "0.1.0";
@@ -63,4 +66,4 @@ in
       mainProgram = "abird-host-manager";
       platforms = pkgs.lib.platforms.linux;
     };
-  }
+  })

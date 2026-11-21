@@ -1,0 +1,700 @@
+{
+  "sourceBaseline": {
+    "head": "327868dde",
+    "stagedTree": "6af67e88a83e9df94e86ff903a5b9cb978ab5a4c"
+  },
+  "destinationBaseline": "df659590b",
+  "checks": {
+    "z": [
+      "abird-agent-module",
+      "abird-child-flake-parity",
+      "abird-component-boundaries",
+      "abird-config-stacks",
+      "abird-corp-auth",
+      "abird-nix-builder-gc-defaults",
+      "abird-nixos-core",
+      "lib-ab-extraction",
+      "lib-flake-config-family",
+      "lib-flake-language-toolchains",
+      "lib-flake-rust-closures",
+      "lib-flake-rust-source-scope",
+      "lib-flake-rust-toolchain",
+      "lib-hardware-nvidia",
+      "lib-nginx-phase-projection-routes",
+      "lib-nix-builder-gc-coordination",
+      "lib-system-optional-features"
+    ],
+    "nix": [
+      "lib-ab-extraction",
+      "lib-flake-config-family",
+      "lib-flake-configuration-family",
+      "lib-flake-fabric-projection",
+      "lib-flake-isolated",
+      "lib-flake-language-toolchains",
+      "lib-flake-phase-projection",
+      "lib-flake-repo-modules",
+      "lib-flake-repository-config",
+      "lib-flake-repository-fold",
+      "lib-flake-rust-closures",
+      "lib-flake-rust-source-scope",
+      "lib-flake-rust-toolchain",
+      "lib-flake-service-placements",
+      "lib-hardware-nvidia",
+      "lib-incus-helper",
+      "lib-incus-module",
+      "lib-nginx-phase-projection-routes",
+      "lib-nix-repo-registry",
+      "lib-podman-compose-helper",
+      "lib-podman-compose-module",
+      "lib-system-optional-features",
+      "pvl-child-flake-parity",
+      "pvl-external-packages",
+      "pvl-flake-isolated",
+      "pvl-nix-builder-gc-defaults",
+      "pvl-nix-cache-policy",
+      "pvl-postgres-extensions-policy",
+      "pvl-rust-base-integration",
+      "pvl-rust-composition-integration",
+      "pvl-rust-native-context-integration",
+      "pvl-rust-toolchain-integration",
+      "pvl-secret-recipients"
+    ]
+  },
+  "hostToplevelEvaluations": [
+    "z:gap3-rivendell",
+    "nix:pvl-x2"
+  ],
+  "destinationFeatureParity": {
+    "groups": 30,
+    "differences": {}
+  },
+  "destinationPublicSurface": {
+    "removed": {},
+    "added": {
+      "checks": [
+        "lib-ab-extraction",
+        "lib-flake-config-family",
+        "lib-flake-language-toolchains",
+        "lib-service-client-identity",
+        "lib-system-optional-features",
+        "lib-tailscale-helper",
+        "lib-zerobyte-helper"
+      ]
+    },
+    "counts": {
+      "baseline": {
+        "apps": 11,
+        "checks": 103,
+        "devShells": 2,
+        "hosts": 7,
+        "images": 3,
+        "modules": 10,
+        "packages": 26
+      },
+      "ported": {
+        "apps": 11,
+        "checks": 110,
+        "devShells": 2,
+        "hosts": 7,
+        "images": 3,
+        "modules": 10,
+        "packages": 26
+      }
+    }
+  },
+  "staticNixPathsChecked": 868,
+  "staticTools": [
+    "nix-instantiate --parse",
+    "statix check",
+    "deadnix --fail"
+  ],
+  "deadnixPatternException": "--no-lambda-pattern-names only for ab/core/packaging/rust/default.nix; public parameters are forwarded through args",
+  "cargoQualification": {
+    "regularRecipeEvaluation": true,
+    "patchedRecipeEvaluation": true,
+    "allControlsPassed": true,
+    "productionDefaultChanged": false,
+    "virtualMachinesRun": false
+  },
+  "scopedCanonicalCommands": [
+    "nix fmt -- --project hello-python",
+    "nix run .#lint -- --diff --base HEAD --project hello-python"
+  ],
+  "limits": {
+    "fullFlakeCheck": false,
+    "fullRepositoryLint": false,
+    "systemBuilds": false,
+    "installerBoot": false,
+    "vmRuns": false,
+    "deployment": false
+  },
+  "initialSharedAb": {
+    "gitTree": "c4e61a4df7a909e880039f3b0158cbcdd0215188",
+    "inventorySha256": "d62c38a55bece44817cd00a00bce3a5e6631ea71351b08ee5b6f852a119e34da",
+    "counts": {
+      "file": 566,
+      "symlink": 6,
+      "directory": 257
+    },
+    "bytesTypesModesAndSymlinksIdentical": true
+  },
+  "sharedAb": {
+    "tree": "ec0e1f08321102bea6c3afc853b43fd545d9b0f2",
+    "inventorySha256": "535716d2b5076f11059c0448d6379e6f7f4e27d1d2e506dbc5b32153ebe3f131",
+    "inventoryIncludesAbRoot": true,
+    "counts": {
+      "directory": 259,
+      "file": 573,
+      "symlink": 6
+    },
+    "bytesTypesModesAndSymlinksIdentical": true,
+    "localPermissions": "Nix follows Z main; permission reductions only; Git executable bits unchanged",
+    "permissionReductions": 167
+  },
+  "refinementSync": {
+    "zDelivery": {
+      "worktree": "/home/pvl/spaces/abird/src/z",
+      "branch": "master",
+      "head": "015f35857dd0dee1087158714928086362a38bb0",
+      "tree": "6c3faa11a5280e52337ffb308f5d22b50159e700",
+      "patchSha256": "20ac3e0f36a0380e081628469ab503cad828090118f7a8f40a440099648b6662",
+      "sideWorktreeRemoved": true,
+      "branchRetained": "review/architecture-convergence"
+    },
+    "nixDelivery": {
+      "worktree": "/home/pvl/src/nix/worktrees/ab-convergence",
+      "branch": "review/ab-convergence",
+      "head": "df659590ba9369a622b0d0c5f6f6c2c9f3333c3f",
+      "previousReviewTree": "78844ce3a2df2acb5fc09f262855982bbd0e28a5"
+    },
+    "checks": {
+      "z": [
+        "lib-ab-package-contracts",
+        "lib-ab-stack-assembly",
+        "lib-ab-extraction",
+        "lib-system-optional-features",
+        "lib-hardware-nvidia",
+        "lib-nix-repo-registry",
+        "abird-component-boundaries",
+        "abird-external-core-package",
+        "abird-external-repo",
+        "abird-external-runtime",
+        "abird-external-services",
+        "abird-external-stack",
+        "abird-child-flake-parity",
+        "abird-nixos-core",
+        "abird-agent-module",
+        "abird-nix-cache-policy",
+        "abird-nix-builder-gc-defaults",
+        "lib-nix-builder-gc-coordination",
+        "lib-nginx-phase-projection-routes",
+        "lib-flake-stack-set",
+        "lib-flake-config-family",
+        "abird-config-stacks",
+        "abird-corp-auth",
+        "lib-flake-service-placements",
+        "lib-flake-repository-fold",
+        "lib-flake-fabric-projection",
+        "lib-flake-phase-projection",
+        "lib-flake-rust-export",
+        "lib-flake-rust-mirror",
+        "lib-flake-rust-closures",
+        "lib-flake-rust-toolchain",
+        "lib-flake-rust-source-scope",
+        "lib-flake-language-toolchains",
+        "lib-podman-compose-module",
+        "lib-incus-module"
+      ],
+      "nix": [
+        "lib-ab-extraction",
+        "lib-ab-package-contracts",
+        "lib-ab-stack-assembly",
+        "lib-flake-config-family",
+        "lib-flake-configuration-family",
+        "lib-flake-fabric-projection",
+        "lib-flake-isolated",
+        "lib-flake-language-toolchains",
+        "lib-flake-phase-projection",
+        "lib-flake-repo-modules",
+        "lib-flake-repository-config",
+        "lib-flake-repository-fold",
+        "lib-flake-rust-closures",
+        "lib-flake-rust-export",
+        "lib-flake-rust-mirror",
+        "lib-flake-rust-source-scope",
+        "lib-flake-rust-toolchain",
+        "lib-flake-service-placements",
+        "lib-hardware-nvidia",
+        "lib-incus-helper",
+        "lib-incus-module",
+        "lib-nginx-phase-projection-routes",
+        "lib-nix-repo-registry",
+        "lib-podman-compose-helper",
+        "lib-podman-compose-module",
+        "lib-system-optional-features",
+        "pvl-child-flake-parity",
+        "pvl-external-packages",
+        "pvl-flake-isolated",
+        "pvl-nix-builder-gc-defaults",
+        "pvl-nix-cache-policy",
+        "pvl-postgres-extensions-policy",
+        "pvl-rust-base-integration",
+        "pvl-rust-composition-integration",
+        "pvl-rust-native-context-integration",
+        "pvl-rust-toolchain-integration",
+        "pvl-secret-recipients"
+      ]
+    },
+    "hostToplevels": {
+      "z": "/nix/store/sxbcy63g3dmin6brwdxww7qxmdjjbmbs-nixos-system-gap3-rivendell-lxc-26.05.20261108.ac588ef.drv",
+      "nix": "/nix/store/n73w8zsds909w0nw5zxv5pgrvlvkslh0-nixos-system-pvl-x2-26.05.20261108.ac588ef.drv",
+      "bothUnchanged": true
+    },
+    "nixFeatureParity": {
+      "groups": [
+        "bluetooth",
+        "firewall",
+        "flatpak",
+        "gdm",
+        "gnome",
+        "gpg",
+        "graphics",
+        "kernelParams",
+        "keyd",
+        "mdns",
+        "network",
+        "nixGc",
+        "nixPackage",
+        "nixSettings",
+        "nvidia",
+        "pathsToLink",
+        "pipewire",
+        "powerProfiles",
+        "printing",
+        "seatd",
+        "serviceNames",
+        "sessionVariables",
+        "ssh",
+        "stateVersion",
+        "sudo",
+        "systemPackages",
+        "timerNames",
+        "unfree",
+        "userServices",
+        "videoDrivers"
+      ],
+      "differences": {},
+      "snapshotSha256": "b52a81f5d8401775c25ecd42c544cc6af9685a13bd8056506e60826d862f3758"
+    },
+    "nixPublicSurface": {
+      "before": {
+        "packages": 26,
+        "apps": 11,
+        "checks": 110,
+        "devShells": 2,
+        "hosts": 7,
+        "images": 3,
+        "modules": 10
+      },
+      "after": {
+        "packages": 26,
+        "apps": 11,
+        "checks": 112,
+        "devShells": 2,
+        "hosts": 7,
+        "images": 3,
+        "modules": 10
+      },
+      "added": {
+        "checks": [
+          "lib-ab-package-contracts",
+          "lib-ab-stack-assembly"
+        ]
+      },
+      "removed": {}
+    },
+    "staticNixPaths": [
+      "ab/core/default.nix",
+      "ab/core/packaging/project.nix",
+      "ab/core/packaging/rust/export.nix",
+      "ab/core/packaging/rust/tests/export.nix",
+      "ab/core/packaging/rust/tests/fixtures/exports/members/manager/default.nix",
+      "ab/core/packaging/scope.nix",
+      "ab/core/packaging/with-deps.nix",
+      "ab/core/validation/default.nix",
+      "ab/default.nix",
+      "ab/repo/default.nix",
+      "ab/repo/packages.nix",
+      "ab/repo/repository-fold.nix",
+      "ab/services/default.nix",
+      "ab/stack/build-set.nix",
+      "ab/stack/default.nix",
+      "ab/stack/finalize.nix",
+      "ab/stack/registry.nix",
+      "ab/stack/tests/assembly.nix",
+      "ab/system/default.nix",
+      "ab/system/hardware/devices/asus-fa401wv.nix",
+      "ab/system/hardware/devices/lenovo-legion-5-15ach6h.nix",
+      "ab/system/hardware/nvidia.nix",
+      "ab/system/nix/default.nix",
+      "ab/system/tests/hardware-nvidia.nix",
+      "ab/tests/fixtures/package-scope/base.nix",
+      "ab/tests/fixtures/package-scope/dependent.nix",
+      "ab/tests/package-contracts.nix",
+      "ab/tests/system-features.nix",
+      "nix/default.nix",
+      "nix/installer-build-image.nix",
+      "nix/podman.nix",
+      "nix/profiles/policy/nix.nix",
+      "nix/profiles/policy/wm.nix",
+      "nix/repo-context.nix",
+      "nix/root.nix",
+      "nix/tests/default.nix"
+    ],
+    "canonical": {
+      "project": "hello-python",
+      "z": true,
+      "nix": true,
+      "fullRepositoryLint": false
+    },
+    "nixMain": {
+      "workingInputChangesPreserved": true,
+      "externalLockfileStagingObserved": true,
+      "currentIndex": "37f1f370475d23ee90ff9b49fc96dd0360f3a8b0"
+    },
+    "limits": [
+      "no full flake check",
+      "no full repository lint",
+      "no NixOS system builds",
+      "no VM runs or installer boots",
+      "no deployment",
+      "pvl-x2 has Nvidia disabled; active Nvidia hardware was not evaluated"
+    ]
+  },
+  "commitSync": {
+    "sourceBase": "fc1a40ee6707e28dee5baecc2d8e391e9617de33",
+    "zCodeCommits": [
+      {
+        "commit": "8707466cc0acb262eb15ac317cb01ab8fbf4301e",
+        "subject": "fix(ab): unify package scopes and dependencies",
+        "tree": "7ec4e14a49e879202d09406f8c495b83f71e0581",
+        "checks": [
+          "lib-ab-package-contracts",
+          "abird-child-flake-parity",
+          "lib-flake-rust-export",
+          "lib-flake-rust-mirror",
+          "lib-flake-rust-closures",
+          "abird-component-boundaries"
+        ]
+      },
+      {
+        "commit": "0226ed5f0a141c6633620ad45b77db1cd5209dff",
+        "subject": "fix(stack): preserve owned assembly namespaces",
+        "tree": "81c85bc38934a5dc8818b32ca73ab46d0a4899d3",
+        "checks": [
+          "lib-ab-stack-assembly",
+          "lib-flake-config-family",
+          "lib-flake-service-placements",
+          "abird-component-boundaries"
+        ]
+      },
+      {
+        "commit": "9268c6511e36da89a275df5af420a3e759889d5e",
+        "subject": "fix(services): make adapters extractable",
+        "tree": "f8381304ab00f4aa523c52e35cf97232a9dec129",
+        "checks": [
+          "abird-external-services",
+          "abird-nixos-core",
+          "lib-nginx-phase-projection-routes",
+          "abird-config-stacks",
+          "abird-component-boundaries"
+        ]
+      },
+      {
+        "commit": "84a47066ad1710e10235d71ef8e44043fb5aca0e",
+        "subject": "feat(system): separate modules from repo policy",
+        "tree": "a744b32df6d1ea44ac2a2216abdccb730e0b4634",
+        "checks": [
+          "lib-ab-extraction",
+          "lib-system-optional-features",
+          "lib-hardware-nvidia",
+          "abird-nix-cache-policy",
+          "abird-nix-builder-gc-defaults",
+          "abird-component-boundaries"
+        ]
+      }
+    ],
+    "zCodeHead": "84a47066ad1710e10235d71ef8e44043fb5aca0e",
+    "zSourceCodePreservedFromIndex": "c29320a19ac362dfade2fcdba06ded277cd4e766",
+    "zCommittedChecks": {
+      "count": 35,
+      "namesReference": "refinementSync.checks.z",
+      "commit": "84a47066ad1710e10235d71ef8e44043fb5aca0e"
+    },
+    "zCanonicalReuse": {
+      "evidence": "Z rebase receipt / source index c29320a19ac362dfade2fcdba06ded277cd4e766",
+      "reason": "tracked Z implementation unchanged from the already qualified rebase index"
+    },
+    "candidateChecks": [
+      {
+        "tree": "7ec4e14a49e879202d09406f8c495b83f71e0581",
+        "checks": [
+          "lib-ab-package-contracts",
+          "abird-child-flake-parity",
+          "lib-flake-rust-export",
+          "lib-flake-rust-mirror",
+          "lib-flake-rust-closures",
+          "abird-component-boundaries"
+        ],
+        "passed": true
+      },
+      {
+        "tree": "81c85bc38934a5dc8818b32ca73ab46d0a4899d3",
+        "checks": [
+          "lib-ab-stack-assembly",
+          "lib-flake-config-family",
+          "lib-flake-service-placements",
+          "abird-component-boundaries"
+        ],
+        "passed": true
+      },
+      {
+        "tree": "f8381304ab00f4aa523c52e35cf97232a9dec129",
+        "checks": [
+          "abird-external-services",
+          "abird-nixos-core",
+          "lib-nginx-phase-projection-routes",
+          "abird-config-stacks",
+          "abird-component-boundaries"
+        ],
+        "passed": true
+      },
+      {
+        "tree": "a744b32df6d1ea44ac2a2216abdccb730e0b4634",
+        "checks": [
+          "lib-ab-extraction",
+          "lib-system-optional-features",
+          "lib-hardware-nvidia",
+          "abird-nix-cache-policy",
+          "abird-nix-builder-gc-defaults",
+          "abird-component-boundaries"
+        ],
+        "passed": true
+      }
+    ],
+    "nixBase": "df659590ba9369a622b0d0c5f6f6c2c9f3333c3f",
+    "nixWorktree": "/home/pvl/src/nix/worktrees/ab-convergence",
+    "nixPortUnits": [
+      {
+        "sourceCommit": "f85f48e99236dca1460c830f88fa937575969782",
+        "sourceAuthorDate": "2026-11-18T20:49:54Z",
+        "paths": [
+          "pkgs/tools/abird-host-manager/src/fleet/health_runtime.rs",
+          "pkgs/tools/abird-host-manager/tests/fleet_health_runtime.rs",
+          "pkgs/tools/abird-host-manager/tests/fleet_host_runtime.rs"
+        ],
+        "destinationTreeBefore": "770bd5aa229c8bceac9207ce291f25a95dee065f",
+        "destinationTreeAfter": "182f552c6788617a88848407a49ab907c9d244bc",
+        "exactSourceEdits": true
+      },
+      {
+        "sourceCommit": "b3050ec787a22547d9687ffa2077dc5770ec9ef0",
+        "sourceAuthorDate": "2026-11-18T21:06:43Z",
+        "paths": [
+          "pkgs/tools/abird-host-manager/src/fleet/build_backend/agent/capture.rs"
+        ],
+        "destinationTreeBefore": "182f552c6788617a88848407a49ab907c9d244bc",
+        "destinationTreeAfter": "faaa5df7eac62fb79fb6738b1614aa1534bbe9d1",
+        "exactSourceEdits": true
+      }
+    ],
+    "nixCodeTree": "faaa5df7eac62fb79fb6738b1614aa1534bbe9d1",
+    "nixCommitted": false,
+    "nixChecks": {
+      "count": 37,
+      "namesReference": "refinementSync.checks.nix"
+    },
+    "nixCanonical": {
+      "project": "abird-host-manager",
+      "format": true,
+      "lint": true,
+      "tests": true,
+      "cargoJobs": 2,
+      "testThreads": 2
+    },
+    "pvlX2DrvAfterPort": "/nix/store/ibpxrhbgjww8ab9w6hdr29mi95qihr34-nixos-system-pvl-x2-26.05.20261108.ac588ef.drv",
+    "sharedAb": {
+      "gitTree": "ec0e1f08321102bea6c3afc853b43fd545d9b0f2",
+      "counts": {
+        "file": 573,
+        "symlink": 6,
+        "directory": 259
+      },
+      "directByteComparison": true,
+      "fullModes": true,
+      "symlinkTargets": true
+    },
+    "nixMainPreserved": {
+      "head": "df659590ba9369a622b0d0c5f6f6c2c9f3333c3f",
+      "index": "37f1f370475d23ee90ff9b49fc96dd0360f3a8b0",
+      "pendingPaths": [
+        "flake.lock",
+        "flake.nix"
+      ],
+      "observedConcurrentCommit": {
+        "commit": "673d750c5fb30a0bcda3e3d2e99dd4867aeaac3b",
+        "parent": "df659590ba9369a622b0d0c5f6f6c2c9f3333c3f",
+        "tree": "37f1f370475d23ee90ff9b49fc96dd0360f3a8b0",
+        "sameAsInitialStagedTree": true,
+        "paths": [
+          "flake.lock",
+          "flake.nix"
+        ],
+        "createdByThisTask": false
+      }
+    },
+    "incomingRange": {
+      "base": "327868ddea28915345ea1632e70fcd865d4d3223",
+      "head": "b19f5eeb0e76d44efcac00bf6de5b669e59fb7ff",
+      "portedPaths": 4,
+      "excludedPaths": 128,
+      "exclusionReason": "Z-only products, host/evaluation policy and associated docs/plans; no shared ab changes"
+    },
+    "limits": [
+      "no push or deployment",
+      "no NixOS system build or VM run",
+      "no full repository lint or full flake check",
+      "ignored native tests remain ignored",
+      "dirty-worktree host derivation identities are not clean-commit identity promises"
+    ]
+  },
+  "nixMainIntegration": {
+    "sourceReviewHead": "df659590ba9369a622b0d0c5f6f6c2c9f3333c3f",
+    "sourceReviewIndexBeforeFormatting": "2bb514b430d0d0633d682250fa483f93d85815e9",
+    "sourceReviewIndexAfterSharedFormatting": "990296b743f088c03f79a605a056d64a1c2f1ed8",
+    "destinationParent": "115accd1ac9dac84010dcc84137dd16bf738bbb2",
+    "preservedMainCommits": [
+      "673d750c5fb30a0bcda3e3d2e99dd4867aeaac3b chore(deps): bump dotlink to v0.17.6",
+      "d9476a1a65d1ebe87fc8343c63039efe601d7ce5 chore(deps): bump dotlink to v0.17.7",
+      "f9e927941fdc08fe2b89af76c5f207df5f0b3474 feat(voice): drop whisrs from host profiles",
+      "115accd1ac9dac84010dcc84137dd16bf738bbb2 chore(deps): bump dotlink to v0.17.9"
+    ],
+    "preservedMainPaths": [
+      ".agents/docs/notes/voice-dictation/2026-11-18.md",
+      "flake.lock",
+      "flake.nix",
+      "users/pvl/voice/README.md",
+      "users/pvl/voice/default.nix"
+    ],
+    "overlap": {
+      "path": "flake.nix",
+      "resolution": "Only three migration path/API replacements applied to the newer main file; Dotlink v0.17.9 retained."
+    },
+    "transferredPathCount": 863,
+    "exactTransferTreeBeforeFormattingAndReceipts": "9304f5ae53273ce3d2426caf1aeb91413e5289fd",
+    "zPush": {
+      "head": "7a4bf7303b32fdda3319c1523eab5bae82e9847f",
+      "hook": "Normal pre-push diff hook; no added resource limits; passed.",
+      "hostEvaluationJobs": 9,
+      "evaluatedHosts": [
+        "abird-ci",
+        "abird-corp",
+        "abird-data",
+        "abird-edge",
+        "abird-id",
+        "abird-labs",
+        "abird-nest",
+        "abird-obs",
+        "abird-proxy",
+        "abird-srv",
+        "abird-zulip",
+        "gap3-gondor",
+        "gap3-rivendell",
+        "llmug-rivendell",
+        "abird-garage"
+      ],
+      "hostScope": "15 registered configuration names with matching hosts/ directories; not every published configuration alias.",
+      "conventionalChangedPackageChecks": "passed",
+      "formatterOnlyCommit": "7a4bf7303b32fdda3319c1523eab5bae82e9847f",
+      "formattedMarkdownFiles": 78,
+      "sharedReadmePaths": [
+        "ab/core/packaging/rust/mirror/README.md",
+        "ab/core/packaging/rust/qualification/README.md",
+        "ab/core/packaging/rust/README.md"
+      ]
+    },
+    "sharedAb": {
+      "gitTree": "d5bf0fbf4cb09afcb1ce515b2369f1355f2e283c",
+      "files": 573,
+      "symlinks": 6,
+      "directoriesIncludingRoot": 259,
+      "verification": "Exact paths, contents, types, full non-symlink permissions and link targets match Z and the source review."
+    },
+    "staticNixPathCount": 526,
+    "deadnixPatternException": "ab/core/packaging/rust/default.nix: preserve forwarded public constructor parameters",
+    "destinationFormatterOnlyPaths": [
+      "nix/tests/qualification/rust/README.md",
+      "pkgs/README.md"
+    ],
+    "checks": [
+      "lib-ab-extraction",
+      "lib-ab-package-contracts",
+      "lib-ab-stack-assembly",
+      "lib-flake-config-family",
+      "lib-flake-configuration-family",
+      "lib-flake-fabric-projection",
+      "lib-flake-isolated",
+      "lib-flake-language-toolchains",
+      "lib-flake-phase-projection",
+      "lib-flake-repo-modules",
+      "lib-flake-repository-config",
+      "lib-flake-repository-fold",
+      "lib-flake-rust-closures",
+      "lib-flake-rust-export",
+      "lib-flake-rust-mirror",
+      "lib-flake-rust-source-scope",
+      "lib-flake-rust-toolchain",
+      "lib-flake-service-placements",
+      "lib-hardware-nvidia",
+      "lib-incus-helper",
+      "lib-incus-module",
+      "lib-nginx-phase-projection-routes",
+      "lib-nix-repo-registry",
+      "lib-podman-compose-helper",
+      "lib-podman-compose-module",
+      "lib-system-optional-features",
+      "pvl-child-flake-parity",
+      "pvl-external-packages",
+      "pvl-flake-isolated",
+      "pvl-nix-builder-gc-defaults",
+      "pvl-nix-cache-policy",
+      "pvl-postgres-extensions-policy",
+      "pvl-rust-base-integration",
+      "pvl-rust-composition-integration",
+      "pvl-rust-native-context-integration",
+      "pvl-rust-toolchain-integration",
+      "pvl-secret-recipients"
+    ],
+    "publishedHostCount": 7,
+    "publishedCheckCount": 112,
+    "preCommitHostEvaluation": {
+      "drv": "/nix/store/fg617ajp3xykgdr4xzif5j2fmjfgpzaa-nixos-system-pvl-x2-26.05.20261108.ac588ef.drv",
+      "revision": null,
+      "stateVersion": "25.11"
+    },
+    "nativeEvidence": "Reuse commitSync destination native gates: native implementation/test/build bytes are unchanged from the qualified side worktree.",
+    "sideWorktree": {
+      "path": "/home/pvl/src/nix/worktrees/ab-convergence",
+      "ignoredGeneratedCacheFiles": {
+        "pkgs/examples/hello-python/.ruff_cache/": 3,
+        "target/": 6314
+      },
+      "retirementGate": "Remove only after one signed aggregate commit, exact preservation checks and clean-commit host evaluation. Keep review branch."
+    },
+    "limits": [
+      "No Nix push or deployment.",
+      "No NixOS system build or VM run.",
+      "Destination: focused checks and changed-Nix static checks, not full repository lint or full flake check."
+    ]
+  }
+}

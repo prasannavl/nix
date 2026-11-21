@@ -111,15 +111,15 @@
   };
 
   outputs = inputs:
-    (import ./lib/flake/root.nix {
+    (import ./nix/root.nix {
       inherit inputs;
       # Repository composition manifest: every repository-specific fact about
       # the shared flake library is declared here and injected as arguments
       # (see .agents/docs/design-patterns/shared-test-areas.md).
       repositoryConfig = import ./config;
       repositoryInventory = import ./hosts/nixbot.nix;
-      repoChecksFn = args:
-        (import ./lib/flake/repo-checks.nix) (args // {crane = inputs.crane;});
+      repositoryChecksFor = args:
+        (import ./nix/repo-checks.nix) (args // {crane = inputs.crane;});
       # The full table is required: this assignment replaces the shared
       # default wholesale, so omitting an entry drops it from the input set.
       inputSetInputNames.default = {

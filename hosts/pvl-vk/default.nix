@@ -1,7 +1,7 @@
 {...}: {
   imports = [
     ../common/all.nix
-    ../../lib/podman.nix
+    ../../ab/runtime/podman/host.nix
     ./packages.nix
     ./users.nix
   ];

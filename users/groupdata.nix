@@ -1,6 +1,6 @@
 {
   users,
-  accountsLib ? import ../lib/flake/accounts/lib.nix,
+  accountsLib ? (import ../ab).stack.accounts,
   ...
 }: {
   users = {

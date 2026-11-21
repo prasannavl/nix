@@ -1,8 +1,11 @@
 {
-  pkgs ? import <nixpkgs> {},
-  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
-}: let
-  buildController = pkgs.abird-host-manager or (pkgs.callPackage ../abird-host-manager {pkgHelper = pkgHelper;});
+  pkgs,
+  ab,
+  buildController ? ../abird-host-manager,
+}:
+ab.package.withDeps {
+  inherit buildController;
+} ({buildController}: let
   app = pkgs.writeShellApplication {
     name = "nixbot";
     meta = {
@@ -38,7 +41,7 @@
   tests = import ./tests {
     inherit pkgs app;
   };
-  drv = pkgHelper.mkShellScriptDerivation {
+  drv = ab.build.shell {
     inherit pkgs;
     src = ./.;
     build = pkgs.symlinkJoin {
@@ -57,4 +60,4 @@
     };
   };
 in
-  drv
+  drv)

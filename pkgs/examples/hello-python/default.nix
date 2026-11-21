@@ -1,10 +1,7 @@
 {
-  pkgs ? import <nixpkgs> {},
-  stack ? import ../../../lib/flake/stack/package.nix,
+  pkgs,
+  ab,
 }: let
-  s = stack;
-  pkg = s.pkg;
-  srv = s.srv;
   build = pkgs.python3Packages.buildPythonApplication {
     pname = "hello-python";
     version = "0.1.0";
@@ -22,11 +19,11 @@
     };
   };
 in
-  pkg.wirePassthru
-  (pkg.mkPythonDerivation {
+  ab.package.wire
+  (ab.build.python {
     inherit pkgs;
     build = build;
   })
   {
-    nixosModule = srv.mkModule {};
+    nixosModule = ab.nixos.service {};
   }

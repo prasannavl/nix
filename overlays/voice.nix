@@ -7,8 +7,8 @@
     };
 in {
   voiceTools = {
-    voxtype = package ../lib/ext/voxtype;
-    whisrs = package ../lib/ext/whisrs;
-    vocalinux = package ../lib/ext/vocalinux;
+    voxtype = package ../nix/ext/voxtype;
+    whisrs = package ../nix/ext/whisrs;
+    vocalinux = package ../nix/ext/vocalinux;
   };
 }

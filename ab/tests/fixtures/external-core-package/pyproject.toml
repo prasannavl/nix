@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "external-core-python"
+version = "0.1.0"
+description = "External ab-core Python fixture"
+requires-python = ">=3.11"
+
+[project.scripts]
+external-core-python = "external_core_python:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/external_core_python"]

@@ -19,6 +19,21 @@ is universally canonical. Local cross-remotes are `abird` in nix and `pvl` in z.
 - Never copy private products, keys, credentials or state into the other lineage
   merely to achieve a tree-wide match.
 
+## Component-tree convergence
+
+- Shared surface: the complete `ab/` tree (`core`, `repo`, `runtime`,
+  `services`, `stack`, `system`, generic tests). Compare paths, bytes, file
+  kinds, modes and symlink targets; a rename count or successful evaluation is
+  not parity.
+- Repository composition stays in `nix/`; retain inputs, manifests, host/user
+  profiles, cache order, build concurrency and optional qualification policy.
+- Exercise exported APIs from separately copied component sources. Metadata and
+  `attrNames` checks do not prove extraction.
+- Check root/child package parity and explicit dependency overrides. Tests of
+  opt-in workspace layering must enable it independently of repository defaults.
+- Compare selected destination-host feature/policy values with the committed
+  baseline. Do not substitute a fleet build for focused contract checks.
+
 ## Review-gated procedure
 
 1. Inspect both statuses, indexes, worktrees and previous port ledgers. Freeze

@@ -4,7 +4,7 @@
   machines,
 }: let
   inherit (machines) pvl-x2;
-  secretsLib = import ../../../lib/flake/secrets.nix;
+  secretsLib = (import ../../../ab).stack.secrets;
   secrets = secretsLib.mkStack {
     base = "data/secrets/pvl";
     inherit scope;

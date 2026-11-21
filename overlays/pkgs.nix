@@ -1,5 +1,10 @@
 _: final: prev: let
-  packageTree = import ../lib/flake/packages.nix {pkgs = final;};
+  ab = (import ../ab).withRepository {
+    root = ../.;
+    manifest = import ../pkgs/manifest.nix;
+    treefmtConfig = ../treefmt.toml;
+  };
+  packageTree = ab.repo.packagesFor final;
   hostInstallablePackages = let
     projectPackage = value:
       if prev.lib.isDerivation value

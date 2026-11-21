@@ -7,7 +7,7 @@
   llvmPackages,
   cmake,
   pkg-config,
-  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
+  ab,
   rustPlatform,
   stdenvNoCC,
 }: let
@@ -89,7 +89,7 @@
     };
   };
 
-  server = pkgHelper.mkCraneRustPackage {
+  server = ab.build.crane {
     inherit cargoExtraArgs craneLib rustPlatform;
     attrs = commonRustAttrs;
     finalAttrs = {

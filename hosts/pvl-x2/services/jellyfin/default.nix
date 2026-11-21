@@ -5,7 +5,7 @@
   ...
 }: let
   registry = stack.serviceRegistry;
-  nginxLib = import ../../../../lib/services/nginx {inherit lib;};
+  nginxLib = import ../../../../ab/services/nginx {inherit lib;};
   nginxPort = config.services.podman-compose.pvl.instances.nginx.exposedPorts.http.port;
   mediaDir = "/var/lib/pvl/media";
 in {

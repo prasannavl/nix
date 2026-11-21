@@ -1,0 +1,33 @@
+{pkgs}: let
+  python = pkgs.python3.withPackages (packages: [packages.pyyaml]);
+in
+  {
+    helper =
+      pkgs.runCommand "podman-compose-helper-test" {
+        nativeBuildInputs = [
+          pkgs.bash
+          pkgs.coreutils
+          pkgs.getent
+          pkgs.jq
+          pkgs.procps
+          python
+          pkgs.util-linux
+        ];
+      } ''
+        repo="$TMPDIR/repo"
+        mkdir -p "$repo/ab/runtime"
+        cp -R ${../.} "$repo/ab/runtime/podman"
+        chmod -R u+w "$repo"
+        python -m unittest discover \
+          --start-directory "$repo/ab/runtime/podman/tests" \
+          --pattern 'test_*.py'
+        touch "$out"
+      '';
+
+    quadlet-conversion = import ./quadlet-conversion.nix {pkgs = pkgs;};
+  }
+  // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    quadlet-generator-lifecycle = pkgs.testers.runNixOSTest ./quadlet-generator-lifecycle.nix;
+    quadlet-provider-transition = pkgs.testers.runNixOSTest ./quadlet-provider-transition.nix;
+    systemd-user-lifecycle = pkgs.testers.runNixOSTest ./systemd-user-lifecycle.nix;
+  }

@@ -11,8 +11,8 @@ in {
   imports = [
     ../common/pvl.nix
     ../common/ci.nix
-    ../../lib/devices/gmtek-evo-x2.nix
-    ../../lib/services/nix-builder-gc-coordination
+    ../../ab/system/hardware/devices/gmtek-evo-x2.nix
+    ../../ab/system/nix/gc-coordination.nix
     ./cloudflare.nix
     ./sys.nix
     ./packages.nix

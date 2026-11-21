@@ -1,11 +1,9 @@
 {
+  ab,
   config,
-  lib,
   ...
 }: let
-  incusLib = import ../../lib/incus/lib.nix {
-    inherit config lib;
-  };
+  incusLib = ab.runtime.incus.helpersFor {inherit config;};
 in {
   services.incus-manager.default.instances = {
     pvl-vk = {

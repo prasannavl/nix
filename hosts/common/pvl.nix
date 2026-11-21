@@ -5,11 +5,11 @@
 }: {
   imports = [
     ./all.nix
-    ../../lib/incus
-    ../../lib/services/ai/module.nix
-    ../../lib/swap-auto.nix
-    ../../lib/profiles/all.nix
-    ../../lib/podman.nix
+    ../../nix/incus.nix
+    ../../ab/services/ai/module.nix
+    ../../ab/system/storage/swap-auto.nix
+    ../../nix/profiles/all.nix
+    ../../ab/runtime/podman/host.nix
   ];
 
   services.ai.stack.name = "pvl";

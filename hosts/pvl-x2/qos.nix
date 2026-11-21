@@ -9,7 +9,7 @@
       (network: (network.type or null) == "bridge")
       config.virtualisation.incus.preseed.networks);
 in {
-  imports = [../../lib/services/host-network-qos];
+  imports = [../../ab/services/host-network-qos];
 
   services.host-network-qos = {
     enable = true;

@@ -18,6 +18,13 @@ use super::task::{InternalTask, Task};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
+fn maximum_readiness_attempts(readiness: &ReadinessBudget) -> usize {
+    readiness
+        .timeout_seconds
+        .div_ceil(POLL_INTERVAL.as_secs())
+        .saturating_add(1) as usize
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedHealthReport {
     pub decision: HealthDecision,
@@ -176,6 +183,7 @@ where
     let mut baseline = BaselineTimerUnits::default();
     let mut budget = None;
     let mut ignored_system_failures = BTreeSet::new();
+    let mut healthy_confirmation_pending = false;
     loop {
         attempts += 1;
         let hold_output = runtime.execute_remote_root_command_bounded(
@@ -231,6 +239,7 @@ where
         report.ignored_system_failures = ignored_system_failures.iter().cloned().collect();
         match report.decision {
             HealthDecision::Settling { .. } => {
+                healthy_confirmation_pending = true;
                 let resolved = derive_observation_budget(&observation)?;
                 if budget.is_none() {
                     budget = resolved;
@@ -256,10 +265,7 @@ where
                     progress(attempts, &report.decision, &report.details);
                     return Ok(report);
                 };
-                let maximum_attempts = readiness
-                    .timeout_seconds
-                    .div_ceil(POLL_INTERVAL.as_secs())
-                    .saturating_add(1) as usize;
+                let maximum_attempts = maximum_readiness_attempts(readiness);
                 if attempts >= maximum_attempts {
                     let report = ManagedHealthReport {
                         decision: HealthDecision::ServiceFailure {
@@ -281,6 +287,40 @@ where
                     return Ok(report);
                 }
                 progress(attempts, &report.decision, &report.details);
+                runtime.wait(POLL_INTERVAL);
+            }
+            HealthDecision::Healthy { .. } if healthy_confirmation_pending => {
+                let readiness = budget
+                    .as_ref()
+                    .context("health confirmation requires its readiness budget")?;
+                if attempts >= maximum_readiness_attempts(readiness) {
+                    report.decision = HealthDecision::ServiceFailure {
+                        evidence: vec![HealthEvidence::ReportedFailure {
+                            scope: "readiness".to_owned(),
+                            detail: "stable health was not confirmed before the readiness deadline"
+                                .to_owned(),
+                        }],
+                    };
+                    report.details = vec![
+                        "health became ready too late to confirm stability within the readiness deadline"
+                            .to_owned(),
+                    ];
+                    report.failure_excerpts =
+                        collect_failure_excerpts(runtime, target, &observation);
+                    report.attempts = attempts;
+                    report.readiness_budget = budget;
+                    progress(attempts, &report.decision, &report.details);
+                    return Ok(report);
+                }
+                let confirmation = HealthDecision::Settling {
+                    evidence: vec![HealthEvidence::DeploymentWorkSettling],
+                };
+                progress(
+                    attempts,
+                    &confirmation,
+                    &["confirming stable health after settling".to_owned()],
+                );
+                healthy_confirmation_pending = false;
                 runtime.wait(POLL_INTERVAL);
             }
             _ => {

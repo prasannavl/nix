@@ -1,10 +1,7 @@
 {
-  pkgs ? import <nixpkgs> {},
-  stack ? import ../../../lib/flake/stack/package.nix,
+  pkgs,
+  ab,
 }: let
-  s = stack;
-  pkg = s.pkg;
-  srv = s.srv;
   build = pkgs.buildGoModule {
     pname = "hello-go";
     version = "0.1.0";
@@ -18,11 +15,11 @@
     };
   };
 in
-  pkg.wirePassthru
-  (pkg.mkGoDerivation {
+  ab.package.wire
+  (ab.build.go {
     inherit pkgs;
     build = build;
   })
   {
-    nixosModule = srv.mkModule {};
+    nixosModule = ab.nixos.service {};
   }

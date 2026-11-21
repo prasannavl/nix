@@ -1,0 +1,23 @@
+{pkgs}: {
+  helper =
+    pkgs.runCommand "llama-router-helper-test" {
+      nativeBuildInputs = [
+        pkgs.bash
+        pkgs.coreutils
+        pkgs.jq
+        pkgs.python3
+      ];
+    } ''
+      repo="$TMPDIR/repo"
+      mkdir -p "$repo/ab/services"
+      cp -R ${../.} "$repo/ab/services/llama-router"
+      chmod -R u+w "$repo"
+      export MODEL_RECONCILER_OWNERSHIP_LIB=${../../model-reconciler/ownership.sh}
+      export MODEL_RECONCILER_DISPATCH_LIB=${../../model-reconciler/dispatch.sh}
+      python -m unittest discover \
+        --start-directory "$repo/ab/services/llama-router/tests" \
+        --pattern 'test_*.py'
+      touch "$out"
+    '';
+  module = import ./module.nix {inherit pkgs;};
+}

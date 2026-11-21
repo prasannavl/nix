@@ -146,15 +146,21 @@
 
 ## Packaging conventions
 
-- Every package `default.nix` is the canonical build definition. It must work
-  with both `callPackage` (root flake) and `nix-build` (standalone).
-- Package constructors own intrinsic dependency defaults. Use sibling
-  `pkgs.callPackage` defaults and forward shared constructor context such as
-  `pkgHelper`; keep explicit dependency overrides available. Do not repeat those
-  defaults in `pkgs/manifest.nix` or a separate child registry. Manifest `args`
-  remains available for intentional composition overrides, which independent
-  child flakes do not implicitly inherit. Matching build identities require
-  equal effective arguments as well as source and package-set inputs.
+- Every package `default.nix` is the canonical injectable build definition.
+  `pkgs` is required; leaf packages do not import Nixpkgs or extend package
+  sets. Root composition and child flakes own standalone package-set/context
+  construction.
+- Package constructors own intrinsic sibling dependencies. Declare them once in
+  `default.nix` with `ab.package.withDeps`; do not rediscover siblings through
+  repository package lookup or repeat dependency arguments in
+  `pkgs/manifest.nix` / child flakes. Manifest dependency `args` and
+  `packageArgsFor` are retired. Matching build identities require equal
+  effective dependencies as well as source and package-set inputs.
+- Bind package scopes through `core.packageScope` at composition boundaries;
+  never duplicate the recursive `pkgs` / `ab` / `callPackage` binding.
+  `ab.package.withDeps` resolves Nix paths only; derivations, `null` and other
+  explicit values pass through unchanged. Construct argument-bearing overrides
+  explicitly rather than relying on an attrset's `path` field.
 - Set `meta.description` and `meta.mainProgram` on every package that produces a
   binary. `meta.mainProgram` is the standard Nix way to declare which binary a
   package provides — `lib.getExe` uses it.
@@ -169,7 +175,7 @@
   };
   ```
 
-- The root flake's `lib/flake/apps.nix` uses a `mkApp` helper that reads
+- The root flake's `ab/core/packaging/apps.nix` uses a `mkApp` helper that reads
   `meta.mainProgram` and `meta` from the package:
 
   ```nix
@@ -183,6 +189,39 @@
 - Do **not** duplicate binary paths or descriptions across layers. The
   `default.nix` package is the single source of truth — sub-flakes and root apps
   derive from it.
+
+## Project `default.nix` / `flake.nix` split is intentional
+
+For projects under `pkgs/**`, the asymmetry between `default.nix` and
+`flake.nix` is a design constraint, not leftover ceremony:
+
+- `default.nix` is the canonical injectable package implementation. It owns
+  build logic, metadata, passthru exports, and intrinsic sibling dependencies
+  through `ab.package.withDeps`. Root composition, child flakes, tests, and
+  external callers must all converge on this constructor.
+- `flake.nix` is the standalone/subflake loader boundary. Nix requires the
+  top-level flake value and its `inputs` declaration to be literal syntax that
+  the flake loader can inspect before evaluating outputs. Do not replace the
+  whole file or its `inputs` with `import helper.nix`, generated indirection, or
+  a function call.
+- The child flake is intentionally mechanical. Its `outputs` may delegate to
+  `nix/project.nix`, but package dependencies and package behavior must not
+  migrate into the wrapper.
+- Repetition of the small standard input declarations across child flakes is
+  accepted because it preserves valid native flake semantics. Do not remove that
+  repetition by hiding the flake/input attrsets behind an import.
+- Repository subflake consumption such as `?dir=pkgs/<package>` is supported.
+  Opening the package directory inside this repository also works because its
+  repo-relative composition paths remain present. A physically detached copy of
+  only the package directory is not currently self-contained.
+- Any refactor of package composition must compare child input names and child
+  package/app/check/dev-shell/NixOS-module output names before and after. A
+  package that still builds can still have lost public passthru or module
+  exports.
+
+Z’s post-Phase-14 imported-whole-flake experiment violated the literal loader
+constraint and was reverted. Do not retry that shape unless Nix itself changes
+the flake-loader contract and the direct loader tests prove the new shape.
 
 ## Flake conventions
 
@@ -224,7 +263,7 @@
   validate the specific file or module directly without a flake `path:` ref, or
   ask the user. A bare absolute path is Git-aware as a command-line flake ref,
   but it resolves to `path:` inside `builtins.getFlake`, so impure
-  self-references must go through `lib/flake/repo-flake.nix` (or an explicit
+  self-references must go through `ab/repo/self-flake.nix` (or an explicit
   `git+file:///...` ref). Do not use `path:` as the live-untracked escape hatch.
   See `.agents/docs/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`.
 - Within this repo, prefer canonical package `default.nix` imports or root-flake

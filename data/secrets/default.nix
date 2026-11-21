@@ -1,5 +1,5 @@
 let
-  secretsLib = import ../../lib/flake/secrets.nix;
+  secretsLib = (import ../../ab).stack.secrets;
   repositoryConfig = import ../../config;
   userdata = repositoryConfig.shared.accounts.users;
   admins = userdata.pvl.sshKeys;

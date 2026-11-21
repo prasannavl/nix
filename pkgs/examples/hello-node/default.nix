@@ -1,10 +1,7 @@
 {
-  pkgs ? import <nixpkgs> {},
-  stack ? import ../../../lib/flake/stack/package.nix,
+  pkgs,
+  ab,
 }: let
-  s = stack;
-  pkg = s.pkg;
-  srv = s.srv;
   build = pkgs.buildNpmPackage {
     pname = "hello-node";
     version = "0.1.0";
@@ -20,12 +17,12 @@
     };
   };
 in
-  pkg.wirePassthru
-  (pkg.mkWebDerivation {
+  ab.package.wire
+  (ab.build.web {
     inherit pkgs;
     build = build;
     lintParts = [
-      (pkg.projectLintBiome pkgs {})
+      (ab.tasks.node.projectLint pkgs {})
       {
         inputs = [pkgs.nodejs];
         commands = ["node --check index.js"];
@@ -33,5 +30,5 @@ in
     ];
   })
   {
-    nixosModule = srv.mkModule {};
+    nixosModule = ab.nixos.service {};
   }

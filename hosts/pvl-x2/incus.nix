@@ -1,14 +1,14 @@
 {
+  ab,
   inputs,
   config,
   lib,
   ...
 }: let
-  incusLib = import ../../lib/incus/lib.nix {
-    inherit config lib;
-  };
+  incusLib = ab.runtime.incus.helpersFor {inherit config;};
   incusSecrets = ../../data/secrets/globals/incus;
-  fpp = incusLib.fabricPolicyProfiles;
+  fabricPolicy = (import ../../ab).stack.fabric.incus {inherit lib;};
+  fpp = fabricPolicy.fabricPolicyProfiles;
   abirdProjection = {
     addressBases = {
       ipv4 = "10.10";
@@ -91,7 +91,7 @@
       };
     };
   };
-  abirdFabric = import ../../lib/flake/fabric-projection.nix {
+  abirdFabric = (import ../../ab).stack.fabric.projection {
     inherit lib;
     projection = abirdProjection;
   };
@@ -214,7 +214,7 @@
           };
         };
     };
-  fabricIsolation = incusLib.mkManagedFabricPolicy {
+  fabricIsolation = fabricPolicy.mkManagedFabricPolicy {
     defaultFabric = {
       subnets = defaultPrefixes;
       masqueradeToUplink = {

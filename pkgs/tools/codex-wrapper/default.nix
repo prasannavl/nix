@@ -1,6 +1,6 @@
 {
   pkgs ? import <nixpkgs> {},
-  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
+  ab,
   codex-unwrapped ? pkgs.unstable.codex,
 }: let
   cr = pkgs.writeShellApplication {
@@ -23,7 +23,7 @@
       exec ${cr}/bin/cr -u "$@"
     '';
   };
-  drv = pkgHelper.mkShellScriptDerivation {
+  drv = ab.build.shell {
     pkgs = pkgs;
     src = ./.;
     build = pkgs.symlinkJoin {
