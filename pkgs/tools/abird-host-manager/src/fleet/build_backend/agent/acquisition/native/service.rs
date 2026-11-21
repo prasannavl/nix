@@ -389,6 +389,22 @@ mod tests {
 
     #[test]
     fn descriptor_transfer_preserves_original_exclusion() {
+        // CLOEXEC does not prevent parallel tests from retaining a forked copy
+        // of the lock before exec. Open and transfer it in an isolated process.
+        const CHILD: &str = "ABIRD_TEST_LOCK_TRANSFER_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "fleet::build_backend::agent::acquisition::native::service::tests::descriptor_transfer_preserves_original_exclusion",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
         let file = tempfile::NamedTempFile::new().unwrap();
         let original = file.reopen().unwrap();
         assert_eq!(
