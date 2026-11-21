@@ -74,7 +74,7 @@ The upstream Voxtype ONNX packages also omit Oniguruma, which their Rust
 tokenizer dependency needs in a Nix build; `mk` adds it. SQLite is not needed:
 `rusqlite` is built bundled. The package-specific fixes live in
 `lib/ext/voxtype/`, `lib/ext/whisrs/` and `lib/ext/vocalinux/`. The
-`overlays/voice.nix` file only wires these into `pkgs.voiceTools`, retaining
+`lib/overlays/voice.nix` file only wires these into `pkgs.voiceTools`, retaining
 upstream wrappers.
 
 Upstream ships the ONNX engines as separate binaries (`voxtype-onnx`, `-cuda`,

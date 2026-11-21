@@ -10,7 +10,7 @@ files also own explicit sibling-package dependencies through
 aliases, root apps and output selectors. It does not restate package dependency
 wiring.
 
-Child `flake.nix` files are mechanical wrappers around `nix/project.nix` for
+Child `flake.nix` files are mechanical wrappers around `lib/project.nix` for
 package-local `nix run` / `nix develop`. Nix requires the top-level flake and
 its `inputs` to be literal attribute sets, so those standard input declarations
 remain visible in each wrapper; package logic and sibling dependencies still
@@ -33,10 +33,10 @@ To add a new package:
 Example projects live under `pkgs/examples/`. Their root flake package names are
 prefixed with `example-`.
 
-Externally sourced units live under `nix/ext/` when they follow upstream
+Externally sourced units live under `lib/ext/` when they follow upstream
 (unpatched, pinned release) and under `pkgs/ext/` when this repository owns
-their shape (patches, vendored locks, own build logic). `nix/ext/**` is the
-reserved non-composition exception inside `nix/**`; it owns source recipes,
+their shape (patches, vendored locks, own build logic). `lib/ext/**` is the
+reserved non-composition exception inside `lib/**`; it owns source recipes,
 pins, and updaters rather than Z assembly. Management style decides the root;
 registration in `pkgs/manifest.nix` follows placement. See
 [external source units](../.agents/docs/design-patterns/external-source-units.md).

@@ -77,7 +77,7 @@ class MarkdownPolicyTests(unittest.TestCase):
                 ["git", "-C", str(root), "add", "--", *files], env=env, check=True
             )
             md_args = " ".join(shlex.quote(path) for path in MARKDOWN)
-            harness = f"""source ../../nix/tests/lint-functions.sh
+            harness = f"""source ./lint-functions.sh
 REPO_ROOT={shlex.quote(str(root))}
 LINT_FIX={int(fix)}
 LINT_MODE=full

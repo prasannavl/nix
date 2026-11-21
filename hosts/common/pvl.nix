@@ -5,10 +5,10 @@
 }: {
   imports = [
     ./all.nix
-    ../../nix/incus.nix
+    ../../lib/incus.nix
     ../../ab/services/ai/module.nix
     ../../ab/system/storage/swap-auto.nix
-    ../../nix/profiles/all.nix
+    ../../lib/profiles/all.nix
     ../../ab/runtime/podman/host.nix
   ];
 

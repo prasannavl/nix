@@ -8,7 +8,7 @@ die() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd -P)"
-	TARGET_DIR="${REPO_ROOT}/nix/ext"
+	TARGET_DIR="${REPO_ROOT}/lib/ext"
 }
 
 ensure_runtime_shell() {

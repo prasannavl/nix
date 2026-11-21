@@ -7,16 +7,16 @@ Usage: update.sh [options]
 
 Runs all repo maintenance update scripts:
   flake lock updates
-  external sources under nix/ext/* and pkgs/ext/*
+  external sources under lib/ext/* and pkgs/ext/*
   Podman Compose image pin updates
 
 Options:
   --skip-flake          Do not update flake locks.
   --only-flake          Only update flake locks.
-  --skip-ext            Do not process nix/ext source units.
-  --only-ext            Only process nix/ext source units.
-  --skip-ext-NAME       Skip nix/ext/NAME. May be repeated.
-  --only-ext-NAME       Only process nix/ext/NAME. May be repeated.
+  --skip-ext            Do not process lib/ext source units.
+  --only-ext            Only process lib/ext source units.
+  --skip-ext-NAME       Skip lib/ext/NAME. May be repeated.
+  --only-ext-NAME       Only process lib/ext/NAME. May be repeated.
   --skip-pkgs-ext       Do not process pkgs/ext source units.
   --only-pkgs-ext       Only process pkgs/ext source units.
   --skip-images         Do not process Podman Compose image pins.
@@ -60,7 +60,7 @@ configure_github_nix_access_token() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
-	EXT_DIR="${REPO_ROOT}/nix/ext"
+	EXT_DIR="${REPO_ROOT}/lib/ext"
 	PKGS_EXT_DIR="${REPO_ROOT}/pkgs/ext"
 	UPDATE_HELPER="${REPO_ROOT}/scripts/update/helper.py"
 	SKIP_FLAKE=0
@@ -354,7 +354,7 @@ validate_ext_filters() {
 
 	for requested in "${ONLY_EXT_NAMES[@]}" "${SKIP_EXT_NAMES[@]}"; do
 		contains_name "$requested" "${ext_names[@]}" ||
-			die "No nix/ext source unit found for: ${requested}"
+			die "No lib/ext source unit found for: ${requested}"
 	done
 }
 
@@ -465,7 +465,7 @@ run_report() {
 
 	if ((RUN_EXT)); then
 		((printed_section)) && echo
-		print_section_title "nix/ext:"
+		print_section_title "lib/ext:"
 		run_source_report "$REPORT_JOBS" "$EXT_DIR" || status=$?
 		printed_section=1
 	fi

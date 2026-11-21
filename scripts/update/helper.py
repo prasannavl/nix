@@ -386,10 +386,10 @@ def uses_repository_helper(path, root):
     """Recognize the canonical repository package-composition binder.
 
     Child wrappers are repository-bound only when executable Nix code references
-    nix/project.nix. Comments, strings, similarly named helpers, and
+    lib/project.nix. Comments, strings, similarly named helpers, and
     unrelated repository paths do not count.
     """
-    binder = (root.resolve() / "nix/project.nix").resolve()
+    binder = (root.resolve() / "lib/project.nix").resolve()
     for token in nix_tokens(path.read_text()):
         if token.lastgroup == "path":
             imported = Path(os.path.abspath(path.parent / token.group()))

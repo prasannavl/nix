@@ -61,7 +61,7 @@ class LayoutTests(unittest.TestCase):
         self.assertGreaterEqual(count, 3)
 
     def test_repository_scenarios_are_outside_the_generic_library(self):
-        owner = ROOT / "nix/tests/qualification/rust"
+        owner = ROOT / "lib/tests/qualification/rust"
         for name in ("manager-recipes.nix", "manager-vm.nix", "product-eval.nix"):
             self.assertTrue((owner / "pvl" / name).is_file())
             self.assertFalse((QUALIFICATION / name).exists())
@@ -69,7 +69,7 @@ class LayoutTests(unittest.TestCase):
         self.assertFalse((QUALIFICATION / "abird-recipes.nix").exists())
         for path in QUALIFICATION.glob("*.nix"):
             text = path.read_text()
-            self.assertNotIn("nix/tests/qualification", text, path)
+            self.assertNotIn("lib/tests/qualification", text, path)
             self.assertNotIn("pkgs/tools/abird-", text, path)
             self.assertNotIn("pkgs/support/nats-", text, path)
 
@@ -105,7 +105,6 @@ class LayoutTests(unittest.TestCase):
     def test_old_active_entries_are_absent(self):
         for path in (QUALIFICATION / "patched-cargo.nix",
                      QUALIFICATION / "cargo-dep-info-order-16691.patch",
-                     ROOT / "nix/tests/qualification/rust/pvl/manager-patched-vm.nix",
                      ROOT / "scripts/qualification",
                      ROOT / "scripts/rust-fabric", ROOT / "scripts/rust-g4-qualification", ROOT / "scripts/rust-unit-spike",
                      ROOT / "scripts/support/rust-mirror.py",

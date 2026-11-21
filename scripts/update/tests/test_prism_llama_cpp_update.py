@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).parents[3]
-UPDATE_SCRIPT = REPO_ROOT / "nix/ext/prism-llama-cpp/update.sh"
+UPDATE_SCRIPT = REPO_ROOT / "lib/ext/prism-llama-cpp/update.sh"
 TMP_ROOT = REPO_ROOT / "tmp"
 
 

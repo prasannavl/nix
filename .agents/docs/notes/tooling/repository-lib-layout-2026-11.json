@@ -1,0 +1,141 @@
+{
+  "repository": "nix",
+  "publishedBase": "81cbadde81ebc2921aff65f9bbe2b95afb89ebea",
+  "qualifiedTreeBeforeReceipt": "a29a43f8e06ea1cc1b2d9fee39178baf4e6f990f",
+  "sharedAb": {
+    "equal": true,
+    "files": 573,
+    "links": 6,
+    "directories": 259,
+    "inventorySha256": "3dc13571ebb2ec97a59489facd3b3d1b02e17a93c12e2163f8d0fc54181074bc",
+    "gitTree": "289545b1977c665d8ce857b1d44a1ea190ac354c"
+  },
+  "paths": {
+    "relativeNixPaths": 1676,
+    "allResolvedTargetsPreserved": true,
+    "oldRootsAbsent": true
+  },
+  "verification": {
+    "passed": true,
+    "checks": [
+      "lib-ab-extraction",
+      "lib-ab-package-contracts",
+      "lib-ab-stack-assembly",
+      "lib-flake-config-family",
+      "lib-flake-configuration-family",
+      "lib-flake-fabric-projection",
+      "lib-flake-isolated",
+      "lib-flake-language-toolchains",
+      "lib-flake-phase-projection",
+      "lib-flake-repo-modules",
+      "lib-flake-repository-config",
+      "lib-flake-repository-fold",
+      "lib-flake-rust-closures",
+      "lib-flake-rust-export",
+      "lib-flake-rust-mirror",
+      "lib-flake-rust-source-scope",
+      "lib-flake-rust-toolchain",
+      "lib-flake-service-placements",
+      "lib-hardware-nvidia",
+      "lib-incus-helper",
+      "lib-incus-module",
+      "lib-nginx-phase-projection-routes",
+      "lib-nix-repo-registry",
+      "lib-podman-compose-helper",
+      "lib-podman-compose-module",
+      "lib-system-optional-features",
+      "pvl-child-flake-parity",
+      "pvl-external-packages",
+      "pvl-flake-isolated",
+      "pvl-nix-builder-gc-defaults",
+      "pvl-nix-cache-policy",
+      "pvl-postgres-extensions-policy",
+      "pvl-rust-base-integration",
+      "pvl-rust-composition-integration",
+      "pvl-rust-native-context-integration",
+      "pvl-rust-toolchain-integration",
+      "pvl-secret-recipients",
+      "lib-pi-web",
+      "pvl-pi-web",
+      "lib-lint-markdown",
+      "lib-lint-no-ifd",
+      "lib-lint-manifest-temp-cleanup",
+      "lib-update-helper-repository",
+      "lib-pi-updater",
+      "lib-prism-llama-cpp-updater",
+      "lib-podman-image-updater"
+    ],
+    "host": "pvl-l5",
+    "hostData": {
+      "drv": "/nix/store/xn581j8gxkjhr5bg3s4rhrs6p0hwhmzq-nixos-system-pvl-l5-26.05.20261108.ac588ef.drv",
+      "revision": null,
+      "stateVersion": "25.11"
+    },
+    "outputNamesUnchanged": true,
+    "staticNixFiles": 166,
+    "canonicalHostManager": "fmt/lint/tests passed; CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2"
+  },
+  "interfaces": {
+    "inputNames": [
+      "agenix",
+      "antigravity",
+      "crane",
+      "disko",
+      "dotlink",
+      "flake-utils",
+      "go-overlay",
+      "home-manager",
+      "llm-agents",
+      "nix-alien",
+      "nixos-hardware",
+      "nixpkgs",
+      "noctalia",
+      "p7-borders",
+      "p7-cmds",
+      "systems",
+      "treefmt-nix",
+      "unstable",
+      "vocalinux",
+      "voxtype",
+      "vscode-ext",
+      "whisrs"
+    ],
+    "packageCounts": {
+      "aarch64-darwin": 17,
+      "aarch64-linux": 26,
+      "x86_64-linux": 26
+    },
+    "appCounts": {
+      "aarch64-darwin": 7,
+      "aarch64-linux": 11,
+      "x86_64-linux": 11
+    },
+    "hostCount": 7,
+    "moduleCount": 10,
+    "imageGroups": [
+      "incus-lxc-base",
+      "incus-vm-base",
+      "installer"
+    ],
+    "checkCounts": {
+      "aarch64-darwin": 0,
+      "aarch64-linux": 112,
+      "x86_64-linux": 113
+    }
+  },
+  "preserved": [
+    "flake inputs and lock",
+    "Cargo workspace and locks",
+    "package manifest",
+    "configuration and data",
+    "all external source pins and patches",
+    "shared ab filesystem parity",
+    "unrelated worktrees and stashes"
+  ],
+  "limits": [
+    "No layout push authorized",
+    "No fleet operation, NixOS system build, deployment or VM run",
+    "Not full-repository lint or full nix flake check",
+    "Host drvPath evaluation used the staged candidate; clean-commit revision metadata changes its derivation identity"
+  ]
+}

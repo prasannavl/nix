@@ -6,7 +6,7 @@
 }: {
   imports = [
     (ab.services.piWeb.nixos {
-      defaultPackage = pkgs.callPackage ../../../nix/ext/pi/pi-web {};
+      defaultPackage = pkgs.callPackage ../../../lib/ext/pi/pi-web {};
       defaultUser = "pvl";
     })
   ];

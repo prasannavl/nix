@@ -205,7 +205,7 @@ For projects under `pkgs/**`, the asymmetry between `default.nix` and
   whole file or its `inputs` with `import helper.nix`, generated indirection, or
   a function call.
 - The child flake is intentionally mechanical. Its `outputs` may delegate to
-  `nix/project.nix`, but package dependencies and package behavior must not
+  `lib/project.nix`, but package dependencies and package behavior must not
   migrate into the wrapper.
 - Repetition of the small standard input declarations across child flakes is
   accepted because it preserves valid native flake semantics. Do not remove that

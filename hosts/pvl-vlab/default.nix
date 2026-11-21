@@ -1,7 +1,7 @@
 {...}: {
   imports = [
     ../common/all.nix
-    ../../nix/incus.nix
+    ../../lib/incus.nix
     ../../ab/runtime/podman/host.nix
     ./cloudflare.nix
     ./incus.nix

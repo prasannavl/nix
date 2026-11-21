@@ -33,7 +33,7 @@ WRAPPER = '''{
     flake-utils.url = "old";
   };
   outputs = inputs:
-    (import ../../nix/project.nix).mkFlakeOutputs ./default.nix inputs;
+    (import ../../lib/project.nix).mkFlakeOutputs ./default.nix inputs;
 }
 '''
 WRAPPER_WITH_CRANE = WRAPPER.replace(
@@ -331,7 +331,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_new_wrapper_is_automatically_included_and_updated(self):
         new = self.root / "pkgs/new/nested/flake.nix"
         new.parent.mkdir(parents=True)
-        new.write_text(WRAPPER.replace("../../nix", "../../../nix"))
+        new.write_text(WRAPPER.replace("../../lib", "../../../lib"))
         self.assertEqual(pins.discover_wrappers(self.root), [new, self.wrapper])
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pins.main(["child-refs", "--root", str(self.root), "--write"]), 0)
@@ -352,10 +352,10 @@ class DiscoveryTests(unittest.TestCase):
                 vendor = generated / "vendor/flake.nix"
                 vendor.parent.mkdir(parents=True)
                 binder = os.path.relpath(
-                    self.root / "nix/project.nix", vendor.parent
+                    self.root / "lib/project.nix", vendor.parent
                 )
                 vendor.write_text(WRAPPER.replace(
-                    "../../nix/project.nix", binder
+                    "../../lib/project.nix", binder
                 ).replace(
                     'nixpkgs.url = "old";', ""
                 ))
@@ -388,7 +388,7 @@ class DiscoveryTests(unittest.TestCase):
         outside.mkdir()
         external = outside / "flake.nix"
         external.write_text(WRAPPER.replace(
-            "../../nix/project.nix", "../nix/project.nix"
+            "../../lib/project.nix", "../lib/project.nix"
         ))
         before = external.read_bytes()
         links = {}
@@ -417,10 +417,10 @@ class DiscoveryTests(unittest.TestCase):
             git.mkdir(parents=True)
             flake = git / "flake.nix"
             binder = os.path.relpath(
-                self.root / "nix/project.nix", git
+                self.root / "lib/project.nix", git
             )
             flake.write_text(WRAPPER.replace(
-                "../../nix/project.nix", binder
+                "../../lib/project.nix", binder
             ))
             (git / "escape").symlink_to(self.root, target_is_directory=True)
             ignored_flakes.append(flake)
@@ -445,7 +445,7 @@ class DiscoveryTests(unittest.TestCase):
             flake = self.root / "pkgs/tools" / name / "flake.nix"
             flake.parent.mkdir(parents=True)
             (flake.parent / "default.nix").write_text("package fixture\n")
-            flake.write_text(WRAPPER_WITH_CRANE.replace("../../nix", "../../../nix"))
+            flake.write_text(WRAPPER_WITH_CRANE.replace("../../lib", "../../../lib"))
             real_packages.append(flake)
         self.assertEqual(pins.discover_wrappers(self.root), sorted([self.wrapper, *real_packages]))
         with contextlib.redirect_stdout(io.StringIO()):
@@ -490,7 +490,7 @@ class DiscoveryTests(unittest.TestCase):
         self.wrapper.write_text('''{
 outputs = inputs: let
   helper = import /* varied */
-    ../../nix/project.nix;
+    ../../lib/project.nix;
 in helper
  . mkFlakeOutputs ./default.nix inputs;
 }''')
@@ -500,7 +500,7 @@ in helper
         for helper in ("pkg-helper.nix", "future-adapter.nix", "default.nix"):
             with self.subTest(helper=helper):
                 self.wrapper.write_text(WRAPPER.replace(
-                    "../../nix/project.nix", f"../../nix{helper}"
+                    "../../lib/project.nix", f"../../lib{helper}"
                 ))
                 with self.assertRaisesRegex(
                     ValueError, "no repository-bound child wrappers"
@@ -511,10 +511,10 @@ in helper
         external = self.root / "pkgs/external/flake.nix"
         external.parent.mkdir()
         external.write_text('''{
-# import ../../nix/project.nix
-/* import ../../nix/project.nix */
-description = "../../nix/project.nix";
-note = ''../../nix/project.nix'';
+# import ../../lib/project.nix
+/* import ../../lib/project.nix */
+description = "../../lib/project.nix";
+note = ''../../lib/project.nix'';
 outputs = inputs: {};
 }''')
         self.assertEqual(pins.discover_wrappers(self.root), [self.wrapper])
@@ -526,7 +526,7 @@ outputs = inputs: {};
     def test_independent_external_flake_and_lock_are_untouched(self):
         external = self.root / "pkgs/external/flake.nix"
         external.parent.mkdir()
-        external.write_text(WRAPPER.replace("../../nix/project.nix", "./helper.nix"))
+        external.write_text(WRAPPER.replace("../../lib/project.nix", "./helper.nix"))
         child_lock = self.wrapper.with_name("flake.lock")
         child_lock.write_text("independent lock state\n")
         before = {path: path.read_bytes() for path in (external, child_lock)}
@@ -580,7 +580,7 @@ outputs = inputs: {};
 
     def test_non_child_package_root_flake_fails_closed(self):
         (self.root / "pkgs/flake.nix").write_text(
-            WRAPPER.replace("../../nix", "../nix")
+            WRAPPER.replace("../../lib", "../lib")
         )
         with self.assertRaisesRegex(ValueError, "invalid child wrapper path"):
             pins.discover_wrappers(self.root)

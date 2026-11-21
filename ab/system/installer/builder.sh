@@ -1363,7 +1363,7 @@ build_installer() {
 			prepare_cli_custom_spec "$spec_file"
 		fi
 		installer_profile="$(jq -r '.installerProfile // "minimal"' "$spec_file")"
-		installable="${INSTALLER_SPEC_BUILDER:-${REPO_ROOT}/nix/installer-build-image.nix}"
+		installable="${INSTALLER_SPEC_BUILDER:-${REPO_ROOT}/lib/installer-build-image.nix}"
 	fi
 
 	if [ "$USE_SYSTEM_STORE" = "1" ] && [ -z "$OUT_LINK" ] && [ "$NO_LINK" != "1" ]; then

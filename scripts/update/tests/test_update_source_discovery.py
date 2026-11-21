@@ -21,7 +21,7 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
         self.repo = Path(self.temp_dir.name) / "repo"
         (self.repo / "scripts").mkdir(parents=True)
         (self.repo / "scripts/update").mkdir(parents=True)
-        (self.repo / "nix/ext").mkdir(parents=True)
+        (self.repo / "lib/ext").mkdir(parents=True)
         (self.repo / "pkgs/ext").mkdir(parents=True)
         shutil.copy2(UPDATE_SCRIPT, self.repo / "scripts/update.sh")
 
@@ -56,7 +56,7 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
 
     def test_github_token_configures_reporters_and_nix(self):
         trace = Path(self.temp_dir.name) / "trace"
-        unit = self.add_unit("nix/ext", "example", sources=True, updater=True)
+        unit = self.add_unit("lib/ext", "example", sources=True, updater=True)
         (unit / "update.sh").write_text(
             '#!/usr/bin/env bash\nprintf "%s\\n%s\\n" '
             '"$GITHUB_TOKEN" "$NIX_CONFIG" >"$TRACE"\n'
@@ -85,7 +85,7 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
 
     def test_sources_and_updater_participate_in_updates(self):
         trace = Path(self.temp_dir.name) / "trace"
-        self.add_unit("nix/ext", "example", sources=True, updater=True)
+        self.add_unit("lib/ext", "example", sources=True, updater=True)
 
         result = self.run_update("--only-ext", trace=trace)
 
@@ -114,7 +114,7 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
         self.assertIn("No external update scripts selected", result.stdout)
 
     def test_directory_without_convention_files_is_ignored(self):
-        self.add_unit("nix/ext", "example")
+        self.add_unit("lib/ext", "example")
 
         result = self.run_update("--only-ext")
 
@@ -122,7 +122,7 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
         self.assertIn("No external update scripts selected", result.stdout)
 
     def test_updater_without_sources_is_rejected(self):
-        self.add_unit("nix/ext", "example", updater=True)
+        self.add_unit("lib/ext", "example", updater=True)
 
         result = self.run_update("--only-ext")
 
@@ -130,7 +130,7 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
         self.assertIn("has no sibling sources.nix", result.stderr)
 
     def test_non_executable_updater_is_rejected(self):
-        unit = self.add_unit("nix/ext", "example", sources=True, updater=True)
+        unit = self.add_unit("lib/ext", "example", sources=True, updater=True)
         (unit / "update.sh").chmod(0o644)
 
         result = self.run_update("--only-ext")
@@ -157,16 +157,16 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
 
     def test_report_footer_names_failed_updaters_with_serial_and_parallel_jobs(self):
         for name, status in [("bad-a", 7), ("bad-b", 9), ("good", 0)]:
-            unit = self.add_unit("nix/ext", name, sources=True, updater=True)
+            unit = self.add_unit("lib/ext", name, sources=True, updater=True)
             (unit / "update.sh").write_text(f"#!/usr/bin/env bash\nexit {status}\n")
         for jobs in [1, 4]:
             with self.subTest(jobs=jobs):
                 result = self.run_update("--only-ext", "--report", "--jobs", str(jobs))
                 self.assertEqual(result.returncode, 9, result.stderr)
                 self.assertIn("Report failures:", result.stderr)
-                self.assertIn("nix/ext/bad-a/update.sh (exit 7)", result.stderr)
-                self.assertIn("nix/ext/bad-b/update.sh (exit 9)", result.stderr)
-                self.assertNotIn("nix/ext/good/update.sh", result.stderr)
+                self.assertIn("lib/ext/bad-a/update.sh (exit 7)", result.stderr)
+                self.assertIn("lib/ext/bad-b/update.sh (exit 9)", result.stderr)
+                self.assertNotIn("lib/ext/good/update.sh", result.stderr)
 
     def test_report_footer_names_failed_source_reporter(self):
         self.add_unit("pkgs/ext", "example", sources=True)
@@ -189,7 +189,7 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
         self.assertIn("scripts/update/podman-images.py (exit 6)", result.stderr)
 
     def test_earlier_failure_is_reported_after_successful_image_report(self):
-        unit = self.add_unit("nix/ext", "nvidia", sources=True, updater=True)
+        unit = self.add_unit("lib/ext", "nvidia", sources=True, updater=True)
         (unit / "update.sh").write_text("#!/usr/bin/env bash\nexit 1\n")
         reporter = self.repo / "scripts/update/podman-images.py"
         reporter.write_text("#!/usr/bin/env bash\nprintf 'image report completed\\n'\n")
@@ -197,7 +197,7 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
         result = self.run_update("--report", "--skip-flake", "--skip-pkgs-ext")
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("image report completed", result.stdout)
-        self.assertIn("nix/ext/nvidia/update.sh (exit 1)", result.stderr)
+        self.assertIn("lib/ext/nvidia/update.sh (exit 1)", result.stderr)
         self.assertNotIn("podman-images.py", result.stderr)
 
     def test_report_footer_names_failed_flake_metadata(self):

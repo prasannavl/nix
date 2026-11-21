@@ -2,7 +2,7 @@
 Generic repository-configuration contract: the structural invariants every
 repository composition must satisfy, asserted without naming any repository's
 families, stacks, or scopes. Repository-specific topology assertions live in
-the owning Z identity directory (nix/tests/repository/<topology>/), never here. See
+the owning Z identity directory (lib/tests/repository/<topology>/), never here. See
 .agents/docs/design-patterns/shared-test-areas.md.
 */
 {

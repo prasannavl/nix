@@ -24,7 +24,7 @@ qualification support. Package definitions continue to use the stable
   it.
 - [qualification/](qualification/README.md) owns reusable optional fixture,
   acceptance and VM support. Product/repository scenarios live in
-  [nix/tests/qualification/rust/](../../../../nix/tests/qualification/rust/README.md)
+  [lib/tests/qualification/rust/](../../../../lib/tests/qualification/rust/README.md)
   and inject their recipes; the generic library never selects them.
 
 The general commands in `scripts/` maintain the repository: formatting, linting,

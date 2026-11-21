@@ -44,7 +44,7 @@ one recursive package-author scope. These helpers support component/repository
 composition and do not add namespaces to the portable `ab` value.
 
 Z supplies repository-specific package-composition defaults through
-`nix/project.nix`; the core engine itself contains no Z path.
+`lib/project.nix`; the core engine itself contains no Z path.
 
 ```text
 ab-core
@@ -108,8 +108,8 @@ creating or forwarding a bound value does not require a second local name.
 
 Component source trees are extraction boundaries. A component must not reach
 into sibling component source, Z `hosts/`, deployment `config/`, repository
-`pkgs/`, `lib/`, `data/`, or `overlays/`. Data needed by a component is passed
-through its constructor or fixture inputs.
+`pkgs/`, `lib/`, `data/`, or `lib/overlays/`. Data needed by a component is
+passed through its constructor or fixture inputs.
 
 ## Portable package contract
 
@@ -169,7 +169,7 @@ resolution; copying `ab.build` alone leaves the old dependency closure attached.
 Leaves must not create their own scopes.
 
 The repository manifest contains only publication metadata. Child `flake.nix`
-files are mechanical literal wrappers around `nix/project.nix`; they do not
+files are mechanical literal wrappers around `lib/project.nix`; they do not
 restate dependencies. Nix requires literal top-level flake/input sets, so
 standard input declarations remain in the wrapper. `withDeps` resolves nested
 constructors using the same bound recursive package set, so root and child-flake
@@ -190,7 +190,7 @@ package override seam, not accidental attribute-merge precedence.
 - Shared Nix setup accepts one resolved `cachePolicy`. Trust roots, third-party
   cache defaults, unfree policy, Nix version, GC schedule and installation state
   version belong to repository/host policy. Z binds these in
-  `nix/profiles/policy/nix.nix`; state versions never follow release upgrades.
+  `lib/profiles/policy/nix.nix`; state versions never follow release upgrades.
 
 ## Stack assembly
 
@@ -238,13 +238,13 @@ deployment-specific service intent.
 For Podman specifically, lifecycle/compiler/fact mechanics live under
 `ab.runtime.podman`. Firewall projection stays runtime-owned, Nginx projection
 is service-owned, tunnel projection is stack-owned, and the host-agent adapter
-is owned by `ab.services.abirdHostAgent`. `nix/podman.nix` only composes those
+is owned by `ab.services.abirdHostAgent`. `lib/podman.nix` only composes those
 APIs. Runtime must never import service/stack/controller policy.
 
 For Incus specifically, lifecycle/module/helper mechanics live under
 `ab.runtime.incus`; Incus fabric policy is stack-owned under
 `ab.stack.fabric.incus`; Z binds repository-built image defaults through
-`nix/incus.nix`. Do not reintroduce a merged Incus compatibility library.
+`lib/incus.nix`. Do not reintroduce a merged Incus compatibility library.
 
 Reusable concrete service semantics live under `ab.services`. Service
 renderers/models consume neutral inputs. Z-owned projections join runtime facts
@@ -256,7 +256,7 @@ the deployment planner, and the reusable NixOS module all live under
 at `ab.services.ai.projection`; cross-owner consumers use that seam rather than
 importing implementation files. Z supplies concrete model/backend/stack
 declarations. Owner-local AI module/projection tests stay with the component;
-real deployment integrations remain under `nix/tests/**`.
+real deployment integrations remain under `lib/tests/**`.
 
 Deployment policy remains in `stack` and Z integration, including concrete
 secrets, identity, topology, ingress/tunnel intent and host placement.
@@ -339,13 +339,13 @@ Z is the composition root. It may:
 - wrap portable derivations with `ab.nixos` deployment integration;
 - inject repository-owned package implementations into reusable service seams.
 
-Z-owned Nix composition belongs under `nix/**`; concrete host and deployment
+Z-owned Nix composition belongs under `lib/**`; concrete host and deployment
 data remain under `hosts/**` and `config/**`. Root/output binding, concrete
 machine profiles, image selection and repository-specific installer composition
-remain Z-owned under `nix/**`; generic config-family, projection/phase and
+remain Z-owned under `lib/**`; generic config-family, projection/phase and
 installer mechanics are reusable component APIs. Repository acceptance tests
 that import concrete host or deployment declarations belong under
-`nix/tests/**`, even when they exercise reusable service semantics; test-only Z
+`lib/tests/**`, even when they exercise reusable service semantics; test-only Z
 ownership must not create a residual `lib/services/**` service owner.
 
 Do not move Z-specific orchestration into a portable component merely to
@@ -367,19 +367,21 @@ hardware, security, storage, systemd, user, Nix and network mechanisms under it.
 Z supplies repository cache, locale and other deployment policy through explicit
 profile adapters. The target reusable implementation is under
 `ab/{core,runtime,services,repo,stack,system}`. Z Nix composition/integration
-remains under `nix/**`, and concrete deployment data remains under `hosts/**`
+remains under `lib/**`, and concrete deployment data remains under `hosts/**`
 and `config/**`. Z machine/image/install composition is specifically owned by
-thin `nix/profiles/**`, `nix/images.nix`, `nix/installer.nix`, and
-`nix/installer-build-image.nix` binders over `ab-system` / `ab-runtime` APIs.
-After Phase 14D the generic `lib/` ownership bucket is absent entirely. Reusable
-tests live with their `ab/**` owners; repository/deployment integration tests
-live under `nix/tests/**` or concrete Z service/profile test directories.
+thin `lib/profiles/**`, `lib/images.nix`, `lib/installer.nix`, and
+`lib/installer-build-image.nix` binders over `ab-system` / `ab-runtime` APIs.
+Phase 14D removed the mixed reusable `lib/` bucket. The current `lib/` name owns
+only repository integration; reusable mechanisms remain in `ab/`. Repository
+overlays live under `lib/overlays/`. Reusable tests live with their `ab/**`
+owners; repository/deployment integration tests live under `lib/tests/**` or
+concrete Z service/profile test directories.
 
 `ab-core` also exposes composition-time seams that must be stable before a bound
 `ab` context exists: `core.registryModule` and `core.toolchainOverlays`. The
 complete Rust package/mirror/qualification ownership cell lives under
 `ab/core/packaging/rust/**`; it uses `core.project` directly and must not depend
-on Z's `nix/project.nix`.
+on Z's `lib/project.nix`.
 
 Phase 14E also makes generic composition engines explicit APIs:
 `core.flake.{apps,devShells}`, `repo.flake.{outputs,self}`,
@@ -397,10 +399,10 @@ runtime -> service/stack dependency or sibling-source import is introduced.
 
 Generic installer, disk override, persistence, installer-set/image algebra, spec
 realization, and the installer CLI live under `ab/system/installer/**`.
-`nix/installer.nix` supplies only repository source filtering and concrete
-user/profile data; `nix/installer-build-image.nix` binds self-flake evaluation
+`lib/installer.nix` supplies only repository source filtering and concrete
+user/profile data; `lib/installer-build-image.nix` binds self-flake evaluation
 for the CLI. Reusable installer constructors receive repository/source/user data
-explicitly and do not import Z `users/**`, `hosts/**`, or `nix/**` source.
+explicitly and do not import Z `users/**`, `hosts/**`, or `lib/**` source.
 
 The composition-purity follow-up completes those splits: AI NixOS rendering is
 service-owned, host-agent/host-manager NixOS integration is service-owned,
@@ -409,17 +411,18 @@ host-agent-owned, and Cloudflare/Rathole host-managed planning is runtime-owned.
 Z retains only concrete declarations, secret resolution, inventory/repository
 binding, and final assembly.
 
-Phase 14I closes the `lib/` migration: `lib/` is absent, historical moved paths
-are physically absent, resolved `ab/**` source paths do not escape into Z roots,
-root check owners are pairwise disjoint, and the canonical root surface remains
-stable. Historical fake old-path strings may remain only inside explicit
-security fixtures; they are not compatibility surfaces.
+Phase 14I removed the legacy library implementations. Reusing `lib/` for
+repository integration does not restore those compatibility paths. Resolved
+`ab/**` source paths do not escape into repository roots, root check owners are
+pairwise disjoint, and the canonical root surface remains stable. Historical
+fake old-path strings may remain only inside explicit security fixtures; they
+are not compatibility surfaces.
 
-The stricter post-Phase-14 target is **Nix composition purity**: `nix/**` is not
+The stricter post-Phase-14 target is **Nix composition purity**: `lib/**` is not
 a reusable implementation bucket. Product-neutral option schemas, NixOS modules,
 renderers, lifecycle helpers and scripts belong with their reusable `ab/**`
 owner. Z assembly, explicit adapters and integration tests remain under
-`nix/**`; `nix/ext/**` is the one reserved exception, owning upstream-following
+`lib/**`; `lib/ext/**` is the one reserved exception, owning upstream-following
 source recipes/pins/updaters. Concrete package/product source remains under
 `pkgs/**` rather than being forced into `ab/**`, and there is no parallel
 top-level `sources/**` root.

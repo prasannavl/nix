@@ -4,7 +4,7 @@
 
 All new VM lanes use 16 CPUs / 16 GiB by explicit human instruction.
 Repository-specific manager and 24-member scenarios live in
-[nix/tests/qualification/rust/](../../../../../nix/tests/qualification/rust/README.md).
+[lib/tests/qualification/rust/](../../../../../lib/tests/qualification/rust/README.md).
 The shared matrix accepts caller-supplied recipes; it does not select a product
 or repository. Dependency producers must remain in `excludedOutputs` even when
 their source/vendor/tool inputs are selected. Tested Cargo outputs are never

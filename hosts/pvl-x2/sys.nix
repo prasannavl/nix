@@ -10,7 +10,7 @@
 in {
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
-    ../../nix/profiles/disko.nix
+    ../../lib/profiles/disko.nix
   ];
 
   disko.devices.disk.main = diskoLib.mkMain {

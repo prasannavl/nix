@@ -9,5 +9,5 @@
   outputs = declaredInputs: let
     inputs = declaredInputs // {rustWorkspaceDeps = false;};
   in
-    (import ../../../nix/project.nix).mkFlakeOutputs ./. inputs;
+    (import ../../../lib/project.nix).mkFlakeOutputs ./. inputs;
 }

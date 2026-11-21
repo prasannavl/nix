@@ -25,7 +25,7 @@ is universally canonical. Local cross-remotes are `abird` in nix and `pvl` in z.
   `services`, `stack`, `system`, generic tests). Compare paths, bytes, file
   kinds, modes and symlink targets; a rename count or successful evaluation is
   not parity.
-- Repository composition stays in `nix/`; retain inputs, manifests, host/user
+- Repository composition stays in `lib/`; retain inputs, manifests, host/user
   profiles, cache order, build concurrency and optional qualification policy.
 - Exercise exported APIs from separately copied component sources. Metadata and
   `attrNames` checks do not prove extraction.

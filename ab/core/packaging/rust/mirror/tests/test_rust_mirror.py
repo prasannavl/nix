@@ -55,7 +55,7 @@ def sources():
         "lib/flake/tests/fixture.txt": b"excluded test-owned resource",
         "lib/flake/tests/source-link": (b"../resources", "120000"),
         "lib/services/module.nix": b"{}\n",
-        "nix/ext/not-owned.nix": b"must not be read",
+        "lib/ext/not-owned.nix": b"must not be read",
         "pkgs/a/Cargo.toml": b'[package]\nname = "a"\nversion = "0.1.0"\n',
         "pkgs/a/default.nix": b"{}\n",
         "pkgs/a/flake.nix": b"import ../../lib/flake/helper.nix\n",
@@ -424,7 +424,7 @@ class MirrorTests(unittest.TestCase):
                   "pkgs/a/default.nix", "pkgs/a/flake.nix", *mirror.ROOT_METADATA):
             self.assertIn(p, files)
         self.assertNotIn("pkgs/unrelated/Cargo.toml", files)
-        self.assertNotIn("nix/ext/not-owned.nix", files)
+        self.assertNotIn("lib/ext/not-owned.nix", files)
         self.assertFalse(any(p.startswith("data/") for p in files))
         stamp = mirror.parse_json(files[mirror.STAMP][0])
         self.assertEqual(stamp["revision"], self.fixture.rev)
@@ -514,7 +514,7 @@ class MirrorTests(unittest.TestCase):
     def test_unselected_payload_and_unowned_blobs_never_fetched(self):
         objects = self.fixture.objects()
         blocked = {objects.entries[p][2] for p in (
-            "pkgs/unrelated/src/lib.rs", "nix/ext/not-owned.nix", "data/secrets/synthetic.key",
+            "pkgs/unrelated/src/lib.rs", "lib/ext/not-owned.nix", "data/secrets/synthetic.key",
             "lib/flake/tests/fixture.txt", "lib/flake/tests/source-link")}
         original = objects.git
         def git(*args):
@@ -871,7 +871,7 @@ class CachedExportTests(unittest.TestCase):
         host.write_bytes(b"payload")
         for resource, changes in (
             ('../.. + "/ab/core/absent.txt"', {}),
-            ('../.. + "/nix/ext/review-payload.txt"', {"nix/ext/review-payload.txt": b"payload"}),
+            ('../.. + "/lib/ext/review-payload.txt"', {"lib/ext/review-payload.txt": b"payload"}),
             ('../.. + "/ab/core/packaging/rust/tests/review-payload.txt"',
              {"ab/core/packaging/rust/tests/review-payload.txt": b"payload"}),
             (mirror.nix_string(str(host)), {}),
