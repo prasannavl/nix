@@ -24,6 +24,7 @@ crash.log
 /.claude/
 .codex
 .kilo/
+.ruff_cache/
 
 # Repo-specific
 flake.lock
