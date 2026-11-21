@@ -26,10 +26,11 @@
   in {
     # One binary per tool, nothing auto-starts competing microphone daemons.
     # Vocalinux ships Vulkan-only pywhispercpp and picks Vulkan, then CUDA, then
-    # the CPU by itself at model load.
+    # the CPU by itself at model load. whisrs stays packaged in `voiceTools` but
+    # is not installed: voxtype covers the same Whisper/Vulkan job.
     home.packages = [
       voice.voxtype.accel.${accel}
-      voice.whisrs.accel.${accel}
+      # voice.whisrs.accel.${accel}
       voice.vocalinux.vulkan
     ];
   };
