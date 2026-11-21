@@ -38,6 +38,7 @@ import ./flake-isolated.nix {inherit pkgs;}
 // import ./postgres-extensions.nix {inherit pkgs;}
 // import ./secrets.nix {inherit pkgs;}
 // import ./nix-cache-policy.nix {inherit pkgs;}
+// import ./pi-web.nix {pkgs = pkgs;}
 // pkgs.lib.optionalAttrs (crane != null) {
   pvl-child-flake-parity = import ./child-flake-parity.nix {inherit pkgs crane;};
   pvl-rust-toolchain-integration = import ./rust-toolchain-integration.nix {pkgs = pkgs;};

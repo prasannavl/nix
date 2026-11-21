@@ -1,5 +1,15 @@
-{config, ...}: {
-  imports = [../../../ab/services/pi-web/nixos.nix];
+{
+  ab,
+  config,
+  pkgs,
+  ...
+}: {
+  imports = [
+    (ab.services.piWeb.nixos {
+      defaultPackage = pkgs.callPackage ../../../nix/ext/pi/pi-web {};
+      defaultUser = "pvl";
+    })
+  ];
 
   services.pi-web = {
     enable = true;
