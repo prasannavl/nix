@@ -149,7 +149,10 @@ in {
     crewai
     agent-workspace-linux
     tuicr
+    # TUI server, native desktop app, and the `hc` core CLI.
     unstable.herdr
+    unstable.herdr-core
+    unstable.herdr-desktop
     llm-agents-pkgs.chatgpt
     llm-agents-pkgs.claude-desktop
 

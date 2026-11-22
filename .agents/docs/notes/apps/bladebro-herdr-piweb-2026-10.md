@@ -15,11 +15,56 @@ and the validation used.
 
 ## Herdr
 
-nixpkgs already ships `herdr`; nixos-26.05 does not, but the pinned
-`nixos-unstable` input does (`herdr` 0.9.3). It is therefore consumed directly
-as `unstable.herdr` in `hosts/pvl-a1/packages.nix` and
-`hosts/pvl-l5/packages.nix`. No repository-local unit, source pin, or updater is
-needed, and the unstable overlay keeps owning the version.
+nixos-26.05 does not ship Herdr, but the pinned `nixos-unstable` input does.
+`hosts/pvl-a1/packages.nix` and `hosts/pvl-l5/packages.nix` consume three
+unstable attributes directly:
+
+- `unstable.herdr` 0.9.5: the TUI/server (`herdr`).
+- `unstable.herdr-core` 0.1.18: the core runtime and `hc` CLI.
+- `unstable.herdr-desktop` 0.1.13: the native GPUI app (`herdr-app`).
+
+No repository-local unit, source pin, or updater is needed; the unstable overlay
+keeps owning the versions. The TUI package also installs every agent integration
+source under `$out/share/herdr/integrations/`, so the Pi wiring below needs no
+runtime `herdr integration install` step.
+
+The app and the TUI are separate runtimes: the app drives `herdr-core`, while
+`unstable.herdr` runs its own server. They can run side by side, but their panes
+are not shared. The app needs a desktop session and a working Vulkan driver.
+
+## Herdr Pi integration
+
+`users/pvl/pi/default.nix` links `.pi/agent/extensions/herdr-agent-state.ts` to
+`${pkgs.unstable.herdr}/share/herdr/integrations/pi/herdr-agent-state.ts` on the
+hosts listed in `herdrHosts` (`pvl-a1`, `pvl-l5`). The extension is inert unless
+the TUI server sets `HERDR_ENV=1` and provides its socket and pane id, so the
+shared Pi profile keeps working outside Herdr. Inside a Herdr TUI pane it
+reports `working`, `blocked` and `idle` state plus the Pi session path, which
+lets the TUI restore the same session after a server restart.
+
+This extension does not serve the app: `herdr-core` consumes Pi's native OSC
+7501 status reports instead. The app therefore shows Pi state but does not
+restore Pi sessions after a core restart.
+
+Do not run `herdr integration install pi` on those hosts: it writes the same
+path and would replace the Home Manager symlink. Bump `herdrHosts` when another
+host starts installing `unstable.herdr`.
+
+## Running it
+
+Neither frontend has a browser client.
+
+- TUI on pvl-a1: `ssh pvl-a1` then `herdr` (tmux-style; detach with `ctrl+b q`).
+- TUI from another workstation: `herdr --remote pvl-a1`; panes run on pvl-a1 and
+  the UI renders locally.
+- Native app: launch Herdr from the app launcher or run `herdr-app`. `hc` from
+  `herdr-core` is on `PATH`; add pvl-a1 under Settings -> Machines to keep
+  remote spaces in the same window.
+- Phone app: connects to `herdr-core`, not the TUI server. It sees app/core
+  spaces only.
+
+Browser access to Pi is the existing pvl-a1 `pi-web` service on port 30141, not
+Herdr.
 
 ## Bladebro package unit
 
@@ -94,3 +139,11 @@ its `tailcaaad.ts.net` MagicDNS name.
   bladebro extension and package.
 - `scripts/update.sh --report --only-pkgs-ext` includes
   `bladebro: 4.5.0 [latest]`.
+- `herdr integration status` with the built extension symlink reports
+  `pi: current (v9)`; the pvl-a1 and pvl-l5 home activations contain the link,
+  while container and non-Herdr hosts do not.
+- `nix eval` of pvl-a1 and pvl-vk `system.build.toplevel.drvPath` still
+  evaluates after the Pi wiring.
+- `nix build` of `unstable.herdr-desktop` produces `herdr-app --version` 0.1.13
+  and its `--help`/`--skill` entrypoints; `unstable.herdr-core` produces
+  `hc --version` 0.1.18.

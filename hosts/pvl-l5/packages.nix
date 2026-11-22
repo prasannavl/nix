@@ -145,7 +145,10 @@ in {
     claude-code
     agent-workspace-linux
     tuicr
+    # TUI server, native desktop app, and the `hc` core CLI.
     unstable.herdr
+    unstable.herdr-core
+    unstable.herdr-desktop
 
     # Custom packages
     (python3.withPackages (ps: with ps; [pip setuptools virtualenv numpy]))
