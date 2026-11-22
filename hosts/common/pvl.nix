@@ -63,6 +63,12 @@
     gdb
     vim.xxd
 
+    # Diff and review
+    delta
+    difftastic
+    diffx
+    oyo
+
     # Database
     postgresql_18
 
