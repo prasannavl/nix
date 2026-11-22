@@ -37,6 +37,9 @@ in
         # agent-facing ones live in lib/overlays/agent-tools.nix.
         tuicr = final.callPackage ../ext/tuicr {};
         kache = final.callPackage ../ext/kache {};
+        # Prebuilt release binaries; neither tool is in nixpkgs.
+        oyo = final.callPackage ../ext/oyo {};
+        diffx = final.callPackage ../ext/diffx {};
         nvidiaCustomForKernel = kernelPackages:
           final.callPackage ../ext/nvidia {inherit kernelPackages;};
         nvidia-custom = final.nvidiaCustomForKernel final.linuxPackages;
