@@ -71,6 +71,11 @@
     # adapter reads the standard shared MCP file as its user-global server
     # source and keeps its own writable overrides in mcp-adapter.json.
     graphicalHost = !osConfig.boot.isContainer;
+    # Hosts whose system profile installs `unstable.herdr` (see
+    # hosts/*/packages.nix). Keep this list in sync with those hosts: the Pi
+    # integration is inert outside a Herdr pane.
+    herdrHosts = ["pvl-a1" "pvl-l5"];
+    herdrPiIntegration = "${pkgs.unstable.herdr}/share/herdr/integrations/pi/herdr-agent-state.ts";
     # Obsidian vault read/written by mcpvault; Obsidian itself need not run.
     obsidianVault = "${config.home.homeDirectory}/notes";
     mcpConfig = {
@@ -120,52 +125,61 @@
         mcpForBlender
       ];
 
-    home.file = {
-      ".pi/agent/extensions/bladebro".source = bladebroRoot;
-      ".pi/agent/extensions/pi-diff".source = piDiffRoot;
-      ".pi/agent/extensions/pi-extensions-i18n".source = "${piModelsDiscoveryRoot}/node_modules/pi-extensions-i18n";
-      ".pi/agent/extensions/pi-models-discovery/index.ts".source = "${piModelsDiscoveryRoot}/index.ts";
-      ".pi/agent/extensions/pi-models-discovery/locales".source = "${piModelsDiscoveryRoot}/locales";
-      ".pi/agent/extensions/pi-models-discovery/node_modules".source = "${piModelsDiscoveryRoot}/node_modules";
-      ".pi/agent/extensions/pi-models-discovery/package.json".source = "${piModelsDiscoveryRoot}/package.json";
-      ".pi/agent/extensions/pi-models-discovery/src".source = "${piModelsDiscoveryRoot}/src";
-      ".pi/agent/extensions/pi-mcp-adapter".source = piMcpAdapterRoot;
-      ".pi/agent/extensions/pi-patty-bg-tasks".source = piPattyBgTasksRoot;
-      ".pi/agent/extensions/pi-usage".source = piUsageRoot;
-      ".pi/agent/extensions/pi-tool".source = piToolRoot;
-      ".pi/agent/extensions/pi-goal".source = piGoalRoot;
-      ".pi/agent/extensions/pi-wait".source = piWaitRoot;
-      ".pi/agent/extensions/pi-loop".source = piLoopRoot;
-      ".pi/agent/extensions/pi-until".source = piUntilRoot;
-      ".pi/agent/extensions/pi-notify".source = piNotifyRoot;
-      ".pi/agent/extensions/pi-openai-toolkit".source = piOpenaiToolkitRoot;
-      ".pi/agent/extensions/pi-total-recall".source = piTotalRecallRoot;
-      ".pi/agent/extensions/rpiv-voice".source = rpivVoiceRoot;
-      ".pi/agent/extensions/rpiv-todo".source = rpivTodoRoot;
-      ".pi/agent/extensions/rpiv-btw".source = rpivBtwRoot;
-      ".pi/agent/extensions/rpiv-advisor".source = rpivAdvisorRoot;
-      ".pi/agent/extensions/pi-stamp".source = piStampRoot;
-      ".pi/agent/extensions/pi-anthropic-auth".source = piAnthropicAuthRoot;
-      ".pi/agent/extensions/pi-tool-manager".source = piToolManagerRoot;
-      ".pi/agent/extensions/pi-session-manager.ts".source = "${piSessionManagerRoot}/extensions/session-manager.ts";
-      # @gotgenes/pi-subagents ships only the runtime extension. Unlike the
-      # previous nicobailon/pi-subagents package it provides no skills or
-      # prompt templates, so none are linked below.
-      ".pi/agent/extensions/pi-subagents".source = piSubagentsRoot;
-      ".pi/agent/extensions/pi-tps.ts".source = "${piTpsRoot}/extensions/pi-tps.ts";
+    home.file =
+      {
+        ".pi/agent/extensions/bladebro".source = bladebroRoot;
+        ".pi/agent/extensions/pi-diff".source = piDiffRoot;
+        ".pi/agent/extensions/pi-extensions-i18n".source = "${piModelsDiscoveryRoot}/node_modules/pi-extensions-i18n";
+        ".pi/agent/extensions/pi-models-discovery/index.ts".source = "${piModelsDiscoveryRoot}/index.ts";
+        ".pi/agent/extensions/pi-models-discovery/locales".source = "${piModelsDiscoveryRoot}/locales";
+        ".pi/agent/extensions/pi-models-discovery/node_modules".source = "${piModelsDiscoveryRoot}/node_modules";
+        ".pi/agent/extensions/pi-models-discovery/package.json".source = "${piModelsDiscoveryRoot}/package.json";
+        ".pi/agent/extensions/pi-models-discovery/src".source = "${piModelsDiscoveryRoot}/src";
+        ".pi/agent/extensions/pi-mcp-adapter".source = piMcpAdapterRoot;
+        ".pi/agent/extensions/pi-patty-bg-tasks".source = piPattyBgTasksRoot;
+        ".pi/agent/extensions/pi-usage".source = piUsageRoot;
+        ".pi/agent/extensions/pi-tool".source = piToolRoot;
+        ".pi/agent/extensions/pi-goal".source = piGoalRoot;
+        ".pi/agent/extensions/pi-wait".source = piWaitRoot;
+        ".pi/agent/extensions/pi-loop".source = piLoopRoot;
+        ".pi/agent/extensions/pi-until".source = piUntilRoot;
+        ".pi/agent/extensions/pi-notify".source = piNotifyRoot;
+        ".pi/agent/extensions/pi-openai-toolkit".source = piOpenaiToolkitRoot;
+        ".pi/agent/extensions/pi-total-recall".source = piTotalRecallRoot;
+        ".pi/agent/extensions/rpiv-voice".source = rpivVoiceRoot;
+        ".pi/agent/extensions/rpiv-todo".source = rpivTodoRoot;
+        ".pi/agent/extensions/rpiv-btw".source = rpivBtwRoot;
+        ".pi/agent/extensions/rpiv-advisor".source = rpivAdvisorRoot;
+        ".pi/agent/extensions/pi-stamp".source = piStampRoot;
+        ".pi/agent/extensions/pi-anthropic-auth".source = piAnthropicAuthRoot;
+        ".pi/agent/extensions/pi-tool-manager".source = piToolManagerRoot;
+        ".pi/agent/extensions/pi-session-manager.ts".source = "${piSessionManagerRoot}/extensions/session-manager.ts";
+        # @gotgenes/pi-subagents ships only the runtime extension. Unlike the
+        # previous nicobailon/pi-subagents package it provides no skills or
+        # prompt templates, so none are linked below.
+        ".pi/agent/extensions/pi-subagents".source = piSubagentsRoot;
+        ".pi/agent/extensions/pi-tps.ts".source = "${piTpsRoot}/extensions/pi-tps.ts";
 
-      # pi-diff can register write/edit/apply_patch. Keep agents on Pi's
-      # write/read tools by turning off its patch tool.
-      ".pi/agent/pi-diff.json".text = builtins.toJSON piDiffConfig;
+        # pi-diff can register write/edit/apply_patch. Keep agents on Pi's
+        # write/read tools by turning off its patch tool.
+        ".pi/agent/pi-diff.json".text = builtins.toJSON piDiffConfig;
 
-      # Shared MCP server declarations for Pi's MCP adapter (and other hosts).
-      ".config/mcp/mcp.json".text = builtins.toJSON mcpConfig;
+        # Shared MCP server declarations for Pi's MCP adapter (and other hosts).
+        ".config/mcp/mcp.json".text = builtins.toJSON mcpConfig;
 
-      ".pi/agent/skills/pi-models-discovery/SKILL.md".source = "${piModelsDiscoveryRoot}/SKILL.md";
-      # pi-total-recall's manifest points its skill at the bundled
-      # pi-session-search copy.
-      ".pi/agent/skills/session-history".source = "${piTotalRecallRoot}/node_modules/pi-session-search/skills/session-history";
-      ".pi/agent/skills/mcp-scripting".source = "${piMcpAdapterRoot}/skills/mcp-scripting";
-    };
+        ".pi/agent/skills/pi-models-discovery/SKILL.md".source = "${piModelsDiscoveryRoot}/SKILL.md";
+        # pi-total-recall's manifest points its skill at the bundled
+        # pi-session-search copy.
+        ".pi/agent/skills/session-history".source = "${piTotalRecallRoot}/node_modules/pi-session-search/skills/session-history";
+        ".pi/agent/skills/mcp-scripting".source = "${piMcpAdapterRoot}/skills/mcp-scripting";
+      }
+      // pkgs.lib.optionalAttrs (pkgs.lib.elem osConfig.networking.hostName herdrHosts) {
+        # Herdr ships this extension for `herdr integration install pi`; link
+        # the packaged copy so the Pi profile stays declarative. Herdr uses it
+        # to report agent state and the Pi session (for restore after a server
+        # restart). Do not run that install command on these hosts: it would
+        # replace the Home Manager symlink.
+        ".pi/agent/extensions/herdr-agent-state.ts".source = herdrPiIntegration;
+      };
   };
 }
