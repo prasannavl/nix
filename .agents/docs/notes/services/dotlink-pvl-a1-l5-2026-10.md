@@ -277,12 +277,13 @@ along with `allow_shell = true` and the seven caches it was set up with).
 ## Build
 
 The flake's default package compiles dotlink from source with `crane`. The
-package is not exposed through `pkgs/manifest.nix`; it is referenced only by the
-host service modules through the flake input, and the `dotlink` CLI is not added
-to the hosts' `systemPackages`. A first run therefore requires one manual
-`dotlink --setup` (and `--allow-*`) as user `pvl` on each host before the unit
-can connect; the packaged binary is reachable at
-`systemctl show -p ExecStart dotlink` if needed.
+package is not exposed through `pkgs/manifest.nix`; the host service modules
+reference it through the flake input. Each host also puts the CLI on PATH with
+`environment.systemPackages = [config.services.dotlink.package]`: binding to the
+unit's own option means the shell binary is the exact derivation the service
+runs, and an overridden `services.dotlink.package` moves both together. A first
+run still requires one manual `dotlink --setup` (and `--allow-*`) as user `pvl`
+on each host before the unit can connect.
 
 The v0.8.0 bump needed only seven derivations (Rust 1.98.1 toolchain plus
 `dotlink-deps`/`dotlink`); the rest was substituted from the `pvl-x2` binary

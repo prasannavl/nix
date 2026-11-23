@@ -1,4 +1,5 @@
 {
+  config,
   inputs,
   lib,
   pkgs,
@@ -61,4 +62,7 @@
     extraPackages = with pkgs; [git nix openssh];
     extraGroups = ["kvm" "render" "video"];
   };
+
+  # Same derivation the unit runs, so the CLI and daemon never diverge.
+  environment.systemPackages = [config.services.dotlink.package];
 }
