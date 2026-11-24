@@ -1,0 +1,80 @@
+Backport of https://github.com/pgadmin-org/pgadmin4/pull/10780
+(commit 88c3ac2db15ff8c53fa9b4f8b2d69c8f2b12e611) adapted to REL-9_14.
+
+The PostgreSQL 17.12/18.7 minor releases store an internal pg_attver entry in
+pg_attribute.attoptions. Options prefixed with pg_ cannot be set with DDL, but
+9.14 turns them into "ALTER ... SET (pg_attver=...)"; its reverse-engineered
+SQL regression tests then fail. Filter them out wherever column options are
+read. Drop once pgadmin >= 9.15 (or the release containing PR 10780) is
+packaged.
+
+--- a/PATCH ---
+diff -ruN a/web/pgadmin/browser/server_groups/servers/databases/schemas/catalog_objects/columns/templates/catalog_object_column/sql/default/properties.sql b/web/pgadmin/browser/server_groups/servers/databases/schemas/catalog_objects/columns/templates/catalog_object_column/sql/default/properties.sql
+--- a/web/pgadmin/browser/server_groups/servers/databases/schemas/catalog_objects/columns/templates/catalog_object_column/sql/default/properties.sql
++++ b/web/pgadmin/browser/server_groups/servers/databases/schemas/catalog_objects/columns/templates/catalog_object_column/sql/default/properties.sql
+@@ -8,7 +8,8 @@
+ 	att.attstattarget, description, cs.relname AS sername,
+ 	ns.nspname AS serschema,
+ 	(SELECT count(1) FROM pg_catalog.pg_type t2 WHERE t2.typname=ty.typname) > 1 AS isdup,
+-	indkey, coll.collname, nspc.nspname as collnspname , attoptions,
++	indkey, coll.collname, nspc.nspname as collnspname ,
++	NULLIF(ARRAY(SELECT o FROM pg_catalog.unnest(att.attoptions) AS o WHERE pg_catalog.left(o, 3) <> 'pg_'), '{}') AS attoptions,
+ 	-- Start pgAdmin4, added to save time on client side parsing
+ 	CASE WHEN length(coll.collname::text) > 0 AND length(nspc.nspname::text) > 0  THEN
+ 	  pg_catalog.concat(pg_catalog.quote_ident(nspc.nspname),'.',pg_catalog.quote_ident(coll.collname))
+diff -ruN a/web/pgadmin/browser/server_groups/servers/databases/schemas/foreign_tables/templates/foreign_tables/sql/12_plus/get_columns.sql b/web/pgadmin/browser/server_groups/servers/databases/schemas/foreign_tables/templates/foreign_tables/sql/12_plus/get_columns.sql
+--- a/web/pgadmin/browser/server_groups/servers/databases/schemas/foreign_tables/templates/foreign_tables/sql/12_plus/get_columns.sql
++++ b/web/pgadmin/browser/server_groups/servers/databases/schemas/foreign_tables/templates/foreign_tables/sql/12_plus/get_columns.sql
+@@ -13,7 +13,7 @@
+     GROUP BY at.attname, ph.inhparent, ph.inhseqno, inheritedfrom
+     ORDER BY at.attname, ph.inhparent, ph.inhseqno, inheritedfrom
+     )
+-SELECT INH.inheritedfrom, INH.inheritedid, att.attoptions, att.atttypid, attfdwoptions,
++SELECT INH.inheritedfrom, INH.inheritedid, NULLIF(ARRAY(SELECT o FROM pg_catalog.unnest(att.attoptions) AS o WHERE pg_catalog.left(o, 3) <> 'pg_'), '{}') AS attoptions, att.atttypid, attfdwoptions,
+     att.attname as name, att.attndims, att.atttypmod, pg_catalog.format_type(t.oid,NULL) AS cltype,
+     att.attnotnull, att.attstorage, att.attstattarget, att.attnum, pg_catalog.format_type(t.oid, att.atttypmod) AS fulltype,
+     t.typstorage AS defaultstorage,
+diff -ruN a/web/pgadmin/browser/server_groups/servers/databases/schemas/foreign_tables/templates/foreign_tables/sql/default/get_columns.sql b/web/pgadmin/browser/server_groups/servers/databases/schemas/foreign_tables/templates/foreign_tables/sql/default/get_columns.sql
+--- a/web/pgadmin/browser/server_groups/servers/databases/schemas/foreign_tables/templates/foreign_tables/sql/default/get_columns.sql
++++ b/web/pgadmin/browser/server_groups/servers/databases/schemas/foreign_tables/templates/foreign_tables/sql/default/get_columns.sql
+@@ -13,7 +13,7 @@
+     GROUP BY at.attname, ph.inhparent, ph.inhseqno, inheritedfrom
+     ORDER BY at.attname, ph.inhparent, ph.inhseqno, inheritedfrom
+     )
+-SELECT INH.inheritedfrom, INH.inheritedid, att.attoptions, att.atttypid, attfdwoptions,
++SELECT INH.inheritedfrom, INH.inheritedid, NULLIF(ARRAY(SELECT o FROM pg_catalog.unnest(att.attoptions) AS o WHERE pg_catalog.left(o, 3) <> 'pg_'), '{}') AS attoptions, att.atttypid, attfdwoptions,
+     att.attname as name, att.attndims, att.atttypmod, pg_catalog.format_type(t.oid,NULL) AS cltype,
+     att.attnotnull, att.attstorage, att.attstattarget, att.attnum, pg_catalog.format_type(t.oid, att.atttypmod) AS fulltype,
+     t.typstorage AS defaultstorage,
+diff -ruN a/web/pgadmin/browser/server_groups/servers/databases/schemas/tables/templates/columns/sql/12_plus/properties.sql b/web/pgadmin/browser/server_groups/servers/databases/schemas/tables/templates/columns/sql/12_plus/properties.sql
+--- a/web/pgadmin/browser/server_groups/servers/databases/schemas/tables/templates/columns/sql/12_plus/properties.sql
++++ b/web/pgadmin/browser/server_groups/servers/databases/schemas/tables/templates/columns/sql/12_plus/properties.sql
+@@ -1,5 +1,5 @@
+ SELECT DISTINCT ON (att.attnum) att.attname as name, att.atttypid, att.attlen, att.attnum, att.attndims,
+-		att.atttypmod, att.attacl, att.attnotnull, att.attoptions, att.attfdwoptions, att.attstattarget,
++		att.atttypmod, att.attacl, att.attnotnull, NULLIF(ARRAY(SELECT o FROM pg_catalog.unnest(att.attoptions) AS o WHERE pg_catalog.left(o, 3) <> 'pg_'), '{}') AS attoptions, att.attfdwoptions, att.attstattarget,
+ 		att.attstorage, att.attidentity,
+ 		pg_catalog.pg_get_expr(def.adbin, def.adrelid) AS defval,
+ 		pg_catalog.format_type(ty.oid,NULL) AS typname,
+diff -ruN a/web/pgadmin/browser/server_groups/servers/databases/schemas/tables/templates/columns/sql/14_plus/properties.sql b/web/pgadmin/browser/server_groups/servers/databases/schemas/tables/templates/columns/sql/14_plus/properties.sql
+--- a/web/pgadmin/browser/server_groups/servers/databases/schemas/tables/templates/columns/sql/14_plus/properties.sql
++++ b/web/pgadmin/browser/server_groups/servers/databases/schemas/tables/templates/columns/sql/14_plus/properties.sql
+@@ -14,7 +14,7 @@
+     ORDER BY at.attname, ph.inhparent, ph.inhseqno, inheritedfrom
+     )
+ SELECT DISTINCT ON (att.attnum) att.attname as name, att.atttypid, att.attlen, att.attnum, att.attndims,
+-		att.atttypmod, att.attacl, att.attnotnull, att.attoptions, att.attfdwoptions, att.attstattarget,
++		att.atttypmod, att.attacl, att.attnotnull, NULLIF(ARRAY(SELECT o FROM pg_catalog.unnest(att.attoptions) AS o WHERE pg_catalog.left(o, 3) <> 'pg_'), '{}') AS attoptions, att.attfdwoptions, att.attstattarget,
+ 		att.attstorage, att.attidentity,
+ 		pg_catalog.pg_get_expr(def.adbin, def.adrelid) AS defval,
+ 		pg_catalog.format_type(ty.oid,NULL) AS typname,
+diff -ruN a/web/pgadmin/browser/server_groups/servers/databases/schemas/tables/templates/columns/sql/default/properties.sql b/web/pgadmin/browser/server_groups/servers/databases/schemas/tables/templates/columns/sql/default/properties.sql
+--- a/web/pgadmin/browser/server_groups/servers/databases/schemas/tables/templates/columns/sql/default/properties.sql
++++ b/web/pgadmin/browser/server_groups/servers/databases/schemas/tables/templates/columns/sql/default/properties.sql
+@@ -1,5 +1,5 @@
+ SELECT att.attname as name, att.atttypid, att.attlen, att.attnum, att.attndims,
+-		att.atttypmod, att.attacl, att.attnotnull, att.attoptions, att.attfdwoptions, att.attstattarget,
++		att.atttypmod, att.attacl, att.attnotnull, NULLIF(ARRAY(SELECT o FROM pg_catalog.unnest(att.attoptions) AS o WHERE pg_catalog.left(o, 3) <> 'pg_'), '{}') AS attoptions, att.attfdwoptions, att.attstattarget,
+ 		att.attstorage, att.attidentity,
+ 		pg_catalog.pg_get_expr(def.adbin, def.adrelid) AS defval,
+ 		pg_catalog.format_type(ty.oid,NULL) AS typname,

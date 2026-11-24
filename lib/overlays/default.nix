@@ -12,6 +12,7 @@ in
     (import ./supergfxctl.nix {inherit inputs;})
     inputs.vscode-ext.overlays.default
     (import ./rust-policy.nix)
+    (import ./pgadmin4)
     (import ./pvl.nix {inherit inputs;})
     (import ./pkgs.nix {inherit inputs;})
     (import ./agent-tools.nix)
