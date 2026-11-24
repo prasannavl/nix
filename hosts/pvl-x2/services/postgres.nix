@@ -1,5 +1,5 @@
 {...}: let
-  postgresImage = "docker.io/timescale/timescaledb-ha:pg18.6-ts2.32.0";
+  postgresImage = "docker.io/timescale/timescaledb-ha:pg18.7-ts2.32.1";
   postgresDataDir = "/var/lib/pvl/postgres";
   postgresUid = 1000;
   postgresGid = 1000;

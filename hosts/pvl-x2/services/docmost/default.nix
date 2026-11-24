@@ -27,7 +27,7 @@ in {
 
         services:
           docmost:
-            image: docker.io/docmost/docmost:0.97.0
+            image: docker.io/docmost/docmost:0.98.0
             user: 0:0
             depends_on:
               - db
@@ -50,7 +50,7 @@ in {
               - ./db-data:/var/lib/postgresql/data
 
           redis:
-            image: docker.io/redis:8.10-alpine
+            image: docker.io/redis:8.12-alpine
             user: 0:0
             volumes:
               - ./cache:/data

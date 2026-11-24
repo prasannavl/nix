@@ -3,6 +3,7 @@
   git,
   lib,
   rustPlatform,
+  unixtools,
 }: let
   source = (import ./sources.nix).tuicr;
 in
@@ -19,8 +20,8 @@ in
 
     cargoHash = source.cargoHash;
 
-    # The test suite shells out to git to build throwaway repositories.
-    nativeBuildInputs = [git];
+    # Tests create Git repositories and check timed-out child processes with ps.
+    nativeCheckInputs = [git unixtools.ps];
 
     meta = {
       description = "A code review TUI with vim keybindings";
