@@ -244,22 +244,27 @@ set_optional_url() {
 	fi
 }
 
-assert_url_exists() {
-	local label="$1"
-	local url="$2"
-	curl -fsI "$url" >/dev/null || die "$label not found: $url"
-}
+check_artifacts() {
+	local current_version="$1" selected_version="$2" url status
+	local -a missing=()
 
-validate_inputs() {
-	local version="$1"
+	for url in "$RUNFILE_URL" "$OPEN_URL" "$SETTINGS_URL" "$PERSISTENCED_URL"; do
+		# GitHub can redirect to a missing archive; check the final response.
+		status="$(curl -sSIL --max-time 20 -o /dev/null -w '%{http_code}' "$url")" ||
+			die "Could not check NVIDIA ${selected_version} artifact: $url"
+		case "$status" in
+		2[0-9][0-9]) ;;
+		404 | 410) missing+=("HTTP $status: $url") ;;
+		*) die "Could not check NVIDIA ${selected_version} artifact (HTTP $status): $url" ;;
+		esac
+	done
 
-	[[ -f "$TARGET_FILE" ]] || die "Target file not found: $TARGET_FILE"
-	[[ -n "$version" ]] || die "Could not determine NVIDIA version."
-
-	assert_url_exists "NVIDIA runfile" "$RUNFILE_URL"
-	assert_url_exists "open-gpu-kernel-modules tag" "$OPEN_URL"
-	assert_url_exists "nvidia-settings tag" "$SETTINGS_URL"
-	assert_url_exists "nvidia-persistenced tag" "$PERSISTENCED_URL"
+	if ((${#missing[@]})); then
+		printf 'Warning: NVIDIA %s is missing required artifacts; keeping %s.\n' \
+			"$selected_version" "$current_version" >&2
+		printf '  %s\n' "${missing[@]}" >&2
+		return 1
+	fi
 }
 
 resolve_release_notes_urls() {
@@ -320,6 +325,7 @@ print_summary() {
 	[[ -n "$OPEN_RELEASE_NOTES_URL" ]] && echo "  openReleaseNotesUrl=$OPEN_RELEASE_NOTES_URL"
 	[[ -n "$SETTINGS_RELEASE_NOTES_URL" ]] && echo "  settingsReleaseNotesUrl=$SETTINGS_RELEASE_NOTES_URL"
 	[[ -n "$PERSISTENCED_RELEASE_NOTES_URL" ]] && echo "  persistencedReleaseNotesUrl=$PERSISTENCED_RELEASE_NOTES_URL"
+	return 0
 }
 
 ensure_runtime_shell() {
@@ -357,21 +363,22 @@ main() {
 
 	current_version="$(get_current_version)"
 	selected_version="$(get_version)"
-	if ((REPORT)); then
-		if [[ -z "$REQUESTED_VERSION" ]]; then
-			build_urls "$selected_version"
-			assert_url_exists "NVIDIA runfile" "$RUNFILE_URL"
-		fi
-		print_report "$current_version" "$selected_version"
-		return
-	fi
 	if ((!FORCE)) && [[ "$current_version" == "$selected_version" ]]; then
-		print_no_update "$current_version"
+		if ((REPORT)); then
+			print_report "$current_version" "$selected_version"
+		else
+			print_no_update "$current_version"
+		fi
 		return
 	fi
 
 	build_urls "$selected_version"
-	validate_inputs "$selected_version"
+	check_artifacts "$current_version" "$selected_version" || return 0
+	if ((REPORT)); then
+		print_report "$current_version" "$selected_version"
+		return
+	fi
+
 	resolve_release_notes_urls "$selected_version"
 	compute_hashes
 	update_file "$selected_version"

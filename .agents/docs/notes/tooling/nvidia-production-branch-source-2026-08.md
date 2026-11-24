@@ -60,11 +60,18 @@ The tracked branch is the `branch` key in `lib/ext/nvidia/sources.nix` (`kind`
 was dropped, it had no consumer). `--branch production|new-feature|beta`
 (`prod`, `nfb` accepted) overrides it and is written back on update, so
 switching branches is a normal updater run. Report lines name the branch when it
-is not production (`- nvidia/new-feature: 595.91.07 -> 615.78.08`), and
-report-only runs HEAD the resolved runfile so a phantom version cannot be
-reported.
+is not production (`- nvidia/new-feature: 595.91.07 -> 615.78.08`).
 
-Explicit `--version` requests remain authoritative and skip the lookup.
+Explicit `--version` requests skip the lookup.
+
+## Artifact availability
+
+Before prefetching or reporting a candidate, check the driver runfile and all
+three exact-version source archives with redirect-following HEAD requests. If an
+artifact returns 404 or 410, warn with the missing URLs, keep the entire current
+pin, and let the update suite continue. Transport errors and other unexpected
+HTTP statuses still fail the check. Do not substitute older utility versions or
+select another driver release silently.
 
 Validation:
 

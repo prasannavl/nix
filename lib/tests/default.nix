@@ -141,6 +141,19 @@
     pkgs.runCommand "nix-repo-registry-test" {} ''
       touch "$out"
     '';
+  nvidiaUpdaterTest =
+    pkgs.runCommand "nvidia-updater-test" {
+      nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.python3];
+    } ''
+      mkdir -p lib/ext/nvidia scripts/update/tests
+      cp ${../../lib/ext/nvidia/update.sh} lib/ext/nvidia/update.sh
+      cp ${../../scripts/update.sh} scripts/update.sh
+      cp ${../../scripts/update/tests/test_nvidia_update.py} scripts/update/tests/test_nvidia_update.py
+      chmod u+w lib/ext/nvidia/update.sh
+      patchShebangs lib/ext/nvidia/update.sh
+      python scripts/update/tests/test_nvidia_update.py
+      touch "$out"
+    '';
   ollamaTests = import ../../ab/services/ollama/tests {pkgs = pkgs;};
   podmanImageUpdaterTest =
     pkgs.runCommand "podman-image-updater-test" {
@@ -240,6 +253,7 @@ in
     lib-lint-no-ifd = lintNoIfdTest;
     lib-model-reconciler-wrapper = modelReconcilerTest;
     lib-nix-repo-registry = repoRegistryTest;
+    lib-nvidia-updater = nvidiaUpdaterTest;
     lib-openssh = import ../../ab/system/tests/openssh.nix {inherit pkgs;};
     lib-ollama-helper = ollamaTests.helper;
     lib-ollama-module = ollamaTests.module;
