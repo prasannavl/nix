@@ -18,5 +18,9 @@ This is intentionally non-invasive:
   root, an absolute repo path without a `path:` prefix from outside the repo, or
   an intentional `git+file:///...` ref for committed snapshots.
 
+`scripts/update.sh` already selects `GITHUB_TOKEN`, then `GH_TOKEN`, then a
+noninteractive `gh` login for github.com. No manual override is needed for that
+command. This does not change Nixbot authentication.
+
 For persistent local use, prefer a private user-level Nix config such as
 `~/.config/nix/nix.conf`, not a repo file.
