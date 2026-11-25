@@ -5,6 +5,11 @@
       inherit name path;
       filter = path: type: type != "directory" || builtins.baseNameOf path != "tests";
     };
+  # Scan owner fixtures separately; the external consumers must still work without tests.
+  ownerTestSource = pkgs.lib.fileset.toSource {
+    root = abSource;
+    fileset = pkgs.lib.fileset.fileFilter (file: file.hasExt "nix") abSource;
+  };
   registrySource = extract "ab-registry-isolated" abSource;
   registry = import registrySource;
   core = registry.core;
@@ -61,5 +66,11 @@ in
     pkgs.runCommand "pvl-component-boundaries-test" {nativeBuildInputs = [pkgs.ripgrep];} ''
       bash ${./audit-component-source.sh} ${registrySource}/core
       bash ${./audit-component-source.sh} ${systemSource}
+      if rg -n --glob '**/tests/**/*.nix' '(\.\./)+(lib|hosts|config|pkgs|overlays|data)(/|$)|/(home|Users)/[^/[:space:]]+/(src|spaces)/' \
+        ${ownerTestSource}/{core,runtime,services,repo,stack,system}; then
+        exit 1
+      else
+        test "$?" = 1
+      fi
       touch "$out"
     ''
