@@ -249,6 +249,52 @@ resolve_deps sample 1.0.0 >/dev/null
         self.assertIn("Expected HTTPS", result.stderr)
         self.assertNotIn("unexpected-fetch", result.stderr)
 
+    def test_hash_probe_and_validation_build_inject_locked_pkgs(self):
+        repo = self.root / "repo with spaces"
+        helper = repo / "ab/repo/self-flake.nix"
+        helper.parent.mkdir(parents=True)
+        helper.write_text('''{repoRoot}: let
+  pkgs = {
+    prefix = "locked-pkgs:";
+    callPackage = path: args: import path ({pkgs = pkgs;} // args);
+  };
+in {inputs.nixpkgs.legacyPackages.${builtins.currentSystem} = pkgs;}
+''')
+        suite = self.root / "staged suite"
+        package = suite / "sample/default.nix"
+        package.parent.mkdir(parents=True)
+        package.write_text('''{pkgs}: {
+  result = pkgs.prefix + (import ../sources.nix).sample.npmDepsHash;
+}
+''')
+        real_hash = "sha256-yM4jkD95RLAA5VH8nSMuAf9cgoC0HEV8J8QuAHtnHww="
+        (self.root / "sources.json").write_text('{"sample":{"npmDepsHash":"stale"}}')
+        result = self.shell(
+            r'''
+STAGING_DIR="$RUNTIME_DIR/staged suite"
+REPO_ROOT="$RUNTIME_DIR/repo with spaces"
+write_staged_sources() { render_sources > "$STAGING_DIR/sources.nix"; }
+nix() {
+  [[ "$1 $2 $3" == 'build --impure --no-link' ]] || return 91
+  shift 3
+  local evaluated
+  evaluated="$(command nix --offline eval --raw --impure "$@" result)" || return
+  if [[ "$evaluated" == "locked-pkgs:$FAKE_HASH" ]]; then
+    printf 'got: %s\n' "$REAL_HASH" >&2
+    return 1
+  fi
+  printf '%s\n' "$evaluated"
+  [[ "$evaluated" == "locked-pkgs:$REAL_HASH" ]]
+}
+compute_npm_deps_hash sample
+build_package sample
+''',
+            env={"FAKE_HASH": HASH, "REAL_HASH": real_hash},
+        )
+        self.assertEqual(result.stdout.strip(), f"locked-pkgs:{real_hash}")
+        staged = json.loads((self.root / "sources.json").read_text())
+        self.assertEqual(staged["sample"]["npmDepsHash"], real_hash)
+
     def test_new_catalog_package_dispatch_and_transaction_failure(self):
         original = {
             "sample": {

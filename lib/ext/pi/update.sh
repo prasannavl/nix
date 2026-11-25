@@ -260,19 +260,24 @@ write_staged_sources() {
 build_package() {
 	local package="$1"
 
-	nix-build "${STAGING_DIR}/${package}" --no-out-link >/dev/null
+	nix build --impure --no-link \
+		--argstr repoRoot "$REPO_ROOT" \
+		--argstr packageDir "${STAGING_DIR}/${package}" \
+		--expr '
+      {repoRoot, packageDir}: let
+        flake = import (repoRoot + "/ab/repo/self-flake.nix") {repoRoot = repoRoot;};
+        pkgs = builtins.getAttr builtins.currentSystem flake.inputs.nixpkgs.legacyPackages;
+      in
+        pkgs.callPackage (packageDir + "/default.nix") {}
+    '
 }
 
 compute_npm_deps_hash() {
 	local package="$1"
-	local build_output build_status npm_deps_hash
+	local build_output npm_deps_hash
 
 	set_npm_deps_hash "$package" "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-	set +e
-	build_output="$(nix-build "${STAGING_DIR}/${package}" --no-out-link 2>&1)"
-	build_status=$?
-	set -e
-	if ((build_status == 0)); then
+	if build_output="$(build_package "$package" 2>&1)"; then
 		die "Expected fake npmDepsHash build to fail for ${package}"
 	fi
 	npm_deps_hash="$(awk '/got:[[:space:]]+sha256-/ {print $2}' <<<"$build_output" | tail -n1)"
