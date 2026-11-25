@@ -2,20 +2,20 @@
 
 ## NixOS VM matrix
 
-All new VM lanes use 16 CPUs / 16 GiB by explicit human instruction.
-Repository-specific manager and 24-member scenarios live in
-[lib/tests/qualification/rust/](../../../../../lib/tests/qualification/rust/README.md).
-The shared matrix accepts caller-supplied recipes; it does not select a product
-or repository. Dependency producers must remain in `excludedOutputs` even when
-their source/vendor/tool inputs are selected. Tested Cargo outputs are never
-image seeds.
+All new VM lanes use 16 CPUs / 16 GiB by explicit human instruction. The smoke
+VM uses a shell derivation to exercise Nix caching, not Cargo compilation. The
+historical manager and 24-member recipes are available in Git at the revisions
+that shipped them. The shared matrix accepts caller-supplied recipes; it does
+not select a product or repository. Dependency producers must remain in
+`excludedOutputs` even when their source/vendor/tool inputs are selected. Tested
+Cargo outputs are never image seeds.
 
 Scoped foundation qualification and integration are complete at the source pins
 recorded in the
-[main handoff](../../../../.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md).
+[main handoff](../../../../../.agents/docs/notes/tooling/rust-foundation-main-handoff-2026-10-12.md).
 That handoff is authoritative for results, supported contexts, custody and
 regeneration. The
-[design contract](../../../../.agents/docs/design-patterns/rust-foundation.md)
+[design contract](../../../../../.agents/docs/design-patterns/rust-foundation.md)
 defines compatibility and admission rules.
 
 Regular-Cargo manager qualification passed six required cases in both repos at
@@ -33,13 +33,13 @@ replacement. Earlier qualification does not certify that newer policy. Current
 package implementation lives under `ab/core/packaging/rust/`; historical replay
 uses its archived matching layout and tooling. Broad adoption remains separate.
 
-Required qualification uses regular Cargo and defaults to
-`checkDeterminism = false`. It validates an unchanged Nix cache hit, a local
-binary-cache export/delete/restore with compilation disabled, ordinary warm
-recompilation retaining dependency bases, changed warm and independent changed
-fresh builds. Runtime checks can assert an observable source edit. Cache
-transport must preserve the exported NAR exactly; independently compiled NAR
-differences are reported as optional reproducibility diagnostics.
+The matrix defaults to `checkDeterminism = false`. It validates an unchanged Nix
+cache hit, a local binary-cache export/delete/restore in the warm VM with builds
+disabled, ordinary warm recompilation retaining dependency bases, changed warm
+and independent changed fresh builds. Runtime checks can assert an observable
+source edit. Cache transport must preserve the exported NAR exactly;
+independently compiled NAR differences are reported as optional reproducibility
+diagnostics.
 
 Set `checkDeterminism = true` explicitly to require independent-build byte
 equality and Nix `--rebuild`. Project/dependency reproducibility is outside the
@@ -58,13 +58,12 @@ do not qualify the current route.
 `vm-test.nix` / `vm_test.py` implement the stock NixOS test-framework matrix.
 `smoke-vm.nix` / `smoke-recipes.nix` exercise sandboxing and independent stores;
 `recipe-vm.nix` evaluates an explicit `recipeFile` for both host and guest; the
-caller supplies the `preservedFiles` inventory. Repository wrappers own product
-paths and expectations. `recipe-seeds.nix` selects actual declared inputs from
-explicit producer and extra-input lists, without tested Cargo outputs. Generic
-modules never import the repository wrappers.
+caller supplies the `preservedFiles` inventory. Callers own product paths and
+expectations. `recipe-seeds.nix` selects actual declared inputs from explicit
+producer and extra-input lists, without tested Cargo outputs.
 
 The
-[VM note](../../../../.agents/docs/notes/tooling/rust-foundation-nixos-vm-2026-10.md)
+[VM note](../../../../../.agents/docs/notes/tooling/rust-foundation-nixos-vm-2026-10.md)
 contains run instructions and separately labeled reuse and optional determinism
 results. Earlier regular-Cargo forced-warm equality failed; patched Cargo fixed
 that first failure, then changed warm/fresh equality failed. Those diagnostics

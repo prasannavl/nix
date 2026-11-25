@@ -3,7 +3,7 @@
 This directory owns Rust package construction, Cargo/Crane source and cache
 contracts, toolchain selection, standalone exports, mirror tooling and optional
 qualification support. Package definitions continue to use the stable
-`lib/flake/pkg-helper.nix` facade or their injected package stack.
+`ab.build.rust` API from their injected package context.
 
 ## Layout
 
@@ -18,22 +18,12 @@ qualification support. Package definitions continue to use the stable
 - `trunk/` contains the WASM bootstrap resource used by the Trunk constructor.
 - `tests/` owns generic Rust checks and fixtures. Root check names are
   unchanged; repository product integration stays in
-  `lib/flake/tests/<topology>/`.
+  `lib/tests/repository/<repo>/`.
 - [mirror/](mirror/README.md) owns the mirror CLI and its adjacent trusted Nix
   validator. This is export tooling; ordinary package construction does not run
   it.
-- [qualification/](qualification/README.md) owns reusable optional fixture,
-  acceptance and VM support. Product/repository scenarios live in
-  [lib/tests/qualification/rust/](../../../../lib/tests/qualification/rust/README.md)
-  and inject their recipes; the generic library never selects them.
-
-The general commands in `scripts/` maintain the repository: formatting, linting,
-updates, secrets and operational wrappers. They remain there because their owner
-is the repository, rather than the reusable Rust library. Repository
-qualification scenarios also belong to scripts because they bind real products
-and workspace assumptions. No compatibility directory is left under
-`scripts/rust-fabric/` or at the former flat `ab/core/packaging/rust-*.nix`
-paths.
+- [qualification/](qualification/README.md) owns optional fixtures and VM tests.
+  The smoke fixture runs without a repository-specific workspace or recipe.
 
 ## Validation
 

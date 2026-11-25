@@ -45,8 +45,8 @@ Do not create an identity directory when its contents can be generic.
   integration stays under `lib/tests/`; real PVL package/topology assertions
   live under `lib/tests/repository/pvl/`.
 - Keep language fixtures with the implementation (for example
-  `ab/core/packaging/rust/tests/`) and optional product scenarios under
-  `lib/tests/qualification/`. See [language packaging](language-packaging.md).
+  `ab/core/packaging/rust/tests/`). See
+  [language packaging](language-packaging.md).
 - Exercise GC mechanics in `ab/system/nix/tests/`; assert the actual PVL builder
   defaults in `lib/tests/pvl/nix-builder-gc-coordination.nix`. Do not equalize
   production host policy to equalize tests.

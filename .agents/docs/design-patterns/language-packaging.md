@@ -40,10 +40,8 @@ optional closure/base/mirror admission.
   `rust/mirror-sources.nix` declares the revision-owned support tree and its
   exclusions. Preserve effective source roots, executable modes and VM support
   inputs when relocating resources.
-- Product scenarios under `lib/tests/qualification/rust/` inject recipes,
-  preserved source paths and seed handles. PVL's optional patched-Cargo lane
-  stays there; it is not a production overlay. Shared code never imports
-  repository scenarios or product source.
+- `rust/qualification/` keeps an optional, self-contained VM smoke fixture.
+  Other callers supply their own recipes; shared code does not select products.
 - Keep portable tests with their implementation. Repository integration uses
   `lib/tests/repository/`; PVL identity assertions enter shared assembly through
   `lib/repo-checks.nix` and the bound `ab.repo.checks`. `scripts/` is for

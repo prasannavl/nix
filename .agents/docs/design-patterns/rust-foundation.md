@@ -58,8 +58,8 @@ These paths are relative to `ab/core/packaging/rust/`:
 | `mirror-sources.nix`, `mirror/`       | Mirror support declarations, immutable source inventory, generation and validation. |
 | `tests/`, `mirror/tests/`             | Portable planner, context, composition and mirror regressions.                      |
 
-PVL integration and optional qualification live in `lib/tests/repository/pvl/`
-and `lib/tests/qualification/rust/pvl/` respectively.
+PVL integration checks live in `lib/tests/repository/pvl/`. The optional VM
+smoke fixture lives in `ab/core/packaging/rust/qualification/`.
 
 Do not treat the old design documents' `component` or `legacy` selectors as the
 current public API. Isolated package builds and package-owned defaults remain
@@ -70,17 +70,8 @@ arguments; this cleanup does not introduce or remove an API.
 
 - Regular systems retain the existing Cargo/rustc/Crane implementations. No
   custom compiler, fingerprint reimplementation, `CARGO_LOG` or `-vv` detour.
-- Human-approved exception on 2026-10-13: optional qualification may use the
-  exact Cargo PR #16691 ordering fix, pinned to upstream commit
-  `074980c2670522e3bde8acb9a25b40510f78626c`, until the regular pinned Cargo
-  includes it upstream. This exception is restricted to qualification tooling;
-  no production Cargo overlay or automatic/root-flake qualification check.
-  Patched producer/consumer contexts carry their actual distinct Cargo identity
-  and receive freshly generated bases. Keep strict byte-equality checks when the
-  optional determinism lane is explicitly selected; regular Cargo's known binary
-  dep-info record-order nondeterminism is a cache reproducibility limitation,
-  not demonstrated loss of runtime correctness or external dependency reuse.
-  Patched qualification does not certify raw unpatched cache-archive equality.
+- Qualification uses stock Cargo. The Cargo PR #16691 backport was a historical
+  diagnostic; do not use its results as proof of stock-Cargo byte equality.
 - Preserve manager-to-agent dependencies, agent rsync support, the manager's
   check tools, makeWrapper/fleet PATH, and product `doCheck = false`.
 - Preserve the utility's release/check/strict-dependency behavior.
@@ -124,10 +115,10 @@ require observable source-change behavior and actual compilation frontiers.
 
 Regular qualification uses regular Cargo with `checkDeterminism = false`.
 Optional `checkDeterminism = true` retains strict independent-output comparisons
-and Nix `--rebuild`; the optional patched-Cargo entrypoint defaults to that
-lane. Releases use fresh Nix builds as the human-selected release workflow;
-release builds do not replace the locality, compatibility, cache transport or
-invalidation gates. Integration and adoption remain separately authorized.
+and Nix `--rebuild`. Releases use fresh Nix builds as the human-selected release
+workflow; release builds do not replace the locality, compatibility, cache
+transport or invalidation gates. Integration and adoption remain separately
+authorized.
 
 Qualification resource decision on 2026-10-13: all new VM lanes, smoke and
 optional diagnostics use 16 CPUs and 16 GiB RAM. The historical 1 CPU / 2 GiB
