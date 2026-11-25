@@ -2133,11 +2133,21 @@ fn managed_health_runtime_turns_expired_settling_into_service_failure() {
         health_record("timeout", &["1"]),
     ]
     .concat();
+    let diagnostics = health_record(
+        "failed-log",
+        &[
+            "user",
+            "app",
+            "app.service",
+            "Error: startup configuration rejected",
+        ],
+    );
     let runner = FakeRunner::with_outputs([
         probe_absent(),
         success(&settling),
         probe_absent(),
         success(&settling),
+        success(&diagnostics),
     ]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
     let report = health_runtime::check_managed_health(&mut runtime, &target()).unwrap();
@@ -2147,6 +2157,19 @@ fn managed_health_runtime_turns_expired_settling_into_service_failure() {
     ));
     assert_eq!(report.attempts, 2);
     assert_eq!(report.readiness_budget.unwrap().timeout_seconds, 1);
+    assert_eq!(
+        report.failure_excerpts,
+        ["user=app unit=app.service log=Error: startup configuration rejected",]
+    );
+    let runner = runtime.into_runner();
+    assert_eq!(runner.requests.len(), 5);
+    assert_eq!(runner.timeouts, [Duration::from_secs(20); 5]);
+    assert_eq!(runner.waits, [Duration::from_secs(5)]);
+    assert_eq!(
+        runner.requests[4].task.name(),
+        "post-switch-health-diagnostics-gap3"
+    );
+    assert!(runner.outputs.is_empty());
 }
 
 #[test]

@@ -272,6 +272,118 @@ fn settling_units_require_stable_health_and_preserve_ignored_failures() {
 }
 
 #[test]
+fn restarting_user_unit_gets_diagnostics_when_readiness_cannot_settle() {
+    for annotated in [true, false] {
+        let mut records = vec![
+            // Same-name baseline timer must not steal the user-unit diagnostic.
+            record(
+                "system-transition",
+                &["app.service", "activating/start", "timer"],
+            ),
+            record("user", &["app", "1000", "active", "ok", "ok"]),
+            record(
+                "user-transition",
+                &["app", "app.service", "activating/start-pre", ""],
+            ),
+        ];
+        if annotated {
+            records.push(record("timeout", &["1"]));
+        }
+        let observation = sample(&records);
+        let mut samples = vec![probe_absent(), observation.clone()];
+        if annotated {
+            samples.extend([probe_absent(), observation]);
+        }
+        samples.push(
+            [
+                record(
+                    "failed-status",
+                    &[
+                        "user",
+                        "app",
+                        "app.service",
+                        "exit-code",
+                        "exited",
+                        "1",
+                        "48",
+                    ],
+                ),
+                record(
+                    "failed-log",
+                    &[
+                        "user",
+                        "app",
+                        "app.service",
+                        "repository policy replacement requires a newer generation",
+                    ],
+                ),
+            ]
+            .concat(),
+        );
+        let mut runtime = HostRuntime::new(
+            FakeRunner::samples(samples),
+            PathBuf::from("/repo"),
+            DryRun::No,
+        )
+        .unwrap();
+        let report = check_managed_health_with_ignored_system_units(
+            &mut runtime,
+            &target_with_local(true),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert!(matches!(
+            report.decision,
+            HealthDecision::ServiceFailure { .. }
+        ));
+        assert_eq!(report.attempts, if annotated { 2 } else { 1 });
+        assert_eq!(
+            report.failure_excerpts,
+            [
+                "user=app unit=app.service result=exit-code exit=exited/1 restarts=48",
+                "user=app unit=app.service log=repository policy replacement requires a newer generation",
+            ]
+        );
+        let runner = runtime.into_runner();
+        assert_eq!(runner.waits.len(), usize::from(annotated));
+        let diagnostics = runner.requests.last().unwrap();
+        assert_eq!(
+            diagnostics.task.name(),
+            "post-switch-health-diagnostics-inventory-node"
+        );
+        assert_eq!(
+            &diagnostics.args[diagnostics.args.len() - 3..],
+            ["user", "app", "app.service"]
+        );
+        assert_eq!(runner.requests.len(), if annotated { 5 } else { 3 });
+        assert!(runner.outputs.is_empty());
+    }
+}
+
+#[test]
+fn baseline_timer_does_not_trigger_failure_diagnostics() {
+    let observation = sample(&[record(
+        "system-transition",
+        &["timer-work.service", "activating/start", "timer"],
+    )]);
+    let mut runtime = HostRuntime::new(
+        FakeRunner::samples([probe_absent(), observation]),
+        PathBuf::from("/repo"),
+        DryRun::No,
+    )
+    .unwrap();
+    let report = check_managed_health_with_ignored_system_units(
+        &mut runtime,
+        &target_with_local(true),
+        &BTreeSet::new(),
+    )
+    .unwrap();
+    assert!(matches!(report.decision, HealthDecision::Healthy { .. }));
+    assert!(report.failure_excerpts.is_empty());
+    assert_eq!(runtime.into_runner().requests.len(), 2);
+}
+
+#[test]
 fn failed_or_malformed_collectors_stay_hidden_protocol() {
     let cases = [
         ProcessOutput {

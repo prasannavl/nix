@@ -257,7 +257,7 @@ where
                             "deployment work is still settling, but no service-owned timeoutReadySeconds metadata was found"
                                 .to_owned(),
                         ],
-                        failure_excerpts: Vec::new(),
+                        failure_excerpts: collect_failure_excerpts(runtime, target, &observation, &baseline),
                         ignored_system_failures: report.ignored_system_failures,
                         attempts,
                         readiness_budget: None,
@@ -278,7 +278,12 @@ where
                             }],
                         },
                         details: report.details,
-                        failure_excerpts: collect_failure_excerpts(runtime, target, &observation),
+                        failure_excerpts: collect_failure_excerpts(
+                            runtime,
+                            target,
+                            &observation,
+                            &baseline,
+                        ),
                         ignored_system_failures: report.ignored_system_failures,
                         attempts,
                         readiness_budget: budget,
@@ -306,7 +311,7 @@ where
                             .to_owned(),
                     ];
                     report.failure_excerpts =
-                        collect_failure_excerpts(runtime, target, &observation);
+                        collect_failure_excerpts(runtime, target, &observation, &baseline);
                     report.attempts = attempts;
                     report.readiness_budget = budget;
                     progress(attempts, &report.decision, &report.details);
@@ -325,7 +330,8 @@ where
             }
             _ => {
                 progress(attempts, &report.decision, &report.details);
-                report.failure_excerpts = collect_failure_excerpts(runtime, target, &observation);
+                report.failure_excerpts =
+                    collect_failure_excerpts(runtime, target, &observation, &baseline);
                 report.attempts = attempts;
                 report.readiness_budget = budget;
                 return Ok(report);
@@ -527,7 +533,10 @@ fn classify_observation(
     })
 }
 
-fn failed_units(observation: &Observation) -> Vec<FailedUnit> {
+fn failure_diagnostic_units(
+    observation: &Observation,
+    baseline: &BaselineTimerUnits,
+) -> Vec<FailedUnit> {
     let mut units = BTreeSet::new();
     for failure in &observation.system_failed {
         if let Some(unit) = failure
@@ -555,7 +564,35 @@ fn failed_units(observation: &Observation) -> Vec<FailedUnit> {
             }
         }
     }
-    units.into_iter().take(MAX_FAILURE_UNITS).collect()
+    // A restart loop can be sampled only in start-pre/auto-restart. On terminal
+    // failure, inspect those units too; explicit failures retain first priority.
+    let transitions = observation
+        .system_transitional
+        .iter()
+        .filter(|(unit, _)| !baseline.as_set().contains(&unit.name))
+        .map(|(unit, _)| FailedUnit {
+            scope: FailedUnitScope::System,
+            unit: unit.name.clone(),
+        })
+        .chain(observation.users.iter().flat_map(|(user, observation)| {
+            observation.transitional.iter().map(|(unit, _)| FailedUnit {
+                scope: FailedUnitScope::User(Some(user.clone())),
+                unit: unit.name.clone(),
+            })
+        }));
+    let mut selected = units
+        .into_iter()
+        .take(MAX_FAILURE_UNITS)
+        .collect::<Vec<_>>();
+    for unit in transitions {
+        if selected.len() == MAX_FAILURE_UNITS {
+            break;
+        }
+        if !selected.contains(&unit) {
+            selected.push(unit);
+        }
+    }
+    selected
 }
 
 fn valid_failure_name(value: &str) -> bool {
@@ -705,8 +742,9 @@ fn collect_failure_excerpts<R: ProcessRunner>(
     runtime: &mut HostRuntime<R>,
     target: &HostExecutionTarget,
     observation: &Observation,
+    baseline: &BaselineTimerUnits,
 ) -> Vec<String> {
-    let units = failed_units(observation);
+    let units = failure_diagnostic_units(observation, baseline);
     if units.is_empty() {
         return Vec::new();
     }
@@ -1352,7 +1390,7 @@ emit() {
 }
 diagnose() {
     local scope="$1" user="$2" unit="$3" uid gid runtime_dir state load result code status restarts
-    local -a ctl journal user_env
+    local -a ctl journal user_env recent=() failures=()
     if [ "$scope" = system ]; then
         ctl=(systemctl)
         journal=(journalctl)
@@ -1380,10 +1418,21 @@ diagnose() {
     restarts="$(printf '%s\n' "$state" | sed -n 's/^NRestarts=//p')"
     emit failed-status "$scope" "$user" "$unit" \
         "${result:-unknown}" "${code:-unknown}" "${status:-unknown}" "${restarts:-unknown}"
+    # Restart preambles can bury the preceding process error. Select evidence,
+    # not health: bounded lookback, three excerpts, unchanged Rust redaction.
     while IFS= read -r line; do
         [ -n "$line" ] || continue
+        recent+=("$line")
+        case "${line,,}" in
+            *error:*|*failed*|*panic*|*fatal*) failures+=("$line") ;;
+        esac
+    done < <("${journal[@]}" -u "$unit" -b -n 60 --no-pager -o cat 2>/dev/null || true)
+    if [ "${#failures[@]}" -gt 0 ]; then recent=("${failures[@]}"); fi
+    local offset=0
+    if [ "${#recent[@]}" -gt 3 ]; then offset=$((${#recent[@]} - 3)); fi
+    for line in "${recent[@]:offset}"; do
         emit failed-log "$scope" "$user" "$unit" "$line"
-    done < <("${journal[@]}" -u "$unit" -b -n 3 --no-pager -o cat 2>/dev/null || true)
+    done
 }
 while [ "$#" -ge 3 ]; do
     scope="$1"
@@ -1485,7 +1534,8 @@ mod tests {
         }
         assert!(!HEALTH_COLLECTOR.contains("return 3"));
         assert!(!HEALTH_COLLECTOR.contains("FAILED —"));
-        assert!(HEALTH_FAILURE_DIAGNOSTICS.contains("-n 3"));
+        assert!(HEALTH_FAILURE_DIAGNOSTICS.contains("-n 60"));
+        assert!(HEALTH_FAILURE_DIAGNOSTICS.contains("${recent[@]:offset}"));
     }
 
     #[test]
@@ -1515,6 +1565,121 @@ mod tests {
         assert_eq!(command.args[2], HEALTH_COLLECTOR_ARGV0);
         assert_eq!(command.args[3], "app\tapp.service");
         assert_eq!(command.args.len(), 4);
+    }
+
+    #[test]
+    fn failure_journal_excerpt_prefers_errors_over_restart_noise() {
+        let fixture = r#"
+systemctl() {
+    printf '%s\n' 'LoadState=loaded' 'Result=exit-code' 'ExecMainCode=1' 'ExecMainStatus=1' 'NRestarts=48'
+}
+journalctl() {
+    local count=0
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = -n ]; then count="$2"; break; fi
+        shift
+    done
+    {
+        if [ "$FIXTURE_ERROR" = 1 ]; then
+            printf '%s\n' 'Error: repository policy replacement requires a newer generation'
+        fi
+        for ((i=0; i<FIXTURE_LAYERS; i++)); do printf 'Loading image layer %s\n' "$i"; done
+    } | tail -n "$count"
+}
+"#;
+        for (error, layers) in [(true, 36), (false, 36), (false, 0)] {
+            let script = format!("{fixture}\n{HEALTH_FAILURE_DIAGNOSTICS}").replace(
+                "base64_bin=/run/current-system/sw/bin/base64",
+                "base64_bin=base64",
+            );
+            let output = Command::new("bash")
+                .args(["-c", &script, "--", "system", "", "app.service"])
+                .env("FIXTURE_ERROR", if error { "1" } else { "0" })
+                .env("FIXTURE_LAYERS", layers.to_string())
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{:?}", output.stderr);
+            let excerpts =
+                parse_failure_excerpts(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+            assert_eq!(
+                excerpts[0],
+                "system unit=app.service result=exit-code exit=1/1 restarts=48"
+            );
+            if error {
+                assert_eq!(
+                    &excerpts[1..],
+                    [
+                        "system unit=app.service log=Error: repository policy replacement requires a newer generation"
+                    ]
+                );
+            } else if layers == 0 {
+                assert_eq!(excerpts.len(), 1);
+            } else {
+                assert_eq!(
+                    &excerpts[1..],
+                    [
+                        "system unit=app.service log=Loading image layer 33",
+                        "system unit=app.service log=Loading image layer 34",
+                        "system unit=app.service log=Loading image layer 35",
+                    ]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_diagnostic_selection_prioritizes_failures_and_bounds_transitions() {
+        let input = [
+            encoded("system-failed", &["z-failed.service loaded failed failed"]),
+            encoded(
+                "user-failed",
+                &["app", "z-user.service loaded failed failed"],
+            ),
+            encoded(
+                "system-transition",
+                &["z-failed.service", "activating/auto-restart", ""],
+            ),
+            encoded(
+                "system-transition",
+                &["a-timer.service", "activating/start", "timer"],
+            ),
+            encoded(
+                "system-transition",
+                &["a-starting.service", "activating/start", ""],
+            ),
+            encoded(
+                "user-transition",
+                &["app", "z-user.service", "activating/auto-restart", ""],
+            ),
+            encoded(
+                "user-transition",
+                &["app", "extra.service", "activating/start-pre", ""],
+            ),
+        ]
+        .concat();
+        let observation = parse_observation(&input).unwrap();
+        let selected = failure_diagnostic_units(
+            &observation,
+            &BaselineTimerUnits::from_names(["a-timer.service"]),
+        );
+        assert_eq!(
+            selected,
+            [
+                FailedUnit {
+                    scope: FailedUnitScope::System,
+                    unit: "z-failed.service".into()
+                },
+                FailedUnit {
+                    scope: FailedUnitScope::User(Some("app".into())),
+                    unit: "z-user.service".into()
+                },
+                FailedUnit {
+                    scope: FailedUnitScope::System,
+                    unit: "a-starting.service".into()
+                },
+            ]
+        );
+        assert_eq!(selected.len(), MAX_FAILURE_UNITS);
     }
 
     #[test]
