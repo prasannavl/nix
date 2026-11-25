@@ -160,7 +160,7 @@ print_report() {
 
 print_hold() {
 	print_update_line "tailscale: ${1} -> ${RESOLVED_VERSION} held; ${HOLD_REASON}" "$1" "$RESOLVED_VERSION"
-	echo "Update the pinned go-overlay input, then rerun the Tailscale updater."
+	echo "Update the pinned Go toolchain sources, then rerun."
 }
 
 print_no_update() {
@@ -194,10 +194,20 @@ get_release_metadata() {
 fetch_go_requirement() {
 	local gomod
 	gomod="$(curl -fsSL "https://raw.githubusercontent.com/tailscale/tailscale/v${RESOLVED_VERSION}/go.mod")" || return 1
-	awk '$1 == "go" {print $2; exit}' <<<"$gomod"
+	awk '
+		$1 == "go" && go == "" { go = $2 }
+		$1 == "toolchain" && $2 != "default" && toolchain == "" {
+			toolchain = $2
+			sub(/^go/, "", toolchain)
+		}
+		END {
+			if (toolchain != "") print toolchain
+			else if (go != "") print go
+		}
+	' <<<"$gomod"
 }
 
-go_overlay_has_version() {
+resolve_go_toolchain() {
 	local version="$1"
 	nix eval --impure --raw --expr "
 let
@@ -207,7 +217,7 @@ let
     overlays = import ${REPO_ROOT}/lib/overlays/default.nix { inputs = flake.inputs; };
   };
 in
-  if pkgs.go-bin.hasVersion \"${version}\" then \"yes\" else \"\"" 2>/dev/null
+  (pkgs.toolchains.go { version = \"${version}\"; }).pkg.version" 2>/dev/null
 }
 
 resolve_go_version() {
@@ -221,17 +231,17 @@ resolve_go_version() {
 		return 1
 	}
 	if [[ -z "$required" ]]; then
-		HOLD_REASON="go.mod for v${RESOLVED_VERSION} declares no go directive"
+		HOLD_REASON="go.mod for v${RESOLVED_VERSION} declares no Go version"
 		return 1
 	fi
 
 	GO_VERSION="$required"
-	available="$(go_overlay_has_version "$required")" || {
-		HOLD_REASON="cannot evaluate Go ${required} from the pinned go-overlay"
+	available="$(resolve_go_toolchain "$required")" || {
+		HOLD_REASON="cannot resolve Go ${required} from pinned toolchains"
 		return 1
 	}
-	if [[ -z "$available" ]]; then
-		HOLD_REASON="needs Go ${required}; the pinned go-overlay does not provide it"
+	if [[ "$available" != "$required" ]]; then
+		HOLD_REASON="Go ${required} resolved unexpectedly to ${available}"
 		return 1
 	fi
 }
@@ -274,10 +284,7 @@ let
     vendorHash = pkgs.lib.fakeHash;
 ${go_version}  };
 in
-  import ${REPO_ROOT}/lib/ext/tailscale/default.nix {
-    inherit pkgs source;
-    tailscale = pkgs.unstable.tailscale;
-  }
+  pkgs.tailscale-upstream.override { inherit source; }
 EOF
 }
 
