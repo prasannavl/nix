@@ -10,7 +10,7 @@ area file is named after its generic counterpart (flake-isolated.nix, ...),
 so the repository's identity content for an area sits beside that area's
 shared synthetic coverage. This default.nix imports the area files and is
 the directory's single import target: repository-owned composition
-(lib/flake/repo-checks.nix, wired from the repository manifest flake.nix)
+(lib/repo-checks.nix, wired from the repository manifest flake.nix)
 imports it exactly once, and the shared files never reference identity
 content, so they keep evaluating in repositories without Pvl products. The
 checks carry the `pvl-` prefix, so flake check output always shows ownership.
@@ -39,6 +39,16 @@ import ./flake-isolated.nix {inherit pkgs;}
 // import ./secrets.nix {inherit pkgs;}
 // import ./nix-cache-policy.nix {inherit pkgs;}
 // import ./pi-web.nix {pkgs = pkgs;}
+// {
+  pvl-component-boundaries = import ./component-boundaries.nix {pkgs = pkgs;};
+  pvl-external-core-package = import ./external-core-package.nix {pkgs = pkgs;};
+  pvl-external-runtime = import ./external-runtime.nix {pkgs = pkgs;};
+  pvl-external-services = import ./external-services.nix {pkgs = pkgs;};
+  pvl-external-repo = import ./external-repo.nix {pkgs = pkgs;};
+  pvl-external-stack = import ./external-stack.nix {pkgs = pkgs;};
+  pvl-external-z-consumption = import ./external-z-consumption.nix {pkgs = pkgs;};
+  pvl-nixos-core = import ./nixos-core.nix {pkgs = pkgs;};
+}
 // pkgs.lib.optionalAttrs (crane != null) {
   pvl-child-flake-parity = import ./child-flake-parity.nix {inherit pkgs crane;};
   pvl-rust-toolchain-integration = import ./rust-toolchain-integration.nix {pkgs = pkgs;};

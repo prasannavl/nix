@@ -80,6 +80,36 @@
     lib = pkgs.lib;
     stack = nativeClientCaDefaultsStack;
   };
+  identityClient = packageOutputs.packages.nats-wrecking-ball;
+  selectedSecrets = packages:
+    (pkgs.lib.evalModules {
+      specialArgs.stack.identity.bind = _: {ageSecrets.client.path = "/run/agenix/client";};
+      modules = [
+        identityClient.flakeExtraNixosModules.clientIdentity
+        ({
+          config,
+          lib,
+          ...
+        }: {
+          options = {
+            age.secrets = lib.mkOption {type = lib.types.attrsOf lib.types.anything;};
+            environment.systemPackages = lib.mkOption {type = lib.types.listOf lib.types.package;};
+          };
+          config = {
+            age.secrets.fixture.path = "/run/agenix/fixture";
+            # Comparing derivations would force this script while selecting age.secrets.
+            environment.systemPackages =
+              [
+                (pkgs.writeShellApplication {
+                  name = "unrelated";
+                  text = ''test -e ${lib.escapeShellArg config.age.secrets.fixture.path}'';
+                })
+              ]
+              ++ packages;
+          };
+        })
+      ];
+    }).config.age.secrets;
   genericNatsStreamsExtension = {
     extraConfig = _service: _cfg: {};
   };
@@ -363,6 +393,10 @@ in
     lib-flake-phase-projection = import ./phase-projection.nix {inherit pkgs;};
     lib-flake-repo-modules = import ./repo-modules.nix {inherit pkgs;};
     lib-flake-service-client-endpoints = import ../../../ab/stack/tests/service-client-endpoints.nix {inherit pkgs;};
+    lib-flake-client-identity-selection = assert (selectedSecrets [identityClient]).client.path == "/run/agenix/client";
+    assert builtins.attrNames (selectedSecrets []) == ["fixture"];
+    assert (selectedSecrets [(pkgs.runCommand identityClient.name {} ''touch "$out"'')]).client.path == "/run/agenix/client";
+      pkgs.runCommand "client-identity-selection-test" {} ''touch "$out"'';
     lib-flake-service-placements = import ./service-placements.nix {inherit pkgs;};
     lib-flake-runtime-projection-closeouts = import ./runtime-projection-closeouts.nix {inherit pkgs;};
     lib-flake-service-moves = import ./service-moves.nix {inherit pkgs;};

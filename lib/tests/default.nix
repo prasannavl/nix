@@ -112,7 +112,6 @@
   assert builtins.fromJSON repoRegistryConfig.environment.etc."repo-registry-test".text == repositoryNix;
   assert builtins.head repoRegistryConfig.nix.settings.extra-trusted-public-keys == builtins.head repositoryNix.trustedPublicKeys;
   assert builtins.length repoRegistryConfig.nix.settings.extra-trusted-public-keys == 6;
-  assert builtins.length defaultRepoRegistryConfig.nix.settings.extra-substituters == 5;
   assert defaultRepoRegistryConfig.nix.settings.extra-substituters
   == [
     "https://nix-community.cachix.org"
@@ -134,10 +133,6 @@
   assert defaultRepoRegistryConfig.nix.gc.automatic;
   assert defaultRepoRegistryConfig.nix.gc.dates == ["weekly"];
   assert defaultRepoRegistryConfig.nix.gc.options == "--delete-older-than 14d";
-  assert builtins.elem "https://go-overlay.cachix.org" defaultRepoRegistryConfig.nix.settings.extra-substituters;
-  assert builtins.elem "https://fenix.cachix.org" defaultRepoRegistryConfig.nix.settings.extra-substituters;
-  assert builtins.elem "go-overlay.cachix.org-1:rJ155O3K6WUyUcoKE4MqcC6JcLlK2vPXnP5/76BxWD8=" defaultRepoRegistryConfig.nix.settings.extra-trusted-public-keys;
-  assert builtins.elem "fenix.cachix.org-1:ecJhr+RdYEdcVgUkjruiYhjbBloIEGov7bos90cZi0Q=" defaultRepoRegistryConfig.nix.settings.extra-trusted-public-keys;
     pkgs.runCommand "nix-repo-registry-test" {} ''
       touch "$out"
     '';
