@@ -60,6 +60,10 @@ model_log() {
 	printf '[prefetch-ai-model] %s\n' "$*" >&2
 }
 
+model_progress() {
+	[[ -z ${ABIRD_MODEL_ITEM-} ]] || model_log "item $ABIRD_MODEL_ITEM $1"
+}
+
 model_detail() {
 	[[ "${AI_MODEL_PREFETCH_VERBOSE:-0}" == 1 ]] || return 0
 	model_log "$@"
@@ -226,22 +230,41 @@ acquire_huggingface() {
 	); then
 		return 1
 	fi
+	model_progress ready
 	model_detail "ok backend=hf model=${model}${revision:+ revision=${revision}}"
 }
 
+# Read Ollama's NDJSON once, without collecting the response or advertising
+# a whole-model percentage. Only a final success can satisfy this endpoint.
+ollama_pull_result() {
+	jq -ne --unbuffered --arg item "${ABIRD_MODEL_ITEM-}" '
+		def bytes: type == "number" and isfinite and . >= 0 and floor == .;
+		reduce inputs as $r ({ok:false, tick:0};
+			if ($r | type) != "object" or $r.error != null then error("invalid pull response")
+			else .ok = ($r.status == "success")
+			| if $item != "" and ($r.digest | type == "string" and length > 0)
+				and ($r.completed | bytes) and ($r.total | bytes)
+				and $r.total > 0 and $r.completed <= $r.total and now - .tick >= 1 then
+				("[prefetch-ai-model] item \($item) layer \($r.completed)/\($r.total)\n" | stderr) as $_
+				| .tick = now
+			  else . end end)
+		| .ok' >/dev/null
+}
+
 acquire_ollama() {
-	local entry="$1" model request endpoint response endpoint_count index
+	local entry="$1" model request endpoint endpoint_count index stream=false
 	model="$(entry_value "${entry}" '.model')"
-	request="$(jq -cn --arg name "${model}" '{name: $name, stream: false}')"
+	[[ -z ${ABIRD_MODEL_ITEM-} ]] || stream=true
+	request="$(jq -cn --arg name "${model}" --argjson stream "$stream" '{name:$name, stream:$stream}')"
 	endpoint_count="$(entry_value "${entry}" '.endpoints | length')"
 
 	for ((index = 0; index < endpoint_count; index += 1)); do
 		endpoint="$(entry_value "${entry}" ".endpoints[${index}]")"
-		if response="$(best_effort_curl --fail --silent \
+		if best_effort_curl --fail --silent --no-buffer \
 			--header 'Content-Type: application/json' \
 			--data-binary "${request}" \
-			"${endpoint%/}/api/pull" 2>/dev/null)" &&
-			jq -e 'type == "object" and .status == "success"' <<<"${response}" >/dev/null; then
+			"${endpoint%/}/api/pull" 2>/dev/null | ollama_pull_result; then
+			model_progress ready
 			model_detail "ok backend=ollama model=${model} endpoint=${endpoint}"
 			return 0
 		fi
@@ -281,9 +304,11 @@ acquire_llama_at() {
 	status="$(llama_status "${endpoint}" "${model}")"
 	case "${status}" in
 	unloaded | loaded | sleeping | downloading | downloaded | loading)
+		model_progress "$status"
 		return 0
 		;;
 	absent)
+		model_progress requesting
 		payload="$(jq -cn --arg model "${model}" '{model: $model}')"
 		if ! response="$(best_effort_curl --fail --silent --show-error \
 			--request POST \
@@ -296,6 +321,7 @@ acquire_llama_at() {
 			model_detail "rejected backend=llama model=${model} endpoint=${endpoint}"
 			return 1
 		fi
+		model_progress accepted
 		# Preactivation reports only requests explicitly accepted by the current
 		# endpoint. The post-activation reconciler separately verifies eventual
 		# state and remains the convergence authority.
@@ -482,11 +508,12 @@ run_entry_as_owner() {
 }
 
 run_plan() {
-	local entry policy id count succeeded=0 deferred=0 failures=0 index
+	local entry policy id count backend label succeeded=0 deferred=0 failures=0 index
+	local -x ABIRD_MODEL_ITEM=""
 	validate_plan || return 1
-	validate_required_prerequisites || return 1
 	count="$(jq -er 'length' "${plan}")"
 	model_log "start total=${count}"
+	validate_required_prerequisites || return 1
 	for ((index = 0; index < count; index += 1)); do
 		if ! entry="$(jq -cer --argjson index "${index}" '.[$index]' "${plan}")"; then
 			model_log "could not read validated model-prefetch entry ${index}"
@@ -494,6 +521,17 @@ run_plan() {
 		fi
 		policy="$(entry_value "${entry}" '.policy')"
 		id="$(entry_value "${entry}" '.id')"
+		if [[ ${ABIRD_ACQUIRE_PROGRESS:-0} == 1 ]]; then
+			backend="$(entry_value "$entry" '.type')"
+			label="$(entry_value "$entry" '.model')"
+			[[ $label =~ ^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,191}$ && $label != *//* ]] || label=model
+			ABIRD_MODEL_ITEM="$((index + 1))/$count $backend $label"
+			case "$backend" in
+			hf) model_progress fetching ;;
+			ollama) model_progress pulling ;;
+			llama) model_progress checking ;;
+			esac
+		fi
 		if [[ "${policy}" == "best-effort" ]]; then
 			ensure_best_effort_deadline || return 1
 		else
@@ -505,9 +543,11 @@ run_plan() {
 		fi
 		if [[ "${policy}" == "best-effort" ]]; then
 			((deferred += 1))
+			model_progress deferred
 			model_detail "deferred id=${id}"
 		else
 			model_log "failed id=${id}"
+			model_progress failed
 			((failures += 1))
 		fi
 	done

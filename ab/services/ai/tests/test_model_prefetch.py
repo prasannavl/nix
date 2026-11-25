@@ -185,6 +185,35 @@ main "$@"
             result.stderr.splitlines(),
         )
 
+    def test_fleet_progress_reports_work_not_just_success_counts(self):
+        self.executable("hf", "exit 0")
+        self.executable("curl", """
+case "$*" in
+  *api/pull*)
+    [[ $* == *'"stream":true'* ]] || exit 1
+    printf '%s\\n' '{"status":"pulling","digest":"test-layer","completed":10,"total":100}' '{"status":"success"}';;
+  *POST*) printf '%s\\n' '{}';;
+  *) printf '%s\\n' '{"data":[]}';;
+esac""")
+        result = self.run_plan([self.hf_entry(), self.ollama_entry(), self.llama_entry()],
+                               {"ABIRD_ACQUIRE_PROGRESS": "1"})
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([line.removeprefix("[prefetch-ai-model] ") for line in result.stderr.splitlines()], [
+            "start total=3", "item 1/3 hf Qwen/example fetching", "item 1/3 hf Qwen/example ready",
+            "item 2/3 ollama test:1 pulling", "item 2/3 ollama test:1 layer 10/100",
+            "item 2/3 ollama test:1 ready", "item 3/3 llama repo/model:Q4 checking",
+            "item 3/3 llama repo/model:Q4 requesting", "item 3/3 llama repo/model:Q4 accepted",
+            "ok=3/3 deferred=0 failed=0"])
+
+    def test_layer_progress_is_not_success_and_does_not_leak_endpoints(self):
+        for response in ['{"completed":50,"total":100}', '{"error":"server detail"}', 'invalid json']:
+            self.executable("curl", f"printf '%s\\n' '{response}'")
+            result = self.run_plan([self.ollama_entry()], {"ABIRD_ACQUIRE_PROGRESS":"1"})
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("item 1/1 ollama test:1 deferred", result.stderr)
+            self.assertNotIn(" ready", result.stderr)
+            self.assertNotIn("127.0.0.1", result.stderr)
+
     def test_verbose_output_keeps_per_entry_diagnostics(self):
         self.executable("hf", "exit 0\n")
         self.executable("curl", "exit 7\n")
