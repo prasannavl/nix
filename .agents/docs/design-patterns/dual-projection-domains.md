@@ -16,10 +16,11 @@ capabilities; they never become a second authoring format.
 Every `config/<family>` declaration exposes the same
 `{ stacks, projectionScopes, projections }` shape. `config/default.nix` declares
 the families, repository-wide `shared` data, optional module registrations, and
-projection-domain extensions. Generic composition lives under `lib/flake`:
-`projection-domain-specifications.nix` owns the built-in fragment schemas,
-`repository-config.nix` assembles the repository, and `repository-fold.nix`
-validates and folds any compatible stack set. A domain specification owns:
+projection-domain extensions. Generic repository composition lives under
+`ab/repo`: `projection-domain-specifications.nix` owns the built-in fragment
+schemas, `repository-config.nix` assembles the repository, and
+`repository-fold.nix` validates and folds any compatible stack set. A domain
+specification owns:
 
 - fragment validation and normalization;
 - collision and authority checks across scopes;
@@ -50,10 +51,10 @@ unfolded repository declaration through a second channel. This makes the fold
 the only composition boundary and keeps extension domains substitutable in
 tests.
 
-Families have two explicit construction modes. Data-driven families use
-`configuration-family.nix`, including its stack-definition and registry
-validation. Already-built stacks use the generic
-`prebuilt-configuration-family.nix` adapter and must opt into that boundary
+Families have two explicit construction modes. Data-driven families use the
+static registry's `ab.stack.config.family`, including its stack-definition and
+registry validation. Already-built stacks use the
+`ab.stack.config.prebuiltFamily` adapter and must opt into that boundary
 deliberately. A repository must not present raw imports and validated family
 declarations as though they were the same construction path.
 
@@ -66,8 +67,8 @@ canonical `scopeOwners` and `fabrics` views, never a public `families` object.
 A repository root that builds hosts always declares at least one family and one
 stack. The family is required even when there is only one organization because
 it partitions authored stacks and projection intent. A package-only or isolated
-library consumer may still evaluate `lib/flake/default.nix` with no stacks. For
-an existing simple repository such as Pvl, one prebuilt `pvl` family wraps the
+library consumer may still evaluate `lib/default.nix` with no stacks. For an
+existing simple repository such as Pvl, one prebuilt `pvl` family wraps the
 existing `pvl` and `pvl-dev` stacks; shared repository data moves to
 `repository.shared` while concrete stacks remain homogeneous.
 
@@ -89,8 +90,8 @@ The shared modules have one direction of composition:
 | `repository-fold.nix`                  | Build family, scope, and stack ownership before evaluating projections.  |
 | `projection-domain-specifications.nix` | Define fragment schemas and neutral values.                              |
 | `projection-domain-fold.nix`           | Order adapters, thread declared context, and arbitrate claims and paths. |
-| `projection-built-in-adapters.nix`     | Evaluate the service placement and move domains.                         |
-| `projection-repository.nix`            | Define the typed repository layout and mutation rows.                    |
+| `service-projection-adapters.nix`      | Evaluate the service placement and move domains.                         |
+| `service-projection-repository.nix`    | Define the typed repository layout and mutation rows.                    |
 | `projection-domains.nix`               | Assemble built-ins and extensions and shape their public output.         |
 
 Domain code may depend down this table. A lower layer must not import a higher

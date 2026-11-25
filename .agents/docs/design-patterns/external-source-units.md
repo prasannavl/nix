@@ -14,7 +14,8 @@ Management style decides the root, not the other way around. Registration in
   versions or release tags, and either a package-local updater or a source kind
   the generic reporter reads (`github-tags`, `github-branch`, `gitlab-tags`,
   `registry-tags`). No repo-owned patch, vendored lock, or bespoke build logic
-  is expected to accumulate here.
+  is expected to accumulate here. This source-owner subtree is the exception to
+  `lib/`'s repository-composition role.
 - `pkgs/ext/<unit>/` owns units the repository manages itself: patches, vendored
   dependency closures, repo-owned build or test logic, or repo-owned code. These
   are registered in `pkgs/manifest.nix` because the repository owns their shape
@@ -91,10 +92,9 @@ runtime behavior. Version updates must not regenerate `default.nix`.
 external roots.
 
 - Units with an executable updater delegate reports and updates to that script.
-- Units without an updater use
-  `scripts/support/update-helper.py report-sources`, the generic kind-based
-  read-only reporter. That subcommand never invokes child ref synchronization or
-  mutates source state.
+- Units without an updater use `scripts/update/helper.py report-sources`, the
+  generic kind-based read-only reporter. That subcommand never invokes child ref
+  synchronization or mutates source state.
 - A non-executable `update.sh` is rejected rather than silently treated as
   report-only.
 
@@ -105,7 +105,7 @@ prefetch work for current versions, format generated Nix, and use a
 repository-local temporary path before atomic replacement.
 
 Updaters that evaluate the repository's own flake from an embedded Nix
-expression must import `lib/flake/repo-flake.nix` instead of calling
+expression must import `ab/repo/self-flake.nix` instead of calling
 `builtins.getFlake` on a bare path. The helper forces the Git fetcher so ignored
 linked worktrees are never walked; the `self-reference-fetcher` step in
 `scripts/lint.sh` enforces this across `*.nix` and `*.sh`. See
@@ -191,4 +191,4 @@ and diagnostics.
 - `pkgs/ext/*/sources.nix`
 - `pkgs/ext/*/update.sh`
 - `scripts/update.sh`
-- `scripts/support/update-helper.py` (`report-sources`)
+- `scripts/update/helper.py` (`report-sources`)

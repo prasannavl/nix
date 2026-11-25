@@ -1,74 +1,55 @@
 # Language packaging ownership
 
-Language-specific implementations and resources live in `lib/flake/<language>/`.
-The directory owns its constructors, language operations, generic tests and any
-associated export or qualification tools. `pkg-helper.nix` remains the public
-facade, preserving existing package and stack calls.
+Package authors use the bound `ab` API curated by `ab/core/default.nix`, not the
+internal `pkg-helper.nix`. Portable implementations live under
+`ab/core/packaging/`:
 
-Shared runtime implementation is repository-agnostic. Named products, stack
-inventories and acceptance expectations belong to repository adapters or
-explicit identity tests; the generic library never selects or imports them.
+| Owner                       | Responsibility                                                                            |
+| --------------------------- | ----------------------------------------------------------------------------------------- |
+| `rust/`                     | Cargo/Crane constructors, planning, toolchains, exports, Trunk, mirrors and qualification |
+| `go/`, `nodejs/`, `python/` | Native build and check operations and language-specific resolver policy                   |
+| `deno/`                     | Deno toolchain resolution                                                                 |
+| `shell/`                    | Script packages and formatter/check operations                                            |
 
-| Owner                         | Content                                                                                             |
-| ----------------------------- | --------------------------------------------------------------------------------------------------- |
-| `lib/flake/pkg-helper.nix`    | Shared app/check operations, passthru, source naming and facade composition                         |
-| `lib/flake/rust/`             | Cargo/Crane constructors, planning, toolchains, exports, Trunk resources, mirrors and qualification |
-| `lib/flake/go/`               | Go formatter, checks and package operations                                                         |
-| `lib/flake/nodejs/`           | Node/web formatter, checks and static-web package operations                                        |
-| `lib/flake/python/`           | Python formatter, checks and package operations                                                     |
-| `lib/flake/shell/`            | Shell formatter, checks and script package operations                                               |
-| `lib/flake/tests/<topology>/` | Repository product and topology integration                                                         |
-| `scripts/`                    | Repository maintenance and operational commands                                                     |
+Language implementations receive shared operations explicitly and contribute
+disjoint operations to the internal helper. Do not route by project discovery,
+normalize manifests, or select named products in the portable library. Use
+ordinary Nixpkgs builders unless the package needs a
+[toolchain selection contract](language-toolchains.md).
 
 ## Composition
 
-Each language's `default.nix` is an implementation factory receiving shared
-operations explicitly. Language code selects its own defaults and invokes
-ordinary Nixpkgs/Cargo/Crane constructors. The facade merges these disjoint
-exports; it does not route by project discovery, normalize manifests or select
-new production policy. Keep common mechanics in the facade and language-specific
-semantics in the owning directory. Package `default.nix` files remain canonical
-build definitions, with the same injectable arguments and standalone behavior.
+`core.project` and `core.packageScope` give root and child builds a coherent
+recursive `pkgs`/`callPackage` and a core-only `ab`. `lib/project.nix` binds
+this repository's source root and formatter config. The package's `default.nix`
+declares sibling package dependencies once with `ab.package.withDeps`; neither
+child flake wrappers nor the publication manifest restate the graph. See
+[package project boundaries](package-project-boundaries.md).
 
-Rust's source-bound adapter receives the composed helper explicitly so it can
-preserve the full facade while closing only Rust entrypoints over its source
-context. It retains omitted arguments, explicit refusal and lazy dependencies.
-The Abird ordinary lock-policy handling remains repository-owned and distinct
-from optional closure/base/mirror admission.
+The Rust exporter calls the original constructors with source-scoped `ab.build`
+operations **and** a `withDeps` rebound to the same scope, so siblings get the
+same build policy. Preserve omitted arguments, explicit overrides (including
+supported `null`) and laziness. Ordinary repository lock policy is separate from
+optional closure/base/mirror admission.
 
-Generic checks localize with the language and register through the shared
-flake-check aggregator. Their existing exported check names remain stable.
-Repository-specific product/host facts remain in the topology identity home and
-enter through `repoChecksFn`; generic code never imports that identity content.
+## Tools, tests and source boundaries
 
-## Tools and source boundaries
-
-A script's owner follows what it implements, not its interpreter or extension.
-Rust mirror generation belongs to `rust/mirror/`; its trusted Nix validator
-stays adjacent. Reusable Rust qualification support belongs to
-`rust/qualification/` and stays optional. Product/repository scenarios belong to
-`scripts/qualification/rust/` under explicitly named owners. They inject
-`recipeFile`, preserved source paths and seed handles into the generic
-framework; shared library code never imports those scenarios. Repository-wide
-formatting, update and operational scripts stay under `scripts/`. Do not move
-product source under the packaging library.
-
-The mirror source contract excludes the nested tests, mirror CLI and optional
-qualification areas from runtime support, just as it previously excluded tests
-and kept tooling outside that support tree. Explicit VM support inventories must
-include the facade's language factories and Rust dependencies. Moving a resource
-must preserve its contents, executable mode and effective source root.
-
-## Validation and history
-
-For moves or extraction, compare public helper names and real package/check
-identities before and after. Run language contract checks and tool integration
-checks, including root discovery and source exclusions. Update active consumers
-and guidance, without rewriting historical receipts or immutable source pins.
-Historical replay uses the tooling and layout corresponding to its pinned
-source.
-
-There are no flat-path compatibility wrappers: current internal consumers use
-canonical language paths, while public constructor names remain stable. Add a
-new language directory when it owns real implementation, rather than creating an
-empty scaffold or a second registry.
+- A script belongs to the feature it implements, not to its interpreter. Rust
+  mirror generation and its trusted validator live in `rust/mirror/`; reusable
+  optional qualification lives in `rust/qualification/`.
+  `rust/mirror-sources.nix` declares the revision-owned support tree and its
+  exclusions. Preserve effective source roots, executable modes and VM support
+  inputs when relocating resources.
+- Product scenarios under `lib/tests/qualification/rust/` inject recipes,
+  preserved source paths and seed handles. PVL's optional patched-Cargo lane
+  stays there; it is not a production overlay. Shared code never imports
+  repository scenarios or product source.
+- Keep portable tests with their implementation. Repository integration uses
+  `lib/tests/repository/`; PVL identity assertions enter shared assembly through
+  `lib/repo-checks.nix` and the bound `ab.repo.checks`. `scripts/` is for
+  repository commands, not product qualification fixtures.
+- On extraction, compare the public API, actual package/check identities and
+  exported check names; exercise root discovery and source exclusions as well as
+  the builds. Update active callers, not dated receipts or immutable pins.
+  Replay historical qualification with its pinned layout; do not add
+  compatibility wrappers for old paths.

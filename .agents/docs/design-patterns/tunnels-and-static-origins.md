@@ -11,12 +11,16 @@
 
 - Configure Cloudflare Tunnel edge IP behavior at the tunnel level through the
   native NixOS option `services.cloudflared.tunnels.<id>.edgeIPVersion`.
-- Prefer the shared helper in `lib/services/tunnels/cloudflare.nix` for
-  host-managed tunnels so credential staging, default-service wiring, and edge
-  transport policy stay aligned across hosts.
-- The common-case helper contract should only need `credentialsStoreName`,
-  `tunnelId`, and `ingress`.
-- By convention, the helper derives the agenix secret path as
+- `ab/stack/tunnels/` owns deployment vocabulary and Podman ingress projection
+  (`services.podman-compose-tunnel-projection.<stack>.ingress.<kind>`).
+  `ab.runtime.network.tunnels` owns provider execution and managed-unit
+  planning. Use `ab.runtime.network.wireguard` for the reusable WireGuard
+  mechanism.
+- `hosts/common/host-managed-tunnel.nix` binds a tunnel declaration and
+  `ingress` to the runtime planner, resolves the tracked credential, and
+  registers its units with the host agent. The Cloudflare declaration supplies
+  `kind`, `id` and `credentialsStoreName`.
+- By convention, host composition derives the agenix source path as
   `data/secrets/globals/cloudflare/tunnels/<credentialsStoreName>` and the age
   secret name as `cloudflare-tunnel-<basename>-credentials`, where `<basename>`
   drops `.json.age` or `.age`.
@@ -46,9 +50,9 @@
 
 ## Static Origin Materialization
 
-- Prefer the shared helpers in `lib/services/nginx/default.nix` for static
-  domain wiring so server blocks, staged site trees, container mounts, listener
-  policy, and tunnel/firewall exposure stay in one declarative model.
+- Prefer the shared helpers in `ab/services/nginx/default.nix` for static domain
+  wiring so server blocks, staged site trees, container mounts, listener policy,
+  and tunnel/firewall exposure stay in one declarative model.
 - Static sites are nginx vhosts only. Keep the public listener, firewall
   exposure, tunnel hostnames, and shared static-site rate limit on the nginx
   service's `exposedPorts`.

@@ -5,10 +5,12 @@ Cloudflare Tunnel model for repo-managed hosts.
 ## Source Of Truth
 
 - Host tunnel wiring: `hosts/<host>/cloudflare.nix`
-- Shared helper: `lib/services/tunnels/cloudflare.nix`
+- Host adapter: `hosts/common/host-managed-tunnel.nix`
+- Cloudflare runtime: `ab/runtime/network/tunnels/cloudflare.nix`
+- Listener declarations and tunnel projections: `ab/stack/tunnels/`
 - Tunnel objects and routes: `tf/cloudflare-platform/`
 - Tunnel DNS hostnames: `tf/cloudflare-dns/dns.auto.tfvars`
-- Host listener hostnames: `cfTunnelNames` on
+- Host listener publications: `tunnels` on
   `services.podman-compose.<stack>.instances.<name>.exposedPorts.<port>`
 
 ## Outcome: Expose A Host Through An Existing Tunnel
@@ -33,8 +35,8 @@ Required changes:
 1. Add the hostname to the listener exposed through the tunnel.
 2. Add the public DNS record pointing at the tunnel domain.
 
-For nginx-backed listeners, step 1 usually means adding the hostname to
-`cfTunnelNames`.
+For nginx-backed listeners, add the hostname to the Cloudflare publication on
+the exposed port.
 
 Example:
 
@@ -42,10 +44,10 @@ Example:
 exposedPorts.http = {
   port = 8000;
   openFirewall = true;
-  cfTunnelNames = [
-    "example.com"
-    "api.example.com"
-  ];
+  tunnels = [{
+    kind = "cloudflare";
+    hostNames = ["example.com" "api.example.com"];
+  }];
 };
 ```
 
@@ -69,7 +71,7 @@ Result:
 
 - Cloudflare resolves `api.example.com` to the tunnel
 - cloudflared receives the request for that hostname
-- the host listener selected by `cfTunnelNames` receives the request
+- the published host listener receives the request
 
 ## Outcome: Add A New Tunnel
 
@@ -136,18 +138,26 @@ This does not define per-hostname ingress for local-config tunnels.
 Common pattern:
 
 ```nix
-tunnelsLib.mkHostManagedTunnel {
-  inherit config tunnelId;
-  credentialsStoreName = "edge-main.json.age";
-  ingress = config.services.podman-compose.pvl.cloudflareTunnelIngress;
-  edgeIPVersion = "auto";
-}
+{ab, config, lib, stack, ...}: let
+  mkHostManagedTunnel = import ../common/host-managed-tunnel.nix {
+    inherit ab config lib stack;
+  };
+in
+  mkHostManagedTunnel {
+    tunnel = {
+      kind = "cloudflare";
+      id = "<tunnel-uuid>";
+      credentialsStoreName = "edge-main.json.age";
+    };
+    ingress = config.services.podman-compose-tunnel-projection.pvl.ingress.cloudflare;
+    edgeIPVersion = "auto";
+  }
 ```
 
 ### Derived Ingress
 
-`config.services.podman-compose.<stack>.cloudflareTunnelIngress` is derived from
-`cfTunnelNames` and maps each public hostname to a local origin URL.
+`config.services.podman-compose-tunnel-projection.<stack>.ingress.cloudflare`
+maps the hostnames in Cloudflare port publications to their local origin URLs.
 
 For nginx listeners this is usually:
 
@@ -177,7 +187,7 @@ Check all three layers:
 
 Useful checks:
 
-- `nix eval --json .#nixosConfigurations.<host>.config.services.podman-compose.<stack>.cloudflareTunnelIngress`
+- `nix eval --json .#nixosConfigurations.<host>.config.services.podman-compose-tunnel-projection.<stack>.ingress.cloudflare`
 - inspect `tf/cloudflare-dns/dns.auto.tfvars`
 - inspect `hosts/<host>/cloudflare.nix`
 - verify local origin port before debugging Cloudflare

@@ -28,14 +28,14 @@ invariant.
 
 Every `config/<family>` declaration has the same
 `{ stacks, projectionScopes, projections }` shape. `projections` implements the
-typed domains registered by `lib/flake/repository-config.nix`; today those
-domains are `servicePlacements` and `serviceMoves`. `config/default.nix` is the
-repository composition manifest. The central fold is domain-agnostic: each
-domain owns fragment validation, collision handling, and final aggregation,
-while the fold only enumerates families, stacks, fragments, and domains. Future
-dual runtime/Nix domains such as identity, ingress, or load balancing add one
-typed domain specification and only the family fragments that carry intent,
-rather than a new parallel configuration pipeline.
+typed domains registered through `ab.repo.config`; today those domains are
+`servicePlacements` and `serviceMoves`. `config/default.nix` is the repository
+composition manifest. The central fold is domain-agnostic: each domain owns
+fragment validation, collision handling, and final aggregation, while the fold
+only enumerates families, stacks, fragments, and domains. Future dual
+runtime/Nix domains such as identity, ingress, or load balancing add one typed
+domain specification and only the family fragments that carry intent, rather
+than a new parallel configuration pipeline.
 
 The schema-4 declaration contains immutable identity, authority, scope, an
 ordered, non-empty set of service items, requested phase, generation, per-item

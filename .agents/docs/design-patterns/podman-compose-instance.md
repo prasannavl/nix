@@ -75,12 +75,12 @@ addressing. Do not substitute one for the other.
 
 ### Repository image updates
 
-`scripts/support/podman-image-updater.py` owns both Podman Compose image
-reporting and source updates. `scripts/update.sh --report` invokes its read-only
-mode, while ordinary updates invoke its write mode unless `--skip-images` is
-selected. Use `scripts/update.sh --only-images` for image-only updates and add
-`--report` for an image-only report. The direct updater also accepts `--dry-run`
-to validate and display the complete plan without writing.
+`scripts/update/podman-images.py` owns both Podman Compose image reporting and
+source updates. `scripts/update.sh --report` invokes its read-only mode, while
+ordinary updates invoke its write mode unless `--skip-images` is selected. Use
+`scripts/update.sh --only-images` for image-only updates and add `--report` for
+an image-only report. The direct updater also accepts `--dry-run` to validate
+and display the complete plan without writing.
 
 The updater evaluates the effective host inventory and module definition
 locations together. It updates only repository-local sources owned by the

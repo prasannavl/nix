@@ -156,9 +156,8 @@ repositoryConfig = import ./config;
 # config/default.nix passes its modules attribute to repository-config.nix.
 ```
 
-`lib/flake/root.nix` passes that value to the generic selector after
-materializing the effective canonical stacks. The former
-`lib/stacks/modules.nix` transition path and explicit root `repoModules`
-argument are removed, leaving one effective source of module composition. Keep
-manifests pointed at generic package defaults while registering repository
-specializations through this boundary.
+`lib/root.nix` passes that value to the generic selector after materializing the
+effective canonical stacks. The former `lib/stacks/modules.nix` transition path
+and explicit root `repoModules` argument are removed, leaving one effective
+source of module composition. Keep manifests pointed at generic package defaults
+while registering repository specializations through this boundary.

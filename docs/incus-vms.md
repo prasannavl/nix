@@ -11,18 +11,19 @@ Use this model for declarative Incus guest lifecycle on parent hosts.
 - cleanup of undeclared guests
 - manual lifecycle tags
 
-Shared lifecycle logic lives in `lib/incus/default.nix` and
-`lib/incus/helper.sh`. Guest bootstrap conveniences live in the selected machine
-profile under `lib/profiles/`.
+`lib/incus.nix` supplies default images to the lifecycle module in
+`ab/runtime/incus/nixos.nix`. Guest profiles under `lib/profiles/` bind the
+reusable guest bootstrap to this repository's policy.
 
 ## Source Of Truth
 
 - parent host declarations: `hosts/<parent>/incus.nix`
-- shared lifecycle logic: `lib/incus/default.nix`, `lib/incus/helper.sh`
-- guest bootstrap logic: `lib/profiles/incus-lxc.nix` and
-  `lib/profiles/incus-vm.nix`
-- LXC base image build: `lib/images/incus-lxc-base.nix`
-- VM base image build: `lib/images/incus-vm-base.nix`
+- lifecycle module and helper: `ab/runtime/incus/nixos.nix`,
+  `ab/runtime/incus/helper.sh`
+- guest bootstrap: `ab/system/profiles/incus-guest.nix`, bound by
+  `lib/profiles/incus-lxc.nix` and `lib/profiles/incus-vm.nix`
+- LXC and VM base images: `lib/images.nix` calls `mkBase` from
+  `ab/runtime/incus/images.nix` with the appropriate machine profile
 - guest config: `hosts/<guest>/`
 - deploy metadata: `hosts/nixbot.nix`
 
@@ -30,14 +31,10 @@ profile under `lib/profiles/`.
 
 ```nix
 services.incus-manager = {
-  defaultLxcImage = inputs.self.nixosImages.incus-lxc-base;
-  defaultLxcImageAlias = "nixos-incus-lxc-base";
-  defaultVmImage = inputs.self.nixosImages.incus-vm-base;
-  defaultVmImageAlias = "nixos-incus-vm-base";
-  imageTag = "0";
-  preseedTag = "0";
+  global.imageTag = "0";
+  global.preseedTag = "0";
 
-  instances.<name> = {
+  example.instances.web = {
     kind = "lxc";
     ipv4Address = "10.10.20.10";
     bootTag = "0";
@@ -48,7 +45,7 @@ services.incus-manager = {
     };
 
     devices.state = {
-      source = "<name>";
+      source = "web";
       path = "/var/lib";
     };
   };
@@ -123,16 +120,16 @@ operator-facing procedures.
 ## Why This Module Exists
 
 Incus provides runtime guest management, but not this repo's declarative guest
-lifecycle model. `lib/incus/default.nix` and `lib/incus/helper.sh` make image
-import, create/start, recreate triggers, in-place disk sync, guest GC, and
-manual lifecycle tags part of ordinary deploy-time reconciliation instead of ad
-hoc host-local scripts.
+lifecycle model. `ab/runtime/incus/nixos.nix` and `ab/runtime/incus/helper.sh`
+make image import, create/start, recreate triggers, in-place disk sync, guest
+GC, and manual lifecycle tags part of ordinary deploy-time reconciliation
+instead of ad hoc host-local scripts.
 
 ## Current Model
 
 - parent hosts declare guests in `hosts/<parent>/incus.nix`
-- shared lifecycle logic lives in `lib/incus/default.nix` and
-  `lib/incus/helper.sh`
+- shared lifecycle logic lives in `ab/runtime/incus/nixos.nix` and
+  `ab/runtime/incus/helper.sh`
 - guest bootstrap conveniences live in the selected `machineProfile`
 - guests become normal `nixbot` deploy targets after bootstrap
 - images, tags, and devices are declarative inputs to the parent-host lifecycle
@@ -298,8 +295,8 @@ For nested Incus specifically:
 
 - the outer guest can use a normal Incus `gpu` device
 - the inner nested guest should use `/dev/dri` passthrough plus `/dev/kfd`
-- `/dev` host-path disk mounts are treated by `lib/incus/default.nix` and
-  `lib/incus/helper.sh` as existing device trees, not persistent state
+- `/dev` host-path disk mounts are treated by `ab/runtime/incus/nixos.nix` and
+  `ab/runtime/incus/helper.sh` as existing device trees, not persistent state
   directories
 
 ## FAQ
@@ -428,13 +425,13 @@ recreate it.
 
 ## Source Of Truth Files
 
-- `lib/incus/default.nix`
-- `lib/incus/helper.sh`
+- `lib/incus.nix`
+- `ab/runtime/incus/nixos.nix`
+- `ab/runtime/incus/helper.sh`
 - `lib/profiles/incus-lxc.nix`
 - `lib/profiles/incus-vm.nix`
-- `lib/images/incus-lxc-base.nix`
-- `lib/images/incus-vm-base.nix`
-- `lib/images/default.nix`
+- `lib/images.nix`
+- `ab/runtime/incus/images.nix`
 - `hosts/<parent-host>/incus.nix`
 - `hosts/<guest>/default.nix`
 - `hosts/nixbot.nix`

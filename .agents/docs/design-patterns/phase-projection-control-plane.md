@@ -36,9 +36,9 @@ The architecture has five strict layers:
    activation requirements. Phase names are opaque non-empty identifiers.
 3. The repository reconciler publishes the projection through a manager-owned
    clean checkout in normal mode or commits it directly in the clean invoking
-   checkout under explicit `--local`, derives declarative state through
-   `lib/flake`, and verifies the resulting digest before any runtime work
-   begins.
+   checkout under explicit `--local`, derives declarative state through the
+   repository and stack projection APIs, and verifies the resulting digest
+   before any runtime work begins.
 4. The runtime reconciler converts that same projection into ordered,
    deterministic host-agent jobs through a registered adapter for the intent
    kind. Controller-owned workflow kinds reconcile a manager journal; host-local
@@ -710,7 +710,7 @@ does not invent reversal behavior.
 
 User-editable family declarations under `config/<family>/` remain simple
 canonical inputs. Phase projection interpretation and stack transformation
-belong under `lib/flake/`, after base stacks are loaded.
+belong under `ab/repo/` and `ab/stack/`, after base stacks are loaded.
 
 Individual host files do not scan projection directories or implement phase
 logic. The root flake loads validated projection documents once and injects them
@@ -718,7 +718,7 @@ generically into the host-agent module. Service modules declare ordinary
 resources and allowlisted state profiles only where needed.
 
 Mutable route selection is isolated from ordinary generated configuration by a
-generic Nginx adapter under `lib/services/nginx/`. The proxy host module
+service-owned Nginx adapter under `ab/services/nginx/`. The proxy host module
 contains no workflow, service-move, or Zulip phase names. Each registry-backed
 HTTP service has one durable route file covering its complete HTTP, internal
 TLS, and edge TLS configuration. Services with no active projection follow
@@ -752,7 +752,7 @@ cover both runtime ownership paths, missing and ambiguous ownership, and the
 isolated-network invocation.
 
 Executable Nginx adapter behavior belongs in the packaged
-`lib/services/nginx/helper.sh`, not in generated Nix shell text. Nix constructs
+`ab/services/nginx/helper.sh`, not in generated Nix shell text. Nix constructs
 typed argv and immutable inputs for the helper's config installation,
 best-effort reload, and runtime candidate-validation subcommands. This keeps
 shell control flow independently lintable and testable while leaving the host

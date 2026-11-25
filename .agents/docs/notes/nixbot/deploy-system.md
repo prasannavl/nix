@@ -297,6 +297,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Host `deploy = "skip"` is narrower: the host stays buildable/evaluable, but
   nixbot must not touch the live target. Rollback snapshots and deploy/switch
   work are skipped because no activation can require rollback.
+- A successful Compose image-acquisition step does not prove that a native
+  Quadlet can pull its image at activation. A generation rollback also does not
+  roll back application data: check the service and its data compatibility
+  before treating a stateful rollback as recovery.
 - `--restart-managed` / `NIXBOT_RESTART_MANAGED=1` is an explicit disruptive
   deploy mode for `run` or `deploy` with the `switch` or `test` goal. It
   bypasses host generation-match skipping without forcing Terraform, activates

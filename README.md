@@ -17,9 +17,10 @@ This is the nix driven monorepo, organized as small modules and composed via
 - `hosts/<host>/default.nix`: host-specific system definition and module
   imports.
 - `users/pvl/default.nix`: Base user + Home Manager module builder for `pvl`.
-- `lib/*.nix`: single-topic NixOS modules imported directly by hosts.
-- `lib/flake/`: flake support helpers such as linting and the custom flake tree
-  helper.
+- `ab/`: reusable package, runtime, service, system and stack components.
+- `lib/`: repository composition and policy. `lib/root.nix` assembles the root
+  outputs; child flakes use `lib/project.nix` to build packages with `pkgs` and
+  `ab`.
 - `lib/overlays/`: custom overlays used by the system.
 - `hosts/nixbot.nix`: deploy mapping, either a plain Nix attrset or a function
   that receives `{ stacks = ...; }` from repository composition.
@@ -49,9 +50,9 @@ Reference example: `pkgs/examples/hello-rust/flake.nix`.
 Container workloads run as rootless Podman compose stacks managed by a shared
 NixOS module:
 
-- Shared Podman base config lives in `lib/podman.nix`.
-- Shared compose lifecycle logic lives in `lib/podman-compose/default.nix` with
-  shared shell logic in `lib/podman-compose/helper.sh`.
+- `lib/podman.nix` binds repository policy to the shared Podman module in
+  `ab/runtime/podman/nixos.nix`; its lifecycle helpers live in
+  `ab/runtime/podman/`.
 - Deploy-time orchestration uses native `systemd.user` services, generated
   managed/ready targets, and NixOS' user-unit switch logic.
 - Hosts declare stacks under `services.podman-compose.<stack>` in a host service
@@ -71,12 +72,12 @@ VM and container guests run under Incus with a shared declarative lifecycle
 module:
 
 - Parent host orchestration lives in `hosts/<parent-host>/incus.nix`.
-- Shared lifecycle logic lives in `lib/incus/default.nix`.
-- Reusable guest bootstrap lives in the selected machine profile under
-  `lib/profiles/`.
-- Base image builds live in `lib/images/incus-lxc-base.nix` and
-  `lib/images/incus-vm-base.nix`.
-- Guests are declared under `services.incus-manager.instances.<name>`.
+- `lib/incus.nix` binds the default images to the lifecycle module in
+  `ab/runtime/incus/nixos.nix`.
+- The selected machine profile under `lib/profiles/` configures guest bootstrap.
+- `lib/images.nix` publishes both base images using
+  `ab/runtime/incus/images.nix`.
+- Guests are declared under `services.incus-manager.<project>.instances.<name>`.
 - Machines can use the shared default image or point at per-machine image
   overrides.
 - Lifecycle tags (`bootTag`, `recreateTag`, `imageTag`) control guest
@@ -102,8 +103,9 @@ are first-class citizens regardless of their backing infrastructure.
 - Each host is a directory under `hosts/<host-name>/` with a `default.nix` entry
   point that imports the appropriate profile and host-specific modules.
 - Profiles under `lib/profiles/` provide layered baselines (`core.nix` for
-  headless, `all.nix` for desktop, `lxc.nix` for Incus guests).
-- Device modules under `lib/devices/` encode physical hardware quirks.
+  headless, `all.nix` for desktop, `incus-lxc.nix` for containers).
+- Device modules under `ab/system/hardware/devices/` encode physical hardware
+  quirks.
 - `hosts/default.nix` registers every host into `nixosConfigurations`.
 - `hosts/nixbot.nix` maps deploy targets, SSH routing, and ordering.
 - The same deploy flow, secret model, and module composition apply whether the

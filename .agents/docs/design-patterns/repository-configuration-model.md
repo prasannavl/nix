@@ -38,7 +38,7 @@ avoid `stack profile`, aggregate stack, `stacks.all`, `stacks.shared`, and
 
 ```nix
 {
-  shared.accounts = import ../lib/flake/accounts { ... };
+  shared.accounts = ab.stack.accounts.mk { ... }; # static registry; inject account data
 
   families = {
     abird = import ./abird;
@@ -55,7 +55,7 @@ avoid `stack profile`, aggregate stack, `stacks.all`, `stacks.shared`, and
 }
 ```
 
-`lib/flake/repository-config.nix` validates and normalizes that manifest:
+The static registry's `ab.repo.config` validates and normalizes that manifest:
 
 ```nix
 {
@@ -102,13 +102,14 @@ Deployment inventory still names one authoritative release cache. Its legacy URL
 is injected only when no named origin already describes it. Optional cache
 substitution uses Nix's native build fallback; explicit deployment copies still
 require the exact closure. Repository-specific public keys remain manifest data;
-shared `lib/nix.nix` contains only common public caches and consumes the
-normalized policy. Signatures are never disabled and private keys never enter
-the client policy.
+`lib/profiles/policy/nix.nix` appends PVL's chosen public caches and keys in
+order and passes one `cachePolicy` to `ab.system.nix.module`. The shared module
+does not select trust roots. Signatures are never disabled and private keys
+never enter the client policy.
 
 ## Accounts Contract
 
-Account composition lives under `lib/flake/accounts/`. One accounts bundle has
+Account composition lives under `ab/stack/accounts/`. One accounts bundle has
 this public shape:
 
 ```nix
@@ -123,9 +124,10 @@ this public shape:
 }
 ```
 
-`lib/flake/stack/lib.nix` creates `stack.accounts` with the stack's account
-filter. `config/default.nix` creates `repository.shared.accounts` with all
-stacks included. `mkNixosSystem` validates and selects exactly one bundle:
+`ab.stack.accounts.mk` constructs bundles from injected user/group data. Stack
+assembly selects the filtered bundle as `stack.accounts`. `config/default.nix`
+creates `repository.shared.accounts` with all stacks included. `mkNixosSystem`
+validates and selects exactly one bundle:
 
 ```nix
 accounts =
@@ -162,20 +164,21 @@ config/
     default.nix
 ```
 
-`lib/flake/configuration-family.nix` validates stack definitions and builds the
-standard fabric, registry, placement, dependency, access, secret, and account
-views. `lib/flake/prebuilt-configuration-family.nix` adapts already-evaluated
-stacks. `lib/flake/stack/build-set.nix` is the lower-level stack constructor.
+`ab.stack.config.family` validates stack definitions and builds the standard
+fabric, registry, placement, dependency, access, secret, and account views.
+`ab.stack.config.prebuiltFamily` adapts already-evaluated stacks.
+`ab.stack.buildSet` is the lower-level stack constructor.
 
 The filename or attribute key is the stack identity. The family builder derives
 `stackName` and rejects an authored duplicate. A family authors its secret
 namespace once; stack definitions may add `secretScope` but cannot replace it.
 
-`projection-repository.nix` owns the repository path convention. A family
-creates one `mkFamilyLayout` from its `config/<family>` root, family name, and
-authored placement-scope names. That layout imports stacks, placements, and
-moves and also derives the paths exposed to the publisher. Configuration must
-not pair an arbitrary fragment directory with a projection scope separately.
+`ab/repo/service-projection-repository.nix` owns the repository path convention.
+A family creates one `mkFamilyLayout` from its `config/<family>` root, family
+name, and authored placement-scope names. That layout imports stacks,
+placements, and moves and also derives the paths exposed to the publisher.
+Configuration must not pair an arbitrary fragment directory with a projection
+scope separately.
 
 Pure family-specific models consumed by more than one outer subsystem also
 belong under `config/<family>/`. For example, Abird's Incus remote-project and
@@ -183,8 +186,8 @@ certificate model is shared by host construction and secret-recipient policy.
 `data/secrets/default.nix` remains the repository-wide recipient orchestrator;
 it passes common inputs once to `data/secrets/<family>/`, and that family
 composer owns its scoped variants and family-specific derived secrets. Generic
-secret path and recipient helpers remain under `lib/flake` and do not absorb
-repository topology.
+secret path and recipient helpers remain under `ab/stack/secrets.nix` and do not
+absorb repository topology.
 
 ## NixOS Construction
 
@@ -276,27 +279,14 @@ roles from the selected `stack`; cross-stack controllers consult
 ## Pvl Adaptation
 
 Pvl is not stackless. Its repository manifest imports one prebuilt configuration
-family from `config/pvl`:
-
-```nix
-let
-  accounts = import ../lib/flake/accounts {
-    stackName = null;
-    defaultMailDomain = "invalid.invalid";
-    includeAllStacks = true;
-  };
-in
-  import ../lib/flake/repository-config.nix {
-    shared.accounts = accounts;
-    defaultScope = "pvl";
-    families.pvl = import ./pvl;
-    modules.repo.abird-host-agent = ../lib/services/abird-host-agent;
-    nix.trustedPublicKeys = [ ... ];
-  }
-```
+family from `config/pvl`. `config/default.nix` supplies the same raw account
+data to `(import ../ab).stack.accounts.mk` for the all-stacks account bundle and
+to the prebuilt family for per-stack filtering. The manifest passes the
+resulting accounts and family, module registry and PVL cache policy to
+`(import ../ab).repo.config`.
 
 `config/pvl/default.nix` adapts the already-evaluated `pvl` and `pvl-dev` stacks
-through `prebuilt-configuration-family.nix`. Their definitions and registry live
+through `ab.stack.config.prebuiltFamily`. Their definitions and registry live
 under `config/pvl/`; repository-authored stacks do not live under the shared
 `lib/` tree.
 
@@ -313,5 +303,5 @@ selection.
 A deployment root must declare at least one configuration family and stack. The
 family supplies the authoring partition; scope ownership determines repository
 paths, and stack identity determines runtime policy. Package-only and isolated
-library consumers can remain familyless and stackless through
-`lib/flake/default.nix` without constructing the deployment root.
+library consumers can remain familyless and stackless through `lib/default.nix`
+without constructing the deployment root.

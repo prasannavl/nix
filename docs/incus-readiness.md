@@ -264,9 +264,10 @@ nixbot deploy wave for child hosts:
 
 ## Source Of Truth Files
 
-- `lib/incus/default.nix` and `lib/incus/helper.sh` -- reconciler helper, settle
-  helper, per-machine service, machine type options (`sshPort`, `waitForSsh`,
-  `ipv4Address`)
+- `lib/incus.nix` -- repository image defaults for parent hosts
+- `ab/runtime/incus/nixos.nix` and `ab/runtime/incus/helper.sh` -- reconciler
+  helper, settle helper, per-machine service, machine type options (`sshPort`,
+  `waitForSsh`, `ipv4Address`)
 - `pkgs/tools/nixbot/nixbot.sh` -- `ensure_deploy_wave_parent_readiness`,
   `run_named_prepared_root_command`, command template rendering
 - `hosts/nixbot.nix` -- `parent`, `after`, and deploy target definitions

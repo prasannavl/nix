@@ -5,16 +5,18 @@ limits, forwarded-client headers, and Cloudflare Tunnel host routing.
 
 ## Source Of Truth
 
-- Shared renderer: `lib/services/nginx/default.nix`
-- NixOS option surface: `lib/services/nginx/module.nix`
-- Container runtime config: `lib/services/nginx/compose/nginx.conf`
+- Shared ingress model and renderer: `ab/services/nginx/default.nix`
+- Declaration and rate-limit types: `ab/services/nginx/declaration-policy.nix`
+- NixOS option surface: `ab/services/nginx/module.nix`
+- Container runtime config: `ab/services/nginx/compose/nginx.conf`
 - Security headers include:
-  `lib/services/nginx/compose/conf.d/lib/http-security.conf` (composed from
+  `ab/services/nginx/compose/conf.d/lib/http-security.conf` (composed from
   per-header sub-files: `http-security-xcto.conf`,
   `http-security-referrer.conf`, `http-security-permissions.conf`,
   `http-security-csp.conf`)
 - Host usage example: `hosts/pvl-x2/services/nginx.nix`
-- Derived compose metadata source: `lib/podman-compose/default.nix`
+- Podman ingress projection: `ab/services/nginx/podman-projection.nix`, wired by
+  `lib/podman.nix`
 
 ## Outcomes
 
@@ -42,12 +44,12 @@ There are four ingress declaration surfaces:
 - `staticSites` passed to `nginxLib.renderServers`
 
 Most callers do not construct `proxyVhosts` manually. They come from
-`services.podman-compose.<stack>.nginx-proxy-vhosts`, which is derived from
-`exposedPorts`.
+`services.podman-compose-nginx-projection.<stack>.proxyVhosts`, which is derived
+from `exposedPorts`.
 
 Most path-mounted dynamic routes do not construct route attrsets manually. They
-come from `services.podman-compose.<stack>.nginxRoutes`, which is derived from
-`exposedPorts.<name>.nginxRoutes`.
+come from `services.podman-compose-nginx-projection.<stack>.routes`, which is
+derived from `exposedPorts.<name>.nginxRoutes`.
 
 Manual route attrsets are valid when the origin is external and not represented
 as a local compose service.
@@ -130,7 +132,10 @@ instances.api = rec {
     port = 12000;
     openFirewall = true;
     nginxHostNames = ["api.example.com"];
-    cfTunnelNames = ["api.example.com"];
+    tunnels = [{
+      kind = "cloudflare";
+      hostNames = ["api.example.com"];
+    }];
     rateLimit = null;
   };
 };
@@ -140,7 +145,7 @@ Result:
 
 - firewall opens the declared port when `openFirewall = true`
 - nginx creates a root proxy vhost for `api.example.com`
-- Cloudflare Tunnel ingress is derived from `cfTunnelNames`
+- Cloudflare Tunnel ingress is derived from the port's `tunnels` publication
 
 ## Outcome: Mount A Backend Under A Subpath
 
@@ -376,7 +381,7 @@ Resolved limits are keyed by client IP after nginx real-IP normalization.
 
 ## Outcome: Preserve Real Client Identity Upstream
 
-Shared proxy header behavior lives in `lib/services/nginx/compose/nginx.conf`.
+Shared proxy header behavior lives in `ab/services/nginx/compose/nginx.conf`.
 
 Configured behavior:
 
@@ -401,8 +406,8 @@ forwards the request upstream.
 
 ## Outcome: Publish Hostnames Through Cloudflare Tunnel
 
-`services.podman-compose.<stack>.cloudflareTunnelIngress` is derived from
-`cfTunnelNames` on exposed ports.
+`services.podman-compose-tunnel-projection.<stack>.ingress.cloudflare` is
+derived from Cloudflare `tunnels` entries on exposed ports.
 
 Example:
 
@@ -410,10 +415,10 @@ Example:
 exposedPorts.http = {
   port = 8000;
   openFirewall = true;
-  cfTunnelNames = [
-    "example.com"
-    "api.example.com"
-  ];
+  tunnels = [{
+    kind = "cloudflare";
+    hostNames = ["example.com" "api.example.com"];
+  }];
 };
 ```
 
@@ -422,7 +427,7 @@ Result:
 - derived tunnel ingress maps both hostnames to the local listener
 
 Manual routes do not create tunnel hostnames by themselves. The hostname still
-must be present on a listener exposed through `cfTunnelNames`.
+must be present on a listener published through a Cloudflare tunnel.
 
 This document covers only the nginx-side tunnel touch points. For tunnel
 objects, host runtime wiring, DNS, and when to reuse vs split tunnels, see
@@ -450,8 +455,8 @@ Common fields used by the nginx and tunnel model:
 - `clientMaxBodySize`: optional `client_max_body_size` for uploads
 - `proxyCookiePath`: optional replacement path for `proxy_cookie_path`
 - `proxyRedirects`: additional `proxy_redirect` rewrites
-- `cfTunnelNames`: hostnames published through derived Cloudflare Tunnel ingress
-- `cfTunnelPort`: optional port override for tunnel ingress
+- `tunnels`: list of publications; a Cloudflare entry has `kind = "cloudflare"`,
+  `hostNames`, and an optional `targetPort` override
 - `rateLimit`: ingress rate-limit policy
 - `useUpstreamCsp`: suppress global CSP on the derived root vhost so the
   upstream's CSP passes through
@@ -490,7 +495,7 @@ Derived defaults for these routes:
 
 ### `redirectVhost`
 
-Shared attrset type in `lib/services/nginx/default.nix`:
+Shared attrset type in `ab/services/nginx/default.nix`:
 
 - `serverNames`: root hostnames served by the redirect vhost
 - `target`: absolute URL or path returned by nginx
@@ -499,7 +504,7 @@ Shared attrset type in `lib/services/nginx/default.nix`:
 
 ### `proxyVhost`
 
-Shared attrset type in `lib/services/nginx/default.nix`:
+Shared attrset type in `ab/services/nginx/default.nix`:
 
 - `service`: optional compose dependency service name
 - `serverNames`: root hostnames served by the vhost
@@ -526,7 +531,7 @@ Shared attrset type in `lib/services/nginx/default.nix`:
 
 ### `route`
 
-Shared attrset type in `lib/services/nginx/default.nix`:
+Shared attrset type in `ab/services/nginx/default.nix`:
 
 - `service`: optional compose dependency service name
 - `mode`: `"static"` or `"upstream"`
@@ -678,10 +683,10 @@ services.podman-compose.pvl.instances.nginx = rec {
   exposedPorts.http = {
     port = 8000;
     openFirewall = true;
-    cfTunnelNames = [
-      "example.com"
-      "api.example.com"
-    ];
+    tunnels = [{
+      kind = "cloudflare";
+      hostNames = ["example.com" "api.example.com"];
+    }];
   };
 
   dependsOn = nginxLib.dependencyServices (proxyVhosts // nginxRoutesAll);

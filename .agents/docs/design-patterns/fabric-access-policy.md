@@ -21,7 +21,7 @@ access.ci-management = {
 
 - The independent physical projection uses `fabric`/`fabrics` and `endpoint`
   selectors, with the same singleton/list and Cartesian semantics.
-- Shared `lib/flake/access-selectors.nix` rejects empty lists, conflicting
+- Shared `ab/stack/fabric/access.nix` rejects empty lists, conflicting
   singular/plural fields, repeated selectors and unknown fields. Contracts also
   validate referenced fabrics/endpoints and ports before rendering.
 - Expanded contract records remain concrete source/destination/family/port

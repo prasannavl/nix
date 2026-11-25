@@ -22,11 +22,11 @@ stack. `hosts/nixbot.nix` remains Pvl-owned deployment inventory and may stay a
 plain attribute set; the shared root also supports a function receiving the
 canonical stack set.
 
-Generic `lib/flake` helpers accept caller-owned repository configuration and
-inventory. Concrete stacks, hosts, fabric prefixes, service placement, and
-physical enforcement stay repository-owned. Pvl's physical fabric projection
-must remain independent of Abird imports. Share pure helpers and synthetic tests
-without importing Abird product packages or topology fixtures.
+Generic `ab/repo` and `ab/stack` helpers accept caller-owned repository
+configuration and inventory. Concrete stacks, hosts, fabric prefixes, service
+placement, and physical enforcement stay repository-owned. Pvl's physical fabric
+projection must remain independent of Abird imports. Share pure helpers and
+synthetic tests without importing Abird product packages or topology fixtures.
 
 ## Desired State And Ownership
 
@@ -76,7 +76,9 @@ future engine cutover. Nix subprocesses must evaluate the intended checkout
 without inherited Git selectors redirecting them to another repository.
 
 Builder leases stay controller-owned and generation-independent, locking the
-stable `/nix/var/nix` inode through the inline protocol. Authenticated
+stable `/nix/var/nix` inode through the inline protocol. The reusable GC
+coordinator in `ab/system/nix/gc-coordination.nix` respects those leases;
+builder capacity and scheduling defaults are PVL policy. Authenticated
 `ssh-ng://` builder-store result import remains separate from signed-cache
 deployment distribution.
 

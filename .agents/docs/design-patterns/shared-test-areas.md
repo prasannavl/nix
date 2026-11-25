@@ -2,8 +2,9 @@
 
 ## Generic first
 
-Shared `lib/`, `pkgs/` and `scripts/` test areas carry byte-identical generic
-checks, fixtures and registration across repositories holding that area.
+Keep generic checks and fixtures with their reusable component, package or
+script. Shared areas carry byte-identical generic checks and registration;
+repository acceptance is injected, not an import from a portable owner.
 
 - Generalize reusable behavior before assigning repository ownership. Host names
   in a synthetic inventory do not make an ordering test repository-specific.
@@ -39,19 +40,19 @@ checks, fixtures and registration across repositories holding that area.
 The repository prefix belongs in a subdirectory, not merely a sibling filename.
 Do not create an identity directory when its contents can be generic.
 
-- Flake-library contracts stay in `lib/flake/tests/`; real repository
-  composition stays in `lib/flake/tests/abird/` or `lib/flake/tests/pvl/`. Their
-  `default.nix` files aggregate owned checks.
-- Language-specific synthetic fixtures stay in `lib/flake/<language>/tests/`;
-  product integration stays repository-owned. See
-  [language packaging](language-packaging.md).
-- Service identity checks stay beside their generic area, beneath the repository
-  prefix: `lib/services/kanidm/tests/abird/gap3.nix` imports the real Gap3
-  declaration; `lib/services/kanidm/tests/default.nix` remains generic.
-- Library-wide builder-GC checks use synthetic capacities in
-  `lib/tests/nix-builder-gc-coordination.nix`; actual defaults are asserted
-  under `lib/tests/abird/` and `lib/tests/pvl/`. Production host policy need not
-  move merely to equalize tests.
+- Never import a real repository declaration from an extractable `ab/**` test.
+  For example, `ab/services/kanidm/tests/` is portable. Cross-component
+  integration stays under `lib/tests/`; real PVL package/topology assertions
+  live under `lib/tests/repository/pvl/`.
+- Keep language fixtures with the implementation (for example
+  `ab/core/packaging/rust/tests/`) and optional product scenarios under
+  `lib/tests/qualification/`. See [language packaging](language-packaging.md).
+- Exercise GC mechanics in `ab/system/nix/tests/`; assert the actual PVL builder
+  defaults in `lib/tests/pvl/nix-builder-gc-coordination.nix`. Do not equalize
+  production host policy to equalize tests.
+- Test upstream-following source recipes with their `lib/ext/<unit>/` owner;
+  test repository update commands under `scripts/update/tests/` and operational
+  helpers with their `scripts/ops/` owner.
 - Shared Nixbot ordering and packaging tests use neutral fixtures/contracts.
   Only the private migration-ledger assertion and its ledger belong under
   `pkgs/tools/nixbot/tests/abird/`.
@@ -63,8 +64,8 @@ Do not create an identity directory when its contents can be generic.
 
 - Shared registration stays byte-identical and never names repository identity
   paths. Nix identity checks enter through the repository-owned
-  `lib/flake/repo-checks.nix`, injected by `flake.nix` into shared assembly.
-  Default injection is empty; identity sources must have disjoint check names.
+  `lib/repo-checks.nix`, injected by `flake.nix` into shared assembly. Default
+  injection is empty; identity sources must have disjoint check names.
 - Repository composition may register service, library and script identity
   checks directly or through owned aggregators. Keep each check reachable
   exactly once.
@@ -91,6 +92,9 @@ through `repo-checks.nix` into the same identity suite.
 - Update active imports, fixture paths and discovery when moving tests.
   Historical audit/event content is not rewritten to pretend the new layout
   existed before.
-- Before closing a port, compare generic path presence, bytes and modes, then
-  run generic and repository-owned checks in both repositories. Different
-  identity coverage is legitimate; missing shared coverage is not.
+- Use the [cross-sync playbook](../playbooks/nix-z-cross-sync.md) for
+  convergence checks. Compare paths, bytes, kinds, modes and symlink targets.
+  Reuse native results only when implementation, test and build inputs match.
+  Exercise extraction and each repository's own integration and policy; a dated
+  receipt cannot qualify a different tree. Different identity coverage is
+  legitimate; missing shared coverage is not.

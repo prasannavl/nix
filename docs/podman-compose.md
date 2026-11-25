@@ -14,9 +14,10 @@ on a host.
 - duplicate exposed-port detection for declared host port/protocol pairs
 - deploy-time restart and recreate behavior
 
-The shared logic lives in `lib/podman-compose/default.nix`, with provider
-metadata/rendering in `compose.nix` and `quadlet.nix` and lifecycle adapters in
-the shell helpers.
+`ab/runtime/podman/nixos.nix` owns the lifecycle module; `compose.nix`,
+`quadlet.nix` and their shell helpers in the same directory implement the
+backends. `lib/podman.nix` adds the repository's firewall, nginx and tunnel
+projections.
 
 ## Runtime Backends
 
@@ -315,7 +316,8 @@ images or repo-tracked compose files.
 - host declarations: the host's imported service module, commonly
   `hosts/<host>/services.nix` or `hosts/<host>/services/default.nix`
 - host-local compose trees: `hosts/<host>/compose/<stack>/`
-- shared module logic: `lib/podman-compose/`
+- shared module and lifecycle helpers: `ab/runtime/podman/`
+- repository integration: `lib/podman.nix`
 
 ## Quick Links
 
@@ -1110,8 +1112,6 @@ need an explicit build flow if image refresh semantics need to cover them too.
 ## Further Reading
 
 - `docs/services.md`: Native service pattern for non-container workloads.
-- `docs/services.md`: Native service patterns used alongside
-  `lib/podman-compose/default.nix`.
 - `docs/incus-vms.md`: Incus guest lifecycle (uses the same lifecycle tag
   conventions).
 - `docs/deployment.md`: Deploy architecture and secret model.
@@ -1119,7 +1119,9 @@ need an explicit build flow if image refresh semantics need to cover them too.
 ## Source Of Truth Files
 
 - `lib/podman.nix`
-- `lib/podman-compose/default.nix`
-- `lib/podman-compose/helper.sh`
+- `ab/runtime/podman/nixos.nix`
+- `ab/runtime/podman/compose.nix` and `ab/runtime/podman/compose-helper.sh`
+- `ab/runtime/podman/quadlet.nix` and `ab/runtime/podman/quadlet-helper.sh`
+- `ab/runtime/podman/helper.sh`
 - the host service module that declares `services.podman-compose.<stack>`
 - `hosts/nixbot.nix`

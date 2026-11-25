@@ -7,8 +7,9 @@ Use native NixOS modules and native systemd units for ordinary services.
 - Keep the canonical package build in `pkgs/<name>/default.nix`.
 - Keep package-owned NixOS modules on the canonical derivation as
   `passthru.nixosModule`.
-- Use a package-local `flake.nix` for local UX and to re-export modules through
-  `pkgHelper.mkNixosModuleAttrs`.
+- Use a package-local `flake.nix` for local commands and module exports. The
+  shared child-flake builder exports `nixosModules.default` from
+  `passthru.nixosModule`.
 - Enable the service from the host with `services.<name>.enable = true`.
 - Define plain `systemd.services` and `systemd.timers`.
 
@@ -23,32 +24,20 @@ The reference example is `pkgs/examples/hello-rust/default.nix` plus its thin
 Typical service module shape:
 
 ```nix
-pkg.mkRustDerivation {
-  pkgs = pkgs;
+{pkgs, ab}:
+ab.build.rust {
+  inherit pkgs;
   pname = "my-service";
   version = "0.1.0";
   projectDir = "pkgs/my-service";
-  extraPassthru.nixosModule = srv.mkModule {};
+  extraPassthru.nixosModule = ab.nixos.service {};
 }
 ```
 
-Package-local `flake.nix` should usually just re-export the package and its
-module:
-
-```nix
-let
-  drv = pkgs.callPackage ./default.nix {};
-in
-  pkgHelper.mkStdFlakeOutputs {
-    inherit pkgs;
-    build = drv;
-  }
-  // {
-    nixosModules = pkgHelper.mkNixosModuleAttrs {
-      build = drv;
-    };
-  }
-```
+As in the `hello-rust` example, the child `flake.nix` uses
+`(import ../../../lib/project.nix).mkFlakeOutputs ./. inputs`. This builds the
+same constructor as the root package set and exports `nixosModules.default` from
+`passthru.nixosModule`.
 
 ## Host Usage
 
@@ -134,11 +123,11 @@ service model for ordinary system services.
 ## How To Add A New Service
 
 1. Create the package-local `default.nix` under `pkgs/`.
-2. Add the package to `lib/flake/packages.nix` if it should be exported from the
-   root flake package set.
+2. Add the package to `pkgs/manifest.nix` if it should be exported from the root
+   flake package set.
 3. Add or update the package-local `flake.nix`.
-4. Attach `passthru.nixosModule` to the derivation and re-export it via
-   `pkgHelper.mkNixosModuleAttrs`.
+4. Attach `passthru.nixosModule` to the derivation for the child flake to
+   re-export.
 5. Add `options.services.<name>.enable = lib.mkEnableOption ...`.
 6. Under `config = lib.mkIf cfg.enable`, define native
    `systemd.services.<name>`.
@@ -184,4 +173,6 @@ With the native NixOS option exposed by the module:
 
 - `pkgs/examples/hello-rust/default.nix`
 - `pkgs/examples/hello-rust/flake.nix`
-- `lib/flake/packages.nix`
+- `lib/project.nix`
+- `pkgs/manifest.nix`
+- `ab/repo/packages.nix`

@@ -2,9 +2,11 @@
 
 ## One catalog, separate runtime ownership
 
-`lib/services/ai/catalog.nix` is the only shared model catalog. Keep entries
-small and readable: a stable key, client-facing `id`, and the upstream
-references that actually exist for `hf`, `ollama`, and `llama`.
+`ab/services/ai/catalog.nix` is the only shared model catalog. Portable
+inference, prefetch and module implementation live beside it; repository
+composition supplies model and deployment policy. Keep entries small and
+readable: a stable key, client-facing `id`, and the upstream references that
+actually exist for `hf`, `ollama`, and `llama`.
 
 Do not add a second serving catalog, generated lock file, runtime-image matrix,
 or command generator. Container image, command, accelerator, port, lifecycle,

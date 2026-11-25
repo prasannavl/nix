@@ -377,6 +377,9 @@ shell access for `nixos-rebuild --target-host`.
   - `nixbot tf` auto-loads them into the OpenTofu environment when shell
     variables are absent
 - Incus-guest Tailscale auth:
+  - `lib/profiles/incus-lxc.nix` and `lib/profiles/incus-vm.nix` bind the
+    optional `ab/services/tailscale/default.nix` helper into
+    `ab/system/profiles/incus-guest.nix`
   - source file: `data/secrets/globals/tailscale/<incus-guest>.key.age`
   - recipients: admins + `<incus-guest>`
   - the selected Incus machine profile exposes it as
