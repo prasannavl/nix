@@ -6,7 +6,7 @@
   inherit (validation.mk "invalid stack ingress declaration") require requireOnly uniqueStrings;
   isNonEmptyString = value: builtins.isString value && value != "";
   isPath = value: isNonEmptyString value && builtins.match "/.*" value != null;
-  proxyFields = ["domain" "policy" "port" "requestBody" "response" "responseHeaderBufferSize" "rootRedirect" "service" "timeout" "upstream" "upstreamRedirects"];
+  proxyFields = ["accessLog" "domain" "policy" "port" "requestBody" "response" "responseHeaderBufferSize" "rootRedirect" "service" "timeout" "upstream" "upstreamRedirects"];
   routeFields = ["domain" "logout" "match" "path" "policy" "port" "requestBody" "response" "responseHeaderBufferSize" "service" "target" "timeout" "upstream" "upstreamRedirects"];
   streamProxyFields = ["domain" "port" "protocol" "service"];
   staticSiteFields = ["domain" "file" "files" "hostNames" "routes"];
@@ -293,11 +293,17 @@
       assert require (validDomain domain) "proxy ${name} references an unknown domain group";
       assert require (isNonEmptyString port) "proxy ${name} port must be a non-empty string";
       assert require (validPort service port) "proxy ${name} references an unknown service port";
+      assert require (builtins.isBool (declaration.accessLog or true)) "proxy ${name} accessLog must be boolean";
       assert require (!(declaration ? responseHeaderBufferSize) || isNonEmptyString declaration.responseHeaderBufferSize) "proxy ${name} responseHeaderBufferSize must be non-empty";
       assert require (!(declaration ? timeout) || validTimeout declaration.timeout) "proxy ${name} timeout references an unknown timeout profile";
         {
           inherit domain policy port rootRedirect service;
         }
+        // (
+          if declaration ? accessLog
+          then {inherit (declaration) accessLog;}
+          else {}
+        )
         // (
           if declaration ? upstream
           then {upstream = normalizeUpstream "proxy" name declaration.upstream;}

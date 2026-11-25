@@ -155,6 +155,12 @@
         description = "If true, suppress nginx's global Permissions-Policy for this vhost and let the upstream's Permissions-Policy pass through. Other security headers remain applied.";
       };
 
+      accessLog = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether to inherit nginx access logging for this vhost.";
+      };
+
       proxyBufferSize = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -1812,7 +1818,7 @@
             server {
       ${lib.concatMapStringsSep "\n" (directive: "        ${directive}") listenDirectives}
               server_name ${serverName};
-      ${serverExtraDirectives}
+      ${serverExtraDirectives}${lib.optionalString (rootProxy != null && !(rootProxy.accessLog or true)) "\n        access_log off;"}
 
               include /etc/nginx/conf.d/lib/http-security.conf;
 

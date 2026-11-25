@@ -93,11 +93,13 @@
     http = {
       proxies =
         lib.mapAttrs
-        (service: spec: {
-          serverNames = projectedStack.serviceRegistry.domains.${service};
-          upstreams = [endpointForHost.${projectedStack.serviceRegistry.roles.${spec.role}.host}];
-          rateLimit = nginx.rateLimitProfiles.default;
-        })
+        (service: spec:
+          {
+            serverNames = projectedStack.serviceRegistry.domains.${service};
+            upstreams = [endpointForHost.${projectedStack.serviceRegistry.roles.${spec.role}.host}];
+            rateLimit = nginx.rateLimitProfiles.default;
+          }
+          // lib.optionalAttrs (service == "app") {accessLog = false;})
         projectedStack.serviceRegistry.services;
       routes = {};
       redirects = {};
@@ -230,6 +232,9 @@ in
   assert countOccurrences "map $ssl_server_name $test_edge_certificate {" composedContent == 1;
   assert countOccurrences "map $ssl_server_name $test_edge_certificate_key {" composedContent == 1;
   assert countOccurrences "listen 9443 ssl default_server;" composedContent == 1;
+  # The app opts out on HTTP and both TLS listeners; the API inherits logging.
+  assert countOccurrences "access_log off;" renderedResult.bootstrapFiles.app.content == 3;
+  assert !lib.hasInfix "access_log off;" renderedResult.bootstrapFiles.api.content;
   assert lib.all
   (file:
     !lib.hasInfix "map $remote_addr $client_addr_prefix_key {" file.content
