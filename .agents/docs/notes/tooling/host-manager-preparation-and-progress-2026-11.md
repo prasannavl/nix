@@ -81,6 +81,21 @@
 - Serial non-interactive builds retain evaluation caching. Adjustable pools
   disable it before parallel execution becomes possible.
 
+## Acquire activity
+
+- Closure transfer uses Nix path evidence; admission names the validator in
+  flight. Identity and lease operations have a step and elapsed time, not a
+  synthetic progress counter.
+- Fleet opts candidate runners into item updates with
+  `ABIRD_ACQUIRE_PROGRESS=1`. The compact row shows the current service or
+  model, its 1-based position in the host plan, backend, action and outcome.
+  Earlier lines remain in verbose output and diagnostics. Older candidates
+  retain start/summary output.
+- Image batch size is the number still missing after cache checks, not layers or
+  a transfer percentage. Ollama bytes belong to one layer and are sampled at
+  most once per second per request. HF has no inferred byte total; llama.cpp
+  request acceptance is not download completion. Deferred is not ready.
+
 ## Timing and source identity
 
 - Host-stage elapsed accumulates its steps, including retries and finalization,

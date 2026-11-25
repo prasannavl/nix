@@ -1078,6 +1078,7 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
         self.assertIn("_remote_pre_activation_podman_image_pulls /nix/store/new-system", command)
         self.assertIn('${system_path}/share/podman-compose/image-pulls.json', command)
         self.assertIn('${system_path}/sw/bin/podman-compose-image-pull-all', command)
+        self.assertIn('ABIRD_ACQUIRE_PROGRESS=1', command)
         self.assertIn("NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN", command)
         self.assertIn("[prefetch-podman-image] start", command)
 
@@ -1094,6 +1095,7 @@ class NixbotScriptTest(NixbotScriptMixin, unittest.TestCase):
         command = result.stdout
         self.assertIn("_remote_pre_activation_ai_model_prefetch /nix/store/new-system", command)
         self.assertIn('${system_path}/sw/bin/ai-model-prefetch-all', command)
+        self.assertIn('ABIRD_ACQUIRE_PROGRESS=1', command)
         self.assertNotIn("AI_MODEL_PREFETCH_PLAN", command)
         self.assertNotIn("caching declared AI models with", command)
 

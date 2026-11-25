@@ -1268,29 +1268,36 @@ impl ProgressReporter {
     }
 
     pub fn host_task_output(&self, host: &str, key: &str, line: String) {
+        self.update_host_output(host, key, line, false);
+    }
+
+    /// A current activity replaces stale detail in the live row, not in diagnostics.
+    pub fn host_task_activity(&self, host: &str, key: &str, line: String) {
+        self.update_host_output(host, key, line, true);
+    }
+
+    fn update_host_output(&self, host: &str, key: &str, line: String, replace: bool) {
         if line.is_empty() {
             return;
         }
         self.update_host_row(host, Redraw::Stream, |row| {
-            if row.task_key.as_deref() != Some(key) {
-                if let Some(task) = row.suspended.iter_mut().find(|task| task.key == key) {
-                    if task.output.back() != Some(&line) {
-                        task.output.push_back(line);
-                    }
-                    while task.output.len() > LIVE_OUTPUT_LINES_PER_TASK {
-                        task.output.pop_front();
-                    }
-                    task.last_output = Some(Instant::now());
-                }
+            let (output, last) = if row.task_key.as_deref() == Some(key) {
+                (&mut row.output, &mut row.last_output)
+            } else if let Some(task) = row.suspended.iter_mut().find(|task| task.key == key) {
+                (&mut task.output, &mut task.last_output)
+            } else {
                 return;
+            };
+            if replace {
+                output.clear();
             }
-            if row.output.back() != Some(&line) {
-                row.output.push_back(line);
+            if output.back() != Some(&line) {
+                output.push_back(line);
             }
-            while row.output.len() > LIVE_OUTPUT_LINES_PER_TASK {
-                row.output.pop_front();
+            while output.len() > LIVE_OUTPUT_LINES_PER_TASK {
+                output.pop_front();
             }
-            row.last_output = Some(Instant::now());
+            *last = Some(Instant::now());
         });
     }
 
@@ -6587,6 +6594,10 @@ mod tests {
         let started = host_row(&reporter, "app").task_started;
         reporter.host_task_output("app", "same#1", "parent output".to_owned());
         reporter.host_task_started("app", "same#2", "child", None);
+        reporter.host_task_activity("app", "same#1", "parent activity".into());
+        reporter.host_task_activity("app", "same#2", "first snapshot".into());
+        reporter.host_task_activity("app", "same#2", "current snapshot".into());
+        assert_eq!(host_row(&reporter, "app").output, ["current snapshot"]);
         reporter.host_task_finished(
             "app",
             "unrelated",
@@ -6603,7 +6614,7 @@ mod tests {
         let row = host_row(&reporter, "app");
         assert_eq!(row.task_key.as_deref(), Some("same#1"));
         assert_eq!(row.task_started, started);
-        assert_eq!(row.output.back().map(String::as_str), Some("parent output"));
+        assert_eq!(row.output, ["parent activity"]);
         reporter.host_task_finished(
             "app",
             "same#1",

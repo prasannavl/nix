@@ -2306,7 +2306,15 @@ else
 	fi
 fi
 
+admission_index=0
 for admission_program in "${admission_programs[@]}"; do
+	admission_index=$((admission_index + 1))
+	case "${admission_program##*/}" in
+	*-service-placement-preflight) validator=placement ;;
+	*-projection-preflight) validator=projection ;;
+	*) validator=generation ;;
+	esac
+	printf '[generation-admission] checking %d/%d %s\n' "$admission_index" "${#admission_programs[@]}" "$validator" >&2
 	if admission_output="$(ABIRD_HOST_AGENT_GENERATION_PREFLIGHT_OUTPUT=quiet "${admission_program}" "${system_path}" "${goal}" "${admission_mode}")"; then
 		:
 	else
@@ -11588,7 +11596,7 @@ _remote_pre_activation_podman_image_pulls() {
 	fi
 
 	echo "[prefetch-podman-image] start" >&2
-	NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN="${plan}" "${runner}"
+	ABIRD_ACQUIRE_PROGRESS=1 NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN="${plan}" "${runner}"
 }
 
 build_pre_activation_podman_image_pulls_cmd() {
@@ -11627,7 +11635,7 @@ _remote_pre_activation_ai_model_prefetch() {
 		return 0
 	fi
 
-	"${runner}"
+	ABIRD_ACQUIRE_PROGRESS=1 "${runner}"
 }
 
 build_pre_activation_ai_model_prefetch_cmd() {

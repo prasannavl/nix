@@ -24,6 +24,7 @@ use crate::fleet::host_runtime::ProcessStream;
 use crate::fleet::interactive::InteractiveVerbose;
 use crate::fleet::inventory_routing::{self, RouteDecision, RouteRequest, SelfIdentity};
 use crate::fleet::presentation::report_verbose_line;
+use crate::presentation::format_bytes;
 use crate::programs::{clear_git_repository_environment, nix::Nix};
 use crate::progress::{ProgressReporter, StepProgress, command_reporter};
 use crate::projection::{DesiredResourceState, PhaseProjection, ProjectionEffect};
@@ -3201,23 +3202,6 @@ fn truncate_display(value: &str, limit: usize) -> String {
         format!("{prefix}…")
     } else {
         prefix
-    }
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} {}", UNITS[unit])
-    } else if value >= 10.0 {
-        format!("{value:.0} {}", UNITS[unit])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
     }
 }
 

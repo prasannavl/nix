@@ -735,10 +735,13 @@ impl ProgressTask {
     }
 
     /// Retain and render one semantic line for this step.
-    fn publish_line(&self, line: String) {
+    fn publish_line(&self, line: String, current_activity: bool) {
         self.reporter
             .task_output(self.key.clone(), &self.running, line.clone());
         match &self.target {
+            TaskTarget::Host(host) if current_activity => {
+                self.reporter.host_task_activity(host, &self.key, line)
+            }
             TaskTarget::Host(host) => self.reporter.host_task_output(host, &self.key, line),
             TaskTarget::Phase => {
                 self.reporter
@@ -783,14 +786,18 @@ impl Task for ProgressTask {
                         .flatten()
                 });
             if let Some(dashboard_line) = dashboard_line {
-                self.publish_line(dashboard_line);
+                self.publish_line(
+                    dashboard_line,
+                    line.starts_with("[prefetch-podman-image] ")
+                        || line.starts_with("[prefetch-ai-model] "),
+                );
             }
         }
     }
 
     fn note(&self, line: &str) {
         if let Some(line) = format_operation_dashboard_line(line) {
-            self.publish_line(line);
+            self.publish_line(line, false);
         }
     }
 
@@ -838,7 +845,7 @@ impl Task for ProgressTask {
                     );
                 }
                 TaskOutcome::Failed => {
-                    self.publish_line(FAILURE_HINT.to_owned());
+                    self.publish_line(FAILURE_HINT.to_owned(), false);
                     self.reporter.host_task_finished(
                         host,
                         &self.key,
@@ -866,7 +873,7 @@ impl Task for ProgressTask {
                     true,
                 ),
                 TaskOutcome::Failed => {
-                    self.publish_line(FAILURE_HINT.to_owned());
+                    self.publish_line(FAILURE_HINT.to_owned(), false);
                     self.reporter.task_finished(
                         self.key.clone(),
                         self.running.clone(),
@@ -1551,6 +1558,17 @@ fn activation_protocol_line(line: &str) -> bool {
 
 fn format_structured_status_line(line: &str) -> Option<String> {
     if let Some(rest) = line.strip_prefix("[generation-admission] ") {
+        if let Some((position, validator)) = rest
+            .strip_prefix("checking ")
+            .and_then(|s| s.split_once(' '))
+            && let Some((n, total)) = progress_ratio(position)
+            && n > 0
+            && matches!(validator, "generation" | "projection" | "placement")
+        {
+            return Some(format!(
+                "validator {n}/{total} · checking {validator} policy"
+            ));
+        }
         if matches!(
             rest,
             "rejected-before-switch"
@@ -1572,33 +1590,34 @@ fn format_structured_status_line(line: &str) -> Option<String> {
         }
         return Some("[generation-admission] update; see diagnostics".to_owned());
     }
-    if let Some(rest) = line.strip_prefix("[prefetch-podman-image] ") {
-        return match rest {
-            "start" => Some("[prefetch-podman-image] start".to_owned()),
-            rest if rest.starts_with("skipped ") => {
-                Some("[prefetch-podman-image] skipped".to_owned())
+    for (prefix, unit) in [
+        ("[prefetch-podman-image] ", "service"),
+        ("[prefetch-ai-model] ", "model"),
+    ] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            if let Some(item) = rest
+                .strip_prefix("item ")
+                .and_then(|s| format_acquire_item(unit, s))
+            {
+                return Some(item);
             }
-            rest if rest.starts_with("deferred ") => {
-                Some("[prefetch-podman-image] deferred".to_owned())
+            if rest == "start"
+                || rest.strip_prefix("start total=").is_some_and(ascii_digits)
+                || valid_prefetch_summary(rest)
+            {
+                return Some(line.to_owned());
             }
-            _ => Some("[prefetch-podman-image] activity; see diagnostics".to_owned()),
-        };
-    }
-    if let Some(rest) = line.strip_prefix("[prefetch-ai-model] ") {
-        let numeric_summary = (rest.strip_prefix("start total=").is_some_and(ascii_digits)
-            || valid_ai_prefetch_summary(rest))
-        .then(|| format!("[prefetch-ai-model] {rest}"));
-        return numeric_summary.or_else(|| {
-            Some(if rest.starts_with("failed id=") {
-                "[prefetch-ai-model] item failed; see diagnostics".to_owned()
+            let fallback = if rest.starts_with("failed id=") {
+                "item failed; see diagnostics"
             } else if rest.starts_with("skipped ") {
-                "[prefetch-ai-model] skipped".to_owned()
+                "skipped"
             } else if rest.starts_with("deferred ") {
-                "[prefetch-ai-model] deferred".to_owned()
+                "deferred"
             } else {
-                "[prefetch-ai-model] activity; see diagnostics".to_owned()
-            })
-        });
+                "activity; see diagnostics"
+            };
+            return Some(format!("{prefix}{fallback}"));
+        }
     }
     if let Some(rest) = line.strip_prefix("[pre-switch] ") {
         return Some(match rest {
@@ -1725,7 +1744,86 @@ fn ascii_digits(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
 }
 
-fn valid_ai_prefetch_summary(value: &str) -> bool {
+// Only admit bounded plan identifiers, never endpoints, credentials or child prose.
+fn artifact_label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .split('/')
+            .all(|s| !s.is_empty() && s != "." && s != "..")
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b':' | b'_' | b'-'))
+}
+
+fn image_label(value: &str) -> bool {
+    let Some((name, digest)) = value.split_once('@') else {
+        return artifact_label(value);
+    };
+    artifact_label(name)
+        && digest
+            .strip_prefix("sha256:")
+            .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+fn progress_ratio(value: &str) -> Option<(u64, u64)> {
+    let (n, total) = value.split_once('/')?;
+    if !ascii_digits(n) || !ascii_digits(total) {
+        return None;
+    }
+    let pair = (n.parse().ok()?, total.parse().ok()?);
+    (pair.1 > 0 && pair.0 <= pair.1).then_some(pair)
+}
+
+fn format_acquire_item(unit: &str, fields: &str) -> Option<String> {
+    let mut fields = fields.split(' ');
+    let (n, total) = progress_ratio(fields.next()?)?;
+    let backend = fields.next()?;
+    let label = fields.next()?;
+    let action = fields.next()?;
+    let backend = match (unit, backend) {
+        ("service", "compose" | "quadlet") if safe_name(label) => backend,
+        ("model", "hf") if artifact_label(label) => "Hugging Face",
+        ("model", "llama") if artifact_label(label) => "llama.cpp",
+        ("model", "ollama") if artifact_label(label) => "Ollama",
+        _ => return None,
+    };
+    let detail = match (action, fields.next()) {
+        ("deferred", None) if unit == "service" => "deferred to activation".to_owned(),
+        ("accepted", None) if backend == "llama.cpp" => "request accepted".to_owned(),
+        (
+            "checking" | "fetching" | "pulling" | "ready" | "deferred" | "failed" | "requesting"
+            | "unloaded" | "loaded" | "sleeping" | "downloading" | "downloaded" | "loading",
+            None,
+        ) => action.to_owned(),
+        ("pulling", Some(image)) if unit == "service" && image_label(image) => {
+            format!("pulling {image}")
+        }
+        ("batch", Some(count))
+            if unit == "service" && ascii_digits(count) && count.parse::<u32>().ok()? > 0 =>
+        {
+            if count == "1" {
+                "pulling 1 missing image".to_owned()
+            } else {
+                format!("pulling {count} missing images")
+            }
+        }
+        ("layer", Some(ratio)) if backend == "Ollama" => {
+            let (bytes, size) = progress_ratio(ratio)?;
+            format!(
+                "layer {} / {}",
+                crate::presentation::format_bytes(bytes),
+                crate::presentation::format_bytes(size)
+            )
+        }
+        _ => return None,
+    };
+    (n > 0 && fields.next().is_none())
+        .then(|| format!("{unit} {n}/{total} · {backend} · {label} · {detail}"))
+}
+
+fn valid_prefetch_summary(value: &str) -> bool {
     let Some((ok, rest)) = value
         .strip_prefix("ok=")
         .and_then(|value| value.split_once('/'))
@@ -2626,6 +2724,50 @@ mod tests {
             None
         );
         assert_eq!(format_dashboard_line("\t\r"), None);
+    }
+
+    #[test]
+    fn acquire_detail_reports_units_not_guessed_download_progress() {
+        for (input, expected) in [
+            (
+                "[prefetch-podman-image] item 2/5 quadlet svc pulling ghcr.io/org/app:v1",
+                "service 2/5 · quadlet · svc · pulling ghcr.io/org/app:v1",
+            ),
+            (
+                "[prefetch-podman-image] item 1/1 compose svc batch 3",
+                "service 1/1 · compose · svc · pulling 3 missing images",
+            ),
+            (
+                "[prefetch-ai-model] item 4/9 ollama model:q4 layer 1048576/4194304",
+                "model 4/9 · Ollama · model:q4 · layer 1.0 MiB / 4.0 MiB",
+            ),
+            (
+                "[prefetch-ai-model] item 1/2 llama org/model accepted",
+                "model 1/2 · llama.cpp · org/model · request accepted",
+            ),
+            (
+                "[generation-admission] checking 2/2 projection",
+                "validator 2/2 · checking projection policy",
+            ),
+        ] {
+            assert_eq!(format_dashboard_line(input).as_deref(), Some(expected));
+        }
+        for fields in [
+            "0/1 hf foo ready",
+            "2/1 hf foo ready",
+            "1/1 hf /etc/cache ready",
+            "1/1 ollama foo layer 11/10",
+            "1/1 ollama foo layer 1/0",
+            "1/1 hf user:pass@host/foo ready",
+            "1/1 llama http://host/foo ready",
+            "1/1 hf foo ready extra",
+        ] {
+            let line = format!("[prefetch-ai-model] item {fields}");
+            assert_eq!(
+                format_dashboard_line(&line).as_deref(),
+                Some("[prefetch-ai-model] activity; see diagnostics")
+            );
+        }
     }
 
     #[test]
