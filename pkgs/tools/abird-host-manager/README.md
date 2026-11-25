@@ -377,6 +377,11 @@ adjustment establishes one session-wide target for new work in all remaining
 waves and stages, including deployment. It does not change Nix/compiler thread
 counts. The footer advertises controls only for a live adjustable local pool.
 
+Snapshot and Deploy admit one dependency level at a time. Acquire checks parent
+readiness in selection order, then admits all eligible hosts to one pool. A slow
+image or model pull does not block hosts in a later deployment level; the same
+global and per-domain limits still apply.
+
 Before adjustment, existing stage defaults apply: `--build-jobs` for builds,
 `--jobs` / `--deploy-jobs` for deployment stages, and `--jobs-per-domain` /
 `--deploy-jobs-per-domain` for each domain's initial allowance. The displayed

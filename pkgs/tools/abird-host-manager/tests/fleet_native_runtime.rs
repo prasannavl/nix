@@ -984,6 +984,108 @@ esac
 }
 
 #[test]
+fn acquire_copies_across_deployment_levels_before_the_first_host_finishes() {
+    let temporary = tempdir();
+    let repo = temporary.path().join("repo");
+    let tools = temporary.path().join("tools");
+    fs::create_dir_all(&repo).unwrap();
+    fs::create_dir(&tools).unwrap();
+    fs::write(repo.join("hosts.nix"), "{ hosts = {}; }").unwrap();
+    fs::write(repo.join("flake.nix"), "{ outputs = _: {}; }").unwrap();
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["add", "."]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+    );
+
+    // With the old wave barrier the parent times out: only the child's
+    // simulated copy can release it. No SSH or Nix command reaches a host.
+    let gate = temporary.path().join("overlap");
+    run(Command::new("mkfifo").arg(&gate));
+    let nix = tools.join("nix");
+    write_executable(
+        &nix,
+        r#"#!/bin/sh
+set -eu
+case "$*" in
+  *'.#nixbot.deployDependencies'*) echo '{}' ;;
+  *'--file '*'hosts.nix'*) echo '{"hosts":{
+    "slow":{"target":"slow.invalid"},
+    "child":{"target":"child.invalid","parent":"slow","parentSettleCommand":"settle-child"}
+  }}' ;;
+  *'.#nixbot.plans --apply builtins.attrNames') echo '["slow","child"]' ;;
+  *'.#nixbot.plans.'*'.drvPath') echo /nix/store/aaaaaaaa-system.drv ;;
+  build*) echo /nix/store/aaaaaaaa-nixos-system-test ;;
+  copy*'@slow.invalid '*) timeout 5 sh -c 'read -r msg < "$GATE"; echo "$msg" > "$GATE.proof"' ;;
+  copy*'@child.invalid '*) test -f "$GATE.ready" && timeout 5 sh -c 'echo child > "$GATE"' ;;
+  *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
+esac
+"#,
+    )
+    .unwrap();
+    write_executable(
+        &tools.join("ssh"),
+        r#"#!/bin/sh
+set -eu
+input=$(cat)
+case "$*" in
+  *'@slow.invalid'*)
+    if printf '%s\n' "$input" | grep -Fx "$(printf settle-child | base64)" >/dev/null; then
+      touch "$GATE.ready"
+    fi ;;
+esac
+"#,
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+        .current_dir(&repo)
+        .args([
+            "prepare",
+            "--hosts=slow,child",
+            "--jobs=2",
+            "--jobs-per-domain=2",
+            "--build-host=local",
+            "--config=hosts.nix",
+            "--no-override",
+        ])
+        .env(
+            "PATH",
+            format!("{}:{}", tools.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("GATE", gate)
+        .env("ABIRD_HOST_MANAGER_NIX", nix)
+        .env("NIXBOT_HOST_LOCAL_LOCK_PATH", temporary.path().join("lock"))
+        .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("run"))
+        .env(
+            "NIXBOT_RUNTIME_FALLBACK_ROOT",
+            temporary.path().join("fallback"),
+        )
+        .env("NIXBOT_DIAG_KEEP_ROOT", temporary.path().join("diag"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(temporary.path().join("overlap.proof")).unwrap(),
+        "child\n"
+    );
+}
+
+#[test]
 fn dry_deploy_builds_the_plan_without_contacting_deploy_targets() {
     let temporary = tempdir();
     let repository = temporary.path().join("repository");

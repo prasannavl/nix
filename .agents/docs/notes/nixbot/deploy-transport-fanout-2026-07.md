@@ -32,6 +32,12 @@ preparation, or activation. Rollback uses the same subwaves in reverse.
 Build-plan evaluation and builds remain independently parallel, as does the
 native systemd service graph inside each guest.
 
+The native host manager keeps Snapshot and Deploy wave-ordered. Acquire runs
+parent reconcile/settle for eligible targets in topological order, then uses a
+single domain-limited pool for copying and prefetching, in both `prepare` and
+`deploy`. The live `+/-` target applies across deployment levels; a configured
+hard per-domain maximum still caps siblings.
+
 Parent inference is intentionally narrower than a general physical-domain
 registry. Two distinct root parents that happen to share one physical machine
 remain separate domains, so their mutating group deploys must remain sequential.

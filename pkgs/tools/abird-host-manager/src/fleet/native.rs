@@ -2313,7 +2313,7 @@ impl<'a> NativeFleetEffects<'a> {
                 }
             }
             if !runnable.is_empty() {
-                self.ensure_wave_parent_readiness(&runnable)
+                self.ensure_parent_readiness(&runnable)
                     .context("snapshot parent readiness failed")?;
             }
             let context = self.worker_context();
@@ -2699,8 +2699,11 @@ impl<'a> NativeFleetEffects<'a> {
         Ok(observation.epoch)
     }
 
-    fn ensure_wave_parent_readiness(&mut self, wave: &[String]) -> Result<()> {
-        for host in wave {
+    fn ensure_parent_readiness<'h>(
+        &mut self,
+        hosts: impl IntoIterator<Item = &'h String>,
+    ) -> Result<()> {
+        for host in hosts {
             self.check_forward_work()?;
             let configured = &self.inventory.hosts[host];
             let Some(parent) = configured.parent.as_deref() else {
@@ -3123,137 +3126,120 @@ impl<'a> NativeFleetEffects<'a> {
             return Ok(());
         }
         let control = self.admission_control(self.invocation.options.deploy_jobs, true)?;
-        let wave_count = self.selection.levels.len();
-        for (wave_index, wave) in self.selection.levels.clone().into_iter().enumerate() {
+        self.progress
+            .phase_schedule("acquire", None, control.snapshot().target);
+        let mut tasks = Vec::new();
+        for host in &self.selection.ordered {
             self.check_forward_work()?;
-            self.progress.phase_schedule(
-                "acquire",
-                Some((wave_index + 1, wave_count)),
-                control.snapshot().target,
-            );
-            let mut tasks = Vec::new();
-            for host in wave {
-                if self.inventory.hosts[&host].deploy == DeployMode::Skip {
-                    self.progress.host_status(&host, HostStatus::AcquireSkip);
-                } else if let Some(candidate) = self.candidate_for_acquisition(&host)? {
-                    let builder = self.builder_closures.get(&host).cloned();
-                    tasks.push((host, candidate, builder));
-                } else {
-                    self.progress.host_status(
-                        &host,
-                        if self.optional_snapshot_skipped.contains(&host) {
-                            HostStatus::AcquireBlocked
-                        } else {
-                            HostStatus::AcquireSkip
-                        },
-                    );
-                }
-            }
-            if !tasks.is_empty() {
-                let readiness_hosts = tasks
-                    .iter()
-                    .map(|(host, _, _)| host.clone())
-                    .collect::<Vec<_>>();
-                if let Err(error) = self.ensure_wave_parent_readiness(&readiness_hosts) {
-                    self.release_all_candidate_leases();
-                    self.builder_lease.release();
-                    return Err(error.context("acquisition parent readiness failed"));
-                }
-            }
-            let context = self.worker_context();
-            let inventory = self.inventory;
-            let progress = self.progress.clone();
-            let outcomes = scheduling::dispatch(
-                self.domain_tasks(tasks, |task| &task.0)?,
-                &control,
-                &progress,
-                |(host, candidate, builder_closure)| {
-                    let _operation = progress.host_operation(&host);
-                    let policy = inventory.hosts[&host].deploy;
-                    let mut worker = match context.create() {
-                        Ok(worker) => worker,
-                        Err(error) => {
-                            return AcquireTaskOutcome {
-                                host,
-                                policy,
-                                result: Err(error),
-                                candidate_lease: None,
-                                acquired: None,
-                                deferred: false,
-                            };
-                        }
-                    };
-                    if let Some(closure) = builder_closure {
-                        worker.builder_closures.insert(host.clone(), closure);
-                    }
-                    let result = worker.acquire_one(&host, &candidate).and_then(|()| {
-                        if worker.invocation.action == Action::Prepare {
-                            worker.release_tracked_candidate_lease(&host)
-                        } else {
-                            Ok(())
-                        }
-                    });
-                    AcquireTaskOutcome {
-                        candidate_lease: worker.candidate_leases.get(&host).cloned(),
-                        acquired: worker.acquired.get(&host).cloned(),
-                        deferred: worker.acquisition_deferred.contains(&host),
-                        host,
-                        policy,
-                        result,
-                    }
-                },
-                |outcome| context.stopped() || outcome.stops_admission(),
-                |_, outcome| {
-                    if let Err(error) = &outcome.result {
-                        progress
-                            .host_failed(&outcome.host, format!("acquisition failed: {error:#}"));
-                    } else if outcome.deferred {
-                        progress.host_status(&outcome.host, HostStatus::AcquireDeferred);
+            if self.inventory.hosts[host].deploy == DeployMode::Skip {
+                self.progress.host_status(host, HostStatus::AcquireSkip);
+            } else if let Some(candidate) = self.candidate_for_acquisition(host)? {
+                let builder = self.builder_closures.get(host).cloned();
+                tasks.push((host.clone(), candidate, builder));
+            } else {
+                self.progress.host_status(
+                    host,
+                    if self.optional_snapshot_skipped.contains(host) {
+                        HostStatus::AcquireBlocked
                     } else {
-                        progress.host_status(&outcome.host, HostStatus::AcquireDone);
-                    }
-                },
-            )?;
-            for outcome in outcomes.into_iter().flatten() {
-                if let Some(generation) = outcome.candidate_lease {
-                    self.candidate_leases
-                        .insert(outcome.host.clone(), generation);
-                }
-                if let Some(generation) = outcome.acquired {
-                    self.acquired.insert(outcome.host.clone(), generation);
-                }
-                if outcome.deferred {
-                    self.acquisition_deferred.insert(outcome.host.clone());
-                    self.workflow_warnings.push(WorkflowWarning {
-                        host: outcome.host.clone(),
-                        detail: "prefetch deferred until first activation".to_owned(),
-                    });
-                }
-                if let Err(error) = outcome.result {
-                    self.deploy_failed.insert(outcome.host.clone());
-                    if let Err(cleanup) = self.release_tracked_candidate_lease(&outcome.host) {
-                        self.deploy_failures.push(format!(
-                            "{} candidate lease cleanup: {cleanup:#}",
-                            outcome.host
-                        ));
-                    }
-                    if outcome.policy == DeployMode::Optional {
-                        self.workflow_warnings.push(WorkflowWarning {
-                            host: outcome.host,
-                            detail: format!("acquisition failed: {error:#}"),
-                        });
-                    } else {
-                        self.deploy_failures
-                            .push(format!("{} acquisition: {error:#}", outcome.host));
-                    }
-                }
-            }
-            // All admitted outcomes are retained before cancellation or cleanup.
-            self.check_forward_work()?;
-            if !self.deploy_failures.is_empty() {
-                break;
+                        HostStatus::AcquireSkip
+                    },
+                );
             }
         }
+        // Reconcile guests parent-first. Transferring their candidates needs no
+        // deployment ordering once the targets are reachable.
+        self.ensure_parent_readiness(tasks.iter().map(|(host, _, _)| host))
+            .context("acquisition parent readiness failed")?;
+        let context = self.worker_context();
+        let inventory = self.inventory;
+        let progress = self.progress.clone();
+        let outcomes = scheduling::dispatch(
+            self.domain_tasks(tasks, |task| &task.0)?,
+            &control,
+            &progress,
+            |(host, candidate, builder_closure)| {
+                let _operation = progress.host_operation(&host);
+                let policy = inventory.hosts[&host].deploy;
+                let mut worker = match context.create() {
+                    Ok(worker) => worker,
+                    Err(error) => {
+                        return AcquireTaskOutcome {
+                            host,
+                            policy,
+                            result: Err(error),
+                            candidate_lease: None,
+                            acquired: None,
+                            deferred: false,
+                        };
+                    }
+                };
+                if let Some(closure) = builder_closure {
+                    worker.builder_closures.insert(host.clone(), closure);
+                }
+                let result = worker.acquire_one(&host, &candidate).and_then(|()| {
+                    if worker.invocation.action == Action::Prepare {
+                        worker.release_tracked_candidate_lease(&host)
+                    } else {
+                        Ok(())
+                    }
+                });
+                AcquireTaskOutcome {
+                    candidate_lease: worker.candidate_leases.get(&host).cloned(),
+                    acquired: worker.acquired.get(&host).cloned(),
+                    deferred: worker.acquisition_deferred.contains(&host),
+                    host,
+                    policy,
+                    result,
+                }
+            },
+            |outcome| context.stopped() || outcome.stops_admission(),
+            |_, outcome| {
+                if let Err(error) = &outcome.result {
+                    progress.host_failed(&outcome.host, format!("acquisition failed: {error:#}"));
+                } else if outcome.deferred {
+                    progress.host_status(&outcome.host, HostStatus::AcquireDeferred);
+                } else {
+                    progress.host_status(&outcome.host, HostStatus::AcquireDone);
+                }
+            },
+        )?;
+        for outcome in outcomes.into_iter().flatten() {
+            if let Some(generation) = outcome.candidate_lease {
+                self.candidate_leases
+                    .insert(outcome.host.clone(), generation);
+            }
+            if let Some(generation) = outcome.acquired {
+                self.acquired.insert(outcome.host.clone(), generation);
+            }
+            if outcome.deferred {
+                self.acquisition_deferred.insert(outcome.host.clone());
+                self.workflow_warnings.push(WorkflowWarning {
+                    host: outcome.host.clone(),
+                    detail: "prefetch deferred until first activation".to_owned(),
+                });
+            }
+            if let Err(error) = outcome.result {
+                self.deploy_failed.insert(outcome.host.clone());
+                if let Err(cleanup) = self.release_tracked_candidate_lease(&outcome.host) {
+                    self.deploy_failures.push(format!(
+                        "{} candidate lease cleanup: {cleanup:#}",
+                        outcome.host
+                    ));
+                }
+                if outcome.policy == DeployMode::Optional {
+                    self.workflow_warnings.push(WorkflowWarning {
+                        host: outcome.host,
+                        detail: format!("acquisition failed: {error:#}"),
+                    });
+                } else {
+                    self.deploy_failures
+                        .push(format!("{} acquisition: {error:#}", outcome.host));
+                }
+            }
+        }
+        // All admitted outcomes are retained before cancellation or cleanup.
+        self.check_forward_work()?;
         self.builder_lease.release();
         if self.deploy_failures.is_empty() {
             Ok(())
@@ -3311,16 +3297,10 @@ impl<'a> NativeFleetEffects<'a> {
                         ))
                     })
                     .collect::<Result<Vec<_>>>()?;
-            if !tasks.is_empty() {
-                let readiness_hosts = tasks
-                    .iter()
-                    .map(|(host, _, _, _)| host.clone())
-                    .collect::<Vec<_>>();
-                if let Err(error) = self.ensure_wave_parent_readiness(&readiness_hosts) {
-                    self.deploy_failures
-                        .push(format!("parent readiness: {error:#}"));
-                    break;
-                }
+            if let Err(error) = self.ensure_parent_readiness(tasks.iter().map(|task| &task.0)) {
+                self.deploy_failures
+                    .push(format!("parent readiness: {error:#}"));
+                break;
             }
             let context = self.worker_context();
             let inventory = self.inventory;
