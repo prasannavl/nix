@@ -21,6 +21,21 @@ pub enum Phase {
     Tofu,
 }
 
+impl Phase {
+    pub fn uses_hosts(self) -> bool {
+        matches!(
+            self,
+            Self::Build
+                | Self::Snapshot
+                | Self::Acquire
+                | Self::Deploy
+                | Self::Health
+                | Self::DevelopmentBuild
+                | Self::BootstrapCheck
+        )
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkflowPlan {
     pub phases: Vec<Phase>,

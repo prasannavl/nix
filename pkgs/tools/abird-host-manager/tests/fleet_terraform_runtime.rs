@@ -7,14 +7,14 @@ use tempfile::TempDir;
 
 use abird_host_manager::fleet::terraform::{
     AutomaticTfvars, ChangeDecision, ChangeGateInput, DiffObservation, EnvironmentDeclaration,
-    EnvironmentRequirement, ProcessArgument, ProcessCommand, ProjectRun, SecretLoad,
+    EnvironmentRequirement, ProcessArgument, ProcessCommand, ProjectRun, ProjectStep, SecretLoad,
     TerraformAction, TerraformPhase, project_context,
 };
 use abird_host_manager::fleet::terraform_runtime::{
     ChangeGateSource, CommandExecutor, CopySafeOutput, Decryptor, PhaseProjectStatus,
     ProjectExecution, ProjectRuntimeInput, ProjectSelection, RuntimeError, RuntimePrograms,
     SecureMaterializer, SystemCommandExecutor, discover_tfvar_secrets, execute_phase,
-    materialize_tfvars, prepare_project_execution, resolve_environment,
+    execute_phase_observed, materialize_tfvars, prepare_project_execution, resolve_environment,
     select_projects_for_execution, validate_project_environment,
 };
 
@@ -384,14 +384,39 @@ fn dry_run_executes_init_and_plan_without_saved_plan_or_apply() {
     })
     .unwrap();
     let mut executor = SystemCommandExecutor::new(RuntimePrograms::from_pairs([("tofu", tofu)]));
-    let report = execute_phase(&[execution], fixture.path(), &mut executor);
+    let mut observed = Vec::new();
+    let report = execute_phase_observed(
+        std::slice::from_ref(&execution),
+        fixture.path(),
+        &mut executor,
+        |name, command| {
+            assert_eq!(name, "cloudflare-dns");
+            let earlier = fs::read_to_string(&trace).unwrap_or_default();
+            assert_eq!(earlier.lines().count(), observed.len());
+            observed.push(command.project_step());
+            Ok(())
+        },
+    );
     assert!(report.success);
-    let lines = fs::read_to_string(trace).unwrap();
+    assert_eq!(observed, [ProjectStep::Init, ProjectStep::Plan]);
+    let lines = fs::read_to_string(&trace).unwrap();
     assert_eq!(lines.lines().count(), 2);
     assert!(lines.contains(" init ") || lines.contains(" init"));
     assert!(lines.contains(" plan ") || lines.contains(" plan"));
     assert!(!lines.contains(" apply "));
     assert!(!lines.contains("-out="));
+
+    fs::remove_file(&trace).unwrap();
+    let stopped =
+        execute_phase_observed(&[execution], fixture.path(), &mut executor, |_, command| {
+            match command.project_step() {
+                ProjectStep::Init => Ok(()),
+                ProjectStep::Plan => Err(RuntimeError::Interrupted),
+                other => panic!("unexpected command: {other:?}"),
+            }
+        });
+    assert!(!stopped.success);
+    assert_eq!(fs::read_to_string(trace).unwrap().lines().count(), 1);
 }
 
 #[test]

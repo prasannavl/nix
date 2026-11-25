@@ -23,7 +23,7 @@ use super::environment::Environment;
 use super::inventory::Inventory;
 use super::maintenance::{CleanMode as MaintenanceCleanMode, clean_roots, missing_programs};
 use super::native::NativeFleetEffects;
-use super::plan::Phase;
+use super::plan::{Phase, WorkflowPlan};
 use super::preparation::{self, InventoryContext, Routes, ensure_explicit_named_route_effective};
 use super::presentation::FleetProgress;
 use super::repository::{
@@ -753,7 +753,13 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
                         &selection,
                         Some(&diagnostic_dir),
                     )?;
-                    print_hosts(&inventory, &selection);
+                    if WorkflowPlan::for_action(&invocation.action)
+                        .phases
+                        .into_iter()
+                        .any(Phase::uses_hosts)
+                    {
+                        print_hosts(&inventory, &selection);
+                    }
                     let started = Instant::now();
                     let action = effects.execute();
                     let _ = identity.record(&diagnostic_dir);

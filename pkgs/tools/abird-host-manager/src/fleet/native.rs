@@ -259,7 +259,6 @@ pub struct NativeFleetEffects<'a> {
     rollback_succeeded: BTreeSet<String>,
     rollback_failed: BTreeSet<String>,
     bootstrap_failed: BTreeSet<String>,
-    terraform_status: Vec<(String, bool)>,
     phase_results: Vec<(Phase, PhaseResult)>,
     workflow_warnings: Vec<WorkflowWarning>,
     pending_rollback: BTreeSet<String>,
@@ -515,7 +514,6 @@ impl<'a> NativeFleetEffects<'a> {
             rollback_succeeded: BTreeSet::new(),
             rollback_failed: BTreeSet::new(),
             bootstrap_failed: BTreeSet::new(),
-            terraform_status: Vec::new(),
             phase_results: Vec::new(),
             workflow_warnings: Vec::new(),
             pending_rollback: BTreeSet::new(),
@@ -566,15 +564,8 @@ impl<'a> NativeFleetEffects<'a> {
             .err()
             .is_some_and(|error| error.downcast_ref::<super::signal::Interrupted>().is_some());
 
-        let host_action = matches!(
-            self.invocation.action,
-            Action::Run
-                | Action::Deploy
-                | Action::Prepare
-                | Action::Build
-                | Action::DevBuild
-                | Action::CheckBootstrap
-        );
+        let plan = WorkflowPlan::for_action(&self.invocation.action);
+        let host_action = plan.phases.iter().any(|phase| phase.uses_hosts());
         let deployment = matches!(self.invocation.action, Action::Run | Action::Deploy);
         let mode = if deployment {
             SummaryMode::Deployment
@@ -637,17 +628,7 @@ impl<'a> NativeFleetEffects<'a> {
         } else {
             Vec::new()
         };
-        let terraform = self
-            .terraform_status
-            .iter()
-            .map(|(project, ok)| {
-                (
-                    project.clone(),
-                    if *ok { "ok" } else { "FAIL (tf)" }.to_owned(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let phases = WorkflowPlan::for_action(&self.invocation.action)
+        let phases = plan
             .phases
             .into_iter()
             .map(|phase| {
@@ -662,9 +643,6 @@ impl<'a> NativeFleetEffects<'a> {
             &self.invocation.action,
             phases,
             hosts.iter().map(|(host, status)| (host.as_str(), *status)),
-            terraform
-                .iter()
-                .map(|(project, status)| (project.as_str(), status.as_str())),
             if outcome.is_ok() && !self.workflow_warnings.is_empty() {
                 WorkflowResult::SuccessWithWarnings
             } else if outcome.is_ok() {
@@ -1251,7 +1229,8 @@ impl<'a> NativeFleetEffects<'a> {
         }
     }
 
-    fn run_terraform_phase(&mut self, phase: Phase) -> Result<()> {
+    fn run_terraform_phase(&self, phase: Phase, position: Option<(usize, usize)>) -> Result<()> {
+        use crate::progress::RowOutcome;
         let action = match (&self.invocation.action, phase) {
             (Action::TerraformProject(name), Phase::Tofu) => {
                 super::terraform::TerraformAction::TfProject(name.clone())
@@ -1274,81 +1253,112 @@ impl<'a> NativeFleetEffects<'a> {
             Some("origin/master"),
             &mut changes,
         )?;
+        let projects = selections
+            .iter()
+            .map(|selection| selection.run.name.clone())
+            .collect::<Vec<_>>();
+        self.progress.terraform_projects(phase, &projects, position);
         for selection in selections {
+            let project = &selection.run.name;
             if selection.decision == super::terraform::ChangeDecision::SkipUnchanged {
-                self.terraform_status
-                    .push((selection.run.name.clone(), true));
+                self.progress
+                    .terraform_finished(project, RowOutcome::Skipped);
                 continue;
             }
-            let context = super::terraform::project_context(&selection.run.directory)?;
-            let identities = age_identities(&self.invocation.options);
-            let decryptor = super::terraform_runtime::AgeDecryptor { identities };
-            let mut materializer = super::terraform_runtime::SecureMaterializer::new(
-                self.transport_store.path(),
-                decryptor,
-            )?;
-            let inherited = std::env::vars().collect::<BTreeMap<_, _>>();
-            let environment = super::terraform_runtime::resolve_environment(
-                &super::terraform::project_environment_contract(&context),
-                &inherited,
-                self.repository,
-                &mut materializer,
-            )?;
-            let discovered = super::terraform_runtime::discover_tfvar_secrets(
-                self.repository,
-                &selection.run.name,
-            )?;
-            let automatic_tfvars =
-                super::terraform_runtime::materialize_tfvars(&discovered, &mut materializer)?;
-            let apps_default = self
-                .repository
-                .join("pkgs")
-                .join(&selection.run.name)
-                .join("default.nix");
-            let execution = super::terraform_runtime::prepare_project_execution(
-                &super::terraform_runtime::ProjectRuntimeInput {
-                    selection: selection.clone(),
-                    environment,
-                    automatic_tfvars,
-                    project_requires_secret_tfvars: project_requires_secret_tfvars(
-                        &selection.run.directory,
-                    )?,
-                    dry_run: self.invocation.options.dry_run,
-                    plan_file: materializer
-                        .root()
-                        .join(format!("{}.tfplan", safe_component(&selection.run.name))),
-                    apps_package_default: apps_default.is_file().then_some(apps_default),
-                    repo_root: self.repository.to_path_buf(),
-                },
-            )?;
-            let programs = super::terraform_runtime::RuntimePrograms::from_pairs([
-                ("tofu", PathBuf::from("tofu")),
-                ("nix", self.nix_program.to_path_buf()),
-            ]);
-            let mut executor = super::terraform_runtime::SystemCommandExecutor::new(programs);
-            let report = super::terraform_runtime::execute_phase(
-                &[execution],
-                self.repository,
-                &mut executor,
-            );
-            let report_success = report.success;
-            for project in report.projects {
-                for output in project.commands {
-                    self.progress.log_block(&selection.run.name, &output.stdout);
-                    self.progress.log_block(&selection.run.name, &output.stderr);
-                }
-                if let Some(diagnostic) = project.diagnostic {
-                    self.progress
-                        .message(format!("Terraform {} · {diagnostic}", selection.run.name));
-                }
-            }
-            self.terraform_status
-                .push((selection.run.name.clone(), report_success));
-            if !report_success {
-                bail!("Terraform project {} failed", selection.run.name);
-            }
+            super::signal::check_interrupted()?;
+            self.progress.terraform_step(project, "preparing");
+            let result = self.run_terraform_project(&selection);
+            let (result, outcome) = match super::signal::check_interrupted() {
+                Err(error) => (Err(error), RowOutcome::Interrupted),
+                Ok(()) if result.is_ok() => (result, RowOutcome::Succeeded),
+                Ok(()) => (result, RowOutcome::Failed),
+            };
+            self.progress.terraform_finished(project, outcome);
+            result.with_context(|| format!("Terraform project {project}"))?;
         }
         Ok(())
+    }
+
+    fn run_terraform_project(
+        &self,
+        selection: &super::terraform_runtime::ProjectSelection,
+    ) -> Result<()> {
+        let context = super::terraform::project_context(&selection.run.directory)?;
+        let identities = age_identities(&self.invocation.options);
+        let decryptor = super::terraform_runtime::AgeDecryptor { identities };
+        let mut materializer = super::terraform_runtime::SecureMaterializer::new(
+            self.transport_store.path(),
+            decryptor,
+        )?;
+        let inherited = std::env::vars().collect::<BTreeMap<_, _>>();
+        let environment = super::terraform_runtime::resolve_environment(
+            &super::terraform::project_environment_contract(&context),
+            &inherited,
+            self.repository,
+            &mut materializer,
+        )?;
+        let discovered =
+            super::terraform_runtime::discover_tfvar_secrets(self.repository, &selection.run.name)?;
+        let automatic_tfvars =
+            super::terraform_runtime::materialize_tfvars(&discovered, &mut materializer)?;
+        let apps_default = self
+            .repository
+            .join("pkgs")
+            .join(&selection.run.name)
+            .join("default.nix");
+        let execution = super::terraform_runtime::prepare_project_execution(
+            &super::terraform_runtime::ProjectRuntimeInput {
+                selection: selection.clone(),
+                environment,
+                automatic_tfvars,
+                project_requires_secret_tfvars: project_requires_secret_tfvars(
+                    &selection.run.directory,
+                )?,
+                dry_run: self.invocation.options.dry_run,
+                plan_file: materializer
+                    .root()
+                    .join(format!("{}.tfplan", safe_component(&selection.run.name))),
+                apps_package_default: apps_default.is_file().then_some(apps_default),
+                repo_root: self.repository.to_path_buf(),
+            },
+        )?;
+        let programs = super::terraform_runtime::RuntimePrograms::from_pairs([
+            ("tofu", PathBuf::from("tofu")),
+            ("nix", self.nix_program.to_path_buf()),
+        ]);
+        let mut executor = super::terraform_runtime::SystemCommandExecutor::new(programs);
+        let mut step = "preparing";
+        let report = super::terraform_runtime::execute_phase_observed(
+            &[execution],
+            self.repository,
+            &mut executor,
+            |project, command| {
+                if interruption_active() {
+                    return Err(super::terraform_runtime::RuntimeError::Interrupted);
+                }
+                step = command.project_step().running();
+                self.progress.terraform_step(project, step);
+                Ok(())
+            },
+        );
+        self.report_terraform_output(&report);
+        if !report.success {
+            bail!("failed while {step}");
+        }
+        Ok(())
+    }
+
+    fn report_terraform_output(&self, report: &super::terraform_runtime::PhaseExecutionReport) {
+        for project in &report.projects {
+            for output in &project.commands {
+                self.progress.log_block(&project.name, &output.stdout);
+                self.progress.log_block(&project.name, &output.stderr);
+            }
+            if let Some(diagnostic) = &project.diagnostic {
+                self.progress
+                    .message(format!("Terraform {} · {diagnostic}", project.name));
+            }
+        }
     }
 
     fn build_host(&self) -> String {
@@ -4244,19 +4254,23 @@ fn deploy_goal(goal: super::cli::ActivationGoal) -> super::deploy::ActivationGoa
 impl FleetEffects for NativeFleetEffects<'_> {
     fn run_phase(&mut self, phase: Phase) -> std::result::Result<(), PhaseFailure> {
         let started = Instant::now();
-        let host_count = self.selection.ordered.len();
+        let phase_hosts = if phase.uses_hosts() {
+            self.selection.ordered.as_slice()
+        } else {
+            &[]
+        };
+        let host_count = phase_hosts.len();
         let plan = WorkflowPlan::for_action(&self.invocation.action);
         let position = plan
             .phases
             .iter()
             .position(|candidate| *candidate == phase)
             .map(|index| (index + 1, plan.phases.len()));
-        let phase_hosts = self.selection.ordered.clone();
-        self.progress.phase_started(phase, &phase_hosts, position);
+        self.progress.phase_started(phase, phase_hosts, position);
         let warning_start = self.workflow_warnings.len();
         let result = match phase {
             Phase::TerraformDns | Phase::TerraformPlatform | Phase::TerraformApps | Phase::Tofu => {
-                self.run_terraform_phase(phase)
+                self.run_terraform_phase(phase, position)
             }
             Phase::Build => self.run_build_phase(false),
             Phase::Snapshot => self.run_snapshot_phase(),

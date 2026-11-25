@@ -2406,6 +2406,16 @@ esac
     );
     assert!(!visible_output.contains("backend-secret-value"));
     assert!(!visible_output.contains("provider-token-value"));
+    assert!(!visible_output.contains("Hosts:"), "{visible_output}");
+    assert!(!visible_output.contains("Terraform:"), "{visible_output}");
+    assert!(
+        visible_output.contains("done 1/1 projects"),
+        "{visible_output}"
+    );
+    assert!(
+        visible_output.contains("cloudflare-dns · ✓ done"),
+        "{visible_output}"
+    );
 }
 
 #[test]

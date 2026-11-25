@@ -746,6 +746,17 @@ pub fn execute_phase<E: CommandExecutor>(
     repo_root: &Path,
     executor: &mut E,
 ) -> PhaseExecutionReport {
+    execute_phase_observed(projects, repo_root, executor, |_, _| Ok(()))
+}
+
+/// Observe each command just before it starts. A rejected start aborts the
+/// project without running that command or any subsequent command.
+pub fn execute_phase_observed<E: CommandExecutor>(
+    projects: &[ProjectExecution],
+    repo_root: &Path,
+    executor: &mut E,
+    mut before_command: impl FnMut(&str, &ProcessCommand) -> Result<(), RuntimeError>,
+) -> PhaseExecutionReport {
     let mut results = Vec::with_capacity(projects.len());
     let mut failed = false;
     for project in projects {
@@ -772,7 +783,9 @@ pub fn execute_phase<E: CommandExecutor>(
         let mut status = PhaseProjectStatus::Succeeded;
         let mut diagnostic = None;
         for command in &project.commands {
-            match executor.execute(repo_root, command, &project.environment) {
+            let output = before_command(&project.name, command)
+                .and_then(|()| executor.execute(repo_root, command, &project.environment));
+            match output {
                 Ok(output) if output.success() => outputs.push(output),
                 Ok(output) => {
                     status = PhaseProjectStatus::Failed {
@@ -841,6 +854,7 @@ pub enum RuntimeError {
     },
     InvalidProjectName(String),
     ProjectDirectoryMissing(PathBuf),
+    Interrupted,
     Plan(String),
 }
 
@@ -910,6 +924,7 @@ impl std::fmt::Display for RuntimeError {
                     path.display()
                 )
             }
+            Self::Interrupted => formatter.write_str("Terraform interrupted"),
             Self::Plan(message) => formatter.write_str(message),
         }
     }

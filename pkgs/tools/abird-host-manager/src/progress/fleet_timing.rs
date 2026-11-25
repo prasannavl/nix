@@ -1,4 +1,4 @@
-//! Fleet accounting shares the host rows used by the live renderer. Only
+//! Fleet accounting shares the roster rows used by the live renderer. Only
 //! immutable phase snapshots survive teardown; there is no second live tracker.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 pub(super) enum Interval {
     Task(String),
     Operation(u64),
+    Project,
 }
 
 /// Union of admitted-operation and task intervals. Idle queue gaps never enter
@@ -64,7 +65,7 @@ impl HostTiming {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum HostOutcome {
+pub(crate) enum RowOutcome {
     Succeeded,
     Failed,
     Skipped,
@@ -74,27 +75,27 @@ pub(super) enum HostOutcome {
 
 /// Unconfirmed remote execution is not a settled completion.
 pub(super) fn outcome_counts(
-    outcomes: impl IntoIterator<Item = Option<HostOutcome>>,
+    outcomes: impl IntoIterator<Item = Option<RowOutcome>>,
 ) -> Vec<String> {
     let (mut total, mut done, mut failed, mut skipped, mut interrupted, mut unconfirmed) =
         (0, 0, 0, 0, 0, 0);
     for outcome in outcomes {
         total += 1;
         match outcome {
-            Some(HostOutcome::Succeeded) => done += 1,
-            Some(HostOutcome::Failed) => {
+            Some(RowOutcome::Succeeded) => done += 1,
+            Some(RowOutcome::Failed) => {
                 done += 1;
                 failed += 1;
             }
-            Some(HostOutcome::Skipped) => {
+            Some(RowOutcome::Skipped) => {
                 done += 1;
                 skipped += 1;
             }
-            Some(HostOutcome::Interrupted) => {
+            Some(RowOutcome::Interrupted) => {
                 done += 1;
                 interrupted += 1;
             }
-            Some(HostOutcome::Unconfirmed) => unconfirmed += 1,
+            Some(RowOutcome::Unconfirmed) => unconfirmed += 1,
             None => {}
         }
     }
@@ -113,10 +114,34 @@ pub(super) fn outcome_counts(
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct HostSnapshot {
-    pub host: String,
+pub(crate) struct RowSnapshot {
+    pub name: String,
     pub elapsed: Option<Duration>,
-    pub outcome: Option<HostOutcome>,
+    pub outcome: Option<RowOutcome>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum RosterKind {
+    #[default]
+    Hosts,
+    Projects,
+}
+
+impl RosterKind {
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Hosts => "hosts",
+            Self::Projects => "projects",
+        }
+    }
+
+    pub fn counts(self, outcomes: impl IntoIterator<Item = Option<RowOutcome>>) -> Vec<String> {
+        let mut fields = outcome_counts(outcomes);
+        if self == Self::Projects {
+            fields[0].push_str(" projects");
+        }
+        fields
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -126,17 +151,20 @@ pub(super) struct PhaseSnapshot {
     pub marker: &'static str,
     pub tone: crate::terminal_style::Tone,
     pub elapsed: Duration,
-    pub hosts: Vec<HostSnapshot>,
+    pub kind: RosterKind,
+    pub rows: Vec<RowSnapshot>,
 }
 
 impl PhaseSnapshot {
     pub fn compact(&self) -> String {
-        let counts = if self.hosts.is_empty() {
+        let counts = if self.rows.is_empty() {
             String::new()
         } else {
             format!(
                 " · {}",
-                outcome_counts(self.hosts.iter().map(|host| host.outcome)).join(" · ")
+                self.kind
+                    .counts(self.rows.iter().map(|row| row.outcome))
+                    .join(" · ")
             )
         };
         format!(
@@ -197,22 +225,24 @@ pub(super) fn host_duration_summaries(
     let mut names = hosts.iter().copied().collect::<BTreeSet<_>>();
     let mut recorded = BTreeMap::new();
     for phase in snapshots {
-        if !HOST_TIMING_PHASES.iter().any(|(key, _)| *key == phase.key) {
+        if phase.kind != RosterKind::Hosts
+            || !HOST_TIMING_PHASES.iter().any(|(key, _)| *key == phase.key)
+        {
             continue;
         }
         names.extend(
             phase
-                .hosts
+                .rows
                 .iter()
                 .filter(|host| host.elapsed.is_some())
-                .map(|host| host.host.as_str()),
+                .map(|host| host.name.as_str()),
         );
         recorded.insert(
             phase.key.as_str(),
             phase
-                .hosts
+                .rows
                 .iter()
-                .map(|host| (host.host.as_str(), host))
+                .map(|host| (host.name.as_str(), host))
                 .collect::<BTreeMap<_, _>>(),
         );
     }
@@ -242,11 +272,11 @@ mod tests {
     fn counts_distinguish_settled_failures_from_unconfirmed_remote_work() {
         assert_eq!(
             outcome_counts([
-                Some(HostOutcome::Succeeded),
-                Some(HostOutcome::Failed),
-                Some(HostOutcome::Skipped),
-                Some(HostOutcome::Interrupted),
-                Some(HostOutcome::Unconfirmed),
+                Some(RowOutcome::Succeeded),
+                Some(RowOutcome::Failed),
+                Some(RowOutcome::Skipped),
+                Some(RowOutcome::Interrupted),
+                Some(RowOutcome::Unconfirmed),
                 None,
             ]),
             [
@@ -326,8 +356,9 @@ mod tests {
             marker: "✓",
             tone: crate::terminal_style::Tone::Success,
             elapsed: Duration::from_secs(2),
-            hosts: vec![HostSnapshot {
-                host: "app".into(),
+            kind: RosterKind::Hosts,
+            rows: vec![RowSnapshot {
+                name: "app".into(),
                 elapsed: None,
                 outcome: None,
             }],
@@ -343,10 +374,11 @@ mod tests {
             marker: "✓",
             tone: crate::terminal_style::Tone::Success,
             elapsed: Duration::from_secs(8),
-            hosts: vec![HostSnapshot {
-                host: "alpha".to_owned(),
+            kind: RosterKind::Hosts,
+            rows: vec![RowSnapshot {
+                name: "alpha".to_owned(),
                 elapsed: Some(Duration::from_secs(5)),
-                outcome: Some(HostOutcome::Unconfirmed),
+                outcome: Some(RowOutcome::Unconfirmed),
             }],
         }];
         snapshots.push(PhaseSnapshot {
@@ -355,10 +387,11 @@ mod tests {
             marker: "✓",
             tone: crate::terminal_style::Tone::Success,
             elapsed: Duration::from_secs(1),
-            hosts: vec![HostSnapshot {
-                host: "alpha".into(),
+            kind: RosterKind::Hosts,
+            rows: vec![RowSnapshot {
+                name: "alpha".into(),
                 elapsed: Some(Duration::from_millis(327)),
-                outcome: Some(HostOutcome::Succeeded),
+                outcome: Some(RowOutcome::Succeeded),
             }],
         });
         snapshots.push(PhaseSnapshot {
@@ -367,10 +400,11 @@ mod tests {
             marker: "✓",
             tone: crate::terminal_style::Tone::Success,
             elapsed: Duration::from_secs(24),
-            hosts: vec![HostSnapshot {
-                host: "alpha".into(),
+            kind: RosterKind::Hosts,
+            rows: vec![RowSnapshot {
+                name: "alpha".into(),
                 elapsed: Some(Duration::from_millis(23_200)),
-                outcome: Some(HostOutcome::Succeeded),
+                outcome: Some(RowOutcome::Succeeded),
             }],
         });
         snapshots.push(PhaseSnapshot {
@@ -379,10 +413,11 @@ mod tests {
             marker: "◇",
             tone: crate::terminal_style::Tone::Neutral,
             elapsed: Duration::ZERO,
-            hosts: vec![HostSnapshot {
-                host: "alpha".to_owned(),
+            kind: RosterKind::Hosts,
+            rows: vec![RowSnapshot {
+                name: "alpha".to_owned(),
                 elapsed: None,
-                outcome: Some(HostOutcome::Skipped),
+                outcome: Some(RowOutcome::Skipped),
             }],
         });
         let hosts = ["alpha", "beta"];

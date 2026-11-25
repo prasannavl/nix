@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::progress::RowOutcome;
 use crate::progress::{HostOperation, ProgressReporter, command_reporter, format_duration};
 use crate::terminal_style::Tone;
 
@@ -239,14 +240,28 @@ impl FleetProgress {
         } else {
             self.reporter.started(label);
         }
-        let stage = compact_phase_label(phase).to_owned();
-        let title = match position {
-            Some((current, total)) => {
-                format!("{} · phase {current}/{total}", sentence_title(&stage))
-            }
-            None => sentence_title(&stage),
-        };
-        self.reporter.begin_fleet_dashboard(hosts, &title);
+        if phase.uses_hosts() {
+            self.reporter
+                .begin_fleet_dashboard(hosts, &phase_title(phase, position));
+        }
+    }
+
+    pub(crate) fn terraform_projects(
+        &self,
+        phase: Phase,
+        projects: &[String],
+        position: Option<(usize, usize)>,
+    ) {
+        self.reporter
+            .begin_project_dashboard(projects, &phase_title(phase, position));
+    }
+
+    pub(crate) fn terraform_step(&self, project: &str, label: &str) {
+        self.reporter.project_step(project, label);
+    }
+
+    pub(crate) fn terraform_finished(&self, project: &str, outcome: RowOutcome) {
+        self.reporter.project_finished(project, outcome);
     }
 
     pub fn phase_schedule(
@@ -433,7 +448,7 @@ impl FleetProgress {
     ) {
         let key = compact_phase_label(phase);
         self.reporter
-            .record_host_phase(key, &format!("{key} {status}"), marker, tone, elapsed);
+            .record_fleet_phase(key, &format!("{key} {status}"), marker, tone, elapsed);
     }
 
     pub fn step_started(&self, label: impl Into<String>) {
@@ -478,7 +493,6 @@ impl FleetProgress {
         action: &Action,
         phases: impl IntoIterator<Item = (Phase, Option<PhaseResult>)>,
         hosts: impl IntoIterator<Item = (&'a str, FinalHostState)>,
-        terraform: impl IntoIterator<Item = (&'a str, &'a str)>,
         result: WorkflowResult,
         elapsed: Duration,
     ) {
@@ -514,6 +528,25 @@ impl FleetProgress {
                 phase_label(phase, 0, None),
                 format!(" · {status}{counts}"),
             );
+            for project in self.reporter.phase_projects(compact_phase_label(phase)) {
+                let (tone, outcome) = match project.outcome {
+                    Some(RowOutcome::Succeeded) => (Tone::Success, "✓ done"),
+                    Some(RowOutcome::Failed) => (Tone::Failure, "✗ failed"),
+                    Some(RowOutcome::Skipped) => (Tone::Muted, "◇ skipped (unchanged)"),
+                    Some(RowOutcome::Interrupted) => (Tone::Warning, "⊘ interrupted"),
+                    Some(RowOutcome::Unconfirmed) => (Tone::Warning, "? unconfirmed"),
+                    None => (Tone::Muted, "○ not run"),
+                };
+                let elapsed = project.elapsed.map_or_else(String::new, |elapsed| {
+                    format!(" · {}", format_duration(elapsed))
+                });
+                self.reporter.message_primary_with_metadata(
+                    "    ",
+                    tone,
+                    project.name,
+                    format!(" · {outcome}{elapsed}"),
+                );
+            }
         }
         let hosts = hosts.into_iter().collect::<Vec<_>>();
         let host_names = hosts.iter().map(|(host, _)| *host).collect::<Vec<_>>();
@@ -538,14 +571,6 @@ impl FleetProgress {
         for (host, timing) in durations {
             self.reporter
                 .message_host_summary(&host, std::iter::empty(), Some(&timing), false);
-        }
-        let terraform = terraform.into_iter().collect::<Vec<_>>();
-        if !terraform.is_empty() {
-            self.reporter.message("Terraform:");
-        }
-        for (project, status) in terraform {
-            self.reporter
-                .message(format!("  Terraform {project} · {status}"));
         }
     }
 
@@ -1237,6 +1262,17 @@ fn sentence_title(value: &str) -> String {
         .next()
         .map(|first| first.to_uppercase().collect::<String>() + characters.as_str())
         .unwrap_or_default()
+}
+
+fn phase_title(phase: Phase, position: Option<(usize, usize)>) -> String {
+    let mut title = match phase {
+        Phase::TerraformDns => "DNS".to_owned(),
+        _ => sentence_title(compact_phase_label(phase)),
+    };
+    if let Some((current, total)) = position {
+        title.push_str(&format!(" · phase {current}/{total}"));
+    }
+    title
 }
 
 fn compact_phase_label(phase: Phase) -> &'static str {

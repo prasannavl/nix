@@ -358,6 +358,17 @@ the current index again, so changing staged content changes the candidate. The
 native Nix backend supports preparation; unsupported agent/remote CI preparation
 fails before dispatch rather than changing backend implicitly.
 
+### Terraform progress
+
+`fleet terraform all|dns|platform|apps` and `fleet terraform project NAME` show
+projects, not a host roster. Project rows follow preparation, initialization,
+planning and applying as the commands start. `--dry` stops after planning.
+Unchanged projects are marked skipped, not applied. Results and timings appear
+under each phase in the summary.
+
+`fleet run` keeps the host roster for build and deployment phases and shows
+project rows during Terraform phases. `fleet deploy` has no Terraform phases.
+
 ### Live concurrency and timing
 
 `+` (or `=`) increases the displayed admission limit by one; `-` decreases it

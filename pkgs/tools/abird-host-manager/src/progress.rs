@@ -11,9 +11,8 @@ use crate::terminal_style::{TerminalStyle, Tone};
 
 mod fleet_timing;
 
-use fleet_timing::{
-    HostOutcome, HostSnapshot, HostTiming, Interval, PhaseSnapshot, WorkflowContext,
-};
+use fleet_timing::{HostTiming, Interval, PhaseSnapshot, RosterKind, WorkflowContext};
+pub(crate) use fleet_timing::{RowOutcome, RowSnapshot};
 
 static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
 static COMMAND_REPORTER: OnceLock<ProgressReporter> = OnceLock::new();
@@ -421,6 +420,7 @@ struct ActiveProgress {
 
 #[derive(Clone, Debug, Default)]
 struct HostDashboard {
+    kind: RosterKind,
     title: Option<String>,
     order: Vec<String>,
     rows: BTreeMap<String, HostRow>,
@@ -454,7 +454,7 @@ struct SuspendedHostTask {
 #[derive(Clone, Debug)]
 struct HostRow {
     state: HostRowState,
-    outcome: Option<HostOutcome>,
+    outcome: Option<RowOutcome>,
     timing: HostTiming,
     suspended: Vec<SuspendedHostTask>,
     task_key: Option<String>,
@@ -512,7 +512,7 @@ impl HostRow {
         if self.state != HostRowState::Interrupted {
             return false;
         }
-        self.outcome = Some(HostOutcome::Interrupted);
+        self.outcome = Some(RowOutcome::Interrupted);
         self.timing.stop(Instant::now());
         self.task_started = None;
         self.suspended.clear();
@@ -889,6 +889,7 @@ impl ProgressReporter {
                 && let Some(row) = active
                     .host_dashboard
                     .as_mut()
+                    .filter(|dashboard| dashboard.kind == RosterKind::Hosts)
                     .and_then(|dashboard| dashboard.rows.get_mut(host))
                 && row.outcome.is_none()
             {
@@ -903,7 +904,7 @@ impl ProgressReporter {
 
     /// Snapshot before the phase's active span is removed. Terminal calls are
     /// idempotent; unfinished rows retain observed time without claiming success.
-    pub fn record_host_phase(
+    pub fn record_fleet_phase(
         &self,
         key: &str,
         label: &str,
@@ -912,29 +913,31 @@ impl ProgressReporter {
         elapsed: Duration,
     ) {
         if let Ok(mut state) = self.state.lock() {
-            let hosts = state
+            let now = Instant::now();
+            let (kind, rows) = state
                 .stack
                 .iter_mut()
                 .rev()
                 .find_map(|active| active.host_dashboard.as_mut())
                 .map(|dashboard| {
-                    dashboard
+                    let rows = dashboard
                         .order
                         .iter()
-                        .filter_map(|host| {
-                            let row = dashboard.rows.get_mut(host)?;
-                            row.timing.stop(Instant::now());
-                            Some(HostSnapshot {
-                                host: host.clone(),
+                        .filter_map(|name| {
+                            let row = dashboard.rows.get_mut(name)?;
+                            row.timing.stop(now);
+                            Some(RowSnapshot {
+                                name: name.clone(),
                                 elapsed: row.duration(),
                                 outcome: row.outcome.or(match row.state {
-                                    HostRowState::Interrupted => Some(HostOutcome::Interrupted),
-                                    HostRowState::Unconfirmed => Some(HostOutcome::Unconfirmed),
+                                    HostRowState::Interrupted => Some(RowOutcome::Interrupted),
+                                    HostRowState::Unconfirmed => Some(RowOutcome::Unconfirmed),
                                     _ => None,
                                 }),
                             })
                         })
-                        .collect()
+                        .collect();
+                    (dashboard.kind, rows)
                 })
                 .unwrap_or_default();
             state.workflow.phases.push(PhaseSnapshot {
@@ -943,7 +946,8 @@ impl ProgressReporter {
                 marker,
                 tone,
                 elapsed,
-                hosts,
+                kind,
+                rows,
             });
         }
     }
@@ -977,9 +981,28 @@ impl ProgressReporter {
             .iter()
             .rev()
             .find(|phase| phase.key == key)?;
-        (!phase.hosts.is_empty()).then(|| {
-            fleet_timing::outcome_counts(phase.hosts.iter().map(|host| host.outcome)).join(" · ")
+        (!phase.rows.is_empty()).then(|| {
+            phase
+                .kind
+                .counts(phase.rows.iter().map(|row| row.outcome))
+                .join(" · ")
         })
+    }
+
+    pub(crate) fn phase_projects(&self, key: &str) -> Vec<RowSnapshot> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .workflow
+                    .phases
+                    .iter()
+                    .rev()
+                    .find(|phase| phase.key == key && phase.kind == RosterKind::Projects)
+                    .map(|phase| phase.rows.clone())
+            })
+            .unwrap_or_default()
     }
 
     /// Retain summary data, but release the run heading/history before final output.
@@ -1038,14 +1061,18 @@ impl ProgressReporter {
     }
 
     pub fn begin_host_dashboard(&self, hosts: &[String]) {
-        self.begin_host_dashboard_named(hosts, None);
+        self.begin_dashboard(RosterKind::Hosts, hosts, None);
     }
 
     pub fn begin_fleet_dashboard(&self, hosts: &[String], title: &str) {
-        self.begin_host_dashboard_named(hosts, Some(title));
+        self.begin_dashboard(RosterKind::Hosts, hosts, Some(title));
     }
 
-    fn begin_host_dashboard_named(&self, hosts: &[String], title: Option<&str>) {
+    pub(crate) fn begin_project_dashboard(&self, projects: &[String], title: &str) {
+        self.begin_dashboard(RosterKind::Projects, projects, Some(title));
+    }
+
+    fn begin_dashboard(&self, kind: RosterKind, names: &[String], title: Option<&str>) {
         if !self.enabled() {
             return;
         }
@@ -1055,11 +1082,12 @@ impl ProgressReporter {
             && let Some(active) = state.stack.last_mut()
         {
             active.host_dashboard = Some(HostDashboard {
+                kind,
                 title: title.map(str::to_owned),
-                order: hosts.to_vec(),
-                rows: hosts
+                order: names.to_vec(),
+                rows: names
                     .iter()
-                    .map(|host| (host.clone(), HostRow::default()))
+                    .map(|name| (name.clone(), HostRow::default()))
                     .collect(),
                 ..HostDashboard::default()
             });
@@ -1084,6 +1112,7 @@ impl ProgressReporter {
                 .iter_mut()
                 .rev()
                 .find_map(|active| active.host_dashboard.as_mut())
+            && dashboard.kind == RosterKind::Hosts
         {
             dashboard.stage = Some(stage.into());
             dashboard.wave = wave;
@@ -1118,6 +1147,7 @@ impl ProgressReporter {
                 .iter_mut()
                 .rev()
                 .find_map(|active| active.host_dashboard.as_mut())
+                && dashboard.kind == RosterKind::Hosts
             {
                 let previous = dashboard.admission.as_ref();
                 let running_changed_at = previous.and_then(|old| {
@@ -1288,7 +1318,7 @@ impl ProgressReporter {
             if row.outcome.is_some() {
                 return;
             }
-            row.outcome = Some(HostOutcome::Unconfirmed);
+            row.outcome = Some(RowOutcome::Unconfirmed);
             row.timing.stop(Instant::now());
             row.suspended.clear();
             row.state = HostRowState::Unconfirmed;
@@ -1406,13 +1436,13 @@ impl ProgressReporter {
             row.timing.stop(Instant::now());
             row.suspended.clear();
             if row.state == HostRowState::Unconfirmed {
-                row.outcome = Some(HostOutcome::Unconfirmed);
+                row.outcome = Some(RowOutcome::Unconfirmed);
                 return;
             }
             row.outcome = Some(if succeeded {
-                HostOutcome::Succeeded
+                RowOutcome::Succeeded
             } else {
-                HostOutcome::Failed
+                RowOutcome::Failed
             });
             row.state = if succeeded {
                 HostRowState::Succeeded
@@ -1454,10 +1484,10 @@ impl ProgressReporter {
             row.timing.stop(Instant::now());
             row.suspended.clear();
             if row.state == HostRowState::Unconfirmed {
-                row.outcome = Some(HostOutcome::Unconfirmed);
+                row.outcome = Some(RowOutcome::Unconfirmed);
                 return;
             }
-            row.outcome = Some(HostOutcome::Skipped);
+            row.outcome = Some(RowOutcome::Skipped);
             row.state = state;
             row.summary = (!summary.is_empty()).then_some(summary);
             row.task_started = None;
@@ -1466,7 +1496,54 @@ impl ProgressReporter {
         });
     }
 
+    pub(crate) fn project_step(&self, project: &str, label: &str) {
+        self.update_dashboard_row(RosterKind::Projects, project, Redraw::Immediate, |row| {
+            if row.outcome.is_some() {
+                return;
+            }
+            let now = Instant::now();
+            row.timing.start(Interval::Project, now);
+            row.state = HostRowState::Running;
+            row.task = Some(label.to_owned());
+            row.task_started = Some(now);
+        });
+        if !self.shows_recent_updates() {
+            self.detail(format!("{project} · {label}"));
+        }
+    }
+
+    pub(crate) fn project_finished(&self, project: &str, outcome: RowOutcome) {
+        self.update_dashboard_row(RosterKind::Projects, project, Redraw::Immediate, |row| {
+            if row.outcome.is_some() {
+                return;
+            }
+            row.timing.stop(Instant::now());
+            row.task_started = None;
+            row.outcome = Some(outcome);
+            row.state = match outcome {
+                RowOutcome::Succeeded => HostRowState::Succeeded,
+                RowOutcome::Failed => HostRowState::Failed,
+                RowOutcome::Skipped => HostRowState::Skipped,
+                RowOutcome::Interrupted => HostRowState::Interrupted,
+                RowOutcome::Unconfirmed => HostRowState::Unconfirmed,
+            };
+            if outcome == RowOutcome::Skipped {
+                row.summary = Some("skipped (unchanged)".to_owned());
+            }
+        });
+    }
+
     fn update_host_row(&self, host: &str, redraw: Redraw, update: impl FnOnce(&mut HostRow)) {
+        self.update_dashboard_row(RosterKind::Hosts, host, redraw, update);
+    }
+
+    fn update_dashboard_row(
+        &self,
+        kind: RosterKind,
+        name: &str,
+        redraw: Redraw,
+        update: impl FnOnce(&mut HostRow),
+    ) {
         if !self.enabled() {
             return;
         }
@@ -1478,7 +1555,8 @@ impl ProgressReporter {
                 .iter_mut()
                 .rev()
                 .find_map(|active| active.host_dashboard.as_mut())
-            && let Some(row) = dashboard.rows.get_mut(host)
+            && dashboard.kind == kind
+            && let Some(row) = dashboard.rows.get_mut(name)
         {
             update(row);
         }
@@ -3470,7 +3548,9 @@ fn host_dashboard_lines(
         metadata.push(style.paint(Tone::Muted, format!("slots —/{}", dashboard.concurrency)));
     }
     metadata.extend(
-        fleet_timing::outcome_counts(dashboard.rows.values().map(|row| row.outcome))
+        dashboard
+            .kind
+            .counts(dashboard.rows.values().map(|row| row.outcome))
             .into_iter()
             .map(|field| style.paint(Tone::Muted, field)),
     );
@@ -3506,7 +3586,10 @@ fn host_dashboard_lines(
     if marker_rows > 0 {
         lines.push(format!(
             "  {}",
-            style.paint(Tone::Muted, format!("▲ {host_start} hosts above"))
+            style.paint(
+                Tone::Muted,
+                format!("▲ {host_start} {} above", dashboard.kind.noun())
+            )
         ));
     }
 
@@ -6432,7 +6515,7 @@ mod tests {
         assert!(host_row(&reporter, "app").timing.since.is_some());
         reporter.host_finished("app", true, None, "deploy done");
         let elapsed = host_row(&reporter, "app").duration();
-        reporter.record_host_phase(
+        reporter.record_fleet_phase(
             "deploy",
             "deploy done",
             "✓",
@@ -6445,7 +6528,72 @@ mod tests {
         drop(operation);
         assert_eq!(host_row(&reporter, "app").duration(), None);
         let state = reporter.state.lock().unwrap();
-        assert_eq!(state.workflow.phases[0].hosts[0].elapsed, elapsed);
+        assert_eq!(state.workflow.phases[0].rows[0].elapsed, elapsed);
+    }
+
+    #[test]
+    fn project_roster_tracks_steps_and_does_not_leak_into_host_phases() {
+        let reporter = interactive_reporter();
+        reporter.begin_workflow();
+        let project = "cloudflare-dns";
+        let skipped = "cloudflare-apps";
+        reporter.begin_project_dashboard(&[project.into(), skipped.into()], "DNS · phase 1/8");
+        reporter.project_step(project, "initializing");
+        assert!(host_frame(&reporter).contains("cloudflare-dns  ● initializing"));
+        reporter.project_step(project, "planning");
+        assert!(host_frame(&reporter).contains("cloudflare-dns  ● planning"));
+        reporter.project_step(project, "applying");
+        reporter.host_skipped(project, "host events must not update project rows");
+        reporter.phase_admission(1, 3, true, None);
+        let frame = host_frame(&reporter);
+        assert!(frame.contains("● DNS · phase 1/8"), "{frame}");
+        assert!(frame.contains("done 0/2 projects"), "{frame}");
+        assert!(frame.contains("cloudflare-dns  ● applying"), "{frame}");
+        assert!(!frame.contains(" limit "), "{frame}");
+        reporter.project_finished(project, RowOutcome::Succeeded);
+        reporter.project_finished(skipped, RowOutcome::Skipped);
+        assert!(host_frame(&reporter).contains("done 2/2 projects · 1 skipped"));
+        reporter.record_fleet_phase("dns", "dns done", "✓", Tone::Success, Duration::ZERO);
+        reporter.end_silent_phase();
+        reporter.started_silent("Build");
+        reporter.begin_fleet_dashboard(&[project.into(), "host-only".into()], "Build · phase 3/8");
+        reporter.project_finished(project, RowOutcome::Failed);
+        let frame = host_frame(&reporter);
+        assert!(frame.contains("● Build · phase 3/8"), "{frame}");
+        assert!(frame.contains("done 0/2 ·"), "{frame}");
+        assert!(frame.contains("cloudflare-dns  ○ pending"), "{frame}");
+        assert!(frame.contains("host-only  ○ pending"), "{frame}");
+        let rows = reporter.phase_projects("dns");
+        assert_eq!(rows[0].name, project);
+        assert_eq!(rows[0].outcome, Some(RowOutcome::Succeeded));
+        assert!(rows[0].elapsed.is_some());
+        assert_eq!(rows[1].outcome, Some(RowOutcome::Skipped));
+        assert_eq!(rows[1].elapsed, None);
+        assert!(reporter.host_duration_summaries(&[project]).is_empty());
+    }
+
+    #[test]
+    fn project_failure_and_interruption_do_not_settle_queued_rows() {
+        let reporter = interactive_reporter();
+        reporter
+            .begin_project_dashboard(&["failed".into(), "stopped".into(), "later".into()], "DNS");
+        reporter.project_step("failed", "planning");
+        reporter.project_finished("failed", RowOutcome::Failed);
+        reporter.project_step("stopped", "applying");
+        reporter.project_finished("stopped", RowOutcome::Interrupted);
+        reporter.project_finished("stopped", RowOutcome::Succeeded);
+        let frame = host_frame(&reporter);
+        assert!(
+            frame.contains("done 2/3 projects · 1 failed · 1 interrupted"),
+            "{frame}"
+        );
+        assert!(frame.contains("later  ○ pending"), "{frame}");
+        reporter.record_fleet_phase("dns", "dns failed", "✗", Tone::Failure, Duration::ZERO);
+        let projects = reporter.phase_projects("dns");
+        assert_eq!(projects[0].outcome, Some(RowOutcome::Failed));
+        assert_eq!(projects[1].outcome, Some(RowOutcome::Interrupted));
+        assert_eq!(projects[2].outcome, None);
+        assert_eq!(projects[2].elapsed, None);
     }
 
     #[test]
@@ -6456,7 +6604,7 @@ mod tests {
         reporter.host_task_started("app", "build", "build", None);
         age_host_task(&reporter, "app", 3);
         reporter.host_finished("app", true, None, "build done");
-        reporter.record_host_phase(
+        reporter.record_fleet_phase(
             "build",
             "build done",
             "✓",
@@ -6551,7 +6699,7 @@ mod tests {
             true,
         );
         reporter.host_finished("app", true, None, "build done");
-        reporter.record_host_phase(
+        reporter.record_fleet_phase(
             "build",
             "build done",
             "✓",
@@ -7382,7 +7530,7 @@ mod tests {
                         "blocked".to_owned(),
                         HostRow {
                             state: HostRowState::Warning,
-                            outcome: Some(HostOutcome::Skipped),
+                            outcome: Some(RowOutcome::Skipped),
                             summary: Some("deploy blocked".to_owned()),
                             ..HostRow::default()
                         },

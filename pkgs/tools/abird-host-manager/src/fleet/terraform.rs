@@ -329,7 +329,41 @@ pub struct ProcessCommand {
     pub current_dir: Option<PathBuf>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectStep {
+    PrepareAssets,
+    Init,
+    Plan,
+    Apply,
+    Run,
+}
+
+impl ProjectStep {
+    pub fn running(self) -> &'static str {
+        match self {
+            Self::PrepareAssets => "preparing assets",
+            Self::Init => "initializing",
+            Self::Plan => "planning",
+            Self::Apply => "applying",
+            Self::Run => "running command",
+        }
+    }
+}
+
 impl ProcessCommand {
+    pub fn project_step(&self) -> ProjectStep {
+        match self.program.as_str() {
+            "nix" => ProjectStep::PrepareAssets,
+            "tofu" => match tofu_subcommand(self.args.iter().map(|arg| arg.value.as_str())) {
+                Some("init") => ProjectStep::Init,
+                Some("plan") => ProjectStep::Plan,
+                Some("apply") => ProjectStep::Apply,
+                _ => ProjectStep::Run,
+            },
+            _ => ProjectStep::Run,
+        }
+    }
+
     fn new(
         program: impl Into<String>,
         args: impl IntoIterator<Item = ProcessArgument>,
@@ -554,15 +588,13 @@ pub fn select_tfvar_secret_paths(
         .collect()
 }
 
-fn tofu_subcommand(args: &[String]) -> Option<&str> {
-    let mut index = 0;
-    while index < args.len() {
-        let argument = args[index].as_str();
+fn tofu_subcommand<'a>(mut args: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    while let Some(argument) = args.next() {
         match argument {
-            "-chdir" => index += 2,
-            value if value.starts_with("-chdir=") => index += 1,
-            "-help" | "--help" | "-version" | "--version" => index += 1,
-            value if value.starts_with('-') => index += 1,
+            "-chdir" => {
+                args.next();
+            }
+            value if value.starts_with('-') => {}
             value => return Some(value),
         }
     }
@@ -590,7 +622,7 @@ pub fn inject_automatic_tfvars(
     tfvars: &AutomaticTfvars,
     project_requires_secret_tfvars: bool,
 ) -> Result<Vec<String>, TerraformError> {
-    let Some(subcommand) = tofu_subcommand(args) else {
+    let Some(subcommand) = tofu_subcommand(args.iter().map(String::as_str)) else {
         return Ok(args.to_vec());
     };
     if !supports_var_files(subcommand) || has_explicit_vars(args) {
@@ -817,7 +849,9 @@ pub fn plan_tofu_wrapper_command(
         // Preparation validates the backend environment for every recognized
         // project, even when the wrapper subcommand is not `init`.
         let backend_args = backend_config_args(project, backend_values)?;
-        if tofu_subcommand(args) == Some("init") && !has_explicit_backend_config(args) {
+        if tofu_subcommand(args.iter().map(String::as_str)) == Some("init")
+            && !has_explicit_backend_config(args)
+        {
             command_args.extend(backend_args);
         } else {
             command_args = plain_args(inject_automatic_tfvars(
