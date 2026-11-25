@@ -695,9 +695,10 @@ class UpdateScriptTests(unittest.TestCase):
 
     def run_updater(self, *args, nix_status=0, sync_status=0):
         # Source the actual entrypoint in a disposable repo. Shell functions
-        # intercept EVERY Nix/Python call, so no real updates/network can run.
+        # intercept Nix/Python and gh so no updates or credential reads occur.
         mocks = r'''
 set -Eeuo pipefail
+gh() { return 1; }
 nix() {
     printf 'nix' >> "$EVENTS"
     printf '\t%s' "$@" >> "$EVENTS"

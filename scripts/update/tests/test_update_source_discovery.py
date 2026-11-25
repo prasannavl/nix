@@ -4,7 +4,6 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 
 REPO_ROOT = Path(__file__).parents[3]
@@ -24,6 +23,13 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
         (self.repo / "lib/ext").mkdir(parents=True)
         (self.repo / "pkgs/ext").mkdir(parents=True)
         shutil.copy2(UPDATE_SCRIPT, self.repo / "scripts/update.sh")
+        self.bin = self.repo / "bin"
+        self.bin.mkdir()
+        # Only fixture commands; never consult the host's gh login.
+        for name in ("basename", "bash", "dirname", "find", "python3", "sort"):
+            executable = shutil.which(name)
+            self.assertIsNotNone(executable, f"missing test dependency: {name}")
+            (self.bin / name).symlink_to(executable)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -39,49 +45,93 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
             script.chmod(0o755)
         return unit
 
-    def run_update(self, *args, trace=None, env=None):
+    def add_command(self, name, body):
+        command = self.bin / name
+        command.write_text(f"#!/usr/bin/env bash\n{body}\n")
+        command.chmod(0o755)
+
+    def run_update(self, *args, trace=None, env=None, xtrace=False):
         full_env = os.environ.copy()
-        full_env.pop("GITHUB_TOKEN", None)
-        full_env.pop("GH_TOKEN", None)
+        for name in ("GITHUB_TOKEN", "GH_TOKEN", "NIX_CONFIG"):
+            full_env.pop(name, None)
+        full_env["PATH"] = str(self.bin)
         full_env.update(env or {})
         if trace is not None:
             full_env["TRACE"] = str(trace)
+        command = [self.bin / "bash", "-x"] if xtrace else []
         return subprocess.run(
-            [self.repo / "scripts/update.sh", *args],
+            [*command, self.repo / "scripts/update.sh", *args],
             check=False,
             capture_output=True,
             text=True,
             env=full_env,
         )
 
-    def test_github_token_configures_reporters_and_nix(self):
+    def trace_github_token(self):
         trace = Path(self.temp_dir.name) / "trace"
         unit = self.add_unit("lib/ext", "example", sources=True, updater=True)
         (unit / "update.sh").write_text(
             '#!/usr/bin/env bash\nprintf "%s\\n%s\\n" '
-            '"$GITHUB_TOKEN" "$NIX_CONFIG" >"$TRACE"\n'
+            '"${GITHUB_TOKEN-}" "${NIX_CONFIG-}" >"$TRACE"\n'
         )
-        (unit / "update.sh").chmod(0o755)
+        return trace
 
+    def assert_github_token(self, trace, token):
+        self.assertEqual(
+            trace.read_text().splitlines(),
+            [token, "warn-dirty = false", f"extra-access-tokens = github.com={token}"],
+        )
+
+    def test_explicit_github_token_configures_reporters_and_nix_without_gh(self):
+        trace = self.trace_github_token()
+        self.add_command("gh", 'printf called >"$TRACE.gh"\nexit 1')
+        for github_token, expected in [("github_test_token", "github_test_token"), ("", "gh_test_token")]:
+            with self.subTest(github_token=github_token):
+                result = self.run_update(
+                    "--only-ext",
+                    trace=trace,
+                    env={
+                        "GH_TOKEN": "gh_test_token",
+                        "GITHUB_TOKEN": github_token,
+                        "NIX_CONFIG": "warn-dirty = false",
+                    },
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assert_github_token(trace, expected)
+                self.assertEqual(result.stderr, "GitHub auth: using token from environment\n")
+                self.assertFalse(trace.with_suffix(".gh").exists())
+
+    def test_gh_login_configures_reporters_and_nix_without_tracing_token(self):
+        trace = self.trace_github_token()
+        self.add_command(
+            "gh",
+            '[[ "$GH_PROMPT_DISABLED" == 1 && "$*" == "auth token --hostname github.com" ]] || exit 1\n'
+            'printf "%s\\n" cached_test_token',
+        )
         result = self.run_update(
             "--only-ext",
             trace=trace,
-            env={
-                "GH_TOKEN": "gh_test_token",
-                "GITHUB_TOKEN": "",
-                "NIX_CONFIG": "warn-dirty = false",
-            },
+            env={"GH_HOST": "enterprise.example", "NIX_CONFIG": "warn-dirty = false"},
+            xtrace=True,
         )
-
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(
-            trace.read_text().splitlines(),
-            [
-                "gh_test_token",
-                "warn-dirty = false",
-                "extra-access-tokens = github.com=gh_test_token",
-            ],
-        )
+        self.assert_github_token(trace, "cached_test_token")
+        self.assertIn("GitHub auth: using token from gh\n", result.stderr)
+        self.assertNotIn("cached_test_token", result.stdout + result.stderr)
+        self.assertIn("+ run_updates", result.stderr)
+
+    def test_unavailable_gh_credentials_leave_nix_config_unchanged(self):
+        trace = self.trace_github_token()
+        for installed in (False, True):
+            with self.subTest(installed=installed):
+                if installed:
+                    self.add_command("gh", "echo not-logged-in >&2\necho stray-output\nexit 1")
+                result = self.run_update(
+                    "--only-ext", trace=trace, env={"NIX_CONFIG": "warn-dirty = false"}
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "GitHub auth: public\n")
+                self.assertEqual(trace.read_text().splitlines(), ["", "warn-dirty = false"])
 
     def test_sources_and_updater_participate_in_updates(self):
         trace = Path(self.temp_dir.name) / "trace"
@@ -201,13 +251,8 @@ class UpdateSourceDiscoveryTests(unittest.TestCase):
         self.assertNotIn("podman-images.py", result.stderr)
 
     def test_report_footer_names_failed_flake_metadata(self):
-        binary_dir = self.repo / "bin"
-        binary_dir.mkdir()
-        nix = binary_dir / "nix"
-        nix.write_text("#!/usr/bin/env bash\nprintf '{}\\n'\nexit 3\n")
-        nix.chmod(0o755)
-        with mock.patch.dict(os.environ, {"PATH": f"{binary_dir}:{os.environ['PATH']}"}):
-            result = self.run_update("--only-flake", "--report")
+        self.add_command("nix", "printf '{}\\n'\nexit 3")
+        result = self.run_update("--only-flake", "--report")
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn("flake metadata (exit 3)", result.stderr)
 

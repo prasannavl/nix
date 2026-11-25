@@ -67,14 +67,22 @@ still synchronized before child locks, preserving the previous order.
 
 ## Ownership boundary
 
-- `scripts/support/update-helper.py` owns child-flake discovery (`flake-dirs`)
-  alongside `report-sources` and `child-refs`.
+- `scripts/update/helper.py` owns child-flake discovery (`flake-dirs`) alongside
+  `report-sources` and `child-refs`.
 - `scripts/update.sh` owns orchestration order and user-facing output only.
+
+## GitHub authentication
+
+`scripts/update.sh` uses `GITHUB_TOKEN`, then `GH_TOKEN`, then an existing
+noninteractive `gh` login for `github.com`. Without a token it runs in public
+mode. The updater exports credentials only to its process tree (including native
+Nix via `NIX_CONFIG`); its status line identifies the source, never the token.
+This fallback does not change service-managed Nixbot authentication.
 
 ## Source of truth files
 
 - `scripts/update.sh`
-- `scripts/support/update-helper.py`
-- `scripts/support/tests/test_update_helper_flake_dirs.py`
-- `scripts/support/tests/test_update_helper_child_refs.py`
-- `scripts/support/tests/test_update_helper_cli.py`
+- `scripts/update/helper.py`
+- `scripts/update/tests/test_update_helper_flake_dirs.py`
+- `scripts/update/tests/test_update_helper_child_refs.py`
+- `scripts/update/tests/test_update_helper_cli.py`

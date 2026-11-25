@@ -10,6 +10,8 @@ Runs all repo maintenance update scripts:
   external sources under lib/ext/* and pkgs/ext/*
   Podman Compose image pin updates
 
+GitHub auth: GITHUB_TOKEN, GH_TOKEN, then a gh login for github.com; otherwise public.
+
 Options:
   --skip-flake          Do not update flake locks.
   --only-flake          Only update flake locks.
@@ -34,16 +36,25 @@ die() {
 }
 
 configure_github_nix_access_token() {
-	local github_token="${GITHUB_TOKEN:-${GH_TOKEN:-}}" token_setting=""
+	# Keep credentials out of xtrace; restore options on return.
+	local -
+	set +x
+	local github_token="${GITHUB_TOKEN:-${GH_TOKEN:-}}" token_setting="" token_source="environment"
 
-	[[ -n "$github_token" ]] || return 0
+	if [[ -z "$github_token" ]] && command -v gh >/dev/null 2>&1; then
+		github_token="$(GH_PROMPT_DISABLED=1 gh auth token --hostname github.com </dev/null 2>/dev/null)" ||
+			github_token=""
+		token_source="gh"
+	fi
+	if [[ -z "$github_token" ]]; then
+		printf 'GitHub auth: public\n' >&2
+		return 0
+	fi
 	if [[ "$github_token" == *[$' \t\r\n']* ]]; then
-		die "GITHUB_TOKEN and GH_TOKEN must not contain whitespace"
+		die "GitHub token must not contain whitespace"
 	fi
 
-	# The source reporters consume GITHUB_TOKEN, while Nix consumes
-	# access-tokens from its configuration. Project either supported ambient
-	# variable into both interfaces without replacing other Nix settings.
+	# Share the token with source reporters and native Nix.
 	export GITHUB_TOKEN="$github_token"
 	token_setting="extra-access-tokens = github.com=${github_token}"
 	case $'\n'"${NIX_CONFIG:-}"$'\n' in
@@ -56,6 +67,7 @@ configure_github_nix_access_token() {
 		fi
 		;;
 	esac
+	printf 'GitHub auth: using token from %s\n' "$token_source" >&2
 }
 
 init_vars() {
@@ -515,9 +527,9 @@ run_updates() {
 
 main() {
 	init_vars
-	configure_github_nix_access_token
 	parse_args "$@"
 	normalize_options
+	configure_github_nix_access_token
 	run_updates
 }
 
