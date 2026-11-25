@@ -124,7 +124,8 @@ service model for ordinary system services.
 
 1. Create the package-local `default.nix` under `pkgs/`.
 2. Add the package to `pkgs/manifest.nix` if it should be exported from the root
-   flake package set.
+   flake package set. Repository package composition is exposed through
+   `ab.repo.packages`.
 3. Add or update the package-local `flake.nix`.
 4. Attach `passthru.nixosModule` to the derivation for the child flake to
    re-export.
