@@ -114,6 +114,7 @@ pull_compose_entry() {
 		"PATH=/run/wrappers/bin:/run/current-system/sw/bin"
 		"NIX_PODMAN_COMPOSE_METADATA=$metadata"
 		"NIX_PODMAN_COMPOSE_SERVICE_NAME=$service_name"
+		"ABIRD_IMAGE_ITEM=${image_item-}"
 		"NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE=$status_file"
 		"NIX_PODMAN_COMPOSE_IMAGE_PULL_PREFLIGHT_POLICY=prepare"
 	)
@@ -144,12 +145,10 @@ pull_compose_entry() {
 }
 
 pull_entry() {
-	local entry="$1" owner uid service_name runtime_dir home refs backend status=0
+	local entry="$1" service_name="$2" backend="$3" owner uid runtime_dir home refs status=0
 	local -a images
 	owner="$(jq -er '.user' <<<"$entry")" || return 1
 	uid="$(jq -er '.uid' <<<"$entry")" || return 1
-	service_name="$(jq -er '.serviceName' <<<"$entry")" || return 1
-	backend="$(jq -er '.backend // "compose"' <<<"$entry")" || return 1
 
 	if ! getent passwd "$owner" >/dev/null; then
 		printf '%s%s\n' \
@@ -177,7 +176,7 @@ pull_entry() {
 			cd -- "$home" || exit 1
 			run_as_owner "$owner" "$uid" "$runtime_dir" "$home" \
 				env -i HOME="$home" USER="$owner" LOGNAME="$owner" XDG_RUNTIME_DIR="$runtime_dir" \
-				PATH="${owner_engine_path:?missing owner engine path}" podman-owner-images "${images[@]}"
+				ABIRD_IMAGE_ITEM="${image_item-}" PATH="${owner_engine_path:?missing owner engine path}" podman-owner-images "${images[@]}"
 		) || status="$?"
 		if [ "$status" -eq 75 ]; then
 			printf 'image acquisition: %s is busy; deferring %s to native activation\n' "$owner" "$service_name"
@@ -185,15 +184,16 @@ pull_entry() {
 		fi
 		[ "$status" -eq 0 ] || return 1
 		;;
-	*)
-		printf 'unknown image acquisition backend: %s\n' "$backend" >&2
-		return 1
-		;;
+
 	esac
 }
 
+image_progress() {
+	[[ -z ${image_item-} ]] || printf '[prefetch-podman-image] item %s %s\n' "$image_item" "$1" >&2
+}
+
 main() {
-	local entries entry count=0 pulled_count=0 skipped_count=0 deferred_count=0
+	local entries entry total image_item="" service_name label backend count=0 pulled_count=0 skipped_count=0 deferred_count=0
 
 	if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
 		usage
@@ -208,21 +208,41 @@ main() {
 		return 0
 	fi
 
+	total="$(jq -er 'length' "$plan")" || return 1
 	entries="$(jq -c '.[]' "$plan")" || return 1
 	while IFS= read -r entry; do
 		[ -n "$entry" ] || continue
 		count=$((count + 1))
-		if pull_entry "$entry"; then
+		service_name="$(jq -er '.serviceName' <<<"$entry")" || return 1
+		backend="$(jq -er '.backend // "compose"' <<<"$entry")" || return 1
+		case "$backend" in
+		compose | quadlet) ;;
+		*)
+			printf 'unknown image acquisition backend: %s\n' "$backend" >&2
+			return 1
+			;;
+		esac
+		if [[ ${ABIRD_ACQUIRE_PROGRESS:-0} == 1 ]]; then
+			label="$service_name"
+			[[ $label =~ ^[a-zA-Z0-9_.@-]{1,128}$ ]] || label=service
+			image_item="$count/$total $backend $label"
+			image_progress checking
+		fi
+		if pull_entry "$entry" "$service_name" "$backend"; then
+			image_progress ready
 			pulled_count=$((pulled_count + 1))
 		else
 			case "$?" in
 			2)
+				image_progress ready
 				skipped_count=$((skipped_count + 1))
 				;;
 			3)
+				image_progress deferred
 				deferred_count=$((deferred_count + 1))
 				;;
 			*)
+				image_progress failed
 				return 1
 				;;
 			esac
@@ -231,6 +251,10 @@ main() {
 
 	if [ "$count" -eq 0 ]; then
 		return 0
+	fi
+	if [[ ${ABIRD_ACQUIRE_PROGRESS:-0} == 1 ]]; then
+		printf '[prefetch-podman-image] ok=%d/%d deferred=%d failed=0\n' \
+			"$((count - deferred_count))" "$count" "$deferred_count" >&2
 	fi
 	if [ "$pulled_count" -gt 0 ]; then
 		printf '%s\n' "podman-compose-image-pull-all: prepared ${pulled_count} image set(s)"

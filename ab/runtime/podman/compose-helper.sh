@@ -2505,6 +2505,10 @@ compose_stop() {
 
 compose_images() (
 	close_lifecycle_fds_for_child 2>/dev/null
+	# Keep progress metadata out of the provider interpolation environment.
+	if [[ $1 == ensure && -n ${ABIRD_IMAGE_ITEM-} ]]; then
+		set -- "$@" "$ABIRD_IMAGE_ITEM"
+	fi
 	exec "${project_command[@]}" images "$@"
 )
 

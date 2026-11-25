@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -53,7 +54,7 @@ def cached(ref, platform, native):
     )
 
 
-def acquire(action, remote):
+def acquire(action, remote, item=""):
     if action == "list":
         print(
             json.dumps([{"image": r, "platform": p or None} for r, p in sorted(remote)])
@@ -94,6 +95,19 @@ def acquire(action, remote):
         if index:
             refs = [ref for ref in refs if not cached(ref, platform, native)]
         if refs:
+            if item:
+                # Report the actual batch, after the last cache check. Do not
+                # guess a current image inside a multi-image Podman command.
+                detail = f"batch {len(refs)}"
+                if len(refs) == 1 and re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._:/-]*(?:@sha256:[0-9a-f]{64})?", refs[0]
+                ):
+                    detail = "pulling " + refs[0] if "://" not in refs[0] else detail
+                print(
+                    f"[prefetch-podman-image] item {item} {detail}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             flags = [] if platform == native else [f"--platform={platform}"]
             if subprocess.run(
                 ["podman", "pull", "--policy=missing", *flags, "--", *refs]
@@ -239,7 +253,7 @@ def managed_project(flags, files, archives, candidate_root=None):
     return override, final.values()
 
 
-def execute(action, services, archives):
+def execute(action, services, archives, item):
     from podman_compose import is_local
 
     images = [c for c in services if "image" in c and c.get("x-podman.rootfs") is None]
@@ -247,7 +261,7 @@ def execute(action, services, archives):
     remote = {
         (c["image"], c.get("platform") or "") for c in images if c["image"] not in local
     }
-    return acquire(action, remote)
+    return acquire(action, remote, item)
 
 
 def main(metadata, action, args):
@@ -308,13 +322,17 @@ def main(metadata, action, args):
     if runtime:
         print(json.dumps(policy))
         return 0
-    return execute(action, services, set(archives.values()))
+    return execute(action, services, set(archives.values()), args[0] if args else "")
 
 
 if __name__ == "__main__":
     if sys.argv[1] in {"--ensure-native", "--verify-native"}:
         action = "ensure" if sys.argv[1] == "--ensure-native" else "probe"
-        status = acquire(action, {(ref, "") for ref in sys.argv[2:]})
+        status = acquire(
+            action,
+            {(ref, "") for ref in sys.argv[2:]},
+            os.environ.pop("ABIRD_IMAGE_ITEM", ""),
+        )
         if status == MISSING:
             sys.exit(f"native image missing from owner store: {sys.argv[2:]}")
         sys.exit(status)

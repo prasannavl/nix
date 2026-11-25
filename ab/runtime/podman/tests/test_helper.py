@@ -1135,7 +1135,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         path.write_text("services:\n  web:\n    image: docker.io/library/nginx:latest\n")
         return path
 
-    def acquire(self, metadata, home, registry):
+    def acquire(self, metadata, home, registry, **env):
         return self.run_helper(
             "cmd_image_pull", check=False, HOME=str(home),
             TEST_PODMAN_REGISTRY=json.dumps(registry),
@@ -1143,7 +1143,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
             NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
             NIX_PODMAN_COMPOSE_IMAGE_PULL_RETRY_ATTEMPTS="1",
             NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE=str(self.state_dir / "status"),
-            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            XDG_RUNTIME_DIR=str(self.runtime_dir), **env,
         )
 
     def test_partial_cache_uses_effective_refs_and_preserves_cached_id(self):
@@ -1185,7 +1185,9 @@ class PodmanComposeHelperTest(unittest.TestCase):
         other.mkdir(parents=True)
         (other / quote(sidecar, safe="")).write_text("other-owner-ID")
 
-        result = self.acquire(metadata, self.work_dir, {app: "B", sidecar: "C", extra: "D"})
+        result = self.acquire(metadata, self.work_dir, {app: "B", sidecar: "C", extra: "D"},
+                              ABIRD_IMAGE_ITEM="2/3 compose test-compose")
+        self.assertIn("[prefetch-podman-image] item 2/3 compose test-compose batch 2", result.stderr)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertCountEqual([f"fetch {sidecar}", f"fetch {extra}"], result.stdout.splitlines())
         self.assertEqual("A", (store / quote(app, safe="")).read_text())
@@ -2047,8 +2049,11 @@ class PodmanComposeHelperTest(unittest.TestCase):
                 source ab/runtime/podman/image-helper.sh
                 runtime_dir_for_uid() {{ printf '%s\n' {shlex.quote(str(self.runtime_dir))}; }}
                 home_for_user() {{ printf '%s\n' {shlex.quote(str(self.work_dir))}; }}
-                main
+                ABIRD_ACQUIRE_PROGRESS=1 main
             """)
+            item = "[prefetch-podman-image] item 1/1 quadlet native"
+            self.assertEqual([item + " checking", *[item + " pulling " + r for r in fetched], item + " ready",
+                              "[prefetch-podman-image] ok=1/1 deferred=0 failed=0"], result.stderr.splitlines())
             self.assertEqual([f"fetch {ref}" for ref in fetched],
                              [line for line in result.stdout.splitlines() if line.startswith("fetch ")])
             self.assertEqual("A", (store / quote(app, safe="")).read_text())
