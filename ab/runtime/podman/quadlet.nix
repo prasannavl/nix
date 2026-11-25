@@ -4,6 +4,7 @@
 }: let
   python = pkgs.python3.withPackages (packages: [packages.pyyaml]);
   compiler = ./quadlet-compiler.py;
+  imageTools = import ./compose-image-plan.nix {inherit pkgs;};
 in {
   # Compose is intentionally parsed only inside this derivation.  Callers may
   # pass the resulting paths onward, but must not import report.json into Nix
@@ -12,7 +13,8 @@ in {
     name,
     config,
   }: let
-    configFile = pkgs.writeText "podman-compose-${name}-quadlet-input.json" (builtins.toJSON config);
+    input = config // {verifyNativeImage = imageTools.verifyNative;};
+    configFile = pkgs.writeText "podman-compose-${name}-quadlet-input.json" (builtins.toJSON input);
   in
     pkgs.runCommand "podman-compose-${name}-quadlet" {
       nativeBuildInputs = [python];

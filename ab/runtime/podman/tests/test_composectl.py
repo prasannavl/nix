@@ -861,6 +861,35 @@ class PodmanComposeCtlTest(unittest.TestCase):
             result.stdout.splitlines(),
         )
 
+    def test_expected_runtime_uses_resolved_owner_project_not_registry_source_keys(self):
+        owner = pwd.getpwuid(os.getuid()).pw_name
+        with tempfile.TemporaryDirectory(dir=self.tmp_root) as tmp:
+            directory = Path(tmp)
+            meta = directory / "metadata.json"
+            meta.write_text(json.dumps({"composeFiles": ["nested/compose.yml"]}))
+            registry = directory / "registry.json"
+            registry.write_text(json.dumps({"app": dict(user=owner, uid=str(os.getuid()), serviceName="app",
+                metadataFile=str(meta), workingDir=tmp, expectedComposeServices=["debug"], autoStart=True)}))
+            result = subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", '''
+                registry=$1; helper=/bin/false; source "$2"; project_command=/test/project
+                require_runtime_dir() { :; }
+                run_as_owner() {
+                    shift 4
+                    if [[ $1 == /test/project ]]; then
+                        [[ $2 == "$registry_dir/metadata.json" && $3 == inventory ]] || return 1
+                        echo '{"project":"custom","workingDir":"/nested","services":["web"],"containers":["custom_web_1","custom_web_2"]}'
+                    else
+                        echo '[{"Names":["custom_web_1"],"State":"running","Labels":{"com.docker.compose.project":"custom",
+                            "com.docker.compose.project.working_dir":"/nested","com.docker.compose.service":"web"}},
+                            {"Names":["custom_web_2"],"State":"running","Labels":{"com.docker.compose.project":"foreign",
+                            "com.docker.compose.project.working_dir":"/nested","com.docker.compose.service":"web"}}]'
+                    fi
+                }
+                registry_dir=${registry%/*}; main expected-runtime "$3"
+                ''', "ctl-test", str(registry), str(self.script), owner], capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("missing service=app compose-container=custom_web_2", result.stdout.strip())
+
     def test_expected_runtime_reads_state_larger_than_arg_max_without_argv(self):
         owner = pwd.getpwuid(os.getuid()).pw_name
         with tempfile.TemporaryDirectory(

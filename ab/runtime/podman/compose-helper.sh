@@ -6,6 +6,8 @@ init_vars() {
 	podman_compose_metadata="${NIX_PODMAN_COMPOSE_METADATA-}"
 	podman_compose_service_name="${NIX_PODMAN_COMPOSE_SERVICE_NAME-}"
 	backend="compose"
+	project_command=(podman-compose-project "$podman_compose_metadata")
+	engine_command=(podman)
 
 	runtime_dir="${XDG_RUNTIME_DIR-}"
 	generated_dir=""
@@ -23,6 +25,9 @@ init_vars() {
 	compose_start_timeout_unit=""
 	adoption_stamp=""
 	working_dir=""
+	project_dir=""
+	project_inventory=""
+	project_label_filter=()
 	desired_state="running"
 	reconcile_policy="auto"
 	removal_policy="delete"
@@ -73,11 +78,7 @@ init_vars() {
 	compose_dns_dependencies_loaded=0
 	compose_dns_dependencies_json='[]'
 
-	compose_args=()
-	podman_compose_base_args=()
 	compose_file_args=()
-	pull_compose_file_args=()
-	declared_images=()
 	local_image_refs=()
 	local_image_runtime_refs=()
 	local_image_load_refs=()
@@ -132,6 +133,54 @@ helper_invoked_as_script() {
 	[ "${NIX_PODMAN_COMPOSE_HELPER_TOPLEVEL-}" = "1" ] || [ "${BASH_SOURCE[0]}" = "$0" ]
 }
 
+load_project_context() {
+	engine_command=(podman)
+	project_command=(podman-compose-project "$podman_compose_metadata")
+	if [ "$backend" = compose ]; then
+		engine_command=("${project_command[@]}" engine)
+	fi
+}
+
+# The staging root is not necessarily the provider's first-file directory.
+# Do not resolve the live project for candidate pulls or before cold staging.
+load_compose_inventory() {
+	local first_file project_name
+	project_inventory=""
+	project_label_filter=()
+	first_file="$(jq -r '.composeFiles[0] // empty' "$podman_compose_metadata")" || return 1
+	project_dir="$working_dir"
+	[ -n "$first_file" ] || return 0
+	project_dir="$(realpath -m -- "${first_file%/*}")" || return 1
+	if [ ! -f "$first_file" ] && [ "${1-}" = allow-unstaged ]; then
+		if working_dir_has_compose_containers; then
+			printf 'cannot establish ownership without staged Compose entry: %s\n' "$first_file" >&2
+			return 1
+		fi
+		expected_compose_services=()
+		return 0
+	fi
+	project_inventory="$("${project_command[@]}" inventory)" || return 1
+	project_dir="$(jq -er '.workingDir' <<<"$project_inventory")" || return 1
+	project_name="$(jq -er '.project' <<<"$project_inventory")" || return 1
+	project_label_filter=(--filter "label=com.docker.compose.project=$project_name")
+	mapfile -t expected_compose_services < <(jq -r '.services[]' <<<"$project_inventory")
+}
+
+# ExecStop and ExecStopPost share the start's systemd invocation ID. An old
+# helper never claims that ID, even after a downgrade and subsequent upgrade.
+load_teardown_inventory() {
+	local launched
+	load_project_context
+	launched="$(runtime_state_field projectInvocation '')" || return 1
+	if [ -z "$launched" ] || { [ "${1-}" != recorded ] && [ -n "${INVOCATION_ID-}" ] && [ "$launched" != "$INVOCATION_ID" ]; }; then
+		project_command+=(legacy-stop)
+		engine_command=("${project_command[@]}" engine)
+	fi
+	load_compose_inventory allow-unstaged || return 1
+	# An ownership error is not a failed provider stop that cleanup can forgive.
+	assert_compose_project_ownership
+}
+
 load_metadata() {
 	local compose_file
 	require_env NIX_PODMAN_COMPOSE_METADATA
@@ -141,6 +190,7 @@ load_metadata() {
 	manifest_path="$runtime_dir/podman-compose/${podman_compose_service_name}.manifest"
 	working_dir="$(jq -r '.workingDir' "$podman_compose_metadata")"
 	backend="$(jq -r '.backend // "compose"' "$podman_compose_metadata")"
+	load_project_context
 	desired_state="$(jq -r '.state // "running"' "$podman_compose_metadata")"
 	reconcile_policy="$(jq -r '.reconcilePolicy // "auto"' "$podman_compose_metadata")"
 	generated_dir="$working_dir/.podman-compose"
@@ -167,27 +217,13 @@ load_metadata() {
 	restart_stamp="$(jq -r '.restartStamp // ""' "$podman_compose_metadata")"
 	bootstrap_timeout_seconds="$(jq -r '.timeoutBootstrapSeconds // 300' "$podman_compose_metadata")"
 
-	compose_args=()
-	while IFS= read -r compose_arg; do
-		[ -n "$compose_arg" ] || continue
-		compose_args+=("$compose_arg")
-	done < <(jq -r '.composeArgs[]?' "$podman_compose_metadata")
-
 	compose_file_args=()
 	while IFS= read -r compose_file; do
 		compose_file_args+=(-f "$compose_file")
 	done < <(jq -r '.composeFiles[]?' "$podman_compose_metadata")
-
-	pull_compose_file_args=()
-	while IFS= read -r compose_file; do
-		pull_compose_file_args+=(-f "$compose_file")
-	done < <(jq -r '.pullComposeFiles[]?' "$podman_compose_metadata")
-
-	declared_images=()
-	while IFS= read -r image; do
-		[ -n "$image" ] || continue
-		declared_images+=("$image")
-	done < <(jq -r '.declaredImages[]?' "$podman_compose_metadata")
+	if [ "${#compose_file_args[@]}" -gt 0 ]; then
+		project_dir="$(dirname -- "${compose_file_args[1]}")"
+	fi
 
 	local_image_refs=()
 	local_image_runtime_refs=()
@@ -294,14 +330,14 @@ flock_timeout() {
 }
 
 podman_no_notify() {
-	env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC podman "$@"
+	env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC "${engine_command[@]}" "$@"
 }
 
 podman_no_notify_timeout() {
 	local timeout_seconds
 	timeout_seconds="$1"
 	shift
-	env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC timeout -k 5s "${timeout_seconds}s" podman "$@"
+	env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC timeout -k 5s "${timeout_seconds}s" "${engine_command[@]}" "$@"
 }
 
 run_lifecycle_hook_command() {
@@ -490,7 +526,7 @@ working_dir_has_compose_containers() {
 		close_lifecycle_fds_for_child
 		cd /
 		podman_no_notify ps -a \
-			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
+			--filter "label=com.docker.compose.project.working_dir=${project_dir:-$working_dir}" "${project_label_filter[@]}" \
 			--format '{{.ID}}'
 	)"; then
 		return 0
@@ -1104,37 +1140,33 @@ expected_compose_services_json() {
 	printf '%s\n' "${expected_compose_services[@]}" | jq -R . | jq -s -c .
 }
 
-compose_up_no_progress_report() {
-	local state_json failing_states missing_services expected_services_json
-	state_json="$(cat)"
-	failing_states="$(printf '%s' "$state_json" | failing_states_report)"
-	expected_services_json="$(expected_compose_services_json)"
-	missing_services="$(
-		printf '%s' "$state_json" |
-			jq -r --argjson expected "$expected_services_json" '
-				def compose_service:
-					.Labels["io.podman.compose.service"]
-					// .Labels["com.docker.compose.service"]
-					// empty;
-
-				($expected - ([.[] | select((.State // "") == "running") | compose_service] | unique)) as $missing
-				| if ($expected | length) == 0 or ($missing | length) == 0 then
-					empty
-				  elif length == 0 then
-					"podman compose has no managed containers for expected services during start:",
-					($missing[])
-				  else
-					"podman compose is missing running containers for expected services during start:",
-					($missing[])
-				  end
-			'
-	)"
-
-	if [ -n "$failing_states" ]; then
-		printf '%s\n' "$failing_states"
+# Resolved projects are sets of named replicas. Service labels are only a
+# fallback for older metadata with no Compose entry. Input: one project ps.
+compose_state_missing_expected_report() {
+	local keys expected
+	if [ -n "$project_inventory" ]; then
+		keys=names
+		expected="$(jq -ce '.containers' <<<"$project_inventory")" || return 1
+	else
+		keys=services
+		expected="$(expected_compose_services_json)" || return 1
 	fi
-	if [ "$long_running" = "true" ] && [ -n "$missing_services" ]; then
-		printf '%s\n' "$missing_services"
+	jq -r --arg keys "$keys" --arg state "${1:-running}" --argjson expected "$expected" '
+		$expected - [.[] | select($state == "present" or .State == $state) |
+			if $keys == "names" then .Names[]? else
+				.Labels["io.podman.compose.service"] // .Labels["com.docker.compose.service"] // empty end]
+		| .[]'
+}
+
+compose_up_no_progress_report() {
+	local state_json missing
+	state_json="$(cat)"
+	failing_states_report <<<"$state_json"
+	if [ "$long_running" = true ]; then
+		missing="$(compose_state_missing_expected_report <<<"$state_json")" || return 1
+		if [ -n "$missing" ]; then
+			printf '%s\n' 'podman compose is missing running containers during start:' "$missing"
+		fi
 	fi
 }
 
@@ -1143,7 +1175,7 @@ compose_state_json() {
 		close_lifecycle_fds_for_child
 		cd /
 		podman_no_notify_timeout "$compose_monitor_timeout_seconds" ps -a \
-			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
+			--filter "label=com.docker.compose.project.working_dir=${project_dir:-$working_dir}" "${project_label_filter[@]}" \
 			--format json
 	)
 }
@@ -1158,27 +1190,26 @@ compose_up_no_progress_probe_interval_seconds() {
 	printf '%s\n' "$interval"
 }
 
-json_string() {
-	jq -Rn --arg value "$1" '$value'
+write_compose_runtime_policy() {
+	if [ "${#compose_file_args[@]}" -gt 0 ]; then
+		compose_images runtime-policy
+	else
+		jq -cn --args '{services: ($ARGS.positional | map({key: ., value: {pull_policy: "never", restart: "no"}}) | from_entries)}' -- "${expected_compose_services[@]}"
+	fi
 }
 
 compose_runtime_policy_override_file() {
-	local override_file tmp_file service sep
-	if [ "${#expected_compose_services[@]}" -eq 0 ]; then
+	local override_file tmp_file
+	if [ "${#expected_compose_services[@]}" -eq 0 ] && [ "${#compose_file_args[@]}" -eq 0 ]; then
 		return 0
 	fi
 	install -d -m 0700 "$generated_dir"
 	override_file="$generated_dir/runtime-policy.override.json"
 	tmp_file="$(mktemp "${override_file}.tmp.XXXXXX")"
-	{
-		printf '{"services":{'
-		sep=""
-		for service in "${expected_compose_services[@]}"; do
-			printf '%s%s:{"pull_policy":"never","restart":"no"}' "$sep" "$(json_string "$service")"
-			sep=","
-		done
-		printf '}}\n'
-	} >"$tmp_file"
+	if ! write_compose_runtime_policy >"$tmp_file"; then
+		rm -f "$tmp_file"
+		return 1
+	fi
 	mv -f "$tmp_file" "$override_file"
 	printf '%s\n' "$override_file"
 }
@@ -1199,9 +1230,6 @@ compose_up_once_mutating() {
 		;;
 	esac
 	if [ "$status" -eq 0 ]; then
-		remove_conflicting_compose_container_names || status="$?"
-	fi
-	if [ "$status" -eq 0 ]; then
 		compose_up_supervised || status="$?"
 	fi
 	return "$status"
@@ -1210,6 +1238,7 @@ compose_up_once_mutating() {
 compose_up() {
 	local status=0
 	begin_rootless_mutation "compose up"
+	admit_compose_start || return 1
 	compose_up_once_mutating normal || status="$?"
 	if [ "$status" -eq 0 ]; then
 		commit_rootless_mutation
@@ -1222,6 +1251,7 @@ compose_up() {
 compose_up_force_recreate() {
 	local status=0
 	begin_rootless_mutation "compose up pre-clean recreate"
+	admit_compose_start || return 1
 	compose_up_once_mutating force || status="$?"
 	if [ "$status" -eq 0 ]; then
 		commit_rootless_mutation
@@ -1236,14 +1266,6 @@ compose_up_fatal_line() {
 	line="$1"
 	grep -Eq \
 		'exceeded num_locks|container name ".*" is already in use|cannot be used as a dependency|rootlessport listen tcp .* bind:|aardvark-dns failed to start|failed to bind udp listener .*:53|(^|[[:space:]])image pull-error[[:space:]]' \
-		<<<"$line"
-}
-
-compose_pull_fatal_line() {
-	local line
-	line="$1"
-	grep -Eq \
-		'(^|[[:space:]])image pull-error[[:space:]]|^Error: unable to copy from source docker://' \
 		<<<"$line"
 }
 
@@ -1582,11 +1604,15 @@ compose_up_supervised() {
 	state_probe_interval="$(compose_up_no_progress_probe_interval_seconds)"
 
 	local_compose_file_args=("${compose_file_args[@]}")
-	runtime_policy_override="$(compose_runtime_policy_override_file)"
+	runtime_policy_override="$(compose_runtime_policy_override_file)" || return 1
 	if [ -n "$runtime_policy_override" ]; then
 		local_compose_file_args+=(-f "$runtime_policy_override")
 	fi
-	up_args=(podman compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${local_compose_file_args[@]}" up --no-build -d --remove-orphans)
+	if [ -n "$project_inventory" ]; then
+		# Record before up: a partial provider start still belongs to this contract.
+		write_runtime_state_with_filter '.projectInvocation = (env.INVOCATION_ID // "manual")' || return 1
+	fi
+	up_args=("${project_command[@]}" provider "${local_compose_file_args[@]}" up --no-build -d --remove-orphans)
 	compose_up_pid_file="$(supervised_pid_file)"
 
 	coproc COMPOSE_UP_PROC {
@@ -1710,19 +1736,21 @@ compose_up_supervised() {
 }
 
 compose_down() {
-	local container volume status=0 containers=() anonymous_volumes=()
+	local container container_ids volume status=0 containers=() anonymous_volumes=()
+	assert_compose_project_ownership || return 1
+	container_ids="$(compose_project_container_ids)" || return 1
 
 	while IFS= read -r container; do
 		[ -n "$container" ] || continue
 		containers+=("$container")
-	done < <(compose_project_container_targets)
+	done <<<"$container_ids"
 
 	while IFS= read -r volume; do
 		[ -n "$volume" ] || continue
 		anonymous_volumes+=("$volume")
 	done < <(anonymous_volume_names_for_containers "${containers[@]}")
 
-	compose_command_supervised down "$(compose_stop_timeout_seconds)" podman compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${compose_file_args[@]}" down || status="$?"
+	compose_command_supervised down "$(compose_stop_timeout_seconds)" "${project_command[@]}" provider "${compose_file_args[@]}" down || status="$?"
 	for volume in "${anonymous_volumes[@]}"; do
 		remove_anonymous_volume_target "$volume" || status=1
 	done
@@ -1734,79 +1762,31 @@ compose_project_container_ids() {
 		close_lifecycle_fds_for_child
 		cd /
 		podman_no_notify_timeout "$compose_monitor_timeout_seconds" ps -a \
-			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
+			--filter "label=com.docker.compose.project.working_dir=${project_dir:-$working_dir}" "${project_label_filter[@]}" \
 			--format '{{.ID}}'
 	)
 }
 
-expected_compose_project_container_names() {
-	local compose_project compose_service
-	compose_project="$(basename "$working_dir")"
-	for compose_service in "${expected_compose_services[@]}"; do
-		[ -n "$compose_service" ] || continue
-		printf '%s\n' "${compose_project}_${compose_service}_1"
-	done
-}
-
-compose_project_container_names() {
-	local compose_project
-	compose_project="$(basename "$working_dir")"
-	expected_compose_project_container_names
-	if [ "${#expected_compose_services[@]}" -gt 0 ]; then
-		return
-	fi
-	[ -f "$start_in_progress_path" ] || return
-	while IFS= read -r compose_service; do
-		[ -n "$compose_service" ] || continue
-		printf '%s\n' "$compose_service"
-	done < <(compose_project_storage_container_names "$compose_project")
-}
-
-compose_project_storage_container_names() {
-	local compose_project storage_name
-	compose_project="$1"
-	while IFS= read -r storage_name; do
-		[ -n "$storage_name" ] || continue
-		case "$storage_name" in
-		"${compose_project}"_*_1) printf '%s\n' "$storage_name" ;;
-		esac
-	done < <(
-		podman_no_notify container list --all --storage --format '{{.Names}}' 2>/dev/null || true
-	)
-}
-
-compose_project_container_targets() {
-	{
-		compose_project_container_ids
-		compose_project_container_names
-	} | awk 'NF && !seen[$0]++'
-}
-
-container_compose_working_dir_label() {
-	local container
-	container="$1"
-	podman_no_notify inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container" 2>/dev/null || true
-}
-
-remove_conflicting_compose_container_names() {
-	local container label
-	local -a conflicting_containers=()
-
-	while IFS= read -r container; do
-		[ -n "$container" ] || continue
-		if ! podman_no_notify container exists "$container"; then
-			conflicting_containers+=("$container")
-			continue
-		fi
-		label="$(container_compose_working_dir_label "$container")"
-		if [ "$label" = "$working_dir" ]; then
-			continue
-		fi
-		printf '%s\n' "removing conflicting podman compose container name for ${podman_compose_service_name}: ${container}"
-		conflicting_containers+=("$container")
-	done < <(compose_project_container_names)
-
-	remove_container_targets_and_anonymous_volumes "${conflicting_containers[@]}"
+# Never remove by an expected name: it can belong to a different project,
+# or be a storage-only record whose owner Podman can no longer identify.
+assert_compose_project_ownership() {
+	[ -n "$project_inventory" ] || return 0
+	local conflicts
+	conflicts="$(podman_no_notify_timeout "$compose_monitor_timeout_seconds" ps -a --format json |
+		jq -r --argjson project "$project_inventory" --arg entry "${compose_file_args[1]-}" '
+			.[] | . as $c | (.Labels // {}) as $labels
+			| ($labels["io.podman.compose.project"] // $labels["com.docker.compose.project"]) as $name
+			| select($name == $project.project or
+				($entry != "" and $labels["com.docker.compose.project.working_dir"] == $project.workingDir
+				 and (($labels["com.docker.compose.project.config_files"] // "") | split(",")[0]) == $entry) or
+				any(.Names[]?; . as $n | $project.containers | index($n)))
+			| select($name != $project.project or $labels["com.docker.compose.project.working_dir"] != $project.workingDir)
+			| $c.Names[]
+		')" || return 1
+	[ -z "$conflicts" ] || {
+		printf 'refusing Compose mutation; containers owned elsewhere: %s\n' "$conflicts" >&2
+		return 1
+	}
 }
 
 container_state_json() {
@@ -1978,9 +1958,9 @@ remove_storage_container_target() {
 }
 
 remove_container_target() {
-	local target remove_error cleanup_error storage_error unmount_error
+	local target remove_error cleanup_error exists_status unmount_error
 	target="$1"
-	if remove_error="$(podman_no_notify rm -f --depend -v "$target" 2>&1)"; then
+	if remove_error="$(podman_no_notify rm -f -v "$target" 2>&1)"; then
 		[ -n "$remove_error" ] && printf '%s\n' "$remove_error"
 		if ! podman_no_notify container exists "$target"; then
 			return 0
@@ -2003,7 +1983,7 @@ remove_container_target() {
 	*"is mounted and cannot be removed"* | *"container state improper"*)
 		if unmount_error="$(podman_no_notify unmount --force "$target" 2>&1)"; then
 			[ -n "$unmount_error" ] && printf '%s\n' "$unmount_error"
-			if remove_error="$(podman_no_notify rm -f --depend -v "$target" 2>&1)"; then
+			if remove_error="$(podman_no_notify rm -f -v "$target" 2>&1)"; then
 				[ -n "$remove_error" ] && printf '%s\n' "$remove_error"
 				if ! podman_no_notify container exists "$target"; then
 					return 0
@@ -2037,9 +2017,17 @@ remove_container_target() {
 		return "$?"
 		;;
 	esac
-	if remove_storage_container_target "$target"; then
-		return 0
-	fi
+	# Do not bypass a live dependency or other engine refusal via storage rm.
+	exists_status=0
+	podman_no_notify container exists "$target" || exists_status="$?"
+	case "$exists_status" in
+	0) ;;
+	1)
+		remove_storage_container_target "$target"
+		return
+		;;
+	*) return "$exists_status" ;;
+	esac
 	if cleanup_error="$(podman_no_notify container cleanup --rm "$target" 2>&1)"; then
 		[ -n "$cleanup_error" ] && printf '%s\n' "$cleanup_error"
 		if ! podman_no_notify container exists "$target" && ! storage_container_exists_target "$target"; then
@@ -2131,12 +2119,12 @@ remove_container_targets_and_anonymous_volumes() {
 }
 
 remove_compose_project_containers() {
-	local container containers=()
-
+	local container container_ids containers=()
+	container_ids="$(compose_project_container_ids)" || return 1
 	while IFS= read -r container; do
 		[ -n "$container" ] || continue
 		containers+=("$container")
-	done < <(compose_project_container_targets)
+	done <<<"$container_ids"
 
 	[ "${#containers[@]}" -gt 0 ] || return 0
 	printf '%s\n' "removing stale podman compose containers for ${podman_compose_service_name}"
@@ -2432,16 +2420,7 @@ validate_compose_provider_inventory() {
 		printf '%s\n' "cannot query provider-created project inventory for ${podman_compose_service_name}" >&2
 		return 1
 	fi
-	missing_services="$(
-		printf '%s' "$state_json" |
-			jq -r --argjson expected "$(expected_compose_services_json)" '
-				def compose_service:
-					.Labels["io.podman.compose.service"]
-					// .Labels["com.docker.compose.service"]
-					// empty;
-				($expected - ([.[] | compose_service] | unique))[]?
-			'
-	)"
+	missing_services="$(compose_state_missing_expected_report present <<<"$state_json")" || return 1
 	if [ -n "$missing_services" ]; then
 		printf '%s\n' "Compose provider did not create every expected service for ${podman_compose_service_name}:" >&2
 		printf '%s\n' "$missing_services" >&2
@@ -2449,14 +2428,21 @@ validate_compose_provider_inventory() {
 	fi
 }
 
-compose_start_transaction() {
-	local requested_mode mode force_recreate status=0
-	requested_mode="${1:-auto}"
-	begin_rootless_mutation "compose start transaction" || return "$?"
-	if ! backend_transition_admit; then
+admit_compose_start() {
+	if ! backend_transition_admit || ! assert_compose_project_ownership; then
 		rollback_rootless_mutation_clean
 		return 1
 	fi
+}
+
+compose_start_transaction() {
+	local requested_mode mode force_recreate status=0
+	requested_mode="${1:-auto}"
+	if [ "${#compose_file_args[@]}" -gt 0 ]; then
+		load_compose_inventory || return 1
+	fi
+	begin_rootless_mutation "compose start transaction" || return "$?"
+	admit_compose_start || return 1
 	rm -f -- "$compose_dns_correction_marker_path"
 	run_bootstrap_phase || status="$?"
 	if [ "$status" -eq 0 ]; then
@@ -2504,60 +2490,23 @@ compose_up_checked() {
 }
 
 compose_down_volumes() {
+	assert_compose_project_ownership || return 1
 	local status=0
-	compose_command_supervised "down --volumes" "$(compose_stop_timeout_seconds)" podman compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${compose_file_args[@]}" down --volumes || status="$?"
+	compose_command_supervised "down --volumes" "$(compose_stop_timeout_seconds)" "${project_command[@]}" provider "${compose_file_args[@]}" down --volumes || status="$?"
 	return "$status"
 }
 
 compose_stop() {
+	assert_compose_project_ownership || return 1
 	local status=0
-	compose_command_supervised stop "$(compose_stop_timeout_seconds)" podman compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${compose_file_args[@]}" stop || status="$?"
+	compose_command_supervised stop "$(compose_stop_timeout_seconds)" "${project_command[@]}" provider "${compose_file_args[@]}" stop || status="$?"
 	return "$status"
 }
 
-compose_pull() {
-	local output_file line image status=0 fatal_seen=0
-
-	if [ "${#pull_compose_file_args[@]}" -eq 0 ]; then
-		return 0
-	fi
-	if [ "${#declared_images[@]}" -eq 0 ]; then
-		return 0
-	fi
-	if [ "${#local_image_refs[@]}" -gt 0 ]; then
-		for image in "${declared_images[@]}"; do
-			(
-				close_lifecycle_fds_for_child
-				podman_no_notify pull "$image"
-			)
-		done
-		return 0
-	fi
-
-	output_file="$(mktemp "${generated_dir}/pull-output.XXXXXX")"
-	set +e
-	(
-		close_lifecycle_fds_for_child
-		cd "$working_dir"
-		podman_no_notify compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${pull_compose_file_args[@]}" pull 2>&1
-	) | tee "$output_file"
-	status="${PIPESTATUS[0]}"
-	set -e
-
-	while IFS= read -r line; do
-		if compose_pull_fatal_line "$line"; then
-			fatal_seen=1
-			break
-		fi
-	done <"$output_file"
-	rm -f "$output_file"
-
-	if [ "$fatal_seen" -eq 1 ]; then
-		printf '%s\n' "podman compose pull emitted fatal output for ${podman_compose_service_name}; treating pull as failed" >&2
-		return 1
-	fi
-	return "$status"
-}
+compose_images() (
+	close_lifecycle_fds_for_child 2>/dev/null
+	exec "${project_command[@]}" images "$@"
+)
 
 compose_pull_with_retry() {
 	local attempts delay_seconds attempt=1
@@ -2565,7 +2514,7 @@ compose_pull_with_retry() {
 	attempts="$(positive_integer_or_default "$image_pull_retry_attempts" 10)"
 	delay_seconds="$(nonnegative_integer_or_default "$image_pull_retry_delay_seconds" 1)"
 	while :; do
-		if compose_pull; then
+		if compose_images ensure; then
 			return 0
 		fi
 		if [ "$attempt" -ge "$attempts" ]; then
@@ -2583,7 +2532,7 @@ compose_logs() {
 	(
 		close_lifecycle_fds_for_child
 		cd "$working_dir"
-		podman_no_notify compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${compose_file_args[@]}" logs "$@"
+		"${project_command[@]}" provider "${compose_file_args[@]}" logs "$@"
 	)
 }
 
@@ -2949,7 +2898,7 @@ running_compose_project_container_ids() {
 		close_lifecycle_fds_for_child
 		cd /
 		podman_no_notify_timeout "$compose_monitor_timeout_seconds" ps \
-			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
+			--filter "label=com.docker.compose.project.working_dir=${project_dir:-$working_dir}" "${project_label_filter[@]}" \
 			--format '{{.ID}}'
 	)
 }
@@ -3028,6 +2977,7 @@ load_runtime_preflight_service_entry() {
 
 	podman_compose_service_name="$(jq -r '.serviceName' "$metadata_file")"
 	backend="$(jq -r '.backend // "compose"' "$metadata_file")"
+	load_project_context
 	working_dir="$(jq -r '.workingDir' "$metadata_file")"
 	adoption_stamp="$(jq -r '.adoptionStamp // ""' "$metadata_file")"
 	long_running="$(jq -r 'if has("longRunning") then .longRunning else true end' "$metadata_file")"
@@ -3041,6 +2991,8 @@ load_runtime_preflight_service_entry() {
 	done < <(jq -r '.expectedComposeServices[]?' "$metadata_file")
 	if [ "$backend" = quadlet ]; then
 		quadlet_load_backend_metadata
+	else
+		load_compose_inventory allow-unstaged
 	fi
 }
 
@@ -3111,11 +3063,13 @@ runtime_preflight_project_cleanup_complete() {
 			printf '%s\n' "podman container remains after runtime preflight cleanup for ${podman_compose_service_name}: ${container}" >&2
 			return 1
 		fi
-	done < <(compose_project_container_names)
+	done < <(jq -r '.containers[]?' <<<"${project_inventory:-null}")
 	return 0
 }
 
 runtime_preflight_reconcile_projects() {
+	local -a project_command engine_command project_label_filter expected_compose_services
+	local project_dir project_inventory
 	local encoded entry metadata_file transition_status project_status cleanup_status failed=0
 
 	runtime_preflight_repaired=0
@@ -3123,7 +3077,10 @@ runtime_preflight_reconcile_projects() {
 		[ -n "$encoded" ] || continue
 		entry="$(printf '%s' "$encoded" | base64 -d)"
 		metadata_file="$(jq -r '.metadataFile' <<<"$entry")"
-		load_runtime_preflight_service_entry "$metadata_file"
+		load_runtime_preflight_service_entry "$metadata_file" || {
+			failed=1
+			continue
+		}
 		transition_status=0
 		backend_transition_admit || transition_status="$?"
 		case "$transition_status" in
@@ -3264,9 +3221,7 @@ load_compose_dns_dependencies() {
 	if ! normalized_config="$(
 		close_lifecycle_fds_for_child
 		cd "$working_dir"
-		podman_no_notify compose \
-			"${podman_compose_base_args[@]}" \
-			"${compose_args[@]}" \
+		"${project_command[@]}" provider \
 			"${compose_file_args[@]}" \
 			config 2>/dev/null
 	)"; then
@@ -3292,7 +3247,7 @@ compose_dns_probe_targets() {
 	close_lifecycle_fds_for_child
 	cd /
 	podman_no_notify ps \
-		--filter "label=com.docker.compose.project.working_dir=$working_dir" \
+		--filter "label=com.docker.compose.project.working_dir=${project_dir:-$working_dir}" "${project_label_filter[@]}" \
 		--format json |
 		jq -r --argjson dependencies "$compose_dns_dependencies_json" '
 			. as $containers
@@ -3375,7 +3330,7 @@ compose_dns_query() {
 	local pid="$1" gateway="$2" dependency="$3" query_type="$4"
 	local -a namespace_command=(nsenter -t "$pid" -n --)
 	if [ "$(id -u)" -ne 0 ]; then
-		namespace_command=(podman unshare "${namespace_command[@]}")
+		namespace_command=("${engine_command[@]}" unshare "${namespace_command[@]}")
 	fi
 	close_lifecycle_fds_for_child
 	cd /
@@ -3486,44 +3441,22 @@ verify_compose_dns_stable() {
 	return "$status"
 }
 
-running_compose_services() {
-	(
-		close_lifecycle_fds_for_child
-		cd /
-		podman_no_notify ps \
-			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
-			--format json |
-			jq -r '.[] | (.Labels["io.podman.compose.service"] // .Labels["com.docker.compose.service"] // empty)' |
-			sort -u
-	)
-}
-
 verify_expected_compose_services() {
-	local running_services="" missing_services="" compose_service=""
-
-	[ "$long_running" = "true" ] || return 0
-	[ "${#expected_compose_services[@]}" -gt 0 ] || return 0
-
-	running_services="$(running_compose_services)"
-	for compose_service in "${expected_compose_services[@]}"; do
-		if ! grep -Fxq "$compose_service" <<<"$running_services"; then
-			missing_services="${missing_services}${missing_services:+
-}${compose_service}"
-		fi
-	done
-
-	if [ -n "$missing_services" ]; then
-		printf '%s\n' "podman compose is missing running containers for expected services:" >&2
-		printf '%s\n' "$missing_services" >&2
+	local missing
+	[ "$long_running" = true ] || return 0
+	missing="$(compose_state_missing_expected_report <<<"$1")" || return 1
+	if [ -n "$missing" ]; then
+		printf '%s\n' 'podman compose is missing running containers for expected services:' "$missing" >&2
 		return 1
 	fi
 }
 
 compose_reload_signal() {
+	assert_compose_project_ownership || return 1
 	(
 		close_lifecycle_fds_for_child
 		cd "$working_dir"
-		podman_no_notify compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${compose_file_args[@]}" kill --signal "$reload_signal" "${reload_services[@]}" 2>&1
+		"${project_command[@]}" provider "${compose_file_args[@]}" kill --signal "$reload_signal" "${reload_services[@]}" 2>&1
 	)
 }
 
@@ -3856,31 +3789,6 @@ last_applied_image_pull_stamp() {
 	runtime_state_field imagePullStamp ""
 }
 
-declared_images_present() {
-	local image
-
-	[ "${#declared_images[@]}" -gt 0 ] || return 1
-	for image in "${declared_images[@]}"; do
-		if ! (
-			close_lifecycle_fds_for_child
-			podman_no_notify image exists "$image" >/dev/null 2>&1
-		); then
-			return 1
-		fi
-	done
-}
-
-image_pull_state_current() {
-	local applied_image_pull_stamp
-
-	[ -n "$image_pull_stamp" ] || return 1
-	migrate_legacy_runtime_state_if_needed
-	migrate_runtime_state_version_if_needed
-	applied_image_pull_stamp="$(last_applied_image_pull_stamp)"
-	[ "$applied_image_pull_stamp" = "$image_pull_stamp" ] || return 1
-	declared_images_present
-}
-
 record_image_pull_state() {
 	local tmp_state
 	install -d -m 0750 "$generated_dir"
@@ -4046,18 +3954,6 @@ compose_state_readiness_signature() {
 	"
 }
 
-compose_state_missing_expected_report() {
-	local expected_services_json
-	expected_services_json="$(expected_compose_services_json)"
-	jq -r --argjson expected "$expected_services_json" '
-		def compose_service:
-			.Labels["io.podman.compose.service"]
-			// .Labels["com.docker.compose.service"]
-			// empty;
-		($expected - ([.[] | select((.State // "") == "running") | compose_service] | unique))[]?
-	'
-}
-
 wait_for_compose_state() {
 	local require_all state_json signature last_signature="" terminal_failures missing_services
 	local started_at now last_progress_at query_failure_since=0 running_count dns_failure_since=0 dns_status
@@ -4219,7 +4115,7 @@ verify_compose_state_json() {
 		return 1
 	fi
 
-	verify_expected_compose_services
+	verify_expected_compose_services "$state_json"
 }
 
 verify_compose_state() {
@@ -4318,7 +4214,7 @@ monitor_compose_state() {
 			exit 1
 		fi
 
-		if ! verify_expected_compose_services; then
+		if ! verify_expected_compose_services "$state_json"; then
 			if monitor_transient_failure "podman compose monitor found missing expected services"; then
 				unlock_lifecycle_shared
 				sleep "$monitor_interval"
@@ -4389,6 +4285,7 @@ cmd_verify() {
 			continue
 		fi
 		if verify_staged_runtime_files &&
+			load_compose_inventory &&
 			verify_runtime_state_current &&
 			verify_compose_readiness_with_dns_correction &&
 			run_verify_command; then
@@ -4402,6 +4299,7 @@ cmd_verify() {
 
 cmd_monitor() {
 	load_metadata
+	load_compose_inventory
 	monitor_compose_state
 }
 
@@ -4418,6 +4316,7 @@ cmd_reload() {
 	ensure_runtime_dirs
 	case "$reload_method" in
 	restart)
+		load_teardown_inventory
 		begin_rootless_mutation "compose reload down"
 		if [ "$working_dir_exists" -eq 1 ]; then
 			if ! compose_down; then
@@ -4436,6 +4335,7 @@ cmd_reload() {
 			unlock_lifecycle_exclusive
 			return 1
 		fi
+		load_project_context
 		cleanup_runtime_files
 		ensure_runtime_dirs
 		record_staging_runtime_state
@@ -4455,6 +4355,7 @@ cmd_reload() {
 		fi
 		;;
 	signal)
+		load_compose_inventory allow-unstaged
 		begin_rootless_mutation "compose reload signal"
 		reload_old_manifest="${manifest_path}.reload-old.$$"
 		reload_selected_manifest="${manifest_path}.reload-selected.$$"
@@ -4562,6 +4463,7 @@ cmd_stop() {
 	load_metadata
 	stop_policy="$(current_stop_policy)"
 	lock_lifecycle_exclusive
+	load_teardown_inventory
 	mark_stop_in_progress
 	if [ "$stop_rootless_lock_timeout_seconds" -gt 0 ]; then
 		begin_rootless_mutation_timeout "$stop_rootless_lock_timeout_seconds" "compose stop" drain
@@ -4652,6 +4554,7 @@ cmd_post_stop() {
 		lock_lifecycle_exclusive
 		begin_rootless_mutation "compose post-stop cleanup" drain
 	fi
+	load_teardown_inventory
 	if [ "$failed_start_cleanup" -eq 1 ]; then
 		printf '%s\n' "systemd reported ${podman_compose_service_name}.service result=${SERVICE_RESULT}; running failed-start cleanup"
 		cleanup_failed_compose_start
@@ -4712,6 +4615,8 @@ cmd_remove() {
 		fi
 		stop_policy="$(current_stop_policy)"
 		lock_lifecycle_exclusive
+		# The control command is not the unit's original systemd invocation.
+		load_teardown_inventory recorded
 		begin_rootless_mutation "compose removal cleanup"
 		if ! apply_compose_stop_policy "$stop_policy"; then
 			cleanup_failed_compose_stop "$stop_policy" || true
@@ -4732,23 +4637,24 @@ cmd_remove() {
 }
 
 cmd_image_pull() {
-	local mutation_rc=0
+	local probe=0 mutation_rc=0
 	load_metadata
-	assert_adoption_allowed
-	ensure_runtime_dirs
-	if image_pull_state_current; then
+	compose_images probe || probe="$?"
+	case "$probe" in
+	10) # No registry targets; do not initialize runtime state.
 		record_image_pull_status skipped
 		return 0
-	fi
-	if declared_images_present; then
-		if lock_lifecycle_exclusive_timeout 1; then
+		;;
+	0 | 11) ;; # Ready or missing.
+	*) return 1 ;;
+	esac
+	assert_adoption_allowed
+	ensure_runtime_dirs
+	if [ "$probe" -eq 0 ]; then
+		if [ -n "$image_pull_stamp" ] && [ "$(last_applied_image_pull_stamp)" != "$image_pull_stamp" ] && lock_lifecycle_exclusive_timeout 1; then
 			record_image_pull_state
 			unlock_lifecycle_exclusive
 		fi
-		record_image_pull_status skipped
-		return 0
-	fi
-	if [ "${#declared_images[@]}" -eq 0 ]; then
 		record_image_pull_status skipped
 		return 0
 	fi

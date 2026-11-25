@@ -15,51 +15,28 @@ compose files directly. When the main generated compose file lived alone in the
 store, podman-compose resolved the relative `extends.file` against `/nix/store`
 and failed.
 
-The shared fix belongs in `lib/podman-compose/default.nix`: generate a
-store-backed pull-source directory for each compose instance containing every
-effective staged file, then point `pullComposeFiles` at the entry file inside
-that directory. Keep `composeFiles` pointed at runtime paths for normal
-stage/start behavior.
+`ab/runtime/podman/nixos.nix` gives Acquire a store-backed project with the same
+first-entry directory name, declared dotenv, and sidecars as startup. The
+packaged adapter resolves the stock provider model; it does not invoke project
+`pull`. Podman acquires missing remote references in the owner's store. A stamp
+is not evidence that an image still exists.
 
-The explicit `image-pull` command is a hard pre-activation gate. It must treat
-final Podman pull error output as failure even when `podman compose pull` exits
-successfully, then retry the full compose pull up to the configured attempt
-budget before nixbot activation can continue. Normal start/reload pre-pulls
-remain best-effort because `podman compose up` can still perform the
-service-local pull under the managed start path.
+For `pvl-immich`, the candidate directory must include `compose.yml`, `.env`,
+`hwaccel.ml.yml`, and `hwaccel.transcoding.yml`. Both `extends` and the four
+remote image requirements must resolve without staging files under
+`/var/lib/pvl/compose/immich` or fetching images. Use the same provider-resolved
+names, profiles, and entry directory to supervise the live project.
 
-Repeated deploy pulls should skip registry traffic when every declared image is
-already present in the local Podman image store. If the generated
-`imagePullStamp` also matches the helper runtime state, the helper can skip
-immediately. If the stamp changed but the images are present, the helper should
-record the current stamp when it can briefly acquire the lifecycle lock, then
-skip the registry pull. If an old-generation start is holding the lifecycle
-lock, image-pull should still skip because the explicit pull's correctness
-boundary is local image availability, not forced upstream refresh.
-
-Treat helper state as the generation marker, not as proof that images still
-exist locally. This avoids making pre-activation depend on Docker Hub or another
-registry when a changed store-backed compose source only changes the pull hash
-and the declared images are already available on the host.
-
-Already-current deploy pulls should stay quiet. The batch
-`podman-compose-image-pull-all` driver may use helper-provided status markers
-for accounting, but it should not print one line per skipped service on normal
-repeated deploys. Keep retry progress and actual pull/failure output visible.
-
-Validation used:
+The adapter checks the stock provider's expanded file list and active
+`extends.file` paths against the immutable project directory. A declared live
+absolute path is still a live path: use a relative reference to its candidate
+copy. Teardown compatibility is tied to the launching systemd invocation, not
+the current `/etc` helper or an image-acquisition stamp.
 
 ```sh
-alejandra lib/podman-compose/default.nix lib/podman-compose/tests/module.nix
-deno fmt .agents/docs/README.md \
-  .agents/docs/notes/services/podman-compose-pull-source-sidecars-2026-07.md
-nix build --no-link .#checks.x86_64-linux.lib-podman-compose-module
-nix build --no-link .#nixosConfigurations.pvl-x2.config.system.build.toplevel
+nix build --no-link .#checks.x86_64-linux.lib-podman-compose-helper \
+  .#checks.x86_64-linux.lib-podman-compose-module \
+  .#checks.x86_64-linux.lib-podman-compose-quadlet-conversion
 nix build --no-link --print-out-paths \
   .#nixosConfigurations.pvl-x2.config.system.build.podmanComposeImagePullPlan
 ```
-
-The generated `pvl-immich` metadata should show runtime `composeFiles` under
-`/var/lib/pvl/compose/immich`, while `pullComposeFiles` points to
-`/nix/store/*-podman-compose-pvl-immich-pull-sources/compose.yml` and that same
-directory contains `hwaccel.ml.yml` and `hwaccel.transcoding.yml`.

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 
 def record_args(args):
@@ -66,6 +67,9 @@ def block_until_supervisor_kills_us():
 def main():
     assert_no_systemd_notify_env()
     args = sys.argv[1:]
+    if args[:1] == ["--version"]:
+        print("podman version 5.8.9")
+        return
     record_args(args)
 
     mode = os.environ.get("TEST_PODMAN_MODE", "success")
@@ -224,12 +228,58 @@ def main():
             sys.exit(0)
         sys.exit(1)
 
+    # A fixture image is an ID or 'os/arch@ID'. Unqualified IDs are native.
+    native = os.environ.get("NIX_PODMAN_NATIVE_PLATFORM", "linux/amd64")
+    registry = os.environ.get("TEST_PODMAN_REGISTRY")
+    cache = (Path.home() if registry is not None else Path(os.environ["TEST_PODMAN_ARGS_FILE"]).parent) / "images"
+    platform = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--platform=")), "")
+
+    def local(ref):
+        file = cache / quote(ref, safe="")
+        if file.is_file():
+            return file.read_text()
+        existing = os.environ.get("TEST_PODMAN_EXISTING_IMAGES", "").splitlines()
+        return "cached" if ref in existing or "*" in existing else None
+
+    if args[:2] == ["image", "inspect"]:
+        image = args[-1] if args[-1].startswith("id:") else local(args[-1])
+        if image is None:
+            sys.exit(125)
+        spec = image.removeprefix("id:").split("@")[0] if "@" in image else native
+        os_name, arch = spec.split("/")[:2]
+        print(json.dumps([{"Id": "test-image-id", "Os": os_name, "Architecture": arch}]))
+        return
     if args[:2] == ["image", "exists"]:
-        image = args[2] if len(args) > 2 else ""
-        existing_images = os.environ.get("TEST_PODMAN_EXISTING_IMAGES", "")
-        if existing_images == "*" or image in existing_images.splitlines():
-            sys.exit(0)
-        sys.exit(1)
+        sys.exit(0 if local(args[-1]) is not None else 1)
+    if args[:1] == ["pull"] and "--policy=never" in args:
+        image = local(args[-1])
+        # A selector without a variant accepts the matching architecture. The
+        # adapter independently checks the OCI config for an explicit variant.
+        if image is None or (platform != native and
+                             image.split("@")[0].split("/")[:2] != platform.split("/")[:2]):
+            sys.exit(125)
+        print("id:" + image)
+        return
+    if args[:1] == ["pull"]:
+        if mode == "pull_then_success":
+            attempts = Path(os.environ["TEST_PODMAN_HISTORY_FILE"]).read_text().splitlines()
+            mode = "pull_failure" if sum(call.startswith("pull --policy=missing") for call in attempts) < 3 else "success"
+        if mode == "pull_failure":
+            print("unexpected engine diagnostic", file=sys.stderr)
+            sys.exit(47)
+        cache.mkdir(exist_ok=True)
+        for ref in args[args.index("--") + 1:]:
+            if local(ref) is not None and "--policy=missing" in args and not platform:
+                continue
+            value = "fetched"
+            if registry is not None:
+                print(f"fetch {ref}", flush=True)
+                if ref not in json.loads(registry):
+                    print(f"unexpected engine diagnostic for {ref}", file=sys.stderr)
+                    sys.exit(47)
+                value = json.loads(registry)[ref]
+            (cache / quote(ref, safe="")).write_text(value)
+        return
 
     if args[:2] == ["container", "cleanup"]:
         return
@@ -389,34 +439,12 @@ def main():
         if "kill" in args:
             print("fake podman compose kill ok")
             return
-        for command in ("down", "stop", "pull"):
+        for command in ("down", "stop"):
             if command not in args:
                 continue
             if mode == f"{command}_timeout_child":
                 spawn_term_resistant_child()
                 block_until_supervisor_kills_us()
-            if command == "pull" and mode == "pull_fatal_zero":
-                print("Trying to pull docker.io/library/nats:2.14.0-alpine...")
-                print(
-                    "Error: unable to copy from source docker://nats:2.14.0-alpine: "
-                    "initializing source docker://nats:2.14.0-alpine: "
-                    "reading manifest 2.14.0-alpine in docker.io/library/nats: "
-                    "toomanyrequests: You have reached your unauthenticated pull rate limit."
-                )
-                return
-            if command == "pull" and mode == "pull_fatal_then_success":
-                count_file = Path(os.environ["TEST_PODMAN_HISTORY_FILE"]).with_name("pull-attempt-count")
-                count = int(count_file.read_text(encoding="utf-8").strip()) if count_file.exists() else 0
-                count += 1
-                count_file.write_text(f"{count}\n", encoding="utf-8")
-                succeed_after = int(os.environ.get("TEST_PODMAN_PULL_SUCCEED_AFTER", "3"))
-                if count < succeed_after:
-                    print("Trying to pull docker.io/library/nats:2.14.0-alpine...")
-                    print(
-                        "Error: unable to copy from source docker://nats:2.14.0-alpine: "
-                        "toomanyrequests: You have reached your unauthenticated pull rate limit."
-                    )
-                    return
             print("fake podman compose command ok")
             return
 

@@ -12,6 +12,15 @@
     // {
       passthru.imageRef = imageRef;
     };
+  legacyDir = "/home/tester/old-stack";
+  legacyArgs = ["--pod-args=--infra=false"];
+  legacyMetadata = pkgs.writeText "legacy-unit-v11.json" (builtins.toJSON {
+    version = 11;
+    serviceName = "legacy-stop-fixture";
+    workingDir = legacyDir;
+    composeFiles = ["${legacyDir}/compose.yml"];
+    composeArgs = legacyArgs;
+  });
   mkService = containerName: {
     image = imagePackage;
     container_name = containerName;
@@ -39,6 +48,23 @@ in {
         autoSubUidGidRange = true;
       };
       groups.tester.gid = uid;
+    };
+
+    # Start as a pre-contract unit; stop through the candidate /etc helper.
+    systemd.user.services.legacy-stop-fixture.serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      WorkingDirectory = legacyDir;
+      Delegate = true;
+      KillMode = "mixed";
+      Environment = [
+        "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
+        "LEGACY_TAG=known"
+        "NIX_PODMAN_COMPOSE_SERVICE_NAME=legacy-stop-fixture"
+        "NIX_PODMAN_COMPOSE_METADATA=${legacyMetadata}"
+      ];
+      ExecStart = lib.escapeShellArgs (["${pkgs.podman-compose}/bin/podman-compose"] ++ legacyArgs ++ ["-f" "${legacyDir}/compose.yml" "up" "--no-build" "-d"]);
+      ExecStop = "/etc/podman-compose/helpers/podman-compose-helper stop";
     };
 
     services.podman-compose.mixed = {
@@ -89,6 +115,10 @@ in {
       };
     };
 
+    specialisation.allNative.configuration.services.podman-compose.mixed.instances = {
+      provider.backend = lib.mkForce "quadlet";
+      consumer.backend = lib.mkForce "quadlet";
+    };
     specialisation.quadlet.configuration.services.podman-compose.mixed.instances.consumer.backend =
       lib.mkForce "quadlet";
   };
@@ -188,6 +218,20 @@ in {
         ) == "consumer"
         assert show(private_container, "LoadState") == "not-found"
         assert show(private_network, "LoadState") == "not-found"
+
+    with subtest("teardown preserves the legacy unit's project, environment and provider flags"):
+        image = machine.succeed(f"{podman} inspect mixed-provider | jq -r '.[0].Image'").strip()
+        machine.succeed(f"{podman} tag {image} localhost/legacy-fixture:known")
+        machine.succeed("install -d -o tester -g tester ${legacyDir}")
+        machine.succeed("printf 'COMPOSE_PROJECT_NAME=legacy\\n' > ${legacyDir}/.env")
+        machine.succeed("echo 'services: {web: {image: \"localhost/legacy-fixture:''${LEGACY_TAG:?}\", pull_policy: never}}' > ${legacyDir}/compose.yml")
+        machine.succeed(f"{ctl} start legacy-stop-fixture.service")
+        assert container_label("legacy_web_1", "com.docker.compose.project") == "legacy"
+        machine.succeed(f"{ctl} stop legacy-stop-fixture.service")
+        machine.fail(f"{podman} container exists legacy_web_1")
+        assert container_id("mixed-provider") == provider_id
+        # Managed teardown must instead ignore a later, undeclared live dotenv.
+        machine.succeed("echo COMPOSE_PROJECT_NAME=wrong > /srv/mixed/consumer/.env")
 
     with subtest("switch migrates only the consumer to private Quadlet"):
         machine.succeed(
@@ -334,5 +378,10 @@ in {
         assert container_label(
             consumer_container, "com.docker.compose.service"
         ) == "consumer"
+    with subtest("old Compose units drain when the final provider leaves"):
+        machine.succeed("/run/booted-system/specialisation/allNative/bin/switch-to-configuration test")
+        wait_active(root, provider, provider_ready, consumer, consumer_ready)
+        assert container_id(consumer_container) != quadlet_consumer_id
+        machine.fail("test -e /run/user/${toString uid}/podman-compose/runtime-dirty")
   '';
 }

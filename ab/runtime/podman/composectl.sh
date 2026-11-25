@@ -377,6 +377,26 @@ expected_units() {
 	printf '%s\n' "${units[@]}" | sed '/^$/d' | sort -u
 }
 
+# Resolve as the owner, with the same inputs as the service. Older control
+# registries without project metadata retain their static expectations.
+resolve_compose_expectations() {
+	local entry metadata inventory count
+	while IFS= read -r entry; do
+		metadata="$(jq -r '.metadataFile // empty' <<<"$entry")" || return 1
+		count=0
+		if [ -n "$metadata" ]; then
+			count="$(jq -er '(.composeFiles // []) | length' "$metadata")" || return 1
+		fi
+		if [ "$count" -gt 0 ]; then
+			inventory="$(run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				"${project_command:?missing project adapter}" "$metadata" inventory)" || return 1
+			jq -c --argjson inv "$inventory" '. + {workingDir: $inv.workingDir, project: $inv.project, resolvedContainerNames: $inv.containers}' <<<"$entry" || return 1
+		else
+			printf '%s\n' "$entry"
+		fi
+	done
+}
+
 expected_compose_runtime() {
 	local bus_path encoded entries entry excluded_units home owner probe_pid runtime_dir service_name state_json uid
 	local -a probe_pids=() verify_command=()
@@ -391,7 +411,7 @@ expected_compose_runtime() {
 			| select((.backend // "compose") != "quadlet")
 			| select(.unit as $unit | ($excludedUnits | index($unit)) == null)
 			| select(
-				((.expectedComposeServices // []) | length) > 0
+				(.metadataFile != null) or ((.expectedComposeServices // []) | length) > 0
 				or ((.expectedContainers // []) | length) > 0
 			)
 		]' "$registry"
@@ -403,6 +423,12 @@ expected_compose_runtime() {
 	home="$(getent passwd "$owner" | cut -d: -f6)"
 	[ -n "$home" ] || home=/
 	require_runtime_dir "$runtime_dir"
+	local resolved_entries
+	if ! resolved_entries="$(jq -c '.[]' <<<"$entries" | resolve_compose_expectations)"; then
+		printf 'project-query-failed user=%s\n' "$owner"
+		return 1
+	fi
+	entries="$(jq -cs . <<<"$resolved_entries")"
 	if ! state_json="$(
 		run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
 			env HOME="$home" podman ps -a --format json
@@ -428,34 +454,20 @@ expected_compose_runtime() {
 			  elif ((.Status // "") | test("\\(healthy\\)$"; "i")) then "healthy"
 			  else "none"
 			  end;
-		def labels_match($actual; $expected):
-			all($expected | to_entries[]; . as $entry | $actual[$entry.key] == $entry.value);
 		($project_documents[0] // []) as $projects
 		| . as $containers
 		| $projects[] as $project
-		| (
-			if ($project.backend // "compose") == "quadlet" then
-				($project.expectedContainers // [])[] as $expected
-				| {
-					name: $expected.name,
-					field: "runtime-service",
-					matches: [
-						$containers[]
-						| select(labels_match((.Labels // {}); ($expected.labels // {})))
-					]
-				}
-			else
-				($project.expectedComposeServices // [])[] as $expected
-				| {
-					name: $expected,
-					field: "compose-service",
-					matches: [
-						$containers[]
-						| select(working_dir == $project.workingDir and compose_service == $expected)
-					]
-				}
-			end
-		) as $expectation
+		| ($project.resolvedContainerNames != null) as $resolved
+		| ($project.resolvedContainerNames // $project.expectedComposeServices // [])[] as $expected
+		| {
+			name: $expected,
+			field: (if $resolved then "compose-container" else "compose-service" end),
+			matches: [ $containers[]
+				| select(working_dir == $project.workingDir and
+					($project.project == null or .Labels["com.docker.compose.project"] == $project.project))
+				| select(if $resolved then any(.Names[]?; . == $expected) else compose_service == $expected end)
+			]
+		} as $expectation
 		| $expectation.matches as $matches
 		| if ($matches | length) == 0 then
 			"missing service=\($project.serviceName) \($expectation.field)=\($expectation.name)"

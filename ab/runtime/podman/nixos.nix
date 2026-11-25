@@ -583,6 +583,7 @@
     then config.users.users.${stack.user}.group
     else "-";
 
+  projectTools = import ./compose-image-plan.nix {inherit pkgs;};
   mkComposeHelperPackage = name:
     pkgs.writeShellApplication {
       inherit name;
@@ -596,6 +597,8 @@
         pkgs.procps
         pkgs.systemd
         pkgs.util-linux
+        # /etc switches before old Compose units drain, even on Quadlet-only hosts.
+        projectTools.project
       ];
       text = ''
         export NIX_PODMAN_COMPOSE_HELPER_SELF="$0"
@@ -763,7 +766,7 @@
       composeArgs = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = serviceDefaults.composeArgs;
-        description = "Additional arguments passed to every `podman compose` invocation for this instance, before compose-file flags and the subcommand.";
+        description = "Compose project flags: --project-name (-p), --profile, --env-file (declared project file), --in-pod, --parallel, --no-ansi and --verbose. The module owns engine and file selection.";
       };
 
       preStart = lib.mkOption {
@@ -903,7 +906,7 @@
       imageTag = lib.mkOption {
         type = lib.types.str;
         default = serviceDefaults.imageTag;
-        description = "Declarative knob to enable a compose image refresh unit before this instance starts. Pair with bootTag or recreateTag when already-running containers must be restarted after the pull.";
+        description = "Generation marker for image acquisition and recreate policy. Missing images are acquired even at 0; changing the marker does not refresh a cached tag.";
       };
 
       localImages = lib.mkOption {
@@ -1219,8 +1222,9 @@
     verifyUnit = "${verifyServiceName}.service";
     imagePullServiceName = "${resolvedSystemdServiceName}-image-pull";
     imagePullUnit = "${imagePullServiceName}.service";
-    hasImagePullUnit =
-      !isQuadlet && service.imageTag != "0";
+    hasImagePullUnit = !isQuadlet && service.hasComposeEntry;
+    # Preserve existing forward dependencies (and drain identity) for tagged units.
+    taggedImagePull = !isQuadlet && service.imageTag != "0";
     holdGatedUserUnits =
       ["${resolvedSystemdServiceName}.service"]
       ++ lib.optional hasReconcileUnit "${reconcileServiceName}.service"
@@ -1249,6 +1253,17 @@
       (!isQuadlet && resolvedUser != "root" && rootlessStackUserHasConfig resolvedUser)
       "${rootlessRuntimePreflightUserServiceNameForUser resolvedUser}.service";
     resolvedPullComposeFiles = map (file: service.pullSourcePaths.${file}) service.pullEntryFiles;
+    # Real parent directories preserve Compose's project-name fallback. Keep this
+    # acquisition-only view out of the source identities used for action stamps.
+    pullProjectPath = "root${toString (/. + resolvedWorkingDir)}";
+    pullProject = pkgs.linkFarm "podman-compose-${resolvedSystemdServiceName}-pull-project" (
+      lib.mapAttrsToList (file: path: {
+        name = "${pullProjectPath}/${file}";
+        path = path;
+      })
+      service.pullSourcePaths
+    );
+    pullWorkingDir = "${pullProject}/${pullProjectPath}";
     nativeReloadEnabled = service.reload.method == "signal";
     reloadExternalFileEntries =
       if nativeReloadEnabled
@@ -1441,17 +1456,20 @@
             imageTag = service.imageTag;
             localImages = service.localImageMetadata;
           }
+          // projectInputs
           // lib.optionalAttrs (service.backend == "quadlet") {
             backend = service.backend;
             nativeBundle = service.nativeBundle;
           })
         // secretRecreateInputs;
-      imagePull = {
-        composeArgs = service.composeArgs;
-        pullComposeFiles = resolvedPullComposeFiles;
-        declaredImages = service.declaredImages;
-        imageTag = service.imageTag;
-      };
+      imagePull =
+        {
+          composeArgs = service.composeArgs;
+          pullComposeFiles = resolvedPullComposeFiles;
+          declaredImages = service.declaredImages;
+          imageTag = service.imageTag;
+        }
+        // projectInputs;
     };
     hashActionInput = value: builtins.hashString "sha256" (builtins.toJSON value);
     actionStamps = rec {
@@ -1564,7 +1582,11 @@
       if isQuadlet
       then []
       else composeBackend.expectedContainers resolvedSystemdServiceName resolvedWorkingDir service.knownSourceComposeServices;
-    legacyHelperMetadata = {
+    # Only explicit unit variables enter the project. Systemd adds its own PATH.
+    primaryUnit = config.systemd.user.services.${resolvedSystemdServiceName};
+    projectEnvironment = lib.filterAttrs (name: value: name != "PATH" && value != null) primaryUnit.environment;
+    projectInputs = lib.optionalAttrs (!isQuadlet && projectEnvironment != {}) {inherit projectEnvironment;};
+    baseHelperMetadata = {
       version = 11;
       serviceName = resolvedSystemdServiceName;
       workingDir = resolvedWorkingDir;
@@ -1648,6 +1670,7 @@
         }
         // entryPermsJson entry) (builtins.attrNames service.envSecrets);
     };
+    legacyHelperMetadata = baseHelperMetadata // projectInputs;
     # Compose keeps its established runtime contract.  Native Quadlet services
     # deliberately have no helper metadata: their generated systemd graph is
     # the runtime contract.
@@ -1655,6 +1678,14 @@
       if isQuadlet
       then null
       else writeJSON "podman-compose-${resolvedSystemdServiceName}.json" legacyHelperMetadata;
+
+    # Only Acquire needs the logical project layout; live units retain their
+    # metadata and drain identity when the resolver changes.
+    imagePullMetadata = writeJSON "podman-compose-${resolvedSystemdServiceName}-acquire.json" (legacyHelperMetadata
+      // {
+        pullComposeFiles = map (file: "${pullWorkingDir}/${file}") service.pullEntryFiles;
+        pullWorkingDir = pullWorkingDir;
+      });
 
     shellOwner = value:
       if value == null
@@ -1768,13 +1799,14 @@
       })
       service.localImageMetadata
     );
-    helperEnvironment =
+    helperEnvironment = helperEnvironmentFor helperMetadata;
+    helperEnvironmentFor = metadata:
       if isQuadlet
       then []
       else
         [
           "PATH=${podmanHelperPath}"
-          "NIX_PODMAN_COMPOSE_METADATA=${helperMetadata}"
+          "NIX_PODMAN_COMPOSE_METADATA=${metadata}"
           "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
           "NIX_PODMAN_COMPOSE_PROVIDER_TIMEOUT_SECONDS=${toString startTimeoutSeconds}"
           "NIX_PODMAN_COMPOSE_VERIFY_TRANSITION_WAIT_SECONDS=${toString verifyTransitionWaitSeconds}"
@@ -1799,9 +1831,9 @@
         ++ [stageUnit]
         ++ dependsOnUnits
         ++ wantsUnits
-        ++ lib.optional hasImagePullUnit imagePullUnit
+        ++ lib.optional taggedImagePull imagePullUnit
       );
-      wants = lib.unique (networkOnlineUnits ++ wantsUnits ++ lib.optional hasImagePullUnit imagePullUnit);
+      wants = lib.unique (networkOnlineUnits ++ wantsUnits ++ lib.optional taggedImagePull imagePullUnit);
       # NixOS owns change detection per service. The shared Podman mutation
       # lock serializes the short runtime operation without draining unrelated
       # projects through the managed target on every generation.
@@ -1818,7 +1850,7 @@
             ++ rootlessRuntimePreflightUnit
             ++ [stageUnit]
             ++ dependsOnUnits
-            ++ lib.optional hasImagePullUnit imagePullUnit
+            ++ lib.optional taggedImagePull imagePullUnit
           );
         };
       serviceConfig = {
@@ -1886,6 +1918,8 @@
       else composeBaseSystemdService;
     imagePullSystemdService = lib.optionalAttrs hasImagePullUnit {
       description = "podman: ${resolvedUser}: ${serviceName} image pull";
+      before = lib.optional (!taggedImagePull) "${resolvedSystemdServiceName}.service";
+      requiredBy = lib.optional (!taggedImagePull) "${resolvedSystemdServiceName}.service";
       after = lib.unique (networkOnlineUnits ++ rootlessRuntimePreflightUnit);
       wants = lib.unique networkOnlineUnits;
       unitConfig =
@@ -1897,13 +1931,13 @@
         Type = "oneshot";
         RemainAfterExit = false;
         Environment =
-          helperEnvironment
+          helperEnvironmentFor imagePullMetadata
           ++ [
             "NIX_PODMAN_COMPOSE_IMAGE_TAG=${service.imageTag}"
           ];
         WorkingDirectory = "-${resolvedWorkingDir}";
         ExecStart = "${serviceHelperScript} image-pull";
-        TimeoutStartSec = 120;
+        TimeoutStartSec = bootstrapTimeoutSeconds;
       };
     };
     composeStageSystemdService = {
@@ -2141,13 +2175,39 @@
   in {
     systemdServiceName = resolvedSystemdServiceName;
     systemdUser = resolvedUser;
-    helperMetadata = helperMetadata;
+    inherit helperMetadata imagePullMetadata;
     helperScript =
       if isQuadlet
       then null
       else serviceHelperScript;
     drainStamp = builtins.hashString "sha256" (builtins.toJSON mergedSystemdService);
     systemdService = mergedSystemdService;
+    portableProjectEnvironment = let
+      raw = primaryUnit.serviceConfig;
+      ownerSettings = [
+        "HOME"
+        "USER"
+        "LOGNAME"
+        "XDG_RUNTIME_DIR"
+        "XDG_CONFIG_HOME"
+        "XDG_DATA_HOME"
+        "COMPOSE_PROJECT_DIR"
+        "CONTAINER_HOST"
+        "CONTAINER_CONNECTION"
+        "CONTAINERS_STORAGE_CONF"
+        "STORAGE_DRIVER"
+        "STORAGE_OPTS"
+      ];
+    in
+      (raw.EnvironmentFile or [])
+      == []
+      && (raw.UnsetEnvironment or []) == []
+      && raw.Environment == helperEnvironment
+      && lib.all (name:
+        builtins.match "[A-Za-z_][A-Za-z_0-9]*" name
+        != null
+        && !(builtins.elem name ownerSettings)
+        && !lib.hasInfix "%" (toString projectEnvironment.${name})) (builtins.attrNames projectEnvironment);
     systemdReadyTargetName = readyTargetName;
     systemdUserManagedTargetName = userManagedTargetName;
     resolvedWorkingDir = resolvedWorkingDir;
@@ -2297,23 +2357,37 @@
   );
   controlRegistryBaseFile = writeJSON "podman-compose-control-registry-base.json" controlRegistryValue;
   controlRegistryFile = controlRegistryBaseFile;
-  imagePullPlanValue =
-    map
-    (service: {
+  imagePullPlanFile = let
+    identity = service: {
       user = service.systemdUser;
       uid = userUidString service.systemdUser;
       serviceName = service.systemdServiceName;
-      metadataFile = service.helperMetadata;
-      runtimePreflightMetadata =
-        if service.systemdUser != "root" && rootlessStackUserHasConfig service.systemdUser
-        then runtimePreflightMetadataForUser service.systemdUser
-        else null;
-      helper = service.helperScript;
-      imageTag = service.imageTag;
       backend = service.backend;
-    })
-    (builtins.filter (service: service.backend == "compose" && (service.declaredImages or []) != []) resolvedServices);
-  imagePullPlanFile = writeJSON "podman-compose-image-pulls.json" imagePullPlanValue;
+    };
+    composeEntries = map (service:
+      (identity service)
+      // {
+        metadataFile = service.imagePullMetadata;
+        runtimePreflightMetadata =
+          if service.systemdUser != "root" && rootlessStackUserHasConfig service.systemdUser
+          then runtimePreflightMetadataForUser service.systemdUser
+          else null;
+        helper = service.helperScript;
+        imageTag = service.imageTag;
+      })
+    (builtins.filter (s: s.backend == "compose" && s.hasComposeEntry) resolvedServices);
+    quadlets = builtins.filter (s: s.backend == "quadlet") resolvedServices;
+    emitQuadlet = service: ''
+      jq -c --argjson entry ${lib.escapeShellArg (builtins.toJSON (identity service))} \
+        'select(.declaredImages != []) | $entry + {images: .declaredImages}' \
+        ${service.nativeBundle}/report.json >> entries
+    '';
+  in
+    pkgs.runCommand "podman-compose-image-pulls.json" {nativeBuildInputs = [pkgs.jq];} ''
+      jq -c '.[]' ${writeJSON "compose-image-pull-entries.json" composeEntries} > entries
+      ${lib.concatMapStringsSep "\n" emitQuadlet quadlets}
+      jq -s . entries > "$out"
+    '';
   controlPackage = pkgs.writeShellApplication {
     name = "podman-composectl";
     excludeShellChecks = [
@@ -2331,6 +2405,7 @@
       ++ lib.optional hasComposeBackend pkgs.podman;
     text = ''
       registry="''${NIX_PODMAN_COMPOSE_CONTROL_REGISTRY:-/run/current-system/share/podman-compose/control-registry.json}"
+      project_command=${projectTools.project}/bin/podman-compose-project
       helper=/etc/podman-compose/helpers/podman-compose-helper
       source ${scripts.composectl}
       main "$@"
@@ -2346,11 +2421,13 @@
       pkgs.coreutils
       pkgs.getent
       pkgs.jq
+      pkgs.podman
       pkgs.systemd
       pkgs.util-linux
     ];
     text = ''
       plan="''${NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN:-/run/current-system/share/podman-compose/image-pulls.json}"
+      owner_engine_path="${projectTools.nativeImages}/bin:${projectTools.ownerPath}"
       source ${scripts.imageHelper}
       main "$@"
     '';
@@ -3615,7 +3692,7 @@ in {
                     else generatedHttpVerifyCommand;
                   renderedSource = sourceCompose;
                   stagedEntries = effectiveEntries;
-                  sourcePaths = sourcePaths;
+                  inherit sourcePaths;
                   pullSourcePaths = lib.mapAttrs (fileName: _: "${pullSourceDir}/${fileName}") effectiveEntries;
                   runtimePaths = lib.mapAttrs (fileName: _: "${resolvedWorkingDir}/${fileName}") effectiveEntries;
                   entryFile = normalizedEntryFile;
@@ -3662,9 +3739,7 @@ in {
       system = {
         systemBuilderCommands = ''
           install -Dm0444 ${lib.escapeShellArg controlRegistryFile} "$out/share/podman-compose/control-registry.json"
-          ${lib.optionalString hasComposeBackend ''
-            install -Dm0444 ${lib.escapeShellArg imagePullPlanFile} "$out/share/podman-compose/image-pulls.json"
-          ''}
+          install -Dm0444 ${lib.escapeShellArg imagePullPlanFile} "$out/share/podman-compose/image-pulls.json"
         '';
         build = {
           podmanComposeControlRegistry = controlRegistryFile;
@@ -3702,10 +3777,8 @@ in {
 
       environment = {
         systemPackages =
-          [pkgs.podman]
-          ++ lib.optional hasComposeBackend pkgs.podman-compose
-          ++ [controlPackage]
-          ++ lib.optional hasComposeBackend imageHelperPackage;
+          [pkgs.podman controlPackage imageHelperPackage]
+          ++ lib.optional hasComposeBackend pkgs.podman-compose;
         etc =
           lib.listToAttrs (nativeQuadletEtcEntries ++ runtimePreflightEtcEntries)
           // {
@@ -3778,6 +3851,10 @@ in {
               + lib.concatStringsSep ", " reservedGeneratedPathViolations;
           }
         ]
+        ++ map (service: {
+          assertion = service.portableProjectEnvironment;
+          message = "${service.systemdServiceName}: use literal serviceOverrides.environment or a project .env for Compose inputs. Raw systemd Environment/EnvironmentFile/UnsetEnvironment, identity/store overrides and unit specifiers are not portable before activation; use envSecrets/fileSecrets for container secrets.";
+        }) (builtins.filter (service: service.backend == "compose") resolvedServices)
         ++ lib.concatLists (
           lib.mapAttrsToList
           (stackName: stack:

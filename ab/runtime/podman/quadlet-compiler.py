@@ -940,7 +940,7 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
         local = local_image_by_runtime_ref.get(image)
         image_entries: list[tuple[str, Any, bool]]
         if local is None:
-            image_entries = [("Image", image, False), ("Policy", "newer", False)]
+            image_entries = [("Image", image, False), ("Policy", "missing", False)]
             declared_images.append(image)
             kind = "remote-image"
         else:
@@ -1205,6 +1205,10 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
             ("Restart", restart_policy, False),
             ("TimeoutStartSec", timeout_ready_seconds, False),
         ]
+        if image not in local_image_by_runtime_ref:
+            service_entries.append(
+                ("ExecStartPre", exec_args([config["verifyNativeImage"], image]), True)
+            )
         for dependency in sorted(healthy_dependencies[name]):
             service_entries.append(
                 (

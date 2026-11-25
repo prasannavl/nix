@@ -7,13 +7,9 @@ usage() {
 usage:
   podman-compose-image-pull-all
 
-Pulls all Podman Compose images declared in the generated image-pull plan.
+Acquire the candidate generation's remote Compose and Quadlet images.
 Override the plan with NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN.
 EOF
-}
-
-plan_entries() {
-	jq -c '.[]?' "$plan"
 }
 
 runtime_dir_for_uid() {
@@ -93,35 +89,19 @@ run_as_owner() {
 		"$@"
 }
 
-pull_entry() {
-	local entry owner uid service_name metadata preflight_metadata helper image_tag runtime_dir home label status_file status
+pull_compose_entry() {
+	local entry="$1" owner="$2" uid="$3" service_name="$4" runtime_dir="$5" home="$6"
+	local metadata preflight_metadata helper image_tag label status_file status
 	local -a helper_env=()
-	entry="$1"
-
-	owner="$(jq -r '.user' <<<"$entry")"
-	uid="$(jq -r '.uid' <<<"$entry")"
-	service_name="$(jq -r '.serviceName' <<<"$entry")"
 	metadata="$(jq -r '.metadataFile' <<<"$entry")"
 	preflight_metadata="$(jq -r '.runtimePreflightMetadata // empty' <<<"$entry")"
 	helper="$(jq -r '.helper' <<<"$entry")"
 	image_tag="$(jq -r '.imageTag' <<<"$entry")"
-	runtime_dir="$(runtime_dir_for_uid "$uid")"
 	label="declared compose images"
 	if [ -n "$image_tag" ] && [ "$image_tag" != "0" ] && [ "$image_tag" != "null" ]; then
 		label="tag=${image_tag}"
 	fi
 
-	if ! getent passwd "$owner" >/dev/null; then
-		printf '%s%s\n' \
-			"podman-compose-image-pull-all: skipping pre-activation pull for ${service_name}; " \
-			"owner ${owner} is absent, so service activation will pull it"
-		return 3
-	fi
-
-	home="$(home_for_user "$owner")"
-	if ! ensure_runtime_dir "$owner" "$uid" "$runtime_dir"; then
-		return 1
-	fi
 	if ! status_file="$(mktemp "${runtime_dir}/image-pull-status.XXXXXX")"; then
 		return 1
 	fi
@@ -163,8 +143,57 @@ pull_entry() {
 	return 0
 }
 
+pull_entry() {
+	local entry="$1" owner uid service_name runtime_dir home refs backend status=0
+	local -a images
+	owner="$(jq -er '.user' <<<"$entry")" || return 1
+	uid="$(jq -er '.uid' <<<"$entry")" || return 1
+	service_name="$(jq -er '.serviceName' <<<"$entry")" || return 1
+	backend="$(jq -er '.backend // "compose"' <<<"$entry")" || return 1
+
+	if ! getent passwd "$owner" >/dev/null; then
+		printf '%s%s\n' \
+			"podman-compose-image-pull-all: skipping pre-activation pull for ${service_name}; " \
+			"owner ${owner} is absent, so service activation will pull it"
+		return 3
+	fi
+	if [[ $(id -u "$owner") != "$uid" ]]; then
+		printf 'image acquisition: uid mismatch for %s (candidate %s)\n' "$owner" "$uid" >&2
+		return 1
+	fi
+	home="$(home_for_user "$owner")" || return 1
+	runtime_dir="$(runtime_dir_for_uid "$uid")"
+	ensure_runtime_dir "$owner" "$uid" "$runtime_dir" || return 1
+
+	case "$backend" in
+	compose)
+		pull_compose_entry "$entry" "$owner" "$uid" "$service_name" "$runtime_dir" "$home"
+		;;
+	quadlet)
+		refs="$(jq -er '.images[]' <<<"$entry")" || return 1
+		mapfile -t images <<<"$refs"
+		printf 'Preparing %s images for %s: %s\n' "$service_name" "$owner" "${images[*]}"
+		(
+			cd -- "$home" || exit 1
+			run_as_owner "$owner" "$uid" "$runtime_dir" "$home" \
+				env -i HOME="$home" USER="$owner" LOGNAME="$owner" XDG_RUNTIME_DIR="$runtime_dir" \
+				PATH="${owner_engine_path:?missing owner engine path}" podman-owner-images "${images[@]}"
+		) || status="$?"
+		if [ "$status" -eq 75 ]; then
+			printf 'image acquisition: %s is busy; deferring %s to native activation\n' "$owner" "$service_name"
+			return 3
+		fi
+		[ "$status" -eq 0 ] || return 1
+		;;
+	*)
+		printf 'unknown image acquisition backend: %s\n' "$backend" >&2
+		return 1
+		;;
+	esac
+}
+
 main() {
-	local entry count=0 pulled_count=0 skipped_count=0 deferred_count=0
+	local entries entry count=0 pulled_count=0 skipped_count=0 deferred_count=0
 
 	if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
 		usage
@@ -179,6 +208,7 @@ main() {
 		return 0
 	fi
 
+	entries="$(jq -c '.[]' "$plan")" || return 1
 	while IFS= read -r entry; do
 		[ -n "$entry" ] || continue
 		count=$((count + 1))
@@ -197,13 +227,13 @@ main() {
 				;;
 			esac
 		fi
-	done < <(plan_entries)
+	done <<<"$entries"
 
 	if [ "$count" -eq 0 ]; then
 		return 0
 	fi
 	if [ "$pulled_count" -gt 0 ]; then
-		printf '%s\n' "podman-compose-image-pull-all: completed ${pulled_count} image pull(s)"
+		printf '%s\n' "podman-compose-image-pull-all: prepared ${pulled_count} image set(s)"
 	elif [ "$deferred_count" -gt 0 ]; then
 		printf '%s\n' "podman-compose-image-pull-all: deferred ${deferred_count} image pull(s) to activation"
 	elif [ "$skipped_count" -ne "$count" ]; then

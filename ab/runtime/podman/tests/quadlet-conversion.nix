@@ -274,7 +274,9 @@ in
     test -n "$web_image_name"
     web_image=${bundle}/quadlet/$web_image_name
     grep -F 'Image=docker.io/library/nginx:stable' "$web_image"
-    grep -F 'Policy=newer' "$web_image"
+    grep -E '^ExecStartPre="[^" ]+-podman-verify-native-image" "docker.io/library/nginx:stable"$' "$web"
+    grep -Fx 'Policy=missing' "$web_image"
+    jq -e '.declaredImages == ["docker.io/library/nginx:stable", "docker.io/library/postgres:17"]' "$report"
     grep -F 'StopWhenUnneeded=true' "$web_image"
     grep -F 'Exec="sh" "-c" "echo $$HOME"' "$web"
     grep -F 'Environment="FROM_OVERRIDE=yes"' "$web"

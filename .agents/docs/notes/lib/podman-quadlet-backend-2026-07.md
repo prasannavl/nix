@@ -10,14 +10,14 @@ compatibility backend select `backend = "compose"` explicitly.
 
 The backends intentionally diverge below that declaration boundary:
 
-- Compose keeps metadata schema v11, `podman-compose-helper`, runtime state,
-  rootless runtime preflight, and the deploy image-pull plan unchanged.
+- Compose keeps metadata schema v11, `podman-compose-helper`, runtime state, and
+  rootless runtime preflight. Its deploy pull resolves the candidate project.
 - Quadlet is a build-time translation into native `.container`, `.network`, and
   `.image` units. Systemd and Quadlet own runtime lifecycle, dependencies,
-  readiness, restart policy, image acquisition, and cleanup. Small stateless
-  source helpers perform Nix-owned staging and hook execution from explicit
-  systemd arguments; no helper reads compiler output or runtime metadata, and no
-  `.podman-compose/state.json` is written.
+  readiness, restart policy, first-use image loading, and cleanup. Small
+  stateless source helpers perform Nix-owned staging and hook execution from
+  explicit systemd arguments; no helper reads compiler output or runtime
+  metadata, and no `.podman-compose/state.json` is written.
 
 The checked-in shell ownership is deliberately limited to five source files:
 
@@ -29,12 +29,10 @@ The checked-in shell ownership is deliberately limited to five source files:
   state, reconciliation, and per-instance image-pull implementation.
 - `quadlet-helper.sh` contains only stateless, argv-driven `stage` and `hook`
   commands used by generated systemd units.
-- `image-helper.sh` fans out the Compose deploy image-pull plan and delegates
-  each instance pull to `compose-helper.sh`.
-
-Do not move Compose metadata or lifecycle policy into the shared, Quadlet, or
-image helpers. Do not add a Quadlet image fan-out path: native `.image` units
-already own image acquisition.
+- `image-helper.sh` acquires both backends' candidate images before activation,
+  as each service's owner. Compose retains its preflight-aware helper; Quadlet
+  passes the compiler-resolved remote references directly to Podman. Neither
+  path starts candidate containers to fetch images.
 
 The public graph remains stable for callers:
 
@@ -67,7 +65,7 @@ Compose-to-Quadlet translation is a normal Nix build, not Nix evaluation:
    resulting models in order, validates the supported subset, and emits Quadlet
    source files. Mapping keys are never interpolated.
 3. It also emits `report.json`, containing only unit paths, container names, and
-   image classifications needed by the later per-user collision check.
+   image classifications for the per-user collision check and deploy pull plan.
 4. Nix evaluation never imports the report. Runtime services never read it.
 
 This avoids IFD, keeps every existing Compose source authoritative, and leaves
@@ -81,7 +79,11 @@ diagnostic evidence.
 
 ## Runtime Ownership
 
-- Remote images use `.image` units with `Policy=newer`; store-built images use
+- Acquire ensures each declared remote reference exists in the owner's store
+  with Podman's `missing` policy. Native `.image` units also use
+  `Policy=missing`: a prepared image needs no registry connection on switch,
+  restart or rollback. First boot without a prepared store still works when the
+  registry is reachable. Store-built images use
   `Image=docker-archive:<store-path>` plus the archive's existing repository tag
   as `ImageTag`. `ImageTag` does not create an alias: Quadlet uses it to resolve
   the selected image already present in a file archive. The compiler reads only
@@ -161,11 +163,11 @@ while the public aggregate remains active, without restoring runtime inventory
 metadata. Quadlet containers also carry no repo-owned backend/inventory labels;
 systemd's generated-unit provenance provides the declared identity.
 
-On Quadlet-only systems, Compose runtime-preflight metadata and the
-pre-activation Compose image-pull plan are absent. The immutable Compose helper
-is retained only at the previous-generation `ExecStop=` compatibility path so a
-single deploy can drain an active Compose provider before `/etc` switches; no
-native steady-state unit calls it.
+Quadlet-only systems export the same pre-activation image plan and entrypoint;
+they do not install Compose runtime-preflight metadata. The immutable Compose
+helper is retained only at the previous-generation `ExecStop=` compatibility
+path so a single deploy can drain an active Compose provider before `/etc`
+switches; no native steady-state unit calls it.
 
 ## Supported Compose Subset
 

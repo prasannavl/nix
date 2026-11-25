@@ -1,5 +1,5 @@
 {pkgs}: let
-  python = pkgs.python3.withPackages (packages: [packages.pyyaml]);
+  python = pkgs.python3.withPackages (packages: [packages.pyyaml (packages.toPythonModule pkgs.podman-compose)]);
 in
   {
     helper =
@@ -10,6 +10,7 @@ in
           pkgs.getent
           pkgs.jq
           pkgs.procps
+          (import ../compose-image-plan.nix {pkgs = pkgs;}).project
           python
           pkgs.util-linux
         ];

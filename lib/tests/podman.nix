@@ -184,11 +184,12 @@
                 "file-source".source = sourceFile;
 
                 extended = {
+                  serviceOverrides.environment.BUILD_TAG = "declared";
+                  files.".env".text = "BUILD_TAG=from-project-file\n";
                   startPriority = -50;
                   source = ''
                     services:
                       web:
-                        image: docker.io/library/nginx:latest
                         extends:
                           file: sidecar.yml
                           service: base
@@ -196,6 +197,7 @@
                   files."sidecar.yml".text = ''
                     services:
                       base:
+                        image: example.invalid/''${COMPOSE_PROJECT_NAME}:''${BUILD_TAG}
                         environment:
                           FROM_SIDECAR: "1"
                   '';
@@ -331,6 +333,14 @@
         }
       ];
     }).config;
+  invalidProjectEnv =
+    (evalConfig.extendModules {
+      modules = [{systemd.user.services.demo-extended.serviceConfig.EnvironmentFile = "-/run/activation-only.env";}];
+    }).config;
+  invalidProjectStore =
+    (evalConfig.extendModules {
+      modules = [{systemd.user.services.demo-extended.environment.CONTAINERS_STORAGE_CONF = "/wrong/store.conf";}];
+    }).config;
   invalidNativePreStopConfig =
     (evalConfig.extendModules {
       modules = [
@@ -452,12 +462,6 @@
 
   failedAssertions = builtins.filter (assertion: ! assertion.assertion) config.assertions;
 
-  imagePullPlanEntryByService = serviceName: let
-    matches = builtins.filter (entry: entry.serviceName == serviceName) imagePullPlan;
-  in
-    assert builtins.length matches == 1;
-      builtins.head matches;
-
   metadataPathFromEnv = env: let
     prefix = "NIX_PODMAN_COMPOSE_METADATA=";
     matches = builtins.filter (entry: lib.hasPrefix prefix entry) env;
@@ -481,7 +485,6 @@
   appDnsFact = appFactPort "dns";
 
   controlRegistry = config.system.build.podmanComposeControlRegistry.passthru.value;
-  imagePullPlan = config.system.build.podmanComposeImagePullPlan.passthru.value;
   metadataFromUnit = unit: let
     path = metadataPathFromEnv unit.serviceConfig.Environment;
     matches = builtins.filter (
@@ -531,8 +534,6 @@
   extendedPullDir = builtins.dirOf (builtins.head extendedMetadata.pullComposeFiles);
   systemdUserGraphCheck = config.system.build.podmanComposeSystemdUserGraphCheck;
   quadletGeneratorCheck = config.system.build.podmanComposeQuadletGeneratorCheck;
-  appImagePullPlanEntry = imagePullPlanEntryByService "demo-app";
-  jobImagePullPlanEntry = imagePullPlanEntryByService "demo-custom-job";
   appGeneratedProbePath = builtins.head controlRegistry.demo-app.verifyCommand;
   nativeGeneratedProbePath = builtins.head native.verifyCommand;
   nativeVerifyScriptPath = nativeVerifyUnit.serviceConfig.ExecStart;
@@ -892,20 +893,6 @@ in
   assert appVerifyUnit.serviceConfig.TimeoutStartSec == 45;
   assert config.users.manageLingering == true;
   assert config.users.users.tester.linger == true;
-  assert builtins.length imagePullPlan == 9;
-  assert builtins.all (entry: lib.hasPrefix "demo-" entry.serviceName) imagePullPlan;
-  assert builtins.filter (entry: entry.serviceName == "demo-local-image") imagePullPlan == [];
-  assert builtins.filter (entry: entry.serviceName == "demo-local-image-package") imagePullPlan == [];
-  assert builtins.filter (entry: entry.serviceName == "demo-local-image-store") imagePullPlan == [];
-  assert builtins.filter (entry: entry.serviceName == "demo-native") imagePullPlan == [];
-  assert builtins.filter (entry: entry.serviceName == "inherited-worker") imagePullPlan == [];
-  assert appImagePullPlanEntry.user == "tester";
-  assert appImagePullPlanEntry.uid == "1234";
-  assert appImagePullPlanEntry.serviceName == "demo-app";
-  assert toString appImagePullPlanEntry.metadataFile == metadataPathFromEnv appUnit.serviceConfig.Environment;
-  assert toString appImagePullPlanEntry.runtimePreflightMetadata == runtimePreflightStorePath;
-  assert appImagePullPlanEntry.imageTag == "image-1";
-  assert lib.hasSuffix "/bin/podman-compose-helper" appImagePullPlanEntry.helper;
   assert appMetadata.imagePullStamp != "";
   assert controlRegistry.demo-app.timeoutReadySeconds == 45;
   assert controlRegistry.demo-app.unit == "demo-app.service";
@@ -923,12 +910,6 @@ in
   assert controlRegistry.demo-text-source.verifyCommand == [];
   assert controlRegistry.demo-custom-job.timeoutReadySeconds == 45;
   assert toString controlRegistry.demo-app.metadataFile == metadataPathFromEnv appUnit.serviceConfig.Environment;
-  assert jobImagePullPlanEntry.user == "root";
-  assert jobImagePullPlanEntry.uid == "0";
-  assert toString jobImagePullPlanEntry.metadataFile == metadataPathFromEnv jobUnit.serviceConfig.Environment;
-  assert jobImagePullPlanEntry.runtimePreflightMetadata == null;
-  assert jobImagePullPlanEntry.imageTag == "0";
-  assert lib.hasSuffix "/bin/podman-compose-helper" jobImagePullPlanEntry.helper;
   assert jobMetadata.imagePullStamp != "";
   assert appMetadata.version == 11;
   assert !(appMetadata ? backend);
@@ -1017,6 +998,13 @@ in
   assert fileSourceMetadata.pullComposeFiles != fileSourceMetadata.composeFiles;
   assert extendedMetadata.expectedComposeServices == ["web"];
   assert extendedMetadata.composeFiles == ["/srv/demo/extended/compose.yml"];
+  assert !(extendedMetadata ? pullWorkingDir);
+  assert !(dbMetadata ? projectEnvironment);
+  assert builtins.any (a: !a.assertion && lib.hasInfix "demo-extended: use literal" a.message) invalidProjectStore.assertions;
+  assert builtins.any (a: !a.assertion && lib.hasInfix "demo-extended: use literal" a.message) invalidProjectEnv.assertions;
+  assert config.systemd.user.services.demo-db-image-pull.requiredBy == ["demo-db.service"];
+  assert config.systemd.user.services.demo-db-image-pull.before == ["demo-db.service"];
+  assert extendedMetadata.declaredImages == [];
   assert extendedMetadata.pullComposeFiles == [extended.pullSourcePaths."compose.yml"];
   assert lib.hasPrefix extendedPullDir extended.pullSourcePaths."sidecar.yml";
   assert jobMetadata.state == "stopped";
@@ -1091,6 +1079,7 @@ in
     "demo-native.service"
   ];
   assert appUnit.serviceConfig.ExecStart == "/etc/podman-compose/helpers/podman-compose-helper start-staged";
+  assert builtins.any (pkg: lib.getName pkg == "podman-compose-image-pull-all") quadletOnlyConfig.environment.systemPackages;
   assert lib.hasSuffix
   "/bin/podman-compose-helper"
   (toString quadletOnlyConfig.environment.etc."podman-compose/helpers/podman-compose-helper".source);
@@ -1108,9 +1097,32 @@ in
   assert !(controlRegistry.demo-native ? verifyCommand);
   assert builtins.length invalidNativePreStopAssertions == 1;
   assert lib.hasInfix "Quadlet preStop hooks must be best-effort" (builtins.head invalidNativePreStopAssertions).message; let
+    projectTools = import ../../ab/runtime/podman/compose-image-plan.nix {pkgs = pkgs;};
     sourceInlineTextFixture = pkgs.writeText "source-inline-text.compose.yml" sourceInlineText;
   in
-    pkgs.runCommand "podman-compose-module-test" {} ''
+    pkgs.runCommand "podman-compose-module-test" {nativeBuildInputs = [pkgs.jq projectTools.project];} ''
+      # /etc is already the candidate's when old units execute their stop helper.
+      grep -Fq '${projectTools.project}/bin' ${quadletOnlyConfig.environment.etc."podman-compose/helpers/podman-compose-helper".source}
+      jq -e \
+        --arg appMetadata ${lib.escapeShellArg (metadataPathFromEnv imagePullUnit.serviceConfig.Environment)} \
+        --arg preflight ${lib.escapeShellArg runtimePreflightStorePath} '
+        def service($name): .[] | select(.serviceName == $name);
+        any(service("demo-extended"); .backend == "compose")
+        and any(service("demo-local-image"); .backend == "compose")
+        and ([.[].serviceName] | length == (unique | length))
+        and any(service("demo-app"); .user == "tester" and .uid == "1234"
+          and .imageTag == "image-1" and .metadataFile == $appMetadata
+          and .runtimePreflightMetadata == $preflight and (.helper | endswith("/bin/podman-compose-helper")))
+        and any(service("demo-custom-job"); .user == "root" and .uid == "0"
+          and .imageTag == "0" and (.metadataFile | endswith("-acquire.json"))
+          and .runtimePreflightMetadata == null and (.helper | endswith("/bin/podman-compose-helper")))
+        and any(service("demo-native"); .backend == "quadlet" and .uid == "1234"
+          and .images == ["docker.io/library/busybox:latest"])
+        and any(service("lane-consumer"); .user == "laner" and .uid == "1235")
+        and any(service("inherited-worker"); .images == ["docker.io/library/busybox:latest"])
+      ' ${config.system.build.podmanComposeImagePullPlan}
+      jq -e 'length == 1 and .[0].backend == "quadlet" and .[0].images == ["docker.io/library/busybox:latest"]' \
+        ${quadletOnlyConfig.system.build.podmanComposeImagePullPlan}
       unit_dir="$TMPDIR/quadlet-units"
       generated_dir="$TMPDIR/generated-units"
       mkdir -p "$unit_dir" "$generated_dir"
@@ -1147,7 +1159,54 @@ in
       ! grep -Fq 'database migration review required' ${db.sourcePaths."compose.yml"}
       cmp ${textSource.sourcePaths."compose.yml"} ${sourceInlineTextFixture}
       cmp ${fileSource.sourcePaths."compose.yml"} ${sourceFile}
-      grep -F 'FROM_SIDECAR' ${extended.pullSourcePaths."sidecar.yml"}
+      extended_pull=$(jq -er '.[] | select(.serviceName == "demo-extended").metadataFile' ${config.system.build.podmanComposeImagePullPlan})
+      jq -e '.pullComposeFiles == [(.pullWorkingDir + "/compose.yml")]
+        and ((.pullWorkingDir | split("/") | last) == (.workingDir | split("/") | last))' "$extended_pull"
+      live=${lib.escapeShellArg (metadataPathFromEnv extendedUnit.serviceConfig.Environment)}
+      jq -e --slurpfile live "$live" '.projectEnvironment == $live[0].projectEnvironment' "$extended_pull"
+      export BUILD_TAG=from-deploy PODMAN_COMPOSE_PROVIDER=/no-such-provider COMPOSE_PROJECT_NAME=not-the-project
+      podman-compose-project "$extended_pull" images | jq -e '. == [{image:"example.invalid/extended:declared",platform:null}]'
+      # Check the real pinned runtime provider, with a conflicting unit environment.
+      dir=$(jq -er .pullWorkingDir "$extended_pull")
+      (cd "$dir"; BUILD_TAG=from-unit podman-compose-project "$live" provider --dry-run -f sidecar.yml config) | grep -F 'example.invalid/extended:declared'
+      # Busy native Acquire defers before invoking Podman (no live store in this test).
+      mkdir -p runtime/podman-compose
+      (
+        exec 9>runtime/podman-compose/rootless-lifecycle-v1.lock
+        ${pkgs.util-linux}/bin/flock -x 9
+        rc=0
+        XDG_RUNTIME_DIR="$PWD/runtime" ${projectTools.nativeImages}/bin/podman-owner-images example.invalid/test:1 || rc=$?
+        test "$rc" = 75
+      )
+      # A live untracked dotenv must not influence either selection or startup.
+      mkdir adopted
+      cd adopted
+      printf 'TAG=ambient\n' > .env
+      printf 'services: {web: {image: "example.invalid/web:''${TAG:-default}"}}\n' > compose.yml
+      jq -n --arg root "$PWD" '{workingDir:$root,pullWorkingDir:$root,composeFiles:[($root+"/compose.yml")],
+        pullComposeFiles:[($root+"/compose.yml")]}' > meta.json
+      podman-compose-project meta.json images | jq -e '.[0].image == "example.invalid/web:default"'
+      podman-compose-project meta.json provider --dry-run -f compose.yml config | grep -F 'example.invalid/web:default'
+      # Teardown of a pre-contract unit uses its original argv, dotenv and unit env.
+      jq '.composeArgs=["--pod-args=--infra=false"]' meta.json > legacy.json
+      (unset COMPOSE_PROJECT_NAME PODMAN_COMPOSE_PROVIDER
+       printf 'COMPOSE_PROJECT_NAME=old-project\nTAG=legacy\n' > .env
+       printf 'services: {web: {image: "example.invalid/''${BUILD_TAG:?}:''${TAG:?}"}}\n' > compose.yml
+       podman-compose-project legacy.json legacy-stop inventory | jq -e '.project == "old-project"'
+       if podman-compose-project legacy.json legacy-stop provider -f "$PWD/compose.yml" up 2> err; then exit 1; fi
+       grep -F 'only supports teardown' err)
+      printf 'services: {web: {image: "example.invalid/web:''${TAG:-default}"}}\n' > compose.yml
+      # Declared dotenv is interpolation data. Engine settings are process environment.
+      printf 'TAG=declared\nREGISTRY_AUTH_FILE=/interpolation-only\n' > source.env
+      jq --arg root "$PWD" '.stagedFiles=[{dst:($root+"/.env"),src:($root+"/source.env")}] |
+        .projectEnvironment={REGISTRY_AUTH_FILE:"/owner/auth.json"}' meta.json > declared.json
+      podman-compose-project declared.json images | jq -e '.[0].image == "example.invalid/web:declared"'
+      podman-compose-project declared.json provider --dry-run -f compose.yml config | grep -F 'example.invalid/web:declared'
+      jq '.composeArgs=["--env-file","not-declared.env"]' meta.json > invalid.json
+      if podman-compose-project invalid.json images 2> err; then exit 1; fi
+      grep -F 'must be declared' err
+      cd ..
+      test -L ${config.environment.etc."systemd/user".source}/demo-db.service.requires/demo-db-image-pull.service
 
       grep -F -- '--insecure' ${nativeGeneratedProbePath}
       grep -F -- '--resolve native.example.test:18081:127.0.0.1' ${nativeGeneratedProbePath}
@@ -1156,7 +1215,7 @@ in
       grep -F '/healthchecks.json' ${nativeVerifyScriptPath}
       grep -F "Image=$native_image_file" "$native_quadlet"
       grep -F 'Image=docker.io/library/busybox:latest' "$native_image"
-      grep -F 'Policy=newer' "$native_image"
+      grep -F 'Policy=missing' "$native_image"
       grep -F 'Pull=never' "$native_quadlet"
       ! grep -Fq '[Quadlet]' "$native_quadlet"
       grep -F 'Volume=/srv/demo/native/data:/data:ro' "$native_quadlet"
@@ -1187,7 +1246,7 @@ in
       generated="$generated_dir/demo-native-web-container.service"
       test -s "$generated"
       test -s "$generated_dir/demo-native-network-network.service"
-      test -s "$generated_dir/$image_unit"
+      grep -F -- '--policy missing' "$generated_dir/$image_unit"
       test -L "$generated_dir/demo-native.service.requires/demo-native-web-container.service"
       grep -F 'Requires=demo-native-network-network.service' "$generated"
       grep -F 'After=demo-native-network-network.service' "$generated"

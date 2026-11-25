@@ -62,6 +62,79 @@ never stopped or started. Verification honors image-defined healthchecks:
 `starting` is polled within the normal readiness deadline and `unhealthy` fails
 only that instance's verifier.
 
+## When are images downloaded?
+
+During a fleet deployment, **Acquire** prepares registry images in the service
+owner's Podman store, before **Deploy** drains the old stack. The candidate
+generation supplies the plan and runner for both backends. A failed pull stops
+Acquire; it does not start candidate containers or roll back application data.
+
+- Both backends download only missing references. If `app:latest` is cached and
+  `sidecar:2` is missing, Acquire fetches only the sidecar, even if the registry
+  has a newer `app:latest`. Change the declared tag or digest to roll out new
+  content; bumping `imageTag` alone does not refresh a cached tag.
+- Compose gets its image references from the stock `podman-compose` project
+  model, including overrides, profiles and `extends`. If all images exist, it
+  skips the pull. Quadlet gets its references from its compiler report. Both
+  call Podman directly for acquisition, so a failed pull stops deployment even
+  if a sibling image was fetched. Concurrent candidate writes share the owner's
+  mutation lock; a busy native pull defers to activation. Quadlet's native image
+  units also use missing-only policy on startup.
+- Nix-built image archives travel in the closure and load locally, not from a
+  registry. Archive references inherited through `extends` also run by the
+  archive's store-hashed tag, not a mutable alias.
+- Every managed Compose project with an entry file has an ordered image-pull
+  unit, including `imageTag = "0"`. New accounts and busy/dirty owner stores can
+  defer to this unit. These are explicit exceptions to pre-drain fetching: cold
+  activation needs registry access and fails if the pull fails.
+- Compose pods use the provider default `--infra=false`. If you customize
+  `x-podman.pod_args`, retain `--infra=false`; custom infra images are rejected
+  because `podman pod create` has no offline pull policy. A service using
+  `x-podman.rootfs` does not need a registry image.
+- Supervision uses the active project's names, profiles, replicas and first
+  entry directory. One running replica does not satisfy a missing sibling. Use a
+  distinct project name per owner. A conflicting container or orphaned storage
+  name is not proof of ownership: inspect it as the service user rather than
+  expecting automatic removal by name.
+- Set `platform` on the Compose service; omitting it selects the host platform.
+  Quadlet checks the local architecture again before starting a remote-image
+  container, including after deferral. Acquire never replaces a cached tag to
+  change its architecture. An unqualified architecture and its explicit OCI
+  baseline (`amd64/v1` or `arm64/v8`) can share one download; the explicit
+  variant is still verified. Projects that share an owner also share its store:
+  use distinct platform digests when they need different variants of a tag.
+- Acquire checks the final Compose model with the generated startup override. If
+  an `include` wins over the managed pull/restart policy or archive tag, it
+  fails before pulling. Remove the conflicting setting or replace `include` with
+  an ordered `entryFile` list. Startup repeats the check on staged files.
+
+**Project inputs.** Acquire, startup, and supervision use the packaged local
+Podman and stock Compose provider. `composeArgs` accepts project name (`-p` or
+`--project-name`), `--profile`, `--env-file`, `--in-pod`, `--parallel`,
+`--no-ansi`, and `--verbose`. Use `entryFile` for file order, not `-f`. An
+alternate engine, connection, or raw engine flags are not project settings.
+
+- **Compose files:** declare `include` and `extends.file` sidecars in `files`
+  and reference them relative to the declaring file. Acquire rejects paths
+  outside the candidate project instead of planning from the previous
+  generation's live files.
+- **Interpolation:** declare `files.".env"` or select a declared file with
+  `composeArgs = [ "--env-file" "prod.env" ];`. The declared source is used in
+  both phases. A declared `.env` beside a nested entry is also recognized; if
+  both locations have one, select it explicitly. An undeclared live `.env`
+  (including one left by an adopted project) is ignored. When draining a unit
+  launched before this contract, teardown still uses its original unit
+  environment, dotenv and project flags. This exception never applies to a
+  candidate pull or a new start.
+- **Registry access:** use the owner's normal credentials, or set
+  `serviceOverrides.environment.REGISTRY_AUTH_FILE = "/run/credentials/registry.json";`
+  to an existing owner-readable file. A dotenv value can interpolate a Compose
+  field; it does **not** export credentials to Podman. Put process settings,
+  including `PODMAN_*`, in `serviceOverrides.environment`, not dotenv. Neither
+  the deploying shell nor a unit-only `EnvironmentFile` supplies project inputs.
+- Configure the owner's local store in `containers/storage.conf`. Keep secret
+  values out of Nix; `envSecrets` and `fileSecrets` are for container secrets.
+
 ## Declaration Shape
 
 ```nix
@@ -132,8 +205,8 @@ exposedPorts.http = {
 - `reloadTag`: reload the stack when native reload is enabled
 - `recreateTag`: stop and start the stack; under policies that allow recreate,
   force recreate once for each new tag value
-- `imageTag`: run the image-pull path before the stack starts and, under `auto`
-  or `recreate`, fold image changes into recreate drift
+- `imageTag`: mark an image input change for recreate policy; not needed for
+  image availability
 
 These are manual lifecycle knobs. Toggle the value when you want the behavior.
 
@@ -384,9 +457,7 @@ file:
 services.podman-compose.example.instances.service = {podmanSocket, ...}: {
   source = ./compose/service/docker-compose.yml;
 
-  files.".env" = ''
-    PODMAN_SOCKET=${podmanSocket}
-  '';
+  serviceOverrides.environment.PODMAN_SOCKET = podmanSocket;
 };
 ```
 
@@ -506,9 +577,8 @@ The main generated service keeps only narrow helper state:
   - under `restart`, it restarts the unit without force-recreating containers
 - `imageTag`:
   - default is `"0"`
-  - generates a separate oneshot image-pull user unit
-  - the main compose unit starts after that pull unit when image refresh is
-    enabled
+  - the main Compose unit requires the missing-only image-pull unit even at
+    `"0"`
   - the tag participates in `recreateStamp`; under `auto` or `recreate`, a tag
     change restarts the main unit and the helper uses
     `podman compose up --force-recreate`
@@ -691,7 +761,7 @@ transition tokens; native systemd does not know Podman policy names.
   - are rejected if they also match native reload triggers
 - plain reboot:
   - starts the main compose user service
-  - runs the image-pull helper first when image refresh is enabled
+  - checks image availability before starting a managed Compose project
   - does not replay `recreateTag`
 
 ## Restart Trigger Coverage
@@ -1106,8 +1176,8 @@ still be stopped and restarted unless it has been moved to stopped state.
 
 ### Does `imageTag` rebuild build-only services?
 
-Not by itself. `imageTag` uses `podman compose pull`, so build-only services may
-need an explicit build flow if image refresh semantics need to cover them too.
+No. Acquisition pulls registry images; it does not run builds. Build-only
+services need a separate build step.
 
 ## Further Reading
 
