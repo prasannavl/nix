@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from email.parser import BytesParser
 from email.policy import default
+from functools import partial
 from pathlib import Path
 
 import tomllib
@@ -30,9 +31,7 @@ API_TOKEN_CANDIDATES = [
 ]
 ACCOUNT_ID_PATH = REPO_ROOT / "data/secrets/globals/cloudflare/r2-account-id.key.age"
 CLOUDFLARE_APPS_ROOT = REPO_ROOT / "pkgs/cloudflare-apps"
-TMP_DIR = Path(tempfile.mkdtemp(prefix="cf-export."))
 ZONE_GROUPS = ("main", "stage", "archive", "inactive")
-LEGACY_GENERATED_DIR = TF_CLOUDFLARE_ROOT / "generated"
 SECURITY_SETTING_IDS = {
     "always_use_https",
     "automatic_https_rewrites",
@@ -205,10 +204,6 @@ def resolve_account_id():
     return decrypt(ACCOUNT_ID_PATH)
 
 
-API_TOKEN = resolve_api_token()
-ACCOUNT_ID = resolve_account_id()
-
-
 def cf_request(url: str, expect_json: bool = True):
     req = urllib.request.Request(
         url,
@@ -294,21 +289,28 @@ def serialize_hcl(value, indent=0):
     raise TypeError(f"Unsupported value type: {type(value)!r}")
 
 
-def write_hcl_vars(path: Path, variables: dict):
-    lines = [f"{key} = {serialize_hcl(value)}" for key, value in variables.items()]
-    path.write_text("\n\n".join(lines) + "\n")
-
-
-def write_secret_tfvars(path: Path, variables: dict):
+def write_secret_tfvars(channels, path: Path, variables: dict):
     age_path = path.with_suffix(".tfvars.age")
+    recipients = channels[age_path]  # Exact policy entry, never a directory default.
+    if path.exists() or path.is_symlink():
+        raise ValueError(f"Refusing export alongside existing plaintext: {path}")
     if not variables:
-        path.unlink(missing_ok=True)
-        age_path.unlink(missing_ok=True)
-        return None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    write_hcl_vars(path, variables)
-    subprocess.check_call(["../../update/scripts/age-secrets.sh", "encrypt", str(path.relative_to(REPO_ROOT))], cwd=REPO_ROOT)
-    path.unlink(missing_ok=True)
+        return None  # An empty inventory is not authorization to prune.
+    lines = [f"{key} = {serialize_hcl(value)}" for key, value in variables.items()]
+    payload = ("\n\n".join(lines) + "\n").encode()
+    args = ["age", "--encrypt"]
+    for recipient in recipients:
+        args.extend(["-r", recipient])
+    age_path.parent.mkdir(parents=True, exist_ok=True)
+    # No plaintext file. A failed or no-op encryptor cannot destroy the last good export.
+    with tempfile.TemporaryDirectory(dir=age_path.parent) as staging:
+        staged = Path(staging) / age_path.name
+        with staged.open("xb+") as output:
+            subprocess.run(args, input=payload, stdout=output, cwd=REPO_ROOT, check=True)
+            output.seek(0)
+            if output.readline(32) != b"age-encryption.org/v1\n" or not output.read(1):
+                raise RuntimeError(f"age did not produce ciphertext for {age_path}")
+        staged.replace(age_path)
     return age_path
 
 
@@ -384,10 +386,6 @@ def mirror_worker_assets(script_name: str, hostname: str):
     )
     files = sorted(p for p in assets_dir.rglob("*") if p.is_file())
     return assets_dir, files
-
-
-def tfvars_age_paths():
-    return sorted(TF_CLOUDFLARE_ROOT.rglob("*.tfvars.age"))
 
 
 def dns_secret_paths():
@@ -1275,9 +1273,48 @@ def category_path(category: str, filename: str):
     return TF_CLOUDFLARE_ROOT / category / filename
 
 
-def main():
-    args = parse_args()
+def export_channels(mode):
+    # A legacy recipient entry does not make its payload valid for a split project.
+    split_projects = ("cloudflare-platform", "cloudflare-apps", "cloudflare-dns")
+    if any((TF_CLOUDFLARE_ROOT.parent / project).is_dir() for project in split_projects):
+        raise SystemExit("Split project tfvars use different schemas; refusing categorized Cloudflare export.")
+    if mode == "all":
+        slots = [(category, "account") for category in ("account", "kv", "access", "tunnels")]
+        for category in ("workers", "r2"):
+            slots.extend((category, group) for group in ZONE_GROUPS)
+        for category in ("zone-dnssec", "zone-settings", "zone-security", "rulesets", "page-rules", "email-routing"):
+            slots.extend((category, group) for group in (*ZONE_GROUPS, "account"))
+    else:
+        slots = [(mode, "account")]
+    targets = [category_path(category, f"{slot}.tfvars.age") for category, slot in slots]
+    # Same recipient authority as scripts/age-secrets.sh; query only these channels.
+    names = {str(path.relative_to(REPO_ROOT)): path for path in targets}
+    selection = "{ " + " ".join(f"{json.dumps(name)} = null;" for name in names) + " }"
+    policy = json.loads(subprocess.check_output([
+        "nix", "eval", "--json", "--file", "data/secrets/default.nix", "--apply",
+        "p: builtins.mapAttrs (_: v: v.publicKeys) (builtins.intersectAttrs " + selection + " p)",
+    ], cwd=REPO_ROOT))
+    channels = {}
+    for name, path in names.items():
+        recipients = policy.get(name)
+        if not isinstance(recipients, list) or not recipients or not all(
+            isinstance(value, str) and value.strip() for value in recipients
+        ):
+            raise SystemExit(f"Unmanaged export channel: {name}. Refusing to export into a different schema.")
+        channels[path] = recipients
+    return channels
 
+
+def main():
+    global ACCOUNT_ID, API_TOKEN
+    args = parse_args()
+    channels = export_channels(args.only)  # Before credentials, API reads or any writes.
+    API_TOKEN = resolve_api_token()
+    ACCOUNT_ID = resolve_account_id()
+    export(args, partial(write_secret_tfvars, channels))
+
+
+def export(args, write_secret_tfvars):
     if args.only == "access":
         access_inventory = fetch_access_inventory()
         access_tf = build_access_tfvars(access_inventory)
@@ -1746,12 +1783,6 @@ def main():
     access_tf = build_access_tfvars(access_inventory)
 
     written_files = []
-    for secret_path in tfvars_age_paths():
-        relative = secret_path.relative_to(REPO_ROOT)
-        if "generated" in relative.parts:
-            secret_path.unlink(missing_ok=True)
-            secret_path.with_suffix("").unlink(missing_ok=True)
-
     account_payload = {
         "cloudflare_account_id": ACCOUNT_ID,
         "email_routing_addresses": email_routing_addresses,
@@ -1863,8 +1894,6 @@ def main():
             if age_path is not None:
                 written_files.append(str(age_path))
 
-    write_secret_tfvars(category_path("dns", "account.tfvars"), {})
-
     ungrouped_payloads = {
         ("zone-dnssec", "account.tfvars"): {"zone_dnssec": zone_dnssec_ungrouped},
         ("zone-settings", "account.tfvars"): {"zone_settings": zone_settings_ungrouped},
@@ -1923,7 +1952,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        shutil.rmtree(TMP_DIR, ignore_errors=True)
+    main()
