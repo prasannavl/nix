@@ -51,25 +51,12 @@
       mainProgram = "llmug-hello-wrangler-deploy";
       platforms = pkgs.lib.platforms.linux;
     };
-    runtimeInputs = with pkgs; [
-      git
-      nix
-      wrangler
-    ];
+    runtimeInputs = [pkgs.wrangler];
     text = ''
       set -euo pipefail
 
-      repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-      assets_build_file="${./default.nix}"
-
-      if [ -n "$repo_root" ] && [ -f "$repo_root/pkgs/cloudflare-apps/llmug-hello/default.nix" ]; then
-        assets_build_file="$repo_root/pkgs/cloudflare-apps/llmug-hello/default.nix"
-      fi
-
-      assets_dir="$(nix build --no-link --print-out-paths --file "$assets_build_file" | tail -n1)"
-
       cd ${./.}
-      exec wrangler deploy --assets "$assets_dir" "$@"
+      exec wrangler deploy --assets ${build} "$@"
     '';
   };
   drv = ab.build.web {
