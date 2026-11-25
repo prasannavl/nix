@@ -20,7 +20,6 @@
   recipeFile,
   preservedFiles,
   recipeLabel ? "rust-foundation-recipe",
-  qualificationToolingSrc ? null,
   name ? "rust-foundation-recipe-vm",
   memorySize ? 16384,
   cores ? 16,
@@ -30,12 +29,10 @@
   changedRuntimeChecks ? [],
 }: let
   lib = pkgs.lib;
-  repository = ../../..;
+  repository = ../../../../..;
   fail = message: throw "rust-foundation-recipe-vm: ${message}";
   inputGuard =
-    if
-      lib.all (path: builtins.isPath path && lib.hasPrefix "${builtins.storeDir}/" (toString path) && builtins.pathExists path) [pkgsPath cranePath recipeSupportSrc baselineSrc changedSrc]
-      && (qualificationToolingSrc == null || (builtins.isPath qualificationToolingSrc && lib.hasPrefix "${builtins.storeDir}/" (toString qualificationToolingSrc) && builtins.pathExists qualificationToolingSrc))
+    if lib.all (path: builtins.isPath path && lib.hasPrefix "${builtins.storeDir}/" (toString path) && builtins.pathExists path) [pkgsPath cranePath recipeSupportSrc baselineSrc changedSrc]
     then true
     else fail "recipe inputs must be existing explicit immutable public store snapshots";
   sameFile = left: right: relative:
@@ -71,7 +68,7 @@
     then true
     else fail "public snapshots must preserve current helper support, original constructors, full lock/manifests and Cargo configuration";
   arguments = {
-    inherit pkgsPath cranePath recipeSupportSrc baselineSrc changedSrc qualificationToolingSrc;
+    inherit pkgsPath cranePath recipeSupportSrc baselineSrc changedSrc;
     system = pkgs.stdenv.hostPlatform.system;
   };
   recipes = import recipeFile arguments;
@@ -82,11 +79,6 @@
   recipeExpression = pkgs.writeText "${recipeLabel}-guest-expression.nix" ''
     let recipes = import ${recipeModule} {
       ${lib.concatStringsSep "\n" (map (name: expressionArgument name arguments.${name}) ["pkgsPath" "cranePath" "recipeSupportSrc" "baselineSrc" "changedSrc"])}
-      ${
-      if qualificationToolingSrc == null
-      then "qualificationToolingSrc = null;"
-      else expressionArgument "qualificationToolingSrc" qualificationToolingSrc
-    }
       system = ${builtins.toJSON arguments.system};
     }; in {
       baseline = recipes.baseline;
@@ -101,7 +93,7 @@
     rootName = builtins.head (lib.splitString "/" relative);
   in "${builtins.storeDir}/${rootName}";
   storeRoot = path: builtins.storePath (storeRootString path);
-  evaluationSources = lib.unique (map storeRoot ([pkgsPath cranePath recipeSupportSrc baselineSrc changedSrc] ++ lib.optional (qualificationToolingSrc != null) qualificationToolingSrc)) ++ [recipeModule];
+  evaluationSources = lib.unique (map storeRoot [pkgsPath cranePath recipeSupportSrc baselineSrc changedSrc]) ++ [recipeModule];
   seedRoot = path:
     if lib.isDerivation path
     then path
@@ -130,9 +122,7 @@ in
         (vm.passthru or {})
         // {
           recipeQualification = {
-            inherit checkDeterminism;
-            inherit recipeExpression evaluationSources qualificationToolingSrc;
-            inherit (recipes) qualificationCargo;
+            inherit checkDeterminism recipeExpression evaluationSources;
             inherit (recipes) memberDirs excludedOutputs controls inputs workspaceCrates expectedCompilations;
             cases = {
               baseline = recipes.baseline;
