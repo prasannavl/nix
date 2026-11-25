@@ -10,7 +10,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::progress::RowOutcome;
-use crate::progress::{HostOperation, ProgressReporter, command_reporter, format_duration};
+use crate::progress::{
+    HostOperation, ProgressReporter, TimedField, command_reporter, format_duration,
+};
 use crate::terminal_style::Tone;
 
 use super::build_runtime::{FailedBuild, UnconfirmedBuild};
@@ -198,6 +200,20 @@ impl FleetProgress {
     pub fn execution_source(&self, identity: &str) {
         self.reporter
             .message_field("Source", safe_host_summary(identity));
+    }
+
+    const HOST_LOCAL_LOCK: &str = "Host-local lock";
+
+    pub(super) fn host_local_lock_wait(&self) -> TimedField<'_> {
+        self.reporter.timed_field(Self::HOST_LOCAL_LOCK, "waiting")
+    }
+
+    pub(super) fn host_local_lock(&self, status: &str, waited: Option<Duration>) {
+        self.reporter.message_field_with_metadata(
+            Self::HOST_LOCAL_LOCK,
+            status,
+            waited.map(|duration| format!("waited {}", format_duration(duration))),
+        );
     }
 
     /// Actual scheduler slots, not the number of hosts displaying a running step.

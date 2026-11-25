@@ -224,10 +224,48 @@ impl Drop for ConcurrencyGuard {
     }
 }
 
+/// One command-level field, outside the phase/step stack.
+#[must_use = "the field stays live only while its guard is held"]
+pub(crate) struct TimedField<'a> {
+    reporter: &'a ProgressReporter,
+    label: &'static str,
+    value: &'static str,
+    started: Instant,
+    next_update: Option<Instant>,
+}
+
+impl TimedField<'_> {
+    pub(crate) fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    /// Called from the wait loop; redraw at the normal one-second cadence.
+    pub(crate) fn tick(&mut self, now: Instant) {
+        if self.next_update.is_some_and(|next| now >= next) {
+            self.next_update = Some(now + Duration::from_secs(1));
+            let elapsed = format_duration(now.saturating_duration_since(self.started));
+            self.reporter.set_timed_field(Some(self.reporter.field_line(
+                self.label,
+                self.value,
+                Some(format_args!("elapsed {elapsed}")),
+            )));
+        }
+    }
+}
+
+impl Drop for TimedField<'_> {
+    fn drop(&mut self) {
+        if self.next_update.is_some() {
+            self.reporter.set_timed_field(None);
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct ProgressState {
     stack: Vec<ActiveProgress>,
     workflow: WorkflowContext,
+    timed_field: Option<String>,
     /// Protocol output stays plain even when a key-reader clone refreshes it.
     suppress_live: bool,
     concurrency_handler: Option<ConcurrencyHandler>,
@@ -2225,16 +2263,51 @@ impl ProgressReporter {
         let _output = self.output.lock().ok();
         let mut output_frame = ProgressFrame::new(&self.destination, self.interactive);
         self.clear_line(&mut output_frame);
+        output_frame.write(&format!("{}\n", self.field_line(label, value, metadata)));
+        self.redraw_current(&mut output_frame);
+    }
+
+    fn field_line(
+        &self,
+        label: &str,
+        value: impl std::fmt::Display,
+        metadata: Option<impl std::fmt::Display>,
+    ) -> String {
         let metadata = metadata
             .map(|metadata| self.style.paint(Tone::Muted, format!(" ({metadata})")))
             .unwrap_or_default();
-        output_frame.write(&format!(
-            "{}: {}{}\n",
-            self.style.paint(Tone::Label, label),
+        format!(
+            "{}: {value}{metadata}",
+            self.style.paint(Tone::Label, label)
+        )
+    }
+
+    /// A single in-place metadata row on a TTY, a single announcement in logs.
+    pub(crate) fn timed_field(&self, label: &'static str, value: &'static str) -> TimedField<'_> {
+        let started = Instant::now();
+        let mut field = TimedField {
+            reporter: self,
+            label,
             value,
-            metadata
-        ));
-        self.redraw_current(&mut output_frame);
+            started,
+            next_update: None,
+        };
+        if self.enabled() && self.interactive {
+            field.next_update = Some(started);
+            field.tick(started);
+        } else {
+            self.message_field(label, value);
+        }
+        field
+    }
+
+    fn set_timed_field(&self, line: Option<String>) {
+        let _output = self.output.lock().ok();
+        if let Ok(mut state) = self.state.lock() {
+            state.timed_field = line;
+        }
+        let mut frame = ProgressFrame::new(&self.destination, self.interactive);
+        self.redraw_current(&mut frame);
     }
 
     pub fn message_tone(&self, tone: Tone, message: impl std::fmt::Display) {
@@ -3301,7 +3374,8 @@ fn live_region_lines(
     dashboard: bool,
 ) -> Option<Vec<String>> {
     let active = state.stack.last();
-    let context = workflow_lines(style, &state.workflow);
+    let mut context = workflow_lines(style, &state.workflow);
+    context.extend(state.timed_field.iter().cloned());
     // A blank separator row, an optional cancelling notice, and the footer row.
     let footer_rows = if footer.is_some() {
         2 + usize::from(notice.is_some())
@@ -4550,6 +4624,51 @@ mod tests {
             started: Instant::now(),
         });
         reporter
+    }
+
+    #[test]
+    fn timed_field_ticks_in_place_without_creating_a_step() {
+        let reporter = interactive_reporter();
+        reporter.state.lock().unwrap().stack.clear();
+        let mut wait = reporter.timed_field("Host-local lock", "waiting");
+        let start = wait.started;
+        let painted = || reporter.state.lock().unwrap().painted.clone();
+        assert_eq!(
+            painted(),
+            Painted::InPlace(vec!["Host-local lock: waiting (elapsed 0ms)".into()])
+        );
+        wait.tick(start + Duration::from_millis(500));
+        assert_eq!(
+            painted(),
+            Painted::InPlace(vec!["Host-local lock: waiting (elapsed 0ms)".into()])
+        );
+        wait.tick(start + Duration::from_millis(1250));
+        assert_eq!(
+            painted(),
+            Painted::InPlace(vec!["Host-local lock: waiting (elapsed 1.2s)".into()])
+        );
+        assert!(reporter.state.lock().unwrap().stack.is_empty());
+        drop(wait);
+        assert_eq!(painted(), Painted::None);
+
+        let ProgressDestination::Buffer(buffer) = &reporter.destination else {
+            panic!("expected buffer");
+        };
+        let output = buffer.lock().unwrap();
+        assert!(!output.contains(&b'\n'), "only one row should be written");
+    }
+
+    #[test]
+    fn timed_field_announces_once_without_a_terminal() {
+        let mut reporter = interactive_reporter();
+        reporter.interactive = false;
+        let mut wait = reporter.timed_field("Host-local lock", "waiting");
+        wait.tick(wait.started + Duration::from_secs(30));
+        drop(wait);
+        let ProgressDestination::Buffer(buffer) = &reporter.destination else {
+            panic!("expected buffer");
+        };
+        assert_eq!(*buffer.lock().unwrap(), b"Host-local lock: waiting\n");
     }
 
     /// One verbose line at a fixed time, so fixtures read like a stream.

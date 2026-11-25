@@ -31,8 +31,8 @@ use super::repository::{
     StagedPatch, repo_git_ssh_command, ssh_repository_endpoint,
 };
 use super::run_state::{
-    CleanupOptions, DirectoryLock, RetentionOutcome, RunState, RuntimeRootPreference, RuntimeRoots,
-    SystemProcessProbe,
+    ActionMutex, CleanupOptions, DirectoryLock, RetentionOutcome, RunState, RuntimeRootPreference,
+    RuntimeRoots, SystemProcessProbe,
 };
 use super::selection::Selection;
 use super::source_identity::SourceIdentity;
@@ -42,6 +42,7 @@ use super::terraform::{
 use crate::terminal_style::{TerminalStyle, Tone};
 
 pub const FLEET_VERSION: &str = "2026.07.23";
+const REEXEC_PREPARE_LOCK_WAIT_MS: &str = "NIXBOT_REEXEC_PREPARE_LOCK_WAIT_MS";
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
     pub nix_program: PathBuf,
@@ -248,23 +249,68 @@ pub(super) fn run_nix(invocation: Invocation, runtime: RuntimeConfig) -> Result<
             run_ci_trigger(&invocation, &runtime)
         });
     }
-    let _mutex = action_mutex(&invocation)?;
-    run_unlocked(invocation, runtime)
+    let lock = action_mutex(&invocation)?;
+    run_action(invocation, runtime, lock)
 }
 
 /// The ordinary host-local action lock, shared by every frontend/backend.
 /// Target activation relies on it when the controller is also the target.
-pub(super) fn action_mutex(
-    invocation: &Invocation,
-) -> Result<Option<super::run_state::ActionMutex>> {
-    let action_name = action_name(&invocation.action);
-    if !invocation.options.skip_global_lock
-        && super::run_state::action_needs_local_mutex(action_name)
-    {
-        let path = host_local_action_lock_path();
-        Ok(Some(acquire_action_mutex(&path, action_name)?))
-    } else {
-        Ok(None)
+pub enum ActionLock {
+    NotRequired,
+    Skipped,
+    ParentHeld {
+        waited: Option<Duration>,
+    },
+    Acquired {
+        _guard: ActionMutex,
+        waited: Option<Duration>,
+    },
+}
+
+impl ActionLock {
+    pub(super) fn announce(&self, progress: &FleetProgress) {
+        match self {
+            Self::NotRequired => {}
+            Self::Skipped => progress.host_local_lock("skipped", None),
+            Self::Acquired { waited, .. } | Self::ParentHeld { waited } => {
+                progress.host_local_lock("acquired", *waited);
+            }
+        }
+    }
+}
+
+pub(super) fn action_mutex(invocation: &Invocation) -> Result<ActionLock> {
+    if !super::run_state::action_needs_local_mutex(&invocation.action) {
+        return Ok(ActionLock::NotRequired);
+    }
+    if invocation.options.skip_global_lock {
+        // Metadata only: the explicit skip flag prevents child acquisition.
+        if invocation.action == Action::Prepare
+            && env::var("NIXBOT_REEXECED_FROM_REPO").as_deref() == Ok("1")
+            && let Some(milliseconds) = env::var(REEXEC_PREPARE_LOCK_WAIT_MS)
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+        {
+            return Ok(ActionLock::ParentHeld {
+                waited: (milliseconds != 0).then(|| Duration::from_millis(milliseconds)),
+            });
+        }
+        return Ok(ActionLock::Skipped);
+    }
+    let path = host_local_action_lock_path();
+    let progress = FleetProgress::from_options(&invocation.options);
+    let mut wait = None;
+    loop {
+        super::signal::check_interrupted()?;
+        if let Some(guard) = ActionMutex::try_acquire(&path)? {
+            return Ok(ActionLock::Acquired {
+                _guard: guard,
+                waited: wait.as_ref().map(crate::progress::TimedField::elapsed),
+            });
+        }
+        wait.get_or_insert_with(|| progress.host_local_lock_wait())
+            .tick(Instant::now());
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -291,30 +337,7 @@ fn same_file(left: &Path, right: &Path) -> bool {
     controller.dev() == target.dev() && controller.ino() == target.ino()
 }
 
-fn acquire_action_mutex(path: &Path, action: &str) -> Result<super::run_state::ActionMutex> {
-    let started = Instant::now();
-    let reporter = crate::progress::command_reporter();
-    let mut announced = false;
-    loop {
-        super::signal::check_interrupted()?;
-        if let Some(lock) = super::run_state::ActionMutex::try_acquire(path)? {
-            if announced {
-                reporter.completed(
-                    format!("Host-local action lock · {action}"),
-                    started.elapsed(),
-                );
-            }
-            return Ok(lock);
-        }
-        if !announced {
-            reporter.started(format!("Waiting for host-local action lock · {action}"));
-            announced = true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn run_unlocked(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
+fn run_action(invocation: Invocation, runtime: RuntimeConfig, lock: ActionLock) -> Result<()> {
     match &invocation.action {
         Action::Help => super::cli::print_help(),
         Action::Deps | Action::CheckDeps => {
@@ -370,6 +393,7 @@ fn run_unlocked(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
             Ok(())
         }
         Action::Clean(mode) => {
+            lock.announce(&FleetProgress::from_options(&invocation.options));
             let mode = match mode {
                 super::cli::CleanMode::Auto => MaintenanceCleanMode::Automatic {
                     older_than: Duration::from_secs(24 * 60 * 60),
@@ -400,7 +424,7 @@ fn run_unlocked(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
                 run_tofu(arguments, &invocation, &runtime)
             })
         }
-        _ => run_native_workflow(invocation, runtime),
+        _ => run_native_workflow(invocation, runtime, lock),
     }
 }
 
@@ -441,31 +465,6 @@ fn run_auxiliary_step<T>(
             progress.step_failed(label, &format!("{error:#}"));
             Err(error)
         }
-    }
-}
-
-fn action_name(action: &Action) -> &str {
-    match action {
-        Action::Help => "help",
-        Action::Deps => "deps",
-        Action::CheckDeps => "check-deps",
-        Action::Version => "version",
-        Action::RepoSync => "repo-sync",
-        Action::ListHosts => "list-hosts",
-        Action::ListGroups => "list-groups",
-        Action::Run => "run",
-        Action::Deploy => "deploy",
-        Action::Prepare => "prepare",
-        Action::Build => "build",
-        Action::DevBuild => "dev-build",
-        Action::TerraformAll => "tf",
-        Action::TerraformDns => "tf-dns",
-        Action::TerraformPlatform => "tf-platform",
-        Action::TerraformApps => "tf-apps",
-        Action::TerraformProject(_) => "tf/project",
-        Action::CheckBootstrap => "check-bootstrap",
-        Action::Clean(_) => "clean",
-        Action::Tofu(_) => "tofu",
     }
 }
 
@@ -590,7 +589,11 @@ fn resolves_routing(action: &Action) -> bool {
     )
 }
 
-fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result<()> {
+fn run_native_workflow(
+    invocation: Invocation,
+    runtime: RuntimeConfig,
+    lock: ActionLock,
+) -> Result<()> {
     let _interactive = capture_verbose_key(&invocation);
     let current = env::current_dir().context("resolve fleet invocation directory")?;
     let source_root = runtime
@@ -612,6 +615,7 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
         announce_execution_metadata(
             &invocation,
             identity.display(),
+            &lock,
             invocation
                 .action
                 .uses_build_strategy()
@@ -642,14 +646,25 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
         return finish_run_state(state, action);
     }
 
-    let state = allocate_run_state(&runtime)?;
-    let diagnostic_dir = state.layout().diagnostic_dir.clone();
-    let execution_root = state.layout().run_dir.join("repo");
+    enum WorkspaceOwner {
+        Local(RunState),
+        Reexec(tempfile::TempDir),
+    }
+    let owner = if invocation.options.use_repo_script
+        && env::var("NIXBOT_REEXECED_FROM_REPO").as_deref() != Ok("1")
+    {
+        WorkspaceOwner::Reexec(reexec_directory(&runtime)?)
+    } else {
+        WorkspaceOwner::Local(allocate_run_state(&runtime)?)
+    };
     let inherited = runtime.inherited_worktree_root.is_some();
-    let execution_root = runtime
-        .inherited_worktree_root
-        .clone()
-        .unwrap_or(execution_root);
+    let execution_root = runtime.inherited_worktree_root.clone().unwrap_or_else(|| {
+        match &owner {
+            WorkspaceOwner::Local(state) => &state.layout().run_dir,
+            WorkspaceOwner::Reexec(directory) => directory.path(),
+        }
+        .join("repo")
+    });
     // Re-exec consumes the already-patched execution tree, never stdin or a
     // newly observed caller index for a second time.
     let staged_patch = if inherited {
@@ -715,23 +730,34 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
     drop(prepare_lock);
     let action = match workspace {
         Ok(workspace) => {
-            let action = if invocation.options.use_repo_script
-                && env::var("NIXBOT_REEXECED_FROM_REPO").as_deref() != Ok("1")
-            {
-                reexec_from_workspace(
-                    &invocation,
-                    &runtime,
-                    &source_root,
-                    &workspace.root,
-                    &workspace.commit,
-                    &pinned_inventory,
-                )
-            } else {
-                (|| {
+            let action = match &owner {
+                WorkspaceOwner::Reexec(_) => {
+                    // Older Prepare implementations do not lock. Keep the
+                    // parent guard for Prepare, which never activates a target.
+                    // Activation commands instead need the child's own lock.
+                    let parent_lock = if invocation.action == Action::Prepare {
+                        Some(lock)
+                    } else {
+                        drop(lock);
+                        None
+                    };
+                    reexec_from_workspace(
+                        &invocation,
+                        &runtime,
+                        &source_root,
+                        &workspace.root,
+                        &workspace.commit,
+                        &pinned_inventory,
+                        parent_lock.as_ref(),
+                    )
+                }
+                WorkspaceOwner::Local(state) => (|| {
+                    let diagnostic_dir = &state.layout().diagnostic_dir;
                     let identity = SourceIdentity::execution(&runtime.git_program, &workspace)?;
                     announce_execution_metadata(
                         &invocation,
                         identity.display(),
+                        &lock,
                         invocation
                             .action
                             .uses_build_strategy()
@@ -751,7 +777,7 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
                         &workspace.root,
                         &inventory,
                         &selection,
-                        Some(&diagnostic_dir),
+                        Some(diagnostic_dir),
                     )?;
                     if WorkflowPlan::for_action(&invocation.action)
                         .phases
@@ -762,10 +788,10 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
                     }
                     let started = Instant::now();
                     let action = effects.execute();
-                    let _ = identity.record(&diagnostic_dir);
+                    let _ = identity.record(diagnostic_dir);
                     effects.report_summary(&action, started.elapsed());
                     action
-                })()
+                })(),
             };
             let cleanup = repository_lock(
                 &runtime.git_program,
@@ -777,16 +803,41 @@ fn run_native_workflow(invocation: Invocation, runtime: RuntimeConfig) -> Result
         }
         Err(error) => Err(error),
     };
-    finish_run_state(state, action)
+    match owner {
+        WorkspaceOwner::Local(state) => finish_run_state(state, action),
+        WorkspaceOwner::Reexec(_) => action,
+    }
+}
+
+fn reexec_directory(runtime: &RuntimeConfig) -> Result<tempfile::TempDir> {
+    // The child may wait behind `clean all`; its source must not live under a
+    // runtime root until it holds the lock. Only the child needs run state.
+    let directory = tempfile::Builder::new()
+        .prefix("abird-fleet-reexec-")
+        .tempdir()
+        .context("create private repository re-exec directory")?;
+    let path = directory.path().canonicalize()?;
+    for root in [
+        &runtime.runtime_root,
+        &runtime.runtime_fallback_root,
+        &runtime.diagnostic_root,
+    ] {
+        if root.canonicalize().is_ok_and(|root| path.starts_with(root)) {
+            bail!("repository re-exec needs TMPDIR outside fleet cleanup roots");
+        }
+    }
+    Ok(directory)
 }
 
 pub(crate) fn announce_execution_metadata(
     invocation: &Invocation,
     identity: &str,
+    lock: &ActionLock,
     strategy: Option<ExecutionStrategy>,
 ) {
     let progress = FleetProgress::from_options(&invocation.options);
     progress.execution_source(identity);
+    lock.announce(&progress);
     if let Some(strategy) = strategy {
         progress.message_field_with_metadata(
             "Build strategy",
@@ -825,6 +876,7 @@ fn reexec_from_workspace(
     workspace: &Path,
     commit: &CommitSha,
     pinned_inventory: &PinnedInventoryInput,
+    parent_lock: Option<&ActionLock>,
 ) -> Result<()> {
     let reexec_arguments = workspace_reexec_arguments(
         invocation,
@@ -846,7 +898,18 @@ fn reexec_from_workspace(
         .env("NIXBOT_REEXECED_FROM_REPO", "1")
         .env("NIXBOT_EXECUTOR_KIND", executor_kind)
         .env("NIXBOT_REPO_ROOT", source_root)
-        .env("NIXBOT_REPO_WORKTREE_ROOT", workspace);
+        .env("NIXBOT_REPO_WORKTREE_ROOT", workspace)
+        .env(
+            "NIXBOT_HOST_LOCAL_LOCK_PATH",
+            absolute_from(&host_local_action_lock_path(), &env::current_dir()?),
+        )
+        .env_remove(REEXEC_PREPARE_LOCK_WAIT_MS);
+    if let Some(ActionLock::Acquired { waited, .. }) = parent_lock {
+        command.arg("--skip-global-lock").env(
+            REEXEC_PREPARE_LOCK_WAIT_MS,
+            waited.unwrap_or_default().as_millis().to_string(),
+        );
+    }
     for name in inventory_overlay::OVERLAY_ENVIRONMENT {
         command.env_remove(name);
     }
@@ -871,7 +934,12 @@ fn workspace_reexec_arguments(
     if original.is_empty() {
         bail!("--use-repo-script requires the invoking binary to preserve its arguments");
     }
-    let mut arguments = inventory_overlay::normalize_reexec_arguments(original, overlay);
+    let mut arguments = if invocation.options.no_override {
+        // The explicit boolean flag is already present and cannot be repeated.
+        original.to_vec()
+    } else {
+        inventory_overlay::normalize_reexec_arguments(original, overlay)
+    };
     // Last value wins: pin the resolved workspace, not the caller's branch or
     // absent --sha. Explicit forwarding also covers environment-only maxima.
     arguments.extend(["--sha".to_owned(), commit.as_str().to_owned()]);

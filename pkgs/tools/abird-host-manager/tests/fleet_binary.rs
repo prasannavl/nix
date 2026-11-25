@@ -741,9 +741,11 @@ fn host_local_lock_wait_is_visible_and_interruptible() {
     // SAFETY: `holder` is an open descriptor owned by this test.
     assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
 
-    let spawn_waiter = || {
+    let spawn_waiter = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_nixbot"))
-            .args(["clean", "all", "--dry"])
+            .current_dir(temporary.path())
+            .args(args)
+            .env_remove("NIXBOT_SKIP_GLOBAL_LOCK")
             .env("NIXBOT_HOST_LOCAL_LOCK_PATH", &lock)
             .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
             .env(
@@ -757,26 +759,24 @@ fn host_local_lock_wait_is_visible_and_interruptible() {
             .unwrap()
     };
 
-    let waiter = spawn_waiter();
+    let waiter = spawn_waiter(&["clean", "all", "--dry"]);
     std::thread::sleep(Duration::from_millis(250));
     // SAFETY: `holder` remains open and locked by this test.
     assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_UN) }, 0);
     let output = waiter.wait_with_output().unwrap();
     assert!(output.status.success());
     let progress = String::from_utf8_lossy(&output.stderr);
+    assert!(progress.contains("Host-local lock: waiting"), "{progress}");
     assert!(
-        progress.contains("● Waiting for host-local action lock · clean"),
-        "{progress}"
-    );
-    assert!(
-        progress.contains("✓ Host-local action lock · clean"),
+        progress.contains("Host-local lock: acquired (waited "),
         "{progress}"
     );
 
     // SAFETY: the same descriptor remains open and can be locked again.
     assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
     let started = Instant::now();
-    let interrupted = spawn_waiter();
+    // No repository in this cwd: prepare must block before trying to find one.
+    let interrupted = spawn_waiter(&["prepare"]);
     std::thread::sleep(Duration::from_millis(250));
     // SAFETY: the child pid is live and belongs to this test.
     assert_eq!(
@@ -789,6 +789,7 @@ fn host_local_lock_wait_is_visible_and_interruptible() {
     assert_eq!(output.status.code(), Some(130), "{output:?}");
     assert!(started.elapsed() < Duration::from_secs(2));
     let progress = String::from_utf8_lossy(&output.stderr);
+    assert!(progress.contains("Host-local lock: waiting"), "{progress}");
     assert!(progress.contains("Interrupt received"), "{progress}");
 }
 

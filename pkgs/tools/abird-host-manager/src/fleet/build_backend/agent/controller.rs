@@ -972,7 +972,12 @@ pub(in crate::fleet) fn run_installed(invocation: Invocation) -> Result<()> {
         crate::fleet::build_backend::agent::capture::Environment::current()?.supported()?;
     }
     // The ordinary host-local action lock, held for the whole action.
-    let lock = super::deployment::ActionLock(crate::fleet::runtime::action_mutex(&invocation)?);
+    let lock = crate::fleet::runtime::action_mutex(&invocation)?;
+    if !matches!(invocation.action, Action::Deploy) {
+        lock.announce(&crate::fleet::presentation::FleetProgress::from_options(
+            &invocation.options,
+        ));
+    }
     let cwd = std::env::current_dir()?;
     let mut transport =
         crate::fleet::build_backend::agent::control::transport::Installed::default();
@@ -1037,7 +1042,7 @@ pub fn hand_off(
     mut parent: Controller,
     transport: &mut impl Transport,
     deadline: std::time::Instant,
-    lock: &super::deployment::ActionLock,
+    lock: &crate::fleet::runtime::ActionLock,
 ) -> Result<()> {
     let handed = consume(&mut parent, transport, deadline)?;
     println!(

@@ -19,12 +19,9 @@ use crate::fleet::inventory_routing::{RouteRequest, SelfIdentity};
 use crate::fleet::native::{ForwardWorkGuard, NativeFleetEffects, OwnedHandoff};
 use crate::fleet::preparation::{Routes, select_inventory};
 use crate::fleet::presentation::FleetProgress;
+use crate::fleet::runtime::ActionLock;
 
-/// Proof that the caller holds the ordinary host-local action lock, which
-/// target activation relies on when the controller is also a target.
-pub struct ActionLock(pub Option<crate::fleet::run_state::ActionMutex>);
-
-pub fn deploy(parent: &Controller, attempt: &str, nix: &Path, _lock: &ActionLock) -> Result<()> {
+pub fn deploy(parent: &Controller, attempt: &str, nix: &Path, lock: &ActionLock) -> Result<()> {
     check_interrupted(parent)?;
     let invocation = parent.original_invocation(attempt)?;
     ensure!(
@@ -76,6 +73,7 @@ pub fn deploy(parent: &Controller, attempt: &str, nix: &Path, _lock: &ActionLock
     crate::fleet::runtime::announce_execution_metadata(
         &invocation,
         source_identity.display(),
+        lock,
         Some(abird_host_agent::build_executor::strategy::ExecutionStrategy::Agent),
     );
     let diagnostics = state.layout().diagnostic_dir.clone();

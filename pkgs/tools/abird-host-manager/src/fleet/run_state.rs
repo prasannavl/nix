@@ -413,19 +413,22 @@ impl CleanupGuarantee {
     }
 }
 
-pub fn action_needs_local_mutex(action: &str) -> bool {
+pub fn action_needs_local_mutex(action: &super::cli::Action) -> bool {
+    use super::cli::Action;
     matches!(
         action,
-        "run"
-            | "deploy"
-            | "build"
-            | "dev-build"
-            | "tf"
-            | "tf-dns"
-            | "tf-platform"
-            | "tf-apps"
-            | "clean"
-    ) || action.starts_with("tf/")
+        Action::Run
+            | Action::Deploy
+            | Action::Prepare
+            | Action::Build
+            | Action::DevBuild
+            | Action::TerraformAll
+            | Action::TerraformDns
+            | Action::TerraformPlatform
+            | Action::TerraformApps
+            | Action::TerraformProject(_)
+            | Action::Clean(_)
+    )
 }
 
 #[derive(Debug)]

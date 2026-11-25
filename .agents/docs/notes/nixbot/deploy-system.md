@@ -246,6 +246,15 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   cleanup. This lets different local principals lock the same inode without
   leaving an unwritable regular file or splitting waiters across replacement
   inodes.
+- Native `fleet prepare` takes the same host-local action mutex as build and
+  deploy, before preparing the workspace. `Host-local lock: waiting` shows a
+  live elapsed timer on terminals and prints once in redirected or CI logs. The
+  acquired status shows the final wait duration below `Source`, where available.
+- Native `--use-repo-script` stages its worktree outside fleet cleanup roots.
+  For `prepare`, the parent holds the lock through execution because older
+  children don't acquire it. For other actions, the parent releases its lock
+  before launching the child, which can acquire its own lock without deadlocking
+  or exposing the worktree to `clean all`.
 - `--dirty-staged` overlays must fail closed if the cached diff cannot be
   applied cleanly. Local runs generate the overlay from the staged index; CI
   host-triggered runs send a binary staged patch over SSH stdin and require the

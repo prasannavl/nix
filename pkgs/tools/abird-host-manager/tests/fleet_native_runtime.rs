@@ -603,30 +603,56 @@ case "$*" in
   *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
   *'--file '*'hosts.nix'*) printf '%s\n' '{"hosts":{"app":{"groups":["all"]}},"config":{}}' ;;
   *'--file '*'override.nix'*) printf '{}\n' ;;
-  'run .#nixbot -- build '*) exit 0 ;;
+  'run .#nixbot -- prepare '*)
+    shift 3
+    # Prove exclusion before handing off to any child version.
+    lock_status=0
+    flock -n -E 42 "$NIXBOT_HOST_LOCAL_LOCK_PATH" true || lock_status=$?
+    test "$lock_status" = "$FLEET_TEST_LOCK_STATUS"
+    exec timeout 10 "$FLEET_TEST_NIXBOT" "$@"
+    ;;
+  'run .#nixbot -- build '*)
+    # A real intervening lock holder may clean shared state during handoff.
+    timeout 10 "$FLEET_TEST_NIXBOT" clean all >&2
+    test -f flake.nix
+    ;;
+  *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
+  *'.#nixbot.plans.app.drvPath') printf '%s\n' '/nix/store/aaaaaaaa-system.drv' ;;
+  'build --print-out-paths /nix/store/aaaaaaaa-system.drv^out') printf '%s\n' '/nix/store/aaaaaaaa-system' ;;
   *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
 esac
 "#,
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+    let runtime = temporary.path().join("runtime");
+    fs::create_dir_all(runtime.join("run-stale")).unwrap();
+    let mut prepare = Command::new(env!("CARGO_BIN_EXE_nixbot"));
+    prepare
         .current_dir(&repository)
         .args([
-            "build",
+            "prepare",
             "--host",
             "app",
             "--config",
             "hosts.nix",
             "--no-override",
             "--use-repo-script",
+            "--build-host",
+            "local",
+            "--dry",
         ])
+        .env_remove("NIXBOT_SKIP_GLOBAL_LOCK")
         .env(
             "NIXBOT_HOST_LOCAL_LOCK_PATH",
             temporary.path().join("host-local.lock.d"),
         )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .env("FLEET_TEST_NIXBOT", env!("CARGO_BIN_EXE_nixbot"))
+        .env("FLEET_TEST_LOCK_STATUS", "42")
         .env("NATIVE_FLEET_NIX_LOG", &log)
-        .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
+        .env("TMPDIR", temporary.path())
+        .env("NIXBOT_BUILD_PLAN_CACHE", "0")
+        .env("NIXBOT_RUNTIME_WORK_ROOT", &runtime)
         .env(
             "NIXBOT_RUNTIME_FALLBACK_ROOT",
             temporary.path().join("fallback"),
@@ -634,18 +660,33 @@ esac
         .env(
             "NIXBOT_DIAG_KEEP_ROOT",
             temporary.path().join("diagnostics"),
-        )
+        );
+    let output = prepare.output().unwrap();
+    let progress = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{progress}");
+    assert!(runtime.join("run-stale").exists());
+    let revision = git(&repository, &["rev-parse", "--short=8", "HEAD"]);
+    assert!(
+        progress.contains(&format!("Source: {revision}\nHost-local lock: acquired\n")),
+        "{progress}"
+    );
+    assert!(!progress.contains("Host-local lock: waiting"), "{progress}");
+    let skipped = prepare
+        .arg("--skip-global-lock")
+        .env("FLEET_TEST_LOCK_STATUS", "0")
         .output()
         .unwrap();
+    let progress = String::from_utf8_lossy(&skipped.stderr);
+    assert!(skipped.status.success(), "{progress}");
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        progress.contains(&format!("Source: {revision}\nHost-local lock: skipped\n")),
+        "{progress}"
     );
+
     let commands = fs::read_to_string(&log).unwrap();
     let reexec = commands
         .lines()
-        .find(|line| line.contains("argv=run .#nixbot -- build"))
+        .find(|line| line.contains("argv=run .#nixbot -- prepare"))
         .unwrap();
     assert!(reexec.contains("/repo"), "{reexec}");
     assert!(reexec.contains("--use-repo-script"), "{reexec}");
@@ -680,6 +721,7 @@ esac
             temporary.path().join("host-local.lock.d"),
         )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .env("FLEET_TEST_NIXBOT", env!("CARGO_BIN_EXE_nixbot"))
         .env("NATIVE_FLEET_NIX_LOG", &log)
         .env("ABIRD_HOST_MANAGER_CONFIG_OVERRIDE", "abird.override.nix")
         .env("NIXBOT_CONFIG_OVERRIDE_PATH", "nixbot.override.nix")
@@ -700,6 +742,7 @@ esac
         "{}",
         String::from_utf8_lossy(&relative.stderr)
     );
+    assert!(!runtime.join("run-stale").exists());
     let commands = fs::read_to_string(&log).unwrap();
     let reexec = commands
         .lines()
@@ -734,6 +777,7 @@ esac
             temporary.path().join("host-local.lock.d"),
         )
         .env("ABIRD_HOST_MANAGER_NIX", &nix)
+        .env("FLEET_TEST_NIXBOT", env!("CARGO_BIN_EXE_nixbot"))
         .env("NATIVE_FLEET_NIX_LOG", &log)
         .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
         .env(

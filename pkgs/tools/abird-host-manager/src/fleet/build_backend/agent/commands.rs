@@ -203,12 +203,10 @@ fn run(arguments: &[String]) -> Result<()> {
                 .filter_map(|attempt| parent.original_invocation(attempt).ok())
                 .collect::<Vec<_>>();
             ensure!(invocations.len() <= 1, "one captured invocation per run");
-            let lock = crate::fleet::build_backend::agent::deployment::ActionLock(
-                match invocations.first() {
-                    Some(invocation) => crate::fleet::runtime::action_mutex(invocation)?,
-                    None => None,
-                },
-            );
+            let lock = match invocations.first() {
+                Some(invocation) => crate::fleet::runtime::action_mutex(invocation)?,
+                None => crate::fleet::runtime::ActionLock::NotRequired,
+            };
             crate::fleet::build_backend::agent::controller::hand_off(
                 parent,
                 &mut transport,

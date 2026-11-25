@@ -3,10 +3,8 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-#[path = "../src/fleet/run_state.rs"]
-mod run_state;
-
-use run_state::{
+use abird_host_manager::fleet::cli::Action;
+use abird_host_manager::fleet::run_state::{
     ActionMutex, CleanupGuarantee, CleanupOptions, CleanupStep, DirectoryLock, ProcessProbe,
     RetentionOutcome, RunState, RuntimeRootPreference, RuntimeRoots, StateLock,
     action_needs_local_mutex, cleanup_order, deploy_activation_attempt_unit_name,
@@ -214,10 +212,13 @@ fn local_action_mutex_keeps_the_directory_inode_and_hands_off_on_drop() {
         "release must not replace or unlink the lock inode"
     );
 
-    assert!(action_needs_local_mutex("deploy"));
-    assert!(action_needs_local_mutex("tf/cloudflare-dns"));
-    assert!(!action_needs_local_mutex("list-hosts"));
-    assert!(!action_needs_local_mutex("check-bootstrap"));
+    assert!(action_needs_local_mutex(&Action::Deploy));
+    assert!(action_needs_local_mutex(&Action::Prepare));
+    assert!(action_needs_local_mutex(&Action::TerraformProject(
+        "cloudflare-dns".into()
+    )));
+    assert!(!action_needs_local_mutex(&Action::ListHosts));
+    assert!(!action_needs_local_mutex(&Action::CheckBootstrap));
 }
 
 #[test]
