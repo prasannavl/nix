@@ -11006,6 +11006,38 @@ mod tests {
     }
 
     #[test]
+    fn command_progress_is_captured_with_its_test() {
+        const CHILD: &str = "ABIRD_TEST_PROGRESS_CAPTURE";
+        const REASON: &str = "expected fixture failure";
+        if std::env::var_os(CHILD).is_some() {
+            let reporter = command_reporter();
+            reporter.started("Example");
+            reporter.fail_active("Example", REASON);
+            return;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::command_progress_is_captured_with_its_test",
+                "--show-output",
+                "--color=never",
+            ])
+            .env_remove("RUST_TEST_NOCAPTURE")
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let captured = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            captured.contains("✗ Example") && captured.contains(REASON),
+            "{captured}"
+        );
+        assert!(!captured.contains('\x1b'), "{captured}");
+    }
+
+    #[test]
     fn closeout_deploy_flags_choose_noninteractive_modes() {
         assert_eq!(
             select_closeout_deploy_mode(true, false, "0123456789abcdef", false, true).unwrap(),

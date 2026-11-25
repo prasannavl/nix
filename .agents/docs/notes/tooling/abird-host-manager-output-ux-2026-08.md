@@ -301,6 +301,12 @@ synchronized frame before showing the cursor, using atomics and `write(2)`
 without reporter/stdio locks. Real-PTY tests cover these exit paths and raw-mode
 restoration. Redirected output and empty refreshes emit no cursor controls.
 
+CLI startup claims stderr when it installs terminal cleanup. Library calls emit
+plain diagnostics instead, so unit and binary tests retain libtest capture even
+on a TTY. Use a local reporter for state assertions and a private PTY for
+terminal behavior. An interactive heartbeat borrows shared reporter state for
+each tick; it cannot keep an abandoned span alive by owning the reporter.
+
 Host tails, phase tails, and verbose output share one 50 ms redraw budget. All
 input still updates bounded state and failure evidence; only painting is
 coalesced. Lifecycle changes and operator input repaint immediately. The

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -15,7 +15,7 @@ use fleet_timing::{HostTiming, Interval, PhaseSnapshot, RosterKind, WorkflowCont
 pub(crate) use fleet_timing::{RowOutcome, RowSnapshot};
 
 static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
-static COMMAND_REPORTER: OnceLock<ProgressReporter> = OnceLock::new();
+static TERMINAL_REPORTER: OnceLock<ProgressReporter> = OnceLock::new();
 
 pub fn set_json_output(enabled: bool) {
     JSON_OUTPUT.store(enabled, Ordering::Relaxed);
@@ -38,6 +38,9 @@ pub struct ProgressReporter {
 
 #[derive(Clone, Debug)]
 enum ProgressDestination {
+    /// Ordinary diagnostics; respects libtest capture in downstream crates too.
+    Plain,
+    /// The CLI owns stderr, including cursor state and atomic terminal frames.
     Stderr,
     #[cfg(test)]
     Buffer(Arc<Mutex<Vec<u8>>>),
@@ -58,6 +61,7 @@ impl ProgressDestination {
                 let _ = stderr.write_all(text.as_bytes());
                 let _ = stderr.flush();
             }
+            Self::Plain => eprint!("{text}"),
             #[cfg(test)]
             Self::Buffer(buffer) | Self::BufferWithViewport(buffer, _) => {
                 if let Ok(mut buffer) = buffer.lock() {
@@ -72,6 +76,7 @@ impl ProgressDestination {
     fn viewport(&self) -> Option<(usize, usize)> {
         match self {
             Self::Stderr => terminal_viewport(),
+            Self::Plain => None,
             #[cfg(test)]
             Self::Buffer(_) => None,
             #[cfg(test)]
@@ -752,14 +757,23 @@ impl Drop for HostOperation {
 }
 
 impl ProgressReporter {
+    /// A plain reporter never claims its caller's terminal.
     pub fn new(enabled: bool) -> Self {
-        let interactive = io::stderr().is_terminal();
+        Self::with_destination(enabled, ProgressDestination::Plain)
+    }
+
+    fn with_destination(enabled: bool, destination: ProgressDestination) -> Self {
+        let stderr = matches!(destination, ProgressDestination::Stderr);
         Self {
             enabled,
-            interactive,
+            interactive: stderr && io::stderr().is_terminal(),
             recent_update_limit: 0,
-            style: TerminalStyle::for_stderr(),
-            destination: ProgressDestination::Stderr,
+            style: if stderr {
+                TerminalStyle::for_stderr()
+            } else {
+                TerminalStyle::from_capabilities(false, false)
+            },
+            destination,
             state: Arc::new(Mutex::new(ProgressState::default())),
             output: Arc::new(Mutex::new(())),
         }
@@ -2953,22 +2967,44 @@ impl ProgressReporter {
         )
     }
 
+    /// Keep this view's rendering options, but borrow its shared state only for a tick.
+    fn weak_view(&self) -> impl Fn() -> Option<Self> + 'static {
+        let Self {
+            enabled,
+            interactive,
+            recent_update_limit,
+            style,
+            destination,
+            state,
+            output,
+        } = self.clone();
+        let state = Arc::downgrade(&state);
+        let output = Arc::downgrade(&output);
+        move || {
+            Some(Self {
+                enabled,
+                interactive,
+                recent_update_limit,
+                style,
+                destination: destination.clone(),
+                state: state.upgrade()?,
+                output: output.upgrade()?,
+            })
+        }
+    }
+
     fn start_heartbeat(&self, active_id: u64) {
-        // Render through the same path as every other update so the heartbeat
-        // can never clear or repaint a different region than the dashboard.
-        let reporter = self.clone();
-        let state = Arc::downgrade(&self.state);
-        let output = Arc::downgrade(&self.output);
+        let view = self.weak_view();
         thread::spawn(move || {
             loop {
                 thread::sleep(Duration::from_secs(1));
-                let (Some(state), Some(output)) = (state.upgrade(), output.upgrade()) else {
+                let Some(reporter) = view() else {
                     return;
                 };
-                let Ok(_output) = output.lock() else {
+                let Ok(_output) = reporter.output.lock() else {
                     return;
                 };
-                let render = match state.lock() {
+                let render = match reporter.state.lock() {
                     Ok(state) => {
                         if !state.stack.iter().any(|active| active.id == active_id) {
                             return;
@@ -4079,8 +4115,10 @@ fn heartbeat_detail(detail: Option<&str>, elapsed: Duration) -> String {
         .unwrap_or(elapsed)
 }
 
+/// Only a CLI with terminal cleanup installed owns the caller's stderr.
 pub fn command_reporter() -> &'static ProgressReporter {
-    COMMAND_REPORTER.get_or_init(|| ProgressReporter::new(true))
+    static PLAIN: LazyLock<ProgressReporter> = LazyLock::new(|| ProgressReporter::new(true));
+    TERMINAL_REPORTER.get().unwrap_or_else(|| &PLAIN)
 }
 
 /// Tear down the interactive terminal on process exit: release the live region
@@ -4098,7 +4136,7 @@ pub fn finish_terminal_after_panic() {
 }
 
 fn finish_terminal_impl(blocking: bool) {
-    if let Some(reporter) = COMMAND_REPORTER.get() {
+    if let Some(reporter) = TERMINAL_REPORTER.get() {
         reporter.release_live_region(blocking);
     }
     crate::terminal_mode::restore_published();
@@ -4126,6 +4164,8 @@ pub fn guard_terminal_exit() -> TerminalExitGuard {
         finish_terminal_after_panic();
         previous(info);
     }));
+    TERMINAL_REPORTER
+        .get_or_init(|| ProgressReporter::with_destination(true, ProgressDestination::Stderr));
     TerminalExitGuard
 }
 
@@ -4487,6 +4527,21 @@ mod tests {
     }
 
     #[test]
+    fn heartbeat_can_render_for_a_surviving_clone_but_cannot_own_the_reporter() {
+        let reporter = interactive_reporter();
+        let view = reporter.weak_view();
+        let owner = reporter.clone();
+        drop(reporter);
+        view().unwrap().refresh();
+        assert!(matches!(
+            owner.state.lock().unwrap().painted,
+            Painted::InPlace(_)
+        ));
+        drop(owner);
+        assert!(view().is_none());
+    }
+
+    #[test]
     fn heartbeat_keeps_quiet_and_detailed_steps_visibly_alive() {
         assert_eq!(heartbeat_detail(None, Duration::from_secs(3)), "3.0s");
         assert_eq!(
@@ -4511,15 +4566,7 @@ mod tests {
     #[test]
     fn nested_steps_restore_the_parent_span() {
         set_json_output(false);
-        let reporter = ProgressReporter {
-            enabled: true,
-            interactive: false,
-            recent_update_limit: 0,
-            style: TerminalStyle::from_capabilities(false, false),
-            destination: ProgressDestination::Stderr,
-            state: Arc::new(Mutex::new(ProgressState::default())),
-            output: Arc::new(Mutex::new(())),
-        };
+        let reporter = ProgressReporter::new(true);
 
         reporter.started("Publish projection");
         reporter.started("Push projection");
