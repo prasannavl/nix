@@ -1,4 +1,4 @@
-{pkgs ? import <nixpkgs> {}}: let
+{pkgs}: let
   pname = "pi-web";
   source = (import ../sources.nix).${pname};
   releaseSource = pkgs.fetchFromGitHub {

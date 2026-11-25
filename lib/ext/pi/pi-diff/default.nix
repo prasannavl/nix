@@ -1,4 +1,4 @@
-{pkgs ? import <nixpkgs> {}}: let
+{pkgs}: let
   pname = "pi-diff";
   source = (import ../sources.nix).${pname};
 

@@ -1,4 +1,4 @@
-{pkgs ? import <nixpkgs> {}}: let
+{pkgs}: let
   pname = "pi-mcp-adapter";
   source = (import ../sources.nix).${pname};
 
