@@ -66,12 +66,14 @@ Explicit `--version` requests skip the lookup.
 
 ## Artifact availability
 
-Before prefetching or reporting a candidate, check the driver runfile and all
-three exact-version source archives with redirect-following HEAD requests. If an
-artifact returns 404 or 410, warn with the missing URLs, keep the entire current
-pin, and let the update suite continue. Transport errors and other unexpected
-HTTP statuses still fail the check. Do not substitute older utility versions or
-select another driver release silently.
+Check the runfile at `us.download.nvidia.com` and all three exact-version source
+archives with redirect-following HEAD requests before prefetching or announcing
+a discovered update. On HTTP 404/410, list every missing artifact. Automatic
+discovery keeps the current pin and lets the suite continue; explicit updates
+(`--version`, `--branch`, `--force`) fail instead. `--report --version` prints
+the caller's comparison without checking availability. Transport errors and
+unexpected statuses are fatal. Never substitute older utilities or silently
+select another driver release.
 
 Validation:
 

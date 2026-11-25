@@ -56,7 +56,7 @@ case "$url" in
     [[ "$1" == -*I* && "$1" == -*L* ]] || exit 2
     printf 'head %s\\n' "$url" >>"$TRACE"
     case "$url" in
-        *"${UNAVAILABLE:-never-match}"*) printf '%s' "${STATUS:-404}" ;;
+        *"${UNAVAILABLE:-never-match}"*) [[ "${STATUS:-404}" != timeout ]] || exit 28; printf '%s' "${STATUS:-404}" ;;
         *) printf '200' ;;
     esac
     ;;
@@ -67,6 +67,7 @@ esac
 printf 'prefetch %s\\n' "${@: -1}" >>"$TRACE"
 printf '{"hash":"sha256-test"}\\n'
 ''')
+        self.stub("gh", "exit 1\n")
         self.stub("alejandra", "exit 0\n")
 
     def stub(self, name, body):
@@ -127,7 +128,7 @@ printf '{"hash":"sha256-test"}\\n'
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"keeping {CURRENT}", result.stderr)
-        self.assertIn("HTTP 404: https://download.nvidia.com/", result.stderr)
+        self.assertIn("HTTP 404: https://us.download.nvidia.com/", result.stderr)
         self.assertNotIn("->", result.stdout)
         self.assert_artifacts_checked(self.trace.read_text().splitlines(), "head")
         self.assertEqual(self.source.read_text(), self.initial)
@@ -143,17 +144,37 @@ printf '{"hash":"sha256-test"}\\n'
         self.assertIn(f'version = "{CANDIDATE}";', updated)
         self.assertEqual(updated.count('"sha256-test"'), 4)
 
-    def test_service_error_is_not_a_missing_artifact(self):
-        result = self.run_updater(
-            "--version", CANDIDATE, unavailable="nvidia-settings", status="503"
-        )
+    def test_incomplete_release_fails_for_explicit_requests(self):
+        for args in (("--version", CANDIDATE), ("--branch", "production"), ("--force",)):
+            with self.subTest(args=args):
+                result = self.run_updater(*args, unavailable="nvidia-settings", status="410")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("HTTP 410", result.stderr)
+                self.assertNotIn("keeping", result.stderr)
+                self.assertNotIn("prefetch", self.trace.read_text())
+                self.assertEqual(self.source.read_text(), self.initial)
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Could not check", result.stderr)
-        self.assertIn("HTTP 503", result.stderr)
-        self.assertNotIn("missing required artifacts", result.stderr)
-        self.assertNotIn("prefetch", self.trace.read_text())
-        self.assertEqual(self.source.read_text(), self.initial)
+    def test_service_errors_fail_even_in_automatic_mode(self):
+        for status in ("403", "503", "timeout"):
+            with self.subTest(status=status):
+                result = self.run_updater(unavailable="nvidia-settings", status=status)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Could not check", result.stderr)
+                self.assertNotIn("keeping", result.stderr)
+                self.assertNotIn("prefetch", self.trace.read_text())
+                self.assertEqual(self.source.read_text(), self.initial)
+
+    def test_report_shows_complete_release(self):
+        result = self.run_updater("--report", "--color=never")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"{CURRENT} -> {CANDIDATE}", result.stdout)
+        self.assert_artifacts_checked(self.trace.read_text().splitlines(), "head")
+
+    def test_explicit_version_report_is_offline(self):
+        result = self.run_updater("--report", "--version", CANDIDATE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"{CURRENT} -> {CANDIDATE}", result.stdout)
+        self.assertFalse(self.trace.exists())
 
     def test_current_pin_skips_artifact_checks(self):
         result = self.run_updater("--version", CURRENT)

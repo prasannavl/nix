@@ -26,7 +26,7 @@ die() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
-	BASE_INDEX_URL="https://download.nvidia.com/XFree86/Linux-x86_64/"
+	BASE_INDEX_URL="https://us.download.nvidia.com/XFree86/Linux-x86_64/"
 	# Same lookup used by NVIDIA's PB/NFB/BETA archive.
 	DRIVER_LOOKUP_URL="https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php?func=DriverManualLookup&psid=120&lid=1&isWHQL=0&numberOfResults=25&sort1=1&languageCode=1033&osID=12&pfid=985"
 	TARGET_FILE="${REPO_ROOT}/lib/ext/nvidia/sources.nix"
@@ -260,9 +260,12 @@ check_artifacts() {
 	done
 
 	if ((${#missing[@]})); then
-		printf 'Warning: NVIDIA %s is missing required artifacts; keeping %s.\n' \
-			"$selected_version" "$current_version" >&2
+		printf 'NVIDIA %s is missing required artifacts:\n' "$selected_version" >&2
 		printf '  %s\n' "${missing[@]}" >&2
+		if ((FORCE)) || [[ -n "$REQUESTED_VERSION" || -n "$REQUESTED_BRANCH" ]]; then
+			die "Cannot use the explicitly requested NVIDIA release."
+		fi
+		printf 'Incomplete NVIDIA release; keeping %s.\n' "$current_version" >&2
 		return 1
 	fi
 }
@@ -363,6 +366,10 @@ main() {
 
 	current_version="$(get_current_version)"
 	selected_version="$(get_version)"
+	if ((REPORT)) && [[ -n "$REQUESTED_VERSION" ]]; then
+		print_report "$current_version" "$selected_version"
+		return
+	fi
 	if ((!FORCE)) && [[ "$current_version" == "$selected_version" ]]; then
 		if ((REPORT)); then
 			print_report "$current_version" "$selected_version"
