@@ -1,11 +1,11 @@
 # tmux plugin upstream pins.
-# nixpkgs 26.05 + master pin same old revs (checked 2026-10-05) => input bump can't fix.
-# overlay owns revs, pattern: lib/overlays/sway.nix; drop entry once nixpkgs catches up.
-# only resurrect left; rest of old plugin set -> inlined, see
-# .agents/docs/notes/tooling/tmux-plugins-inlined-2026-10.md
-# fingers stays from nixpkgs (2.6.2): crystal pkg, binary+shard versions must match.
+# nixpkgs 26.05 + master pin same old revs (checked 2026-10-05) => input bump
+# can't fix, so the overlay owns the rev. Drop the entry once nixpkgs catches up.
+# `fingers` stays from nixpkgs (2.6.2): crystal pkg, binary+shard versions must
+# match.
 _final: prev: let
-  # overrideAttrs on tmux plugin => rebuild via mkTmuxPlugin (nixpkgs addRtp); only rev attrs needed
+  # overrideAttrs on a tmux plugin => rebuild via mkTmuxPlugin; only rev attrs
+  # are needed.
   pin = {
     version,
     repo,
