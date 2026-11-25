@@ -886,7 +886,7 @@ def materialize_tf_var_files(
 
 
 def tofu_wrapper_import_args(project: str, var_files: list[Path], address: str, candidate: str) -> list[str]:
-    args = ["../../update/scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", "import"]
+    args = ["./scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", "import"]
     args.extend(f"-var-file={path}" for path in var_files)
     args.extend([address, candidate])
     return args
@@ -913,7 +913,7 @@ def write_import_script_header(lines: list[str]) -> None:
             "",
             'tf_recover_import() {',
             '  local project="$1" address="$2" import_id="$3" identity="" source="" out="" index=0',
-            '  local -a cmd=(../../update/scripts/nixbot.sh tofu "-chdir=tf/${project}" import)',
+            '  local -a cmd=(./scripts/nixbot.sh tofu "-chdir=tf/${project}" import)',
             '  identity="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"',
             '  while IFS= read -r source; do',
             '    [ -n "${source}" ] || continue',
@@ -954,7 +954,7 @@ def init_workspace_project(workspace_root: Path, project: str) -> None:
         backend_file.unlink()
     run(
         [
-            "../../update/scripts/nixbot.sh",
+            "./scripts/nixbot.sh",
             "tofu",
             f"-chdir=tf/{project}",
             "init",
@@ -972,7 +972,7 @@ def decode_console_json(output: str) -> Any:
 
 def console_eval_json(workspace_root: Path, project: str, expression: str) -> Any:
     completed = subprocess.run(
-        ["../../update/scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", "console"],
+        ["./scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", "console"],
         cwd=workspace_root,
         text=True,
         input=expression + "\n",
@@ -1576,7 +1576,7 @@ def write_command_file(repo_root: Path, manifest: list[dict[str, Any]], output_p
 
 def existing_state_addresses(repo_root: Path, project: str) -> set[str]:
     completed = run(
-        ["../../update/scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", "state", "list"],
+        ["./scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", "state", "list"],
         cwd=repo_root,
         capture=True,
         check=False,
@@ -1588,7 +1588,7 @@ def existing_state_addresses(repo_root: Path, project: str) -> set[str]:
 
 def snapshot_state(repo_root: Path, project: str, run_dir: Path) -> None:
     completed = run(
-        ["../../update/scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", "state", "pull"],
+        ["./scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", "state", "pull"],
         cwd=repo_root,
         capture=True,
         check=False,
@@ -1611,7 +1611,7 @@ def import_manifest(repo_root: Path, manifest: list[dict[str, Any]], run_dir: Pa
     try:
         for project, items in by_project.items():
             run(
-                ["../../update/scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", "init", "-lockfile=readonly"],
+                ["./scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", "init", "-lockfile=readonly"],
                 cwd=repo_root,
             )
             var_files = materialize_tf_var_files(repo_root, identity, project, temp_root)
@@ -1655,7 +1655,7 @@ def import_manifest(repo_root: Path, manifest: list[dict[str, Any]], run_dir: Pa
                 ("plan", ["plan", "-input=false"]),
             ):
                 completed = run(
-                    ["../../update/scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", *extra_args],
+                    ["./scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", *extra_args],
                     cwd=repo_root,
                     capture=True,
                     check=False,

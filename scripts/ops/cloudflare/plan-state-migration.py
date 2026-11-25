@@ -347,7 +347,7 @@ def select_entries(
 def init_project(repo_root: Path, project: str) -> None:
     recovery = load_recovery_module(repo_root)
     recovery.run(
-        ["../../update/scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", "init", "-lockfile=readonly"],
+        ["./scripts/nixbot.sh", "tofu", f"-chdir=tf/{project}", "init", "-lockfile=readonly"],
         cwd=repo_root,
     )
 
@@ -387,12 +387,12 @@ def write_import_header(lines: list[str], repo_root: Path) -> None:
             "",
             'tf_migrate_state_has() {',
             '  local project="$1" address="$2"',
-            '  ../../update/scripts/nixbot.sh tofu "-chdir=tf/${project}" state list 2>/dev/null | grep -Fx -- "${address}" >/dev/null',
+            '  ./scripts/nixbot.sh tofu "-chdir=tf/${project}" state list 2>/dev/null | grep -Fx -- "${address}" >/dev/null',
             "}",
             "",
             'tf_migrate_import() {',
             '  local project="$1" address="$2" import_id="$3" identity="" source="" out="" index=0',
-            '  local -a cmd=(../../update/scripts/nixbot.sh tofu "-chdir=tf/${project}" import)',
+            '  local -a cmd=(./scripts/nixbot.sh tofu "-chdir=tf/${project}" import)',
             '  if tf_migrate_state_has "${project}" "${address}"; then',
             '    printf \'skip existing: %s\\n\' "${address}" >&2',
             "    return 0",
@@ -427,7 +427,7 @@ def write_remove_header(lines: list[str], repo_root: Path) -> None:
             "",
             'tf_migrate_state_has() {',
             '  local project="$1" address="$2"',
-            '  ../../update/scripts/nixbot.sh tofu "-chdir=tf/${project}" state list 2>/dev/null | grep -Fx -- "${address}" >/dev/null',
+            '  ./scripts/nixbot.sh tofu "-chdir=tf/${project}" state list 2>/dev/null | grep -Fx -- "${address}" >/dev/null',
             "}",
             "",
             'tf_migrate_state_rm() {',
@@ -436,7 +436,7 @@ def write_remove_header(lines: list[str], repo_root: Path) -> None:
             '    printf \'skip missing: %s\\n\' "${address}" >&2',
             "    return 0",
             "  fi",
-            '  ../../update/scripts/nixbot.sh tofu "-chdir=tf/${project}" state rm "${address}"',
+            '  ./scripts/nixbot.sh tofu "-chdir=tf/${project}" state rm "${address}"',
             "}",
             "",
         ]
@@ -453,7 +453,7 @@ def write_import_script(repo_root: Path, entries: list[dict[str, Any]], output_p
 
     for project in unique([entry["project"] for entry in entries]):
         lines.append(f"# Project: {project}")
-        lines.append(f"../../update/scripts/nixbot.sh tofu -chdir=tf/{project} init -lockfile=readonly")
+        lines.append(f"./scripts/nixbot.sh tofu -chdir=tf/{project} init -lockfile=readonly")
         lines.append("")
         for entry in by_project[project]:
             lines.append(
@@ -490,7 +490,7 @@ def write_remove_script(repo_root: Path, entries: list[dict[str, Any]], output_p
 
     for project in unique([entry["project"] for entry in entries]):
         lines.append(f"# Project: {project}")
-        lines.append(f"../../update/scripts/nixbot.sh tofu -chdir=tf/{project} init -lockfile=readonly")
+        lines.append(f"./scripts/nixbot.sh tofu -chdir=tf/{project} init -lockfile=readonly")
         lines.append("")
         for entry in by_project[project]:
             lines.append(

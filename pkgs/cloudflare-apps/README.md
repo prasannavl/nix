@@ -37,7 +37,9 @@ This directory holds repo-managed Cloudflare application source trees used by
 ## Terraform inputs
 
 Worker/app definitions are referenced from `tf/cloudflare-apps/*.auto.tfvars` or
-encrypted tfvars files under `data/secrets/globals/tf/cloudflare-apps/`.
+encrypted tfvars files under `data/secrets/globals/tf/cloudflare-apps/`. In both
+cases, relative Worker paths resolve from `tf/cloudflare-apps/`, not the tfvars
+file.
 
 Minimal `tf/cloudflare-apps/workers.auto.tfvars` example:
 
@@ -50,7 +52,7 @@ workers = {
     modules = [
       {
         name         = "src/index.js"
-        content_file = "../pkgs/cloudflare-apps/example-worker/src/index.js"
+        content_file = "../../pkgs/cloudflare-apps/example-worker/src/index.js"
         content_type = "application/javascript+module"
       }
     ]
@@ -65,7 +67,7 @@ workers = {
   static-site = {
     compatibility_date = "2026-03-15"
     assets = {
-      directory = "../pkgs/cloudflare-apps/static-site/assets"
+      directory = "../../pkgs/cloudflare-apps/static-site/assets"
       config = {
         run_worker_first = false
       }

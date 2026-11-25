@@ -500,7 +500,7 @@ in helper
         for helper in ("pkg-helper.nix", "future-adapter.nix", "default.nix"):
             with self.subTest(helper=helper):
                 self.wrapper.write_text(WRAPPER.replace(
-                    "../../lib/project.nix", f"../../lib{helper}"
+                    "../../lib/project.nix", f"../../lib/{helper}"
                 ))
                 with self.assertRaisesRegex(
                     ValueError, "no repository-bound child wrappers"

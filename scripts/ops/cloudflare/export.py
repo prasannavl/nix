@@ -1462,7 +1462,7 @@ def export(args, write_secret_tfvars):
                 continue
             modules.append({
                 "name": part_name,
-                "content_file": f"../../../pkgs/cloudflare-apps{name}/{part_name}",
+                "content_file": f"../../pkgs/cloudflare-apps/{name}/{part_name}",
                 "content_type": guess_content_type(part_name),
             })
         worker_cfg = {
@@ -1501,7 +1501,7 @@ def export(args, write_secret_tfvars):
                 _, asset_files = mirror_worker_assets(name, primary_hostname)
                 if asset_files:
                     assets_cfg = {
-                        "directory": f"../../../pkgs/cloudflare-apps{name}/assets",
+                        "directory": f"../../pkgs/cloudflare-apps/{name}/assets",
                     }
                     if assets_runtime:
                         assets_config = {}
