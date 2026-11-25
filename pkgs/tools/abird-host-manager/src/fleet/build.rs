@@ -675,6 +675,122 @@ impl CacheSource {
     }
 }
 
+/// Bound connection setup and download attempts, not total copy time. Only
+/// apply to a `nix copy` command when another route is under consideration.
+pub fn bound_cache_copy_connection(copy: &mut CommandSpec) {
+    copy.args.splice(
+        1..1,
+        [
+            "--option",
+            "connect-timeout",
+            "5",
+            "--option",
+            "download-attempts",
+            "2",
+        ]
+        .map(str::to_owned),
+    );
+}
+
+/// Fixed diagnostic categories only: never retain or render a cache URL or subprocess text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheConnectivityCause {
+    NameResolution,
+    Connection,
+    Timeout,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheCopyOutcome {
+    Succeeded,
+    CacheConnectivityFailure {
+        status: CommandStatus,
+        cause: CacheConnectivityCause,
+    },
+    Terminal(CommandStatus),
+}
+
+impl CacheCopyOutcome {
+    pub fn status(self) -> CommandStatus {
+        match self {
+            Self::Succeeded => CommandStatus::Success,
+            Self::CacheConnectivityFailure { status, .. } | Self::Terminal(status) => status,
+        }
+    }
+
+    pub fn classify(attempt: &CommandAttempt, cache: &CacheSource) -> Self {
+        match attempt.status {
+            CommandStatus::Success => Self::Succeeded,
+            // Nix reports download failures as exit 1. Never reinterpret SSH,
+            // interrupt, or wrapper statuses, even with a stale Nix diagnostic.
+            CommandStatus::Exit(1) if attempt.stdout.is_empty() => {
+                match final_cache_connectivity_cause(&attempt.stderr, cache) {
+                    Some(cause) => Self::CacheConnectivityFailure {
+                        status: attempt.status,
+                        cause,
+                    },
+                    None => Self::Terminal(attempt.status),
+                }
+            }
+            status => Self::Terminal(status),
+        }
+    }
+}
+
+fn final_cache_connectivity_cause(
+    stderr: &str,
+    cache: &CacheSource,
+) -> Option<CacheConnectivityCause> {
+    let mut lines = stderr
+        .lines()
+        .map(|line| line.trim_matches(' '))
+        .filter(|line| !line.is_empty());
+    let (url, reason) = lines
+        .next_back()?
+        .strip_prefix("error: unable to download '")?
+        .split_once("': ")?;
+    // Permit Nix progress/retries and context frames, but not a secondary
+    // error (e.g. HTTP response body), SSH diagnostics or unknown framing.
+    if output_indicates_host_key_failure(stderr)
+        || lines.any(|line| {
+            !(line.starts_with("copying ")
+                || line.starts_with("disabling binary cache '")
+                || line.starts_with("warning: unable to download '")
+                || line == "error:"
+                || line.starts_with("… while "))
+        })
+    {
+        return None;
+    }
+    // Nix store options (e.g. ?priority=20) aren't part of the wire URL.
+    let base = cache.url.split('?').next()?.trim_end_matches('/');
+    let location = base
+        .strip_prefix("https://")
+        .or_else(|| base.strip_prefix("http://"))?;
+    let resource = url.strip_prefix(base)?.strip_prefix('/')?;
+    if location.is_empty()
+        || location.starts_with('/')
+        || location.contains(['@', '#', '\\'])
+        || !resource
+            .split('/')
+            .all(|p| validate_path_component(p, "cache object").is_ok())
+        || reason.chars().any(char::is_control)
+    {
+        return None;
+    }
+    // Match the libcurl summary/code pair, never free-form transfer details.
+    match reason.split_inclusive(')').next()? {
+        "Could not resolve hostname (6)" | "Couldn't resolve host name (6)" => {
+            Some(CacheConnectivityCause::NameResolution)
+        }
+        "Could not connect to server (7)" | "Couldn't connect to server (7)" => {
+            Some(CacheConnectivityCause::Connection)
+        }
+        "Timeout was reached (28)" => Some(CacheConnectivityCause::Timeout),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DistributionInputs {
     pub build_resource: String,

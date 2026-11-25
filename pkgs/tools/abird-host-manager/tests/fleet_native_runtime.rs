@@ -2309,14 +2309,10 @@ exit 0
     );
 }
 
-#[test]
-fn local_relay_preserves_primary_target_failure_instead_of_using_operator_fallback() {
-    let temporary = tempdir();
-    let repository = temporary.path().join("repository");
-    let tools = temporary.path().join("tools");
-    let nix_log = temporary.path().join("nix.log");
-    let ssh_log = temporary.path().join("ssh.log");
-    let builder_count = temporary.path().join("builder.count");
+/// Real native workflow, with only the builder, target and local Nix substituted.
+fn remote_distribution_command(root: &Path, action: &str, peer_ssh: &str) -> Command {
+    let repository = root.join("repository");
+    let tools = root.join("tools");
     fs::create_dir_all(&repository).unwrap();
     fs::create_dir_all(&tools).unwrap();
     fs::write(repository.join("hosts.nix"), "{ hosts = {}; }\n").unwrap();
@@ -2340,11 +2336,12 @@ printf '%s\n' "$*" >> "$NATIVE_FLEET_NIX_LOG"
 case "$*" in
   *'.#nixbot.deployDependencies'*) printf '{}\n' ;;
   *'--file '*'hosts.nix'*)
-    printf '%s\n' '{"hosts":{"app":{"target":"app.invalid","user":"root","operatorUser":"operator","knownHosts":"app.invalid ssh-ed25519 AAAA","groups":["all"]},"builder":{"target":"builder.invalid","knownHosts":"builder.invalid ssh-ed25519 AAAA"}},"config":{}}'
+    printf '{"hosts":{"app":{"target":"app.invalid","user":"root","port":2222,"operatorUser":"operator","knownHosts":"app.invalid ssh-ed25519 AAAA","groups":["all"]},"builder":{"target":"builder.invalid","knownHosts":"builder.invalid ssh-ed25519 AAAA"}},"config":%s}\n' "$FLEET_CONFIG"
     ;;
   *'.#nixbot.plans --apply builtins.attrNames') printf '%s\n' '["app"]' ;;
   *'.#nixbot.plans.app.drvPath') printf '%s\n' '/nix/store/aaaaaaaa-system.drv' ;;
-  copy*) exit 0 ;;
+  'copy --to ssh-ng://root@builder.invalid /nix/store/aaaaaaaa-system.drv') ;;
+  'copy '*) exec "$FIXTURE/relay-copy" "$@" ;;
   *) echo "unexpected nix argv: $*" >&2; exit 91 ;;
 esac
 "#,
@@ -2366,67 +2363,70 @@ case "$*" in
       printf 'PONG\n'
     done
     ;;
-  *'builder.invalid'*)
-    count=0
-    [ ! -f "$NATIVE_FLEET_BUILDER_COUNT" ] || count=$(cat "$NATIVE_FLEET_BUILDER_COUNT")
-    count=$((count + 1))
-    printf '%s\n' "$count" > "$NATIVE_FLEET_BUILDER_COUNT"
-    case "$count" in
-      1) mock-build-receipt /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-nixos-system-app ;;
-      *) cat >/dev/null ;;
-    esac
-    ;;
-  *'root@app.invalid'*) cat >/dev/null; echo 'Permission denied (publickey).' >&2; exit 255 ;;
-  *'operator@app.invalid'*) cat >/dev/null; printf '%s\n' /nix/store/cccccccccccccccccccccccccccccccc-nixos-system-app ;;
-  *) exit 92 ;;
+  *' -- root@builder.invalid '*bash' -s')
+    input=$(cat)
+    case "$input" in
+      *"$(printf nixbot-build-lease | base64)"*) printf '%s\n' "$input" | mock-build-receipt "$CLOSURE" ;;
+    esac ;;
+  *) exec "$FIXTURE/peer-ssh" "$@" ;;
 esac
 "#,
     )
     .unwrap();
+    write_executable(&root.join("peer-ssh"), peer_ssh).unwrap();
     let path = format!(
         "{}:{}",
         tools.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_nixbot"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_nixbot"));
+    command
         .current_dir(&repository)
         .args([
-            "deploy",
-            "--host",
-            "app",
-            "--config",
-            "hosts.nix",
+            action,
+            "--host=app",
+            "--config=hosts.nix",
             "--no-override",
-            "--build-host",
-            "builder",
-            "--build-host-deploy-mode",
-            "local-copy",
-            "--build-cache-url",
-            "http://cache.invalid",
+            "--build-host=builder",
         ])
+        .env_clear()
+        .env("HOME", root)
         .env("PATH", path)
-        .env("ABIRD_HOST_MANAGER_NIX", &nix)
-        .env("NATIVE_FLEET_NIX_LOG", &nix_log)
-        .env("NATIVE_FLEET_SSH_LOG", &ssh_log)
-        .env("NATIVE_FLEET_BUILDER_COUNT", &builder_count)
+        .env("FIXTURE", root)
+        .env(
+            "CLOSURE",
+            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-nixos-system-app",
+        )
+        .env("FLEET_CONFIG", "{}")
+        .env("ABIRD_HOST_MANAGER_NIX", nix)
+        .env("NATIVE_FLEET_NIX_LOG", root.join("nix.log"))
+        .env("NATIVE_FLEET_SSH_LOG", root.join("ssh.log"))
         .env("NIXBOT_TRANSPORT_RETRY_ATTEMPTS", "1")
-        .env("NIXBOT_RUNTIME_WORK_ROOT", temporary.path().join("runtime"))
-        .env(
-            "NIXBOT_RUNTIME_FALLBACK_ROOT",
-            temporary.path().join("fallback"),
-        )
-        .env(
-            "NIXBOT_DIAG_KEEP_ROOT",
-            temporary.path().join("diagnostics"),
-        )
-        .env(
-            "NIXBOT_HOST_LOCAL_LOCK_PATH",
-            temporary.path().join("host-local-lock"),
-        )
+        .env("NIXBOT_RUNTIME_WORK_ROOT", root.join("runtime"))
+        .env("NIXBOT_RUNTIME_FALLBACK_ROOT", root.join("fallback"))
+        .env("NIXBOT_DIAG_KEEP_ROOT", root.join("diagnostics"))
+        .env("NIXBOT_HOST_LOCAL_LOCK_PATH", root.join("host-local-lock"));
+    command
+}
+
+#[test]
+fn local_relay_preserves_primary_target_failure_instead_of_using_operator_fallback() {
+    let temporary = tempdir();
+    let root = temporary.path();
+    let output = remote_distribution_command(root, "deploy", r#"#!/bin/sh
+set -eu
+cat >/dev/null
+case "$*" in
+  *'root@app.invalid'*) echo 'Permission denied (publickey).' >&2; exit 255 ;;
+  *'operator@app.invalid'*) printf '%s\n' /nix/store/cccccccccccccccccccccccccccccccc-nixos-system-app ;;
+  *) exit 92 ;;
+esac
+"#)
+        .args(["--build-host-deploy-mode=local-copy", "--build-cache-url=http://cache.invalid"])
         .output()
         .unwrap();
     assert!(!output.status.success());
-    let ssh_commands = fs::read_to_string(ssh_log).unwrap();
+    let ssh_commands = fs::read_to_string(root.join("ssh.log")).unwrap();
     let operational = ssh_commands
         .lines()
         .filter(|line| !line.contains("-O exit"))
@@ -2451,7 +2451,7 @@ esac
         1,
         "{ssh_commands}"
     );
-    let nix_commands = fs::read_to_string(nix_log).unwrap();
+    let nix_commands = fs::read_to_string(root.join("nix.log")).unwrap();
     assert!(!nix_commands.contains("--from http://cache.invalid"));
     assert!(!nix_commands.contains("--to ssh-ng://root@app.invalid"));
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2459,6 +2459,120 @@ esac
         stderr.contains("primary deploy target app is unavailable"),
         "{stderr}"
     );
+}
+
+/// Run: `cargo test -p abird-host-manager --test fleet_native_runtime auto_cache_owner_relay`
+#[test]
+fn auto_cache_owner_relay_retries_only_cache_connectivity() {
+    // Foreground `ssh -D` stand-in. Re-enter this test binary so the sandbox
+    // needs neither Python nor a socket utility. No remote command is executed.
+    if let Some(socket) = std::env::var_os("FLEET_TEST_OWNER_SOCKET") {
+        let _listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+        std::thread::sleep(Duration::from_secs(30)); // normally killed at end of transfer
+        return;
+    }
+
+    const PEER_SSH: &str = r#"#!/bin/sh
+set -eu
+case " $* " in
+  *' -D '*)
+    echo owner-forward >> "$FIXTURE/events"
+    case " $* " in *' -f '*) exit 92 ;; esac
+    case " $* " in *' -NT '*) ;; *) exit 92 ;; esac
+    while [ "$1" != -D ]; do shift; done
+    test "$#" -eq 4
+    test "$3" = --
+    test "$4" = root@builder.invalid
+    case "$2" in "$FIXTURE/runtime/"*) ;; *) exit 92 ;; esac
+    test "$(stat -c %a "${2%/*}")" = 700
+    printf '%s\n' "$2" > "$FIXTURE/socket"
+    export FLEET_TEST_OWNER_SOCKET="$2"
+    exec "$TEST_EXE" --exact auto_cache_owner_relay_retries_only_cache_connectivity ;;
+  *' -- root@app.invalid '*) ;;
+  *) echo unexpected-peer >> "$FIXTURE/events"; exit 92 ;;
+esac
+# Inspect the framed remote argv, not just the outer `ssh ... bash -s`.
+argv=$(sed -n '/^done <<.*NIXBOT_ARGV/,/^NIXBOT_ARGV$/{ /^done <</d; /^NIXBOT_ARGV$/d; p; }' |
+  while IFS= read -r arg; do printf '%s' "$arg" | base64 -d; printf ' '; done)
+case "$argv" in
+  'nix copy '*"--from $CACHE $CLOSURE ")
+    echo target-pull >> "$FIXTURE/events"
+    echo "$DIAGNOSTIC" >&2
+    exit 1 ;;
+  'nix '*"store verify "*"--recursive $CLOSURE ") echo target-verify >> "$FIXTURE/events" ;;
+  *systemd-run*nixbot-switch-to-configuration*) echo target-activation >> "$FIXTURE/events" ;;
+esac
+"#;
+    const RELAY_COPY: &str = r#"#!/bin/sh
+set -eu
+case "$*" in 'copy '*"--from $CACHE --to ssh-ng://root@app.invalid $CLOSURE") ;; *) exit 91 ;; esac
+case " ${NIX_SSHOPTS:?} " in *' -p 2222 '*) ;; *) exit 91 ;; esac
+if [ -z "${http_proxy:-}" ]; then
+  echo local-direct >> "$FIXTURE/events"
+  printf '%s\n' "$NIX_SSHOPTS" > "$FIXTURE/target-opts"
+  echo "$DIAGNOSTIC" >&2
+  exit 1
+fi
+socket=$(cat "$FIXTURE/socket")
+test "$http_proxy" = "socks5h://localhost$socket"
+test -S "$socket"
+test "$NIX_SSHOPTS" = "$(cat "$FIXTURE/target-opts")"
+echo local-via-owner >> "$FIXTURE/events"
+"#;
+    let cache = "http://cache.invalid:8080/signed";
+    let config = serde_json::json!({
+        "controller": "builder", "transferBroker": "builder", "builders": ["builder"],
+        "registries": {"nix": {"host": "builder", "url": cache}}
+    });
+    for (case, action, diagnostic) in [
+        (
+            "timeout",
+            "prepare",
+            format!(
+                "error: unable to download '{cache}/nix-cache-info': Timeout was reached (28) Connection timed out after 15000 milliseconds"
+            ),
+        ),
+        (
+            "signature",
+            "deploy",
+            "error: cannot add path because it lacks a signature by a trusted key".to_owned(),
+        ),
+    ] {
+        let temporary = tempdir();
+        let root = temporary.path();
+        let mut command = remote_distribution_command(root, action, PEER_SSH);
+        write_executable(&root.join("relay-copy"), RELAY_COPY).unwrap();
+        if action == "deploy" {
+            command.arg("--no-rollback");
+        }
+        let output = command
+            .env("CACHE", cache)
+            .env("FLEET_CONFIG", config.to_string())
+            .env("DIAGNOSTIC", diagnostic)
+            .env("TEST_EXE", std::env::current_exe().unwrap())
+            .env("NIXBOT_REMOTE_READ_TIMEOUT_SECS", "5")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let events = fs::read_to_string(root.join("events")).unwrap_or_default();
+        if case == "timeout" {
+            assert!(output.status.success(), "{events}\n{stderr}");
+            assert_eq!(
+                events,
+                "target-pull\nlocal-direct\nowner-forward\nlocal-via-owner\ntarget-verify\n"
+            );
+            let socket = fs::read_to_string(root.join("socket")).unwrap();
+            assert!(
+                !Path::new(socket.trim_end()).exists(),
+                "forward leaked: {socket}"
+            );
+        } else {
+            assert!(!output.status.success(), "{stderr}");
+            assert_eq!(events, "target-pull\n", "{stderr}");
+            let nix = fs::read_to_string(root.join("nix.log")).unwrap();
+            assert!(!nix.contains("--from"), "unexpected local relay: {nix}");
+        }
+    }
 }
 
 #[test]

@@ -88,6 +88,8 @@ pub enum TransferStep {
     RelayPull,
     /// Controller pushes a cached closure to the target (relay hop).
     RelayPush,
+    /// Relay reads the same cache through its declared owner's network.
+    OwnerRelay { owner: String },
     /// Controller pushes an already-local closure directly to the target.
     DirectPush,
 }
@@ -104,6 +106,11 @@ impl StepSpecSource for TransferStep {
             TransferStep::RelayPush => StepSpec::stage(
                 format!("relay-cache-to-target-{host}"),
                 "closure relay push",
+            ),
+            TransferStep::OwnerRelay { owner } => StepSpec::via(
+                format!("relay-cache-via-owner-{host}"),
+                "cache relay",
+                owner,
             ),
             TransferStep::DirectPush => {
                 StepSpec::stage(format!("deploy-copy-closure-{host}"), "closure copy")

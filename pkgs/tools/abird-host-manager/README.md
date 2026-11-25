@@ -382,6 +382,18 @@ readiness in selection order, then admits all eligible hosts to one pool. A slow
 image or model pull does not block hosts in a later deployment level; the same
 global and per-domain limits still apply.
 
+For native remote builds, `--build-host-deploy-mode=auto` normally pulls from CI
+on the target. If the target cannot resolve or connect to the cache, fleet
+relays from the workstation over the target's existing SSH route. If the
+workstation also cannot reach the cache, `cache relay via <owner>` reads the
+same HTTP(S) URL through the registry owner's inventory SSH route. Neither a
+workstation route to the private cache IP nor a second cache URL is required.
+The owner must be able to reach the publisher and allow SSH forwarding.
+Signature, TLS, missing-path, and target SSH failures do not select another
+route. Explicit `cache` stays target-only; `local-copy` uses the workstation's
+network. Overriding the publisher URL or host does not authorize an owner relay
+for a different endpoint.
+
 Before adjustment, existing stage defaults apply: `--build-jobs` for builds,
 `--jobs` / `--deploy-jobs` for deployment stages, and `--jobs-per-domain` /
 `--deploy-jobs-per-domain` for each domain's initial allowance. The displayed

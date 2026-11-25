@@ -1248,6 +1248,12 @@ impl<T> Execution<T> {
     }
 }
 
+pub(super) enum RelayAccess<'a> {
+    Direct(RetryPolicy),
+    TryDirect,
+    ViaOwner(&'a super::cache_proxy::CacheProxy),
+}
+
 pub struct HostRuntime<R> {
     runner: R,
     cwd: PathBuf,
@@ -1629,6 +1635,24 @@ impl<R: ProcessRunner> HostRuntime<R> {
         Ok(copied.attempt.status)
     }
 
+    /// One automatic target attempt; bound connection setup and Nix retries,
+    /// not the duration of a healthy closure copy.
+    pub fn try_cache_pull(
+        &mut self,
+        target: &HostExecutionTarget,
+        cache: &CacheSource,
+        closure: &NixStorePath,
+        task: Arc<dyn Task>,
+    ) -> Result<build::CacheCopyOutcome> {
+        let mut copy = cache_pull_command(cache, closure);
+        build::bound_cache_copy_connection(&mut copy);
+        let output = self.execute_remote_command(target, &copy, EffectKind::Mutation, task)?;
+        Ok(build::CacheCopyOutcome::classify(
+            &command_attempt(&output),
+            cache,
+        ))
+    }
+
     fn run_remote_with_retry(
         &mut self,
         target: &HostExecutionTarget,
@@ -1673,38 +1697,63 @@ impl<R: ProcessRunner> HostRuntime<R> {
         retry: RetryPolicy,
         task: Arc<dyn Task>,
     ) -> Result<CommandStatus> {
-        if target.local {
-            let local_pull = cache_pull_command(cache, closure);
-            let request = self.local_request(&local_pull, EffectKind::Mutation, Arc::clone(&task));
-            let pulled = self.run(request)?;
-            return Ok(command_status(pulled.status));
-        }
-        let endpoint = &target.route.endpoint;
-        let host = uri_authority_component(&endpoint.host)?;
-        let host = if host.contains(':') {
-            format!("[{host}]")
+        Ok(self
+            .relay_copy(target, closure, cache, RelayAccess::Direct(retry), task)?
+            .status())
+    }
+
+    pub(super) fn relay_copy(
+        &mut self,
+        target: &HostExecutionTarget,
+        closure: &NixStorePath,
+        cache: &CacheSource,
+        access: RelayAccess<'_>,
+        task: Arc<dyn Task>,
+    ) -> Result<build::CacheCopyOutcome> {
+        let mut environment = Vec::new();
+        let mut copy = if target.local {
+            cache_pull_command(cache, closure)
         } else {
-            host.to_owned()
+            let endpoint = &target.route.endpoint;
+            let host = uri_authority_component(&endpoint.host)?;
+            let authority = if host.contains(':') {
+                format!("[{host}]")
+            } else {
+                host.to_owned()
+            };
+            let store_uri = format!(
+                "ssh-ng://{}@{authority}",
+                uri_authority_component(&endpoint.user)?
+            );
+            environment.push((
+                "NIX_SSHOPTS".into(),
+                nix_sshopts_without_control_master(target)?,
+            ));
+            cache_relay_command(cache, &store_uri, closure)
         };
-        let store_uri = format!(
-            "ssh-ng://{}@{host}",
-            uri_authority_component(&endpoint.user)?
-        );
-        let relay = cache_relay_command(cache, &store_uri, closure);
-        let nix_sshopts = nix_sshopts_without_control_master(target)?;
-        let mut tracker = RetryTracker::new(retry);
-        let relayed = loop {
-            let mut request = self.local_request(&relay, EffectKind::Mutation, Arc::clone(&task));
-            request
-                .environment
-                .push(("NIX_SSHOPTS".to_owned(), nix_sshopts.clone()));
-            let attempt = command_attempt(&self.run(request)?);
-            match tracker.observe(attempt.clone()) {
-                RetryDecision::Retry { delay, .. } => self.runner.wait(delay),
-                RetryDecision::Complete | RetryDecision::Stop { .. } => break attempt.status,
+        let once = RetryPolicy::new(1, Duration::ZERO)?;
+        let retry = match access {
+            RelayAccess::Direct(policy) if !target.local => policy,
+            RelayAccess::Direct(_) => once,
+            RelayAccess::TryDirect | RelayAccess::ViaOwner(_) => {
+                build::bound_cache_copy_connection(&mut copy);
+                if let RelayAccess::ViaOwner(proxy) = access {
+                    environment.extend(proxy.environment());
+                }
+                once
             }
         };
-        Ok(relayed)
+        let mut request = self.local_request(&copy, EffectKind::Mutation, task);
+        request.environment = environment;
+        let mut tracker = RetryTracker::new(retry);
+        loop {
+            let attempt = command_attempt(&self.run(request.clone())?);
+            let outcome = build::CacheCopyOutcome::classify(&attempt, cache);
+            match tracker.observe(attempt) {
+                RetryDecision::Retry { delay, .. } => self.runner.wait(delay),
+                RetryDecision::Complete | RetryDecision::Stop { .. } => return Ok(outcome),
+            }
+        }
     }
 
     pub fn snapshot(

@@ -786,11 +786,10 @@ impl Task for ProgressTask {
                         .flatten()
                 });
             if let Some(dashboard_line) = dashboard_line {
-                self.publish_line(
-                    dashboard_line,
-                    line.starts_with("[prefetch-podman-image] ")
-                        || line.starts_with("[prefetch-ai-model] "),
-                );
+                let current_activity = dashboard_line.starts_with("[cache] ")
+                    || line.starts_with("[prefetch-podman-image] ")
+                    || line.starts_with("[prefetch-ai-model] ");
+                self.publish_line(dashboard_line, current_activity);
             }
         }
     }
@@ -1353,6 +1352,9 @@ fn format_dashboard_line(line: &str) -> Option<String> {
     if sensitive_output(&line) && line.trim() != "[agenix] decrypting secrets..." {
         return None;
     }
+    if let Some(activity) = format_cache_lookup_activity(&line) {
+        return Some(activity);
+    }
     if line == "copying 0 paths..." {
         return Some("[copy] closure already present".to_owned());
     }
@@ -1389,6 +1391,39 @@ fn format_dashboard_line(line: &str) -> Option<String> {
         line => return format_structured_status_line(line),
     };
     Some(normalized.to_owned())
+}
+
+/// Nix retries cache discovery before it has any store-path progress to report.
+/// Render only the operation and numeric retry evidence, never the URL or raw error.
+fn format_cache_lookup_activity(line: &str) -> Option<String> {
+    let (severity, message) = line.split_once(": ")?;
+    let (url, reason) = message
+        .strip_prefix("unable to download '")?
+        .split_once("': ")?;
+    if !url.ends_with("/nix-cache-info") {
+        return None;
+    }
+    let status = if reason.starts_with("Timeout was reached (28)") {
+        "lookup timed out"
+    } else {
+        "lookup failed"
+    };
+    match severity {
+        "warning" => {
+            let (_, retry) = reason.rsplit_once("; retrying in ")?;
+            let (delay, attempt) = retry.strip_suffix(')')?.split_once(" ms (attempt ")?;
+            let (n, total) = progress_ratio(attempt)?;
+            if n == 0 || !ascii_digits(delay) {
+                return None;
+            }
+            let delay: u64 = delay.parse().ok()?;
+            Some(format!(
+                "[cache] {status} · attempt {n}/{total} · retrying in {delay}ms"
+            ))
+        }
+        "error" => Some(format!("[cache] {status}")),
+        _ => None,
+    }
 }
 
 fn format_process_dashboard_line(
@@ -2650,6 +2685,33 @@ mod tests {
             progress_task(TaskTarget::Host("pvl-a1".to_owned()), "build").verbose_subject(),
             "build pvl-a1"
         );
+    }
+
+    #[test]
+    fn cache_lookup_retries_are_visible_before_any_path_transfer() {
+        let lookup = "unable to download 'http://private.invalid:5000/nix-cache-info'";
+        let timeout = "Timeout was reached (28) Connection timed out after 15000 milliseconds";
+        let retry = format!("warning: {lookup}: {timeout}; retrying in 559 ms (attempt 2/5)");
+        assert_eq!(
+            format_dashboard_line(&retry).as_deref(),
+            Some("[cache] lookup timed out · attempt 2/5 · retrying in 559ms")
+        );
+        assert_eq!(
+            format_dashboard_line(&format!("error: {lookup}: {timeout}")).as_deref(),
+            Some("[cache] lookup timed out")
+        );
+        assert_eq!(
+            format_dashboard_line(&retry.replace(timeout, "untrusted error text")).as_deref(),
+            Some("[cache] lookup failed · attempt 2/5 · retrying in 559ms")
+        );
+        for line in [
+            retry.replace("2/5", "0/5"),
+            retry.replace("2/5", "6/5"),
+            retry.replace("559 ms", "payload ms"),
+            retry.replace("/nix-cache-info", "/some-download"),
+        ] {
+            assert_eq!(format_dashboard_line(&line), None);
+        }
     }
 
     #[test]

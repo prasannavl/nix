@@ -26,11 +26,11 @@ use super::bootstrap::{
 };
 use super::build::{
     BuildArgs, BuildBatch, BuildCacheContext, BuildCacheState, BuildHostDeployMode, BuildSchedule,
-    BuilderClosure, CacheSource, CommandSpec, CommandStatus, DistributionInputs, DistributionPlan,
-    LocalBuildSpec, NixStorePath, RetryPolicy, automatic_build_plan_jobs, build_plan_cache_file,
-    build_plan_evaluation_command, build_plan_probe_command, closure_verification_command,
-    copy_derivation_command, development_build_command, local_build_command,
-    validate_cached_build_plan,
+    BuilderClosure, CacheCopyOutcome, CacheSource, CommandSpec, CommandStatus, DistributionInputs,
+    DistributionPlan, LocalBuildSpec, NixStorePath, RetryPolicy, automatic_build_plan_jobs,
+    build_plan_cache_file, build_plan_evaluation_command, build_plan_probe_command,
+    closure_verification_command, copy_derivation_command, development_build_command,
+    local_build_command, validate_cached_build_plan,
 };
 use super::build_lease::{
     BuilderLeaseCoordinator, InvocationId, LeaseEpoch, LeaseRetryPolicy, SystemLeaseConnector,
@@ -43,7 +43,7 @@ use super::engine::{FleetEffects, PhaseFailure};
 use super::environment::{Environment, LocalSelfTarget, Settings};
 use super::host_runtime::{
     ActivationExecution, DistributionExecution, DryRun, EffectKind, HostExecutionTarget,
-    HostRuntime, ProcessExecutor, ProcessOutput, builder_lease_process_spec,
+    HostRuntime, ProcessExecutor, ProcessOutput, RelayAccess, builder_lease_process_spec,
     nix_sshopts_without_control_master, render_proxy_chain, retire_control_master,
     ssh_connection_args,
 };
@@ -51,7 +51,7 @@ use super::host_tasks::{
     AcquireStep, BootstrapStep, BuildStep, DeployStep, HealthStep, PhaseStep, ReadinessStep,
     SnapshotStep, TransferStep, VerifyStep, run_step, run_step_with,
 };
-use super::inventory::{DeployMode, Inventory};
+use super::inventory::{DeployMode, Inventory, Registry};
 use super::orchestration::{
     FinalHostState, HostMilestone, HostQualifier, HostStage, PhaseResult, PhaseResultKind,
 };
@@ -1911,7 +1911,7 @@ impl<'a> NativeFleetEffects<'a> {
     }
 
     fn nix_copy_target(&self, target: &HostExecutionTarget) -> Result<HostExecutionTarget> {
-        prepare_nix_copy_target(self.transport_store.path(), target)
+        prepare_nix_copy_target(self.transport_store.path(), target, None)
     }
 
     fn ensure_bootstrap_transport(&mut self, resolved: &ResolvedHost) -> Result<()> {
@@ -2400,11 +2400,7 @@ impl<'a> NativeFleetEffects<'a> {
             let plan = DistributionInputs {
                 build_resource: builder.resource.clone(),
                 target_resource: resolved.resource.clone(),
-                configured_mode: match self.invocation.options.build_host_deploy_mode {
-                    super::cli::BuildHostDeployMode::Auto => BuildHostDeployMode::Auto,
-                    super::cli::BuildHostDeployMode::Cache => BuildHostDeployMode::Cache,
-                    super::cli::BuildHostDeployMode::LocalCopy => BuildHostDeployMode::LocalCopy,
-                },
+                configured_mode: self.invocation.options.build_host_deploy_mode.into(),
                 build_host_is_cache_host: true,
                 target_is_local: self.local_target(&resolved)?,
                 cache: Some(owned.cache.clone()),
@@ -2414,7 +2410,7 @@ impl<'a> NativeFleetEffects<'a> {
                 self.settings.transport_retry_attempts,
                 Duration::from_secs(self.settings.transport_retry_delay_seconds),
             )?;
-            return match self.execute_distribution_plan(&resolved, &plan, retry)? {
+            return match self.execute_distribution_plan(&resolved, &plan, retry, None)? {
                 DistributionExecution::Complete | DistributionExecution::DryRun => Ok(()),
                 DistributionExecution::Failed(status) => {
                     bail!("closure distribution to {host} failed: {status:?}")
@@ -2465,60 +2461,31 @@ impl<'a> NativeFleetEffects<'a> {
 
         let builder = resolve_host(self.inventory, &build_host, &self.invocation.options)?;
         let lease_epoch = self.ensure_builder_closure_for_use(host, &builder)?;
-        let cache_url = self
-            .invocation
-            .options
+        let registry = self.inventory.config.registries.get("nix").or(self
+            .inventory
+            .config
+            .build_cache
+            .as_ref());
+        let options = &self.invocation.options;
+        let cache_url = options
             .build_cache_url
-            .clone()
-            .or_else(|| {
-                self.inventory
-                    .config
-                    .registries
-                    .get("nix")
-                    .map(|registry| registry.url.clone())
-            })
-            .or_else(|| {
-                self.inventory
-                    .config
-                    .build_cache
-                    .as_ref()
-                    .map(|cache| cache.url.clone())
-            });
+            .as_deref()
+            .or_else(|| registry.map(|r| r.url.as_str()));
+        let cache_host = options
+            .build_cache_host
+            .as_deref()
+            .or_else(|| registry.map(|r| r.host.as_str()));
         let cache = cache_url
             .map(|url| CacheSource::new(url, Vec::<String>::new()))
             .transpose()?;
-        let cache_host = self
-            .invocation
-            .options
-            .build_cache_host
-            .clone()
-            .or_else(|| {
-                self.inventory
-                    .config
-                    .registries
-                    .get("nix")
-                    .map(|registry| registry.host.clone())
-            })
-            .or_else(|| {
-                self.inventory
-                    .config
-                    .build_cache
-                    .as_ref()
-                    .map(|cache| cache.host.clone())
-            });
-        let configured_mode = match self.invocation.options.build_host_deploy_mode {
-            super::cli::BuildHostDeployMode::Auto => BuildHostDeployMode::Auto,
-            super::cli::BuildHostDeployMode::Cache => BuildHostDeployMode::Cache,
-            super::cli::BuildHostDeployMode::LocalCopy => BuildHostDeployMode::LocalCopy,
-        };
+        let relay_owner = registry.and_then(|r| automatic_relay_owner(r, options));
+        let configured_mode = options.build_host_deploy_mode.into();
         let target_is_local = self.local_target(&resolved)?;
         let plan = DistributionInputs {
             build_resource: builder.resource.clone(),
             target_resource: resolved.resource.clone(),
             configured_mode,
-            build_host_is_cache_host: cache_host
-                .as_deref()
-                .is_some_and(|owner| owner == build_host),
+            build_host_is_cache_host: cache_host.is_some_and(|owner| owner == build_host),
             target_is_local,
             cache,
         }
@@ -2527,11 +2494,11 @@ impl<'a> NativeFleetEffects<'a> {
             self.settings.transport_retry_attempts,
             Duration::from_secs(self.settings.transport_retry_delay_seconds),
         )?;
-        let mut result = self.execute_distribution_plan(&resolved, &plan, retry)?;
+        let mut result = self.execute_distribution_plan(&resolved, &plan, retry, relay_owner)?;
         if matches!(result, DistributionExecution::Failed(_)) {
             let recovered_epoch = self.ensure_builder_closure_for_use(host, &builder)?;
             if recovered_epoch != lease_epoch {
-                result = self.execute_distribution_plan(&resolved, &plan, retry)?;
+                result = self.execute_distribution_plan(&resolved, &plan, retry, relay_owner)?;
             }
         }
         match result {
@@ -2547,6 +2514,7 @@ impl<'a> NativeFleetEffects<'a> {
         resolved: &ResolvedHost,
         plan: &DistributionPlan,
         retry: RetryPolicy,
+        relay_owner: Option<&str>,
     ) -> Result<DistributionExecution> {
         self.check_forward_work()?;
         let host = resolved.inventory_name.clone();
@@ -2555,6 +2523,11 @@ impl<'a> NativeFleetEffects<'a> {
             DistributionPlan::VerifyExisting { closure } => {
                 let target = self.execution_target(resolved)?;
                 self.distribute_verify(&scope, &target, closure)?
+            }
+            DistributionPlan::TargetCachePull { closure, cache, .. }
+                if relay_owner.is_some() && self.local_target(resolved)? =>
+            {
+                self.relay_and_verify(resolved, &scope, closure, cache, retry, relay_owner)?
             }
             DistributionPlan::TargetCachePull {
                 closure,
@@ -2583,67 +2556,26 @@ impl<'a> NativeFleetEffects<'a> {
                 }
             }
             DistributionPlan::RelayThroughLocal { closure, cache } => {
-                let target = self.primary_execution_target(resolved)?;
-                let nix_target = self.nix_copy_target(&target)?;
-                let step = relay_step(&target);
-                let status = run_step_with(
-                    &scope,
-                    step,
-                    |task| {
-                        self.host_runtime
-                            .relay_transfer(&nix_target, closure, cache, retry, task)
-                    },
-                    command_outcome,
-                )?;
-                if status != CommandStatus::Success {
-                    status
-                } else {
-                    self.distribute_verify(&scope, &target, closure)?
-                }
+                self.relay_and_verify(resolved, &scope, closure, cache, retry, relay_owner)?
             }
             DistributionPlan::TryTargetCacheThenRelay { closure, cache } => {
                 let target = self.execution_target(resolved)?;
-                let status = run_step_with(
+                let outcome = run_step_with(
                     &scope,
                     TransferStep::CachePull,
                     |task| {
-                        self.host_runtime.cache_pull(
-                            &target,
-                            cache,
-                            closure,
-                            RetryPolicy::new(1, Duration::ZERO)?,
-                            task,
-                        )
+                        self.host_runtime
+                            .try_cache_pull(&target, cache, closure, task)
                     },
-                    command_outcome,
+                    |outcome| command_outcome(&outcome.status()),
                 )?;
-                match status {
-                    CommandStatus::Success => self.distribute_verify(&scope, &target, closure)?,
-                    CommandStatus::Signal(signal) => CommandStatus::Signal(signal),
-                    CommandStatus::Exit(_) => {
-                        self.check_forward_work()?;
-                        let primary = self.primary_execution_target(resolved)?;
-                        let nix_primary = self.nix_copy_target(&primary)?;
-                        let step = relay_step(&primary);
-                        let status = run_step_with(
-                            &scope,
-                            step,
-                            |task| {
-                                self.host_runtime.relay_transfer(
-                                    &nix_primary,
-                                    closure,
-                                    cache,
-                                    retry,
-                                    task,
-                                )
-                            },
-                            command_outcome,
-                        )?;
-                        if status != CommandStatus::Success {
-                            status
-                        } else {
-                            self.distribute_verify(&scope, &primary, closure)?
-                        }
+                match outcome {
+                    CacheCopyOutcome::Succeeded => {
+                        self.distribute_verify(&scope, &target, closure)?
+                    }
+                    CacheCopyOutcome::Terminal(status) => status,
+                    CacheCopyOutcome::CacheConnectivityFailure { .. } => {
+                        self.relay_and_verify(resolved, &scope, closure, cache, retry, relay_owner)?
                     }
                 }
             }
@@ -2653,6 +2585,83 @@ impl<'a> NativeFleetEffects<'a> {
         } else {
             DistributionExecution::Failed(result)
         })
+    }
+
+    /// Keep both HTTP reads on the same signed store. Only source connectivity
+    /// can change the relay's network; the destination stays on its primary SSH route.
+    fn relay_and_verify(
+        &mut self,
+        resolved: &ResolvedHost,
+        scope: &Arc<dyn TaskScope>,
+        closure: &NixStorePath,
+        cache: &CacheSource,
+        retry: RetryPolicy,
+        relay_owner: Option<&str>,
+    ) -> Result<CommandStatus> {
+        super::signal::check_interrupted()?;
+        self.check_forward_work()?;
+        let primary = self.primary_execution_target(resolved)?;
+        let target = self.nix_copy_target(&primary)?;
+        let access = relay_owner.map_or(RelayAccess::Direct(retry), |_| RelayAccess::TryDirect);
+        let direct = run_step_with(
+            scope,
+            relay_step(&primary),
+            |task| {
+                self.host_runtime
+                    .relay_copy(&target, closure, cache, access, task)
+            },
+            |outcome| command_outcome(&outcome.status()),
+        )?;
+        let status = match (direct, relay_owner) {
+            (CacheCopyOutcome::CacheConnectivityFailure { status, .. }, Some(owner)) => {
+                self.check_forward_work()?;
+                let owner = self.inventory.host_for_resource(owner)?;
+                let resolved_owner = resolve_host(self.inventory, owner, &self.invocation.options)?;
+                if self.local_target(&resolved_owner)? {
+                    return Ok(status);
+                }
+                run_step_with(
+                    scope,
+                    TransferStep::OwnerRelay {
+                        owner: owner.to_owned(),
+                    },
+                    |task| {
+                        let owner = self.primary_execution_target(&resolved_owner)?;
+                        let proxy = super::cache_proxy::CacheProxy::open(
+                            &owner,
+                            self.transport_store.path(),
+                            || {
+                                super::signal::check_interrupted()?;
+                                self.check_forward_work()
+                            },
+                        )?;
+                        self.check_forward_work()?;
+                        let destination = prepare_nix_copy_target(
+                            self.transport_store.path(),
+                            &primary,
+                            Some(&proxy),
+                        )?;
+                        Ok(self
+                            .host_runtime
+                            .relay_copy(
+                                &destination,
+                                closure,
+                                cache,
+                                RelayAccess::ViaOwner(&proxy),
+                                task,
+                            )?
+                            .status())
+                    },
+                    command_outcome,
+                )?
+            }
+            (outcome, _) => outcome.status(),
+        };
+        if status == CommandStatus::Success {
+            self.distribute_verify(scope, &primary, closure)
+        } else {
+            Ok(status)
+        }
     }
 
     fn distribute_verify(
@@ -3794,6 +3803,35 @@ fn transport_store_name(repository: &Path) -> &str {
         .unwrap_or("fleet")
 }
 
+impl From<super::cli::BuildHostDeployMode> for BuildHostDeployMode {
+    fn from(mode: super::cli::BuildHostDeployMode) -> Self {
+        use super::cli::BuildHostDeployMode as Mode;
+        match mode {
+            Mode::Auto => Self::Auto,
+            Mode::Cache => Self::Cache,
+            Mode::LocalCopy => Self::LocalCopy,
+        }
+    }
+}
+
+/// An unmatched override is not authority to relay an arbitrary URL through an inventory host.
+fn automatic_relay_owner<'a>(
+    registry: &'a Registry,
+    options: &super::cli::Options,
+) -> Option<&'a str> {
+    (options.build_host_deploy_mode == super::cli::BuildHostDeployMode::Auto
+        && options
+            .build_cache_url
+            .as_ref()
+            .is_none_or(|u| u == &registry.url)
+        && options
+            .build_cache_host
+            .as_ref()
+            .is_none_or(|h| h == &registry.host)
+        && (registry.url.starts_with("http://") || registry.url.starts_with("https://")))
+    .then_some(registry.host.as_str())
+}
+
 fn relay_step(target: &HostExecutionTarget) -> TransferStep {
     if target.local {
         TransferStep::RelayPull
@@ -4172,6 +4210,7 @@ fn materialize_nix_proxy_command(directory: &Path, command: &str) -> Result<Path
 fn prepare_nix_copy_target(
     directory: &Path,
     target: &HostExecutionTarget,
+    source: Option<&super::cache_proxy::CacheProxy>,
 ) -> Result<HostExecutionTarget> {
     let mut target = target.clone();
     let proxy = if let Some(command) = &target.route.proxy_command {
@@ -4180,6 +4219,10 @@ fn prepare_nix_copy_target(
         render_proxy_chain(&target)?
     };
     if let Some(proxy) = proxy {
+        let proxy = match source {
+            Some(source) => source.destination_command(&proxy),
+            None => proxy,
+        };
         let path = materialize_nix_proxy_command(directory, &proxy)?;
         target.route.proxy = Default::default();
         target.route.proxy_command = Some(ProxyCommandTemplate::new(
@@ -4488,6 +4531,50 @@ yqPpbFFUX2lXWPH9I3zqYt2VnWDScGTitnk6RpLFwc3nSFWiDm1rkzj/Tf
 ";
 
     #[test]
+    fn owner_relay_requires_the_selected_inventory_publisher_and_auto_mode() {
+        use crate::fleet::cli::{BuildHostDeployMode as Mode, Options};
+        let registry = Registry {
+            host: "publisher".into(),
+            url: "https://cache.internal/releases".into(),
+        };
+        let options = Options::default();
+        assert_eq!(
+            automatic_relay_owner(&registry, &options),
+            Some("publisher")
+        );
+        for overrides in [
+            Options {
+                build_cache_url: Some("https://elsewhere.invalid".into()),
+                ..options.clone()
+            },
+            Options {
+                build_cache_host: Some("other-host".into()),
+                ..options.clone()
+            },
+            Options {
+                build_host_deploy_mode: Mode::Cache,
+                ..options.clone()
+            },
+            Options {
+                build_host_deploy_mode: Mode::LocalCopy,
+                ..options.clone()
+            },
+        ] {
+            assert_eq!(automatic_relay_owner(&registry, &overrides), None);
+        }
+        assert_eq!(
+            automatic_relay_owner(
+                &Registry {
+                    url: "file:///cache".into(),
+                    ..registry
+                },
+                &options
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn bootstrap_public_key_and_fingerprint_are_derived_in_process() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
         for (name, private_key, public_key, fingerprint) in [
@@ -4596,7 +4683,7 @@ yqPpbFFUX2lXWPH9I3zqYt2VnWDScGTitnk6RpLFwc3nSFWiDm1rkzj/Tf
         let command = CommandSpec::new("nix", ["copy".to_owned()]);
         assert!(with_nix_sshopts(command.clone(), &target).is_err());
 
-        target = prepare_nix_copy_target(directory.path(), &target)?;
+        target = prepare_nix_copy_target(directory.path(), &target, None)?;
         let proxy = PathBuf::from(target.route.proxy_command.as_ref().unwrap().as_str());
         assert_eq!(
             std::fs::metadata(&proxy)?.permissions().mode() & 0o777,

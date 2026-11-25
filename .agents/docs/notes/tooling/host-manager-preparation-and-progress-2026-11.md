@@ -85,7 +85,10 @@
 
 - Closure transfer uses Nix path evidence; admission names the validator in
   flight. Identity and lease operations have a step and elapsed time, not a
-  synthetic progress counter.
+  synthetic progress counter. Before any paths are copied, Nix `nix-cache-info`
+  lookup retries show the reported attempt and backoff in the compact row;
+  terminal lookup errors replace the last retry. URLs and raw errors are not
+  copied into the compact view.
 - Fleet opts candidate runners into item updates with
   `ABIRD_ACQUIRE_PROGRESS=1`. The compact row shows the current service or
   model, its 1-based position in the host plan, backend, action and outcome.

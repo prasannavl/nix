@@ -25,6 +25,8 @@ mod build_lease;
 #[allow(clippy::all)]
 #[path = "../src/fleet/build_runtime.rs"]
 mod build_runtime;
+#[path = "../src/fleet/cache_proxy.rs"]
+mod cache_proxy;
 #[allow(clippy::all)]
 #[path = "../src/fleet/cli.rs"]
 mod cli;
@@ -76,8 +78,9 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use bootstrap::ForcedCommandPlan;
 use build::{
-    BuildPlanAttribute, CacheSource, CommandSpec, CommandStatus, LocalBuildSpec, NixStorePath,
-    RetryPolicy, build_plan_evaluation_command, local_build_command,
+    BuildPlanAttribute, CacheConnectivityCause, CacheCopyOutcome, CacheSource, CommandAttempt,
+    CommandSpec, CommandStatus, LocalBuildSpec, NixStorePath, RetryPolicy,
+    build_plan_evaluation_command, local_build_command,
 };
 use deploy::{
     ActivationCommand, ActivationGoal, BootEnvironment, RemoteCommand, SnapshotRequirement,
@@ -1313,6 +1316,155 @@ fn builder_lease_authority_is_semantic_and_ignores_materialized_key_paths() {
 }
 
 #[test]
+fn automatic_target_pull_bounds_only_nix_and_keeps_the_signed_copy() {
+    let cache = CacheSource::new(
+        "https://cache.example/base/?priority=20",
+        ["cache.example-1:key"],
+    )
+    .unwrap();
+    let closure = NixStorePath::closure_output("/nix/store/def-nixos-system-new").unwrap();
+    let error = "error: unable to download 'https://cache.example/base/nix-cache-info': Could not connect to server (7) Failed to connect to cache.example:443 after 5 ms: Could not connect to server";
+    for (output, expected) in [
+        (success(""), CacheCopyOutcome::Succeeded),
+        (
+            failure(1, error),
+            CacheCopyOutcome::CacheConnectivityFailure {
+                status: CommandStatus::Exit(1),
+                cause: CacheConnectivityCause::Connection,
+            },
+        ),
+        (
+            ProcessOutput {
+                status: ProcessStatus::Signal(15),
+                ..failure(1, error)
+            },
+            CacheCopyOutcome::Terminal(CommandStatus::Signal(143)),
+        ),
+    ] {
+        let mut runtime = HostRuntime::new(
+            FakeRunner::with_outputs([output]),
+            "/repo".into(),
+            DryRun::No,
+        )
+        .unwrap();
+        assert_eq!(
+            runtime
+                .try_cache_pull(&target(), &cache, &closure, InternalTask::new("auto-pull"))
+                .unwrap(),
+            expected
+        );
+        let runner = runtime.into_runner();
+        assert_eq!(runner.requests.len(), 1);
+        assert!(runner.waits.is_empty());
+        assert!(runner.timeouts.is_empty());
+        assert_eq!(
+            framed_remote_argv(&runner.requests[0]),
+            strings(&[
+                "nix",
+                "copy",
+                "--option",
+                "connect-timeout",
+                "5",
+                "--option",
+                "download-attempts",
+                "2",
+                "--from",
+                &cache.url,
+                "--option",
+                "extra-trusted-public-keys",
+                "cache.example-1:key",
+                closure.as_str(),
+            ])
+        );
+    }
+}
+
+#[test]
+fn cache_copy_recognizes_final_cache_connectivity_without_retaining_raw_evidence() {
+    let cache = CacheSource::new("http://[::1]:5000/cache?secret=private", ["key"]).unwrap();
+    for (reason, cause) in [
+        (
+            "Could not resolve hostname (6) Could not resolve host: peer",
+            CacheConnectivityCause::NameResolution,
+        ),
+        (
+            "Couldn't connect to server (7)",
+            CacheConnectivityCause::Connection,
+        ),
+        (
+            "Timeout was reached (28) Connection timed out after 5000 ms",
+            CacheConnectivityCause::Timeout,
+        ),
+    ] {
+        let url = "http://[::1]:5000/cache/object.narinfo";
+        let stderr = format!(
+            "warning: unable to download '{url}': {reason}; retrying in 300 ms (attempt 1/2)\ndisabling binary cache 'http://[::1]:5000/cache' for 60 seconds\nerror: unable to download '{url}': {reason}\n"
+        );
+        let outcome = CacheCopyOutcome::classify(&CommandAttempt::failure(1, "", stderr), &cache);
+        assert_eq!(
+            outcome,
+            CacheCopyOutcome::CacheConnectivityFailure {
+                status: CommandStatus::Exit(1),
+                cause
+            }
+        );
+        assert_eq!(outcome.status(), CommandStatus::Exit(1));
+        assert!(!format!("{outcome:?}").contains(url));
+    }
+}
+
+#[test]
+fn cache_copy_fails_closed_on_other_status_origin_or_cause() {
+    let cache = CacheSource::new("https://cache.example", ["key"]).unwrap();
+    let diagnostic = "error: unable to download 'https://cache.example/nix-cache-info': Could not resolve hostname (6)";
+    let retry = "warning: unable to download 'https://cache.example/nix-cache-info': Could not resolve hostname (6); retrying in 300 ms (attempt 1/2)";
+    for (code, stderr) in [
+        (42, diagnostic.to_owned()),
+        (130, diagnostic.to_owned()),
+        (255, diagnostic.to_owned()),
+        (1, retry.to_owned()),
+        (
+            1,
+            format!("{retry}\nerror: lacks a signature by a trusted key"),
+        ),
+        (1, format!("{retry}\nerror: NAR hash mismatch")),
+        (1, format!("{retry}\nHost key verification failed.")),
+        (
+            1,
+            format!("{diagnostic}\nssh: connect to host target port 22: Connection refused"),
+        ),
+        (1, format!("error: HTTP error 404\n{diagnostic}")),
+        (
+            1,
+            diagnostic.replace(
+                "Could not resolve hostname (6)",
+                "HTTP error 404 (Could not resolve hostname (6))",
+            ),
+        ),
+        (
+            1,
+            diagnostic.replace("cache.example", "cache.example.other"),
+        ),
+        (1, diagnostic.replace("cache.example", "cache.example:123")),
+        (1, diagnostic.replace("cache.example", "other.example")),
+        (1, diagnostic.replace("(6)", "(60)")),
+        (23, String::new()),
+    ] {
+        let attempt = CommandAttempt::failure(code, "", stderr);
+        assert_eq!(
+            CacheCopyOutcome::classify(&attempt, &cache),
+            CacheCopyOutcome::Terminal(CommandStatus::Exit(code)),
+            "{attempt:?}"
+        );
+    }
+    let cache = CacheSource::new("https://cache.example/nix", ["key"]).unwrap();
+    assert_eq!(
+        CacheCopyOutcome::classify(&CommandAttempt::failure(1, "", diagnostic), &cache),
+        CacheCopyOutcome::Terminal(CommandStatus::Exit(1))
+    );
+}
+
+#[test]
 fn target_cache_distribution_copies_then_verifies_the_exact_closure() {
     let runner = FakeRunner::with_outputs([success("copied"), success("")]);
     let mut runtime = HostRuntime::new(runner, PathBuf::from("/repo"), DryRun::No).unwrap();
@@ -1338,6 +1490,12 @@ fn target_cache_distribution_copies_then_verifies_the_exact_closure() {
     assert_eq!(verified, CommandStatus::Success);
     let runner = runtime.into_runner();
     assert_eq!(runner.requests.len(), 2);
+    let strict = framed_remote_argv(&runner.requests[0]);
+    assert!(
+        !strict
+            .iter()
+            .any(|a| matches!(a.as_str(), "download-attempts" | "connect-timeout"))
+    );
     assert!(runner.requests[0].task.name().contains("cache-pull"));
     assert!(runner.requests[1].task.name().contains("closure-verify"));
     assert!(

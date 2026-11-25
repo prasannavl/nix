@@ -1,5 +1,39 @@
 # `pvl-vlab-1` cache DNS relay failure
 
+## Current native policy (2026-11)
+
+- `auto`: keep same-store verification and target-first pull when the builder
+  owns the cache. Only a final Nix DNS, connection or timeout error for that
+  cache can switch routes. Retry chatter, SSH errors, missing paths, TLS,
+  signature and hash failures are not evidence for a different route.
+- Prefer the existing workstation relay when it works. If its HTTP(S) source
+  also fails to connect, use the exact declared registry owner
+  (`registries.nix`, or legacy `buildCache`) and its primary SSH route. An
+  unmatched host or URL override, or a local owner, grants no additional
+  fallback. Retained handoffs gain no builder access. Explicit modes are
+  unchanged.
+- Each active owner relay has a foreground SSH process and a private Unix SOCKS
+  socket, not a shared daemon or listening TCP port. Nix keeps the original
+  cache URL, TLS identity and signature checks. The destination uses its normal
+  Nix SSH options and any HTTP-based jump helper retains its original proxy
+  environment. Automatic route attempts bound connection setup, not closure
+  transfer time. See `pkgs/tools/abird-host-manager/tests/cache-relay-smoke.sh`
+  for an opt-in isolated OpenSSH, HTTP(S) and signed-Nix-cache check.
+
+### Moving a cache without stranding old generations
+
+1. While the old publisher is still reachable, add the new cache route to the
+   gateway and consumers **alongside** the old one. Deploy that routing change
+   first.
+2. From the running consumer, verify the route and fetch `nix-cache-info` and an
+   expected signed path from the new publisher. A candidate evaluation or a
+   cache-owner-local probe is not consumer reachability.
+3. Switch the registry URL and verify a normal acquisition. Retire the old route
+   only after consumers and required rollback generations no longer need it. Do
+   not widen the VPN or firewall to compensate for rollout order.
+
+The sections below record earlier implementations and incidents.
+
 ## Incident
 
 Nixbot run `3QAkzu`, started August 25, 2026 at `22:51:34 +0800`, built the new

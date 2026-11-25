@@ -10,6 +10,7 @@ pub mod build;
 pub mod build_backend;
 pub mod build_lease;
 pub mod build_runtime;
+mod cache_proxy;
 pub mod ci_runtime;
 pub mod cli;
 pub mod deploy;
