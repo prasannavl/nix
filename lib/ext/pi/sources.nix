@@ -4,8 +4,8 @@
     package = "@gotgenes/pi-anthropic-auth";
     owner = "gotgenes";
     repo = "pi-anthropic-auth";
-    version = "3.6.0";
-    srcHash = "sha256-qww+guEay2rVWhENXcxIObZSPeGo6XIURg1R88iiJE4=";
+    version = "3.7.0";
+    srcHash = "sha256-llCumqozaBQYO04oRZvqtLD88oa2gy8KrVBpBRGpuKY=";
   };
 
   "pi-diff" = {
@@ -184,8 +184,8 @@
   "pi-subagents" = {
     kind = "npm";
     package = "@gotgenes/pi-subagents";
-    version = "25.1.0";
-    srcHash = "sha256-BoA1PB5pcvQTa3ac6tBmQCXyf5jQQ1nNDWGHn/8O4Ww=";
+    version = "26.0.1";
+    srcHash = "sha256-F2JSHVdFKxFFsU412YraZoOUkRWA5ANr7uNLEbMCUaI=";
   };
 
   "pi-tool" = {
@@ -320,10 +320,10 @@
     package = "@agegr/pi-web";
     owner = "agegr";
     repo = "pi-web";
-    version = "0.18.0";
-    srcHash = "sha256-WuAKZElf9ZUF251/F3aI29Gmq3vfgeaIkLKtBxNASkY=";
-    releaseHash = "sha256-Dl8cgjULhdc5dNeIxexOe7oMaxIZqF0Kv0JGa9AFt7A=";
-    npmDepsHash = "sha256-lY7mGpOY62Hde1/N/K1y+dh2Rb6QOv5xgVnAjErFRzs=";
+    version = "0.19.0";
+    srcHash = "sha256-YQvn3y8CBY/vq5q1ZtuO6mz56lLN0NdODffq2ZBZRSQ=";
+    releaseHash = "sha256-oEJpi33lQ9q/zkTY4u4pner1vtaNsjHWOd1Sh7/831U=";
+    npmDepsHash = "sha256-0LeM+aZn9OuP3HyxfqO9Kq1EYHVsQLxrr0YkrbjdoKQ=";
   };
 
   "rpiv-advisor" = {
@@ -331,15 +331,15 @@
     package = "@juicesharp/rpiv-advisor";
     owner = "juicesharp";
     repo = "rpiv-mono";
-    version = "2.15.0";
-    srcHash = "sha256-AaH67C9qKXKfuMEIOlAUKzV7oXFpIgAmqbYGM45+Et4=";
+    version = "2.16.0";
+    srcHash = "sha256-tiute5LmhFmLoQzVObKHsbZJT1JMWd/YZSY1KQC5JZ4=";
     depsResolver = "registry";
     deps = {
       "@juicesharp/rpiv-config" = {
         kind = "npm-dep";
-        range = "^2.15.0";
-        version = "2.15.0";
-        srcHash = "sha256-Z7QC661n6pbbY5J1/KuXqmagYMox6j96PYaX/bg4xRA=";
+        range = "^2.16.0";
+        version = "2.16.0";
+        srcHash = "sha256-5tij/7V4pPg4nU0PFEi6vu4UUCbEOHckrmPOVEoRtss=";
       };
     };
   };
@@ -349,8 +349,8 @@
     package = "@juicesharp/rpiv-btw";
     owner = "juicesharp";
     repo = "rpiv-mono";
-    version = "2.15.0";
-    srcHash = "sha256-42hv077U5//X9KnShuNSql1oo42aHczzQboYWp2BUko=";
+    version = "2.16.0";
+    srcHash = "sha256-0YzUJrXY7Ukrps/DLdRs8n3o8qB9vIlwKyz6+fthY/o=";
   };
 
   "rpiv-todo" = {
@@ -358,15 +358,15 @@
     package = "@juicesharp/rpiv-todo";
     owner = "juicesharp";
     repo = "rpiv-mono";
-    version = "2.15.0";
-    srcHash = "sha256-9/1DJUvVV6o75HCu6mFvRya5+dTFfGm/BPy20xGQvVY=";
+    version = "2.16.0";
+    srcHash = "sha256-x7XdMCJTir4vIf1WbQfkRXKpmsyn+CisTq6BB/mrbNk=";
     depsResolver = "registry";
     deps = {
       "@juicesharp/rpiv-config" = {
         kind = "npm-dep";
-        range = "^2.15.0";
-        version = "2.15.0";
-        srcHash = "sha256-Z7QC661n6pbbY5J1/KuXqmagYMox6j96PYaX/bg4xRA=";
+        range = "^2.16.0";
+        version = "2.16.0";
+        srcHash = "sha256-5tij/7V4pPg4nU0PFEi6vu4UUCbEOHckrmPOVEoRtss=";
       };
     };
   };
@@ -376,8 +376,8 @@
     package = "@juicesharp/rpiv-voice";
     owner = "juicesharp";
     repo = "rpiv-mono";
-    version = "2.15.0";
-    srcHash = "sha256-710aXXZCYmzkTprH9+4OGuQdGJFGsudH/rmc+NZRzYg=";
+    version = "2.16.0";
+    srcHash = "sha256-ZOWaEapDQVV/L3KsBVVBgYogD9/oxKAjAU/UR2TXUno=";
     depsResolver = "registry";
     deps = {
       "@decibri/decibri-linux-x64-gnu" = {
@@ -388,9 +388,9 @@
       };
       "@juicesharp/rpiv-config" = {
         kind = "npm-dep";
-        range = "^2.15.0";
-        version = "2.15.0";
-        srcHash = "sha256-Z7QC661n6pbbY5J1/KuXqmagYMox6j96PYaX/bg4xRA=";
+        range = "^2.16.0";
+        version = "2.16.0";
+        srcHash = "sha256-5tij/7V4pPg4nU0PFEi6vu4UUCbEOHckrmPOVEoRtss=";
       };
       "decibri" = {
         kind = "npm-dep";
