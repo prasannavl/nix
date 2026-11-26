@@ -23,8 +23,8 @@
     package = "@narumitw/pi-goal";
     owner = "narumiruna";
     repo = "pi-extensions";
-    version = "0.55.4";
-    srcHash = "sha256-jra86Hp0hecb2wGO3/lfomAyPUg+ENFioZNaDnyN5/g=";
+    version = "0.55.5";
+    srcHash = "sha256-5iv2JCR5QjkkSwFHVmisTSAWRj8rj0ghSzIJMJCjCxw=";
     depsResolver = "registry";
     deps = {
       "@narumitw/pi-tui-kit" = {
@@ -184,8 +184,8 @@
   "pi-subagents" = {
     kind = "npm";
     package = "@gotgenes/pi-subagents";
-    version = "25.0.5";
-    srcHash = "sha256-UhB8Lp7vE2PC7UCOvHkypPyWT0BdV70zLj3jR/r/hJo=";
+    version = "25.1.0";
+    srcHash = "sha256-BoA1PB5pcvQTa3ac6tBmQCXyf5jQQ1nNDWGHn/8O4Ww=";
   };
 
   "pi-tool" = {
