@@ -122,6 +122,18 @@
   and lockfile inputs from the caller instead of discovering them with fixed
   upward paths.
 
+## Test timing
+
+- Prove ordering with events, not elapsed time. For async and blocking fixtures,
+  wait for the worker to reach a gate before releasing it. Release the gate on
+  drop as well as on success so a failed assertion cannot strand the worker.
+- Bound waits for progress, cancellation, channel closure and task exit with a
+  shared test helper. When the test sets the operation's deadline, derive the
+  outer wait from the same budget so the operation can report its own timeout.
+- If a fallback can produce the same result, assert what actually happened: for
+  example, verify shutdown reaped the subprocess, not just that shutdown
+  returned. Use timers to test deadlines, not to synchronize workers.
+
 ## Future isolated mode
 
 - Standalone-capable Rust package flakes will need a local Rust source boundary
