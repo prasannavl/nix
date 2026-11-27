@@ -35,7 +35,11 @@ prefixed with `example-`.
 
 Externally sourced units live under `lib/ext/` when they follow upstream
 (unpatched, pinned release) and under `pkgs/ext/` when this repository owns
-their shape (patches, vendored locks, own build logic). `lib/ext/**` is the
+their shape (patches, hand-maintained dependency closures, own build logic). A
+runtime lock generated with the source pin (`mcpvault`) and a dependency
+selected from locked unstable (`gimp-mcp`) do not change ownership. Both are
+host overlay packages, not root package outputs; for example, use
+`nix build .#nixosConfigurations.pvl-x2.pkgs.gimp-mcp`. `lib/ext/**` is the
 reserved non-composition exception inside `lib/**`; it owns source recipes,
 pins, and updaters rather than Z assembly. Management style decides the root;
 registration in `pkgs/manifest.nix` follows placement. See

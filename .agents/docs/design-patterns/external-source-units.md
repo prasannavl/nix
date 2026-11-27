@@ -13,13 +13,17 @@ Management style decides the root, not the other way around. Registration in
 - `lib/ext/<unit>/` owns units that follow upstream: unpatched sources, pinned
   versions or release tags, and either a package-local updater or a source kind
   the generic reporter reads (`github-tags`, `github-branch`, `gitlab-tags`,
-  `registry-tags`). No repo-owned patch, vendored lock, or bespoke build logic
-  is expected to accumulate here. This source-owner subtree is the exception to
-  `lib/`'s repository-composition role.
-- `pkgs/ext/<unit>/` owns units the repository manages itself: patches, vendored
-  dependency closures, repo-owned build or test logic, or repo-owned code. These
-  are registered in `pkgs/manifest.nix` because the repository owns their shape
-  and review cycle.
+  `registry-tags`). No repo-owned patch, hand-maintained lock, or bespoke build
+  logic is expected to accumulate here. A lock the unit's `update.sh`
+  regenerates from upstream release metadata, together with `sources.nix`, is
+  pin data rather than repo ownership (`lib/ext/mcpvault/runtime/`). Building
+  against another locked package set, such as `unstable` for a dependency major
+  that upstream requires, is also not a patch (`lib/ext/gimp-mcp`). This
+  source-owner subtree is the exception to `lib/`'s repository-composition role.
+- `pkgs/ext/<unit>/` owns units the repository manages itself: patches,
+  hand-maintained dependency closures, repo-owned build or test logic, or
+  repo-owned code. These are registered in `pkgs/manifest.nix` because the
+  repository owns their shape and review cycle.
 - A unit may be promoted from `lib/ext/` to `pkgs/ext/` once it needs a
   repo-owned patch or lock, and moved back if that ownership goes away.
 - Agent-facing tooling that follows upstream (MCP servers, browser and desktop
@@ -100,9 +104,13 @@ external roots.
 
 Every package-local updater supports `--report`, `--force`, and `--color=WHEN`.
 Suite updaters may add `--package`; single-package updaters may add `--version`.
-Updaters read and replace only their sibling `sources.nix`, skip expensive
+Normally an updater replaces only its sibling `sources.nix`. Skip expensive
 prefetch work for current versions, format generated Nix, and use a
-repository-local temporary path before atomic replacement.
+repository-local temporary path on the destination filesystem for atomic file
+replacement. When the unit also owns a generated runtime manifest and lock,
+build the staged set first. MCPVault installs the manifest and lock before
+`sources.nix`; these are individual renames, not one transaction. The package
+rejects a locked app version that disagrees with `sources.nix`.
 
 Updaters that evaluate the repository's own flake from an embedded Nix
 expression must import `ab/repo/self-flake.nix` instead of calling

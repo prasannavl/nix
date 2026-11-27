@@ -1,0 +1,8 @@
+{
+  "name": "mcpvault-runtime",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "@bitbonsai/mcpvault": "0.18.4"
+  }
+}
