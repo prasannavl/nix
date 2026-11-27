@@ -1,0 +1,872 @@
+state	path	pvl-mode	pvl-blob	abird-mode	abird-blob	disposition
+pvl-only	lib/ext/gnome-ext/p7-borders.nix	100644	230bedfe31c836eb101a74a8dea63e7835c243a6	-	-	Existing Pvl desktop/media/editor tool; not in z package selection.
+pvl-only	lib/ext/gnome-ext/p7-cmds.nix	100644	61e7d94f11db078a90f55a42ee308f948d8f4356	-	-	Existing Pvl desktop/media/editor tool; not in z package selection.
+pvl-only	lib/ext/gnome-ext/sources.nix	100644	ad538600e21098dd182bc9c5365a4c7972e97043	-	-	Existing Pvl desktop/media/editor tool; not in z package selection.
+pvl-only	lib/ext/gnome-ext/update.sh	100755	aada58cd46f297bfa70dabd2b798525d08dcad22	-	-	Existing Pvl desktop/media/editor tool; not in z package selection.
+pvl-only	lib/ext/handbrake.nix	100644	26a1eb07bd272b8d630d998ecc455501c835a05a	-	-	Existing Pvl desktop/media/editor tool; not in z package selection.
+pvl-only	lib/ext/neovim-plugins/default.nix	100644	8c8e53b59790ab8f30c56b2a8a94bbf3dd3fa46e	-	-	Existing Pvl desktop/media/editor tool; not in z package selection.
+pvl-only	lib/ext/neovim-plugins/sources.nix	100644	12b6b393f955a736c0522aac0ecd93f3255b129c	-	-	Existing Pvl desktop/media/editor tool; not in z package selection.
+pvl-only	lib/ext/neovim-plugins/update.sh	100755	bb052f19a83192175f57f99d2b985febbe3235ab	-	-	Existing Pvl desktop/media/editor tool; not in z package selection.
+different	lib/ext/stalwart-cli/sources.nix	100644	32587baa28755088c4b7c8ace9dc5d2a58503d65	100644	e300ffdaa84e5c0664315152a6025e89ebf4f08b	Keep PVL Stalwart CLI 2.0.0 (6327ad721); actual Abird tip still pins 1.0.14.
+pvl-only	lib/ext/vocalinux/default.nix	100644	4262d8cc5d25b5f422a9decf894d344712b4a5cd	-	-	Desktop dictation stack needs Pvl-only flake inputs/consumers.
+pvl-only	lib/ext/voxtype/default.nix	100644	482b85824d7527d2c81a222c9f3ce6cf361cbf5e	-	-	Desktop dictation stack needs Pvl-only flake inputs/consumers.
+pvl-only	lib/ext/voxtype/gguf-worker.nix	100644	a3a545d43813f2d276fea3bc787b171153cf3387	-	-	Desktop dictation stack needs Pvl-only flake inputs/consumers.
+pvl-only	lib/ext/whisrs/default.nix	100644	17bb5927555a4e888e9f373387785fc990bc3e49	-	-	Desktop dictation stack needs Pvl-only flake inputs/consumers.
+pvl-only	lib/images/gap3-base.nix	100644	10303ccfc6394cf723a4f35f7fb5abb7a8069f72	-	-	Existing PVL-only image wrapper; no tracked caller; public outputs are assembled in lib/images.nix. No deletion inferred.
+pvl-only	lib/images/incus-base.nix	100644	10303ccfc6394cf723a4f35f7fb5abb7a8069f72	-	-	Existing PVL-only image wrapper; no tracked caller; public outputs are assembled in lib/images.nix. No deletion inferred.
+different	lib/overlays/default.nix	100644	fc8df64a5b30090f3a282b15305cd7c28a702890	100644	e4da2bd7c495985241baed0c5e4ec73d3a1e65a5	Package registrations shared; overlay order, aw kernel source and desktop membership belong to each repo.
+pvl-only	lib/overlays/gdm.nix	100644	78ec7c5423786cc51a77daa6622390aff89e762c	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+pvl-only	lib/overlays/niri.nix	100644	648fe8335db5bb9893dc33797135570d39660eaf	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+pvl-only	lib/overlays/pvl.nix	100644	8690a9bca0b0a29f58e123204131ec8cf5b513b4	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+pvl-only	lib/overlays/supergfxctl.nix	100644	2859017f796d9fb0feaa51bfa41abe641f3c45af	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+pvl-only	lib/overlays/sway.nix	100644	39d43e26b80ddc99a19ae3937551bf3fb483a741	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+pvl-only	lib/overlays/unstable-sys.nix	100644	2b7e8df2938bf1471fc3f5fa298f7c5ef76a59e6	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+different	lib/overlays/unstable.nix	100644	91300ce60626c444a65faf306676f2363d5ea35c	100644	b2a3349e319569385f08a7772399c84d53c1852d	z server/web versus Pvl desktop package selections.
+pvl-only	lib/overlays/voice.nix	100644	cc46dbff91e65a5f21e767bf540accef8d877145	-	-	Desktop dictation stack needs Pvl-only flake inputs/consumers.
+pvl-only	lib/profiles/all.nix	100644	cca594025230e2469c3c31ae8df11c3dd26c6647	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+pvl-only	lib/profiles/core.nix	100644	94d23d92aa08ee56a3aff794823cda52fe340f95	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+pvl-only	lib/profiles/desktop-core.nix	100644	7f75bd3787f34e8aeab2d737e1c461df89e3b4a2	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+pvl-only	lib/profiles/desktop-gnome-minimal.nix	100644	7d7cf1c4a187913fee181608606a505e71f6cdaf	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+pvl-only	lib/profiles/desktop-gnome.nix	100644	a4c085f8efee36eb6f4285d4ee89b5eec4b990b0	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+pvl-only	lib/profiles/policy/hardware.nix	100644	449a528c5889acbfb74c4caf683ee9dc9788fe5e	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+different	lib/profiles/policy/locale.nix	100644	5c1f815b42fb3dc2c56b281f50f508c875c627b7	100644	37f945cdaf4d0afb7c364a62be8bbc1f051aff7f	Fixed z timezone versus geolocation/resume.
+different	lib/profiles/policy/network.nix	100644	a5a86cd967dd765294f53987b8aa3f35434050cc	100644	f88186f7fc3b9c5bf8dc5a5b8a258232f0f2dd31	Resolver/DNSSEC defaults differ.
+different	lib/profiles/policy/nix-builder.nix	100644	a0b5b9cc9333f52fa8e3859c55bf582c8eb40cac	100644	7d8b8c914c1a56cbd0f5a2aaddc4456bae555854	z admission 1/12/8 versus Pvl 16/0/16.
+pvl-only	lib/profiles/policy/sudo.nix	100644	d36ab7bc620b32c830f03b1f73e9aef481bd2030	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+pvl-only	lib/profiles/policy/systemd.nix	100644	06272a1dd56f7bed672f05867a72db1d27c8dd83	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+pvl-only	lib/profiles/policy/wm.nix	100644	e690580b6945eb946a755653e3129dd9a4f40de0	-	-	Pvl repository/physical desktop assembly or hardware policy; not a portable ab component.
+different	lib/repo-checks.nix	100644	6977996e14b2dd02e837ac73a1bb57ad2a76cf82	100644	06d9fdee521c93f940d7ae04de93c619b811903a	PVL registers its identity/stack checks and collision guard; Abird additionally promotes its product and topology checks.
+abird-only	lib/tests/kanidm-gap3.nix	-	-	100644	8e44ebbecfd8b1a95e9293ec46b67e6dd65555f6	z-specific acceptance/stack test.
+pvl-only	lib/tests/pvl/nix-builder-gc-coordination.nix	100644	e3dd8327621f9e50291aa24eedf5894b6bb78870	-	-	Builder admission policy tested under lib/tests/repository/abird/nix-builder-gc-defaults.nix.
+abird-only	lib/tests/repository/abird/abird-agent-module.nix	-	-	100644	6602b8f91f3553cc0b77521e5a79cbe85534f1fa	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/ai-agent-binding.nix	-	-	100644	570fff9134c317c434026c0c260d4d7b63ea24fa	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/ai-comfyui.nix	-	-	100644	26f6c556c2af1cefb9489550fb40c0dd224e1669	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/ai-consumers.nix	-	-	100644	f3ce7541b0aaedc05454541bb69b08427b50221f	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/ai-graphiti.nix	-	-	100644	3a38f73af991eea6e44fecf9a0ee2e32adec6686	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/ai-mirofish.nix	-	-	100644	50f85bbcf3e1add941432105e2919cf205ccdc87	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/ai-service.nix	-	-	100644	fd4ca1244dae5058bd652a08b0b4d00eacab6350	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/ai-zulip-robin.nix	-	-	100644	e2b86e43ef22e73ba528b072a2263e403b0ea8bf	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/audit-component-source.sh	-	-	100644	d8f7c2e50b2e9e89ab5ab29fcb3966b3f779de36	Exact fixture (blob and mode) at lib/tests/repository/pvl/audit-component-source.sh.
+abird-only	lib/tests/repository/abird/child-flake-parity.nix	-	-	100644	785c8facd375059039f2727466bc9ce9380a9693	Identity-scoped fixture; mapped to lib/tests/repository/pvl/child-flake-parity.nix, preserving local registrations, consumers and assertions.
+abird-only	lib/tests/repository/abird/component-boundaries.nix	-	-	100644	0c66c9d8da38bb2b70cc36de9df95168c120c06f	Identity-scoped fixture; mapped to lib/tests/repository/pvl/component-boundaries.nix, preserving local registrations, consumers and assertions.
+abird-only	lib/tests/repository/abird/config-stacks.nix	-	-	100644	d7dac75a627bfde0b0a2890ae80190e12c8d640d	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/corp-auth.nix	-	-	100644	50012299b629eace33a53130a2a59945f634972c	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/default.nix	-	-	100644	5379ded53c9b9484ff6244aa3ff9ac07cd8f2600	Identity-scoped fixture; mapped to lib/tests/repository/pvl/default.nix, preserving local registrations, consumers and assertions.
+abird-only	lib/tests/repository/abird/external-core-package.nix	-	-	100644	4d802652e84a0e42023a7e85224d96e1a46aec3a	Exact fixture (blob and mode) at lib/tests/repository/pvl/external-core-package.nix.
+abird-only	lib/tests/repository/abird/external-packages.nix	-	-	100644	08dc2a4c602e0713a06526bcca6e7f5bac55c8cb	Exact fixture (blob and mode) at lib/tests/repository/pvl/external-packages.nix.
+abird-only	lib/tests/repository/abird/external-repo.nix	-	-	100644	bc2edd9a3732725b17c9eee6102ff68b4f2db43b	Exact fixture (blob and mode) at lib/tests/repository/pvl/external-repo.nix.
+abird-only	lib/tests/repository/abird/external-runtime.nix	-	-	100644	89f15b906d60f225d964aae1a23e80c33556ea96	Exact fixture (blob and mode) at lib/tests/repository/pvl/external-runtime.nix.
+abird-only	lib/tests/repository/abird/external-services.nix	-	-	100644	a5db7d012f21e4337b5e910712a38b09878f3bfc	Identity-mapped fixture; PVL exercises Kanidm/Stalwart package argument contracts here, Abird in component-boundaries.nix.
+abird-only	lib/tests/repository/abird/external-stack.nix	-	-	100644	9d6d21f711f725d7fc4baaaeb339852159204ab8	Exact fixture (blob and mode) at lib/tests/repository/pvl/external-stack.nix.
+abird-only	lib/tests/repository/abird/external-z-consumption.nix	-	-	100644	a68d5fc089951240379cae47c6108f5d8d8da5ae	Exact fixture (blob and mode) at lib/tests/repository/pvl/external-z-consumption.nix.
+abird-only	lib/tests/repository/abird/fabric-contract.nix	-	-	100644	d7b7701851670dd173acdc7bf8c9d78a78f5d30b	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/flake-isolated.nix	-	-	100644	17fa7020d2d0b922ab0fda4d6163644ed1e5d2d0	Identity-scoped fixture; mapped to lib/tests/repository/pvl/flake-isolated.nix, preserving local registrations, consumers and assertions.
+abird-only	lib/tests/repository/abird/mail-ingress-contract.nix	-	-	100644	cd4efa5699bf6b80771cbe29bff2175e760a0f1f	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/nix-builder-gc-defaults.nix	-	-	100644	d6a1f3914570e446a026ec2de353e6bd0b8375ce	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/nix-cache-policy.nix	-	-	100644	b32a6e423a565c95d7e4221cb0c7fa518c4a203f	Identity-scoped fixture; mapped to lib/tests/repository/pvl/nix-cache-policy.nix, preserving local registrations, consumers and assertions.
+abird-only	lib/tests/repository/abird/nixos-core.nix	-	-	100644	e87c4741d899fddb4f2747f9aa8bd41f115039bd	Identity-scoped fixture; mapped to lib/tests/repository/pvl/nixos-core.nix, preserving local registrations, consumers and assertions.
+abird-only	lib/tests/repository/abird/opendesign.nix	-	-	100644	76d9383aa17234d81dbfe6966c5c5ed0900ca771	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/phase-projection.nix	-	-	100644	eeaca506f64ee2a7f0d109428aedb0b8797ea5c1	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/postgres-extensions.nix	-	-	100644	8f8ca6c655c9403fab056ca8555543a47db81104	Identity-scoped fixture; mapped to lib/tests/repository/pvl/postgres-extensions.nix, preserving local registrations, consumers and assertions.
+abird-only	lib/tests/repository/abird/repo-modules.nix	-	-	100644	a75b806be48bc44d4b5c6581c168d94ca3f116d9	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/rust-base-integration.nix	-	-	100644	c275f2b459d7dec984d68ef7dc362991e0f76ee0	Identity-scoped fixture; mapped to lib/tests/repository/pvl/rust-base-integration.nix, preserving local registrations, consumers and assertions.
+abird-only	lib/tests/repository/abird/rust-composition-integration.nix	-	-	100644	63f56abdf5e088cccfcb5cced0139f4e3a183d32	Identity-scoped fixture; mapped to lib/tests/repository/pvl/rust-composition-integration.nix, preserving local registrations, consumers and assertions.
+abird-only	lib/tests/repository/abird/rust-fabric-policy.nix	-	-	100644	31f12465626f2df2b3e134f26e6d3b177871b87b	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/rust-native-context-integration.nix	-	-	100644	894deea30702ec979ade7dab5854361813db28fb	Identity-scoped fixture; mapped to lib/tests/repository/pvl/rust-native-context-integration.nix, preserving local registrations, consumers and assertions.
+abird-only	lib/tests/repository/abird/rust-toolchain-integration.nix	-	-	100644	f6d89d038ee4690e970a7af055847f869d8441b6	Identity-scoped fixture; mapped to lib/tests/repository/pvl/rust-toolchain-integration.nix, preserving local registrations, consumers and assertions.
+abird-only	lib/tests/repository/abird/service-client-endpoints.nix	-	-	100644	4c26bd595c0a3c4d65de33b3f183bc0b82ece760	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/service-moves.nix	-	-	100644	e21e66f26f24d44055335111c6caff79b4b56ba2	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/test_ai_comfyui.py	-	-	100644	1a2c71a2d00a63c558aea412ab6ba5bc5cf32778	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/test_ai_mirofish.py	-	-	100644	dd1433e85e6352906c6eb8c7dd36be287cb7073b	z repository, extraction or private product acceptance test.
+abird-only	lib/tests/repository/abird/test_opendesign_proxy.cjs	-	-	100644	129c8f11f7d9febcb23d477490b6a65a5a8a6d1d	z repository, extraction or private product acceptance test.
+different	lib/tests/repository/nginx-phase-projection-routes.nix	100644	f96e9c19ff09d84949c5ba424b499d1bb5633d2c	100644	63e4830b5ca31ce8044b86795e2461d67bb4d600	PVL tests the portable renderer without the Abird proxy host adapter, including opt-out and inherited access logging.
+pvl-only	lib/tests/repository/pvl/audit-component-source.sh	100644	d8f7c2e50b2e9e89ab5ab29fcb3966b3f779de36	-	-	Exact fixture (blob and mode) at lib/tests/repository/abird/audit-component-source.sh.
+pvl-only	lib/tests/repository/pvl/child-flake-parity.nix	100644	338f3f9d9bc8f28a013e81ebc2a5da9b54c167e0	-	-	Identity-scoped fixture; mapped to lib/tests/repository/abird/child-flake-parity.nix, preserving local registrations, consumers and assertions.
+pvl-only	lib/tests/repository/pvl/component-boundaries.nix	100644	8a1d43e800e06845360136bbb42aadcc04689db8	-	-	Identity-scoped fixture; mapped to lib/tests/repository/abird/component-boundaries.nix, preserving local registrations, consumers and assertions.
+pvl-only	lib/tests/repository/pvl/default.nix	100644	3e9e60ba1e14a2d5c42d37ceea4e09c9ee8624a1	-	-	Identity-scoped fixture; mapped to lib/tests/repository/abird/default.nix, preserving local registrations, consumers and assertions.
+pvl-only	lib/tests/repository/pvl/external-core-package.nix	100644	4d802652e84a0e42023a7e85224d96e1a46aec3a	-	-	Exact fixture (blob and mode) at lib/tests/repository/abird/external-core-package.nix.
+pvl-only	lib/tests/repository/pvl/external-packages.nix	100644	08dc2a4c602e0713a06526bcca6e7f5bac55c8cb	-	-	Exact fixture (blob and mode) at lib/tests/repository/abird/external-packages.nix.
+pvl-only	lib/tests/repository/pvl/external-repo.nix	100644	bc2edd9a3732725b17c9eee6102ff68b4f2db43b	-	-	Exact fixture (blob and mode) at lib/tests/repository/abird/external-repo.nix.
+pvl-only	lib/tests/repository/pvl/external-runtime.nix	100644	89f15b906d60f225d964aae1a23e80c33556ea96	-	-	Exact fixture (blob and mode) at lib/tests/repository/abird/external-runtime.nix.
+pvl-only	lib/tests/repository/pvl/external-services.nix	100644	a06988df9ccb2510a92d2edd89146a25a7f2b79d	-	-	Identity-mapped fixture; PVL exercises Kanidm/Stalwart package argument contracts here, Abird in component-boundaries.nix.
+pvl-only	lib/tests/repository/pvl/external-stack.nix	100644	9d6d21f711f725d7fc4baaaeb339852159204ab8	-	-	Exact fixture (blob and mode) at lib/tests/repository/abird/external-stack.nix.
+pvl-only	lib/tests/repository/pvl/external-z-consumption.nix	100644	a68d5fc089951240379cae47c6108f5d8d8da5ae	-	-	Exact fixture (blob and mode) at lib/tests/repository/abird/external-z-consumption.nix.
+pvl-only	lib/tests/repository/pvl/flake-isolated.nix	100644	ca72238d123cc2adeeac20becd70bb4a8c62a21e	-	-	Identity-scoped fixture; mapped to lib/tests/repository/abird/flake-isolated.nix, preserving local registrations, consumers and assertions.
+pvl-only	lib/tests/repository/pvl/nix-cache-policy.nix	100644	11d081614546e315e66cf2bdb00f56ea81c348b5	-	-	Identity-scoped fixture; mapped to lib/tests/repository/abird/nix-cache-policy.nix, preserving local registrations, consumers and assertions.
+pvl-only	lib/tests/repository/pvl/nixos-core.nix	100644	dd5cc1bb6487da62b9925ae87b5b0085caf5d7db	-	-	Identity-scoped fixture; mapped to lib/tests/repository/abird/nixos-core.nix, preserving local registrations, consumers and assertions.
+pvl-only	lib/tests/repository/pvl/pi-web.nix	100644	c2178b829fec31b7f68b714fdc832e564b633a37	-	-	Pvl host/user integration only; no z Pi Web host or Pvl secret inventory.
+pvl-only	lib/tests/repository/pvl/postgres-extensions.nix	100644	42f04090254e4cfd8e33a1ebcd130d266f733550	-	-	Identity-scoped fixture; mapped to lib/tests/repository/abird/postgres-extensions.nix, preserving local registrations, consumers and assertions.
+pvl-only	lib/tests/repository/pvl/rust-base-integration.nix	100644	77f6ebb0d7b4901ac502e4c941daa3c268c3867d	-	-	Identity-scoped fixture; mapped to lib/tests/repository/abird/rust-base-integration.nix, preserving local registrations, consumers and assertions.
+pvl-only	lib/tests/repository/pvl/rust-composition-integration.nix	100644	25a7c836d5bf2c75bb7e23489be4c40ceb691f40	-	-	Identity-scoped fixture; mapped to lib/tests/repository/abird/rust-composition-integration.nix, preserving local registrations, consumers and assertions.
+pvl-only	lib/tests/repository/pvl/rust-native-context-integration.nix	100644	52ac161befee3269c25d12d7bf261dfd7f2a3f96	-	-	Identity-scoped fixture; mapped to lib/tests/repository/abird/rust-native-context-integration.nix, preserving local registrations, consumers and assertions.
+pvl-only	lib/tests/repository/pvl/rust-toolchain-integration.nix	100644	a20954ee0a1a9a41c0ee1eb55e20a4e1356d7f44	-	-	Identity-scoped fixture; mapped to lib/tests/repository/abird/rust-toolchain-integration.nix, preserving local registrations, consumers and assertions.
+pvl-only	lib/tests/repository/pvl/secrets.nix	100644	e09de63c5501f0cee82df8e944e44d9893ce9d37	-	-	Pvl host/user integration only; no z Pi Web host or Pvl secret inventory.
+different	pkgs/README.md	100644	2b8ebfaa64634cb41e853a14641442378acc81d8	100644	082c59956e9f762e6ffa96ee0c37f8cda7a4c51c	Repository product membership, exported tools and examples.
+abird-only	pkgs/apps/abird-app/.gitignore	-	-	100644	77018186dc6fc00e9d50173f014621e0ca3e3905	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/README.md	-	-	100644	8f58ef7ea0d447cac6a1fb7f4e31f9133eff22e4	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/default.nix	-	-	100644	482c84c010d4e6c33a060eb4cea2027952621537	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/flake.nix	-	-	100644	d85f1a7ce1c366e46161348860dc7658898ebfb7	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/frontend-dist/index.html	-	-	100644	71cef05a0ada0808f105cee8da750c3eb7b523c4	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/platform/linux.nix	-	-	100644	27d35b3201db8592bdb2bbf9c4b87ab90068be22	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/platform/macos.nix	-	-	100644	f7df7b5211306b953799e48dea22a7d83ba8fda0	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/platform/windows.nix	-	-	100644	c49cf40e571f091a18144f660fd4851313001592	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/src-tauri/Cargo.toml	-	-	100644	8aab7559066865593f693d0840def3ed9f175ade	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/src-tauri/build.rs	-	-	100644	261851f6b60e0ae6f244b5469289870facc8c997	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/src-tauri/icons/icon.png	-	-	100644	850f48b57bc5569b45cb1ee3bed4e904c94736fd	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/src-tauri/icons/icon.svg	-	-	100644	366c55c70347af5ec5a4013bf67019efce40c37b	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/src-tauri/src/api_key.rs	-	-	100644	c9dc69b9a704a6e5fe17df6b5c5227de053b8291	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/src-tauri/src/chatgpt.rs	-	-	100644	0887442eb71cc58880ff95f8ff781ae436736d8d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/src-tauri/src/main.rs	-	-	100644	7e74c5d9e5339f432aa95038d7ac23dc10137963	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/src-tauri/src/native_callback.rs	-	-	100644	72d651a8d439a5c0c1f21f397310114a858adc2b	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/src-tauri/src/preview.rs	-	-	100644	42fc4221b760600dfed9fc7ccdf4e302f4bf5bef	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/src-tauri/tauri.conf.json	-	-	100644	0153399cacbdf63e402541c448fdaba3b6869db2	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/src-tauri/tauri.linux.conf.json	-	-	100644	310650017c25cabbba4bd58bec7629d131a2dc8a	z product, tool or supporting package; retain membership.
+abird-only	pkgs/apps/abird-app/tests/desktop-service.nix	-	-	100644	f553cf18b8bdaa13855db706ae457db7df6621ef	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/parrot-core/Cargo.toml	-	-	100644	9b91b5e1512f5dc219f84f6baa2eb7f81e03d5f8	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/parrot-core/default.nix	-	-	100644	fadbcbe6bc98937c8bd666ecc012a3cfb737aee3	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/parrot-core/src/lib.rs	-	-	100644	e61fc01feffb39360ad3240360be7aa1efd4de22	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/robin-core/Cargo.toml	-	-	100644	896fb6db6a18462ef7deb6b2707b09c7a8be3f39	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/robin-core/README.md	-	-	100644	ffa8ac7d43d7555d4332a9c947bdb6faeaab5647	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/robin-core/default.nix	-	-	100644	b05680e43caaeb9db2773d34ebfd5fb2183dc5e3	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/robin-core/flake.nix	-	-	100644	4a57c7d37e1e434756cdec77eaebd57f5055e52d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/robin-core/src/lib.rs	-	-	100644	0be346c3d2745fa1bff108d485ede7c9b107efb6	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/robin-core/tests/live_provider.rs	-	-	100644	c58265e12e21374978fddaaaec630c73621c4320	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/tg-parrot/Cargo.toml	-	-	100644	adefca41c78769af33daee162df302de8add3f09	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/tg-parrot/README.md	-	-	100644	910b05ac4214706f79f74b5ea5f23452a2f805b5	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/tg-parrot/default.nix	-	-	100644	2cc0295522dab92a7a49533e65806d5788bce093	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/tg-parrot/flake.nix	-	-	100644	4bdf9af6eef7c7c5e64a4fca323db62475ba9ea4	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/tg-parrot/src/main.rs	-	-	100644	e904bca2a04a338d600eaf385d3921f7f2d1f50c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/zulip-parrot/Cargo.toml	-	-	100644	0c3885b80f00059fb6147e6bec63ab4bf202b3f9	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/zulip-parrot/README.md	-	-	100644	36976fb7efdc3c6b9f3fcafd9a9b70aee54b485d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/zulip-parrot/default.nix	-	-	100644	4b5aaa3c326a7b82275931adf0e3ca4b3efdfeaf	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/zulip-parrot/flake.nix	-	-	100644	715cd1e3185401fc3c11db8d8c5c358a45391726	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/zulip-parrot/src/main.rs	-	-	100644	10b5f07a59e9d421521bb1b7b1299b1103a0e6fc	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/zulip-robin/Cargo.toml	-	-	100644	972119ae870bb9df7810a2d4fc02185d4453a15d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/zulip-robin/README.md	-	-	100644	475ebe49247aa80a9f0c0e296d21cd77394bf955	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/zulip-robin/default.nix	-	-	100644	abe45370a5e022b706563523e01fe7b50690e979	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/zulip-robin/flake.nix	-	-	100644	aaedb1adb790eee9099c57477cb45e83ba863454	z product, tool or supporting package; retain membership.
+abird-only	pkgs/bots/zulip-robin/src/main.rs	-	-	100644	e60ecd4c8efedf3e19908c16a5986730773b712d	z product, tool or supporting package; retain membership.
+different	pkgs/cloudflare-apps/README.md	100644	d13c147b3213a99d936a492c4e20e4f730be6653	100644	17c2b741e58050c56df05db7346a53ef84f46173	PVL documents its encrypted worker-variable channel; example asset paths are relative to tf/cloudflare-apps.
+different	pkgs/cloudflare-apps/llmug-hello/README.md	100644	6c96e85b03ef64209e022142b0e9cb399c7e089c	100644	eb3f5e6c322d1d2b6d6b5df7ab6e3a7e59b314d0	Worker declaration paths/channels differ by repository.
+abird-only	pkgs/examples/edi-ast-parser-rs/.envrc	-	-	100644	3550a30f2de389e537ee40ca5e64a77dc185c79b	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/examples/edi-ast-parser-rs/Cargo.toml	-	-	100644	3c266bddd5ec3bb05971ea91a1b382b9c16dfb52	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/examples/edi-ast-parser-rs/default.nix	-	-	100644	bfc0fae26cd68861d7b7f7cc5fdeee014136c053	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/examples/edi-ast-parser-rs/flake.nix	-	-	100644	cfaa7a2f6a118b0221a26610794c99d463c26cfb	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/examples/edi-ast-parser-rs/sample.edi	-	-	100644	288f6ac75adc527b97533f2d9aa1a2b2c2203f21	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/examples/edi-ast-parser-rs/src/lib.rs	-	-	100644	239cf3d48fa2c460347bf56634653c54f5dcae46	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/examples/edi-ast-parser-rs/src/main.rs	-	-	100644	045ebe8144890ff797123fada909b9fab3effe83	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/ext/gcp-cloud-run/README.md	-	-	100644	19288d684e3282f20f5a95fa65c4f62cd3877b36	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/chat-intelligence/README.md	-	-	100644	e4873b2269b7f065342d76bcfe4530f58b1296e6	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/chat-intelligence/destroy.sh	-	-	100644	a3554bb64b1ad956b0d8efff9a1872533d74b445	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/chat-intelligence/make.sh	-	-	100755	8fd1394ee3571ee74f8b2f8ef72cb6430cb20eab	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/sidecar/README.md	-	-	100644	51aafaa3f8e0f982b1e877c0916e1ca7889630a1	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/sidecar/baked-secrets/.gitignore	-	-	100644	d6b7ef32c8478a48c3994dcadc86837f4371184d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/sidecar/make.sh	-	-	100644	4a612588f593cda80a9ff1520623c10cafe9a7d2	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/sidecar/sidecar-nats-leaf.dockerfile	-	-	100644	4e9847f025b6525cf8eafbe478775c8a51d99c40	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/sidecar/sidecar-nats-leaf.entrypoint.sh	-	-	100644	ba1b7b31a94f27d323bddfcade18890c83171922	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/sidecar/sidecar.dockerfile	-	-	100644	20edab45f17ea4acdcb5b4fc7d86e5e654747919	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/sidecar/sidecar.entrypoint.sh	-	-	100644	2963856f5b17bd8dc294cb1c4ebc452bc6b1481e	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/.dockerignore	-	-	100644	f083ca91a22f9a1e393cf769367c0d634d6dd381	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/.gitignore	-	-	100644	297fdef97e61efc2a7ee7e3248dcca5730eb5fd8	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/Dockerfile	-	-	100644	5ae2d78610b676b5a94e278b9e556add70dd9b35	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/README.md	-	-	100644	776080be4d7f28dab6f0a018fc9d6973b2dc53d2	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/deno.json	-	-	100644	f2ab8e184dd7ab955c52e391f73d353b77a148e0	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/deno.lock	-	-	100644	aaf5ce9ac5b1dc257f7b47d71f46bd1c95a140b4	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/main.ts	-	-	100644	d41158702dc429b0b3a93e26746cb29113d9004f	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/scripts/01-setup.sh	-	-	100755	122ca6abff18702afaaa9549aa147ae2a55d02e3	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/scripts/02-start.sh	-	-	100755	03abc7ad920d22d29e13ea53fc86b2b6527ca553	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/scripts/03-test.sh	-	-	100755	f263451032d4a59cb26c52300ed9651a8fdd2997	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/scripts/04-destroy.sh	-	-	100755	a3554bb64b1ad956b0d8efff9a1872533d74b445	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/scripts/common.sh	-	-	100755	52a254893942d512de9a4bca312932171edb677d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/ext/gcp-cloud-run/xtest/scripts/make.sh	-	-	100644	73b833c5007429b21ab9864e347fadf15720ea1c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/Cargo.lock	-	-	100644	cc793ddadd6a1f5cbde81ca08fbf6ed36c57dba7	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/Cargo.toml	-	-	100644	2d9c239104171d787320f6b88cf9a6424c734e9c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/README.md	-	-	100644	a27b1353bf9c5d63b535aadd0c1eb692142257b6	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/Trunk.toml	-	-	100644	f57d807f6dd157a1ca584a6ddcb4d7584b3700eb	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/assets/fonts/Courier_Prime/CourierPrime-Bold.ttf	-	-	100644	7e6b22280da62a4e804e9e66d45d01439be108ad	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/assets/fonts/Courier_Prime/CourierPrime-BoldItalic.ttf	-	-	100644	2e70ab7e0e79e5142fd97de708322273c8fd3ff4	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/assets/fonts/Courier_Prime/CourierPrime-Italic.ttf	-	-	100644	15d9463c71939bedbadeea1910830303887e9623	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/assets/fonts/Courier_Prime/CourierPrime-Regular.ttf	-	-	100644	4af1ff54c5e2f54238a0e2013cb9a37e3130e4ca	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/assets/fonts/Courier_Prime/OFL.txt	-	-	100644	a160ca5c88e420b57d6c07ccde4130b9b5a0d55d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/assets/sounds/clap.mp3	-	-	100644	a30c08b28678001e9747beaf9201dc74e239bee0	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/assets/sounds/knock.mp3	-	-	100644	61e930723cc7c2aea4494ad2db8b65daf54be767	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/assets/sounds/tap.mp3	-	-	100644	23edb778336fe9c8af8c46b5bb0b07f1eb106e18	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/audio-unlock.js	-	-	100644	1aab284ca4606dae3cd6dab90cbf3ce9dd23c89d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/default.nix	-	-	100644	91661b52776867430d40e5fd6db761017ebdbe25	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/flake.nix	-	-	100644	a7cfa5aaf4bf64761dc9447efaeb90b61b19d326	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/index.html	-	-	100644	68118d97aef56471791ca5176b2865c5a6dbea12	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/src/game.rs	-	-	100644	d6f794e11923cb4675d04fbe09b4eb9441a70e24	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/src/game/ai.rs	-	-	100644	fe41ad346e89aba7e6357f6962db04fc5723cd8c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/src/game/assets.rs	-	-	100644	0b0a810118a35e2d45297e14e97003f0f0c3bc0f	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/src/game/board.rs	-	-	100644	bff9c4c239eaddf3eaa3516db8fe41196cf76662	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/src/game/gameplay.rs	-	-	100644	9e66be0a998c62b09b29275647beb8593fa8376c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/src/game/state.rs	-	-	100644	0f46f2a23f7b7c0b7ebe12f14ca825602b6dcd13	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/src/game/ui.rs	-	-	100644	fa897798fc03686e2eca957e8f7b2bb49ecce9f3	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/rust-tictactoe/src/main.rs	-	-	100644	8da1d7cc4fc6cbd1e673ad8ac50ab1c0ea56740c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/.gitignore	-	-	100644	0ed09d8e34d4ad9b3ec92f9c253f4b4455308d6d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/Cargo.lock	-	-	100644	cd074a3c9ae939e791bddc9624e5418b82eb0299	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/Cargo.toml	-	-	100644	1b2f08ebfa48360b0ccda1bb8ba832e99d6008a4	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/README.md	-	-	100644	ecdb20b7e689a7c10f744052470a91519114b1af	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer-data/Cargo.toml	-	-	100644	a8941b41468bb3ad96a9580a466585bbf3f9e819	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer-data/src/coingecko_onchain.rs	-	-	100644	301583031f77032220b0770290b1a79551a9e87d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer-data/src/drift_client.rs	-	-	100644	c8b44bef9485883226ceea890bbe9d068bde5e95	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer-data/src/drift_perp.rs	-	-	100644	939c12628541fdc8ef488303e3ee4bed547e05de	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer-data/src/exa_search.rs	-	-	100644	2d7ed45d3beb45b36bf82fc91387a1effe1cff0d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer-data/src/jupiter_quote.rs	-	-	100644	f67c51284f47551032b9dcdf0bac5f0174e4a73a	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer-data/src/lib.rs	-	-	100644	193e94be416c733d051d558137cdd450062f3092	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer-data/src/x_search.rs	-	-	100644	e4a3041d6b642d40cb9257fe7f5eb1dd6a1dcd53	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer/Cargo.toml	-	-	100644	fe825acec7fbaf976a29f8783cb0e53a3b1bd82a	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer/src/app.rs	-	-	100644	556e8377d5c44f8669e1159d8b1a4d7a16378912	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer/src/app/config.rs	-	-	100644	b7be149e9184487b099961e14b45a8481b4d9999	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer/src/app/db.rs	-	-	100644	13dcc228ef849d161b543a877773f1becae71ffe	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/indexer/src/main.rs	-	-	100644	9831864346b3d89b285cd08b334334cdabd070ff	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/.gitignore	-	-	100644	6985cf1bd09ddd9ef8516d37668d37e78dddf38c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/Cargo.toml	-	-	100644	427f47159afcbecca5847fd034c8a3bc51abe309	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/LICENSE	-	-	100644	fdddb29aa445bf3d6a5d843d6dd77e10a9f99657	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/README.md	-	-	100644	7be2dba1c09d9e76b8cdafbbfbeb53b9718f028c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/end2end/.gitignore	-	-	100644	169a2afd8a234d7cd3e3a52a731ca6e53f949cf8	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/end2end/package-lock.json	-	-	100644	260e8eb1fcd9bb1f1607eeed06a7050cf33db30d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/end2end/package.json	-	-	100644	a80ac597373427f656d5f9ff363278d6ceb7dfe1	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/end2end/playwright.config.ts	-	-	100644	aee2d46fd6e8d298b3c85ba153816e2e620a069d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/end2end/tests/example.spec.ts	-	-	100644	0139fc30e423c0fb808a49ab58d364c1bff5921f	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/end2end/tsconfig.json	-	-	100644	e075f973c4d28e6c46f9af9914ab53c5e731a6ce	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/public/favicon.ico	-	-	100644	2ba8527cb12f5f28f331b8d361eef560492d4c77	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/public/vendor/apexcharts/apexcharts.min.js	-	-	100644	04ed5308b8b15d1a98a25fae57b94771abe38119	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/src/app.rs	-	-	100644	89c79ca4b690b11fcff2807194eed92eb4018556	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/src/chart.rs	-	-	100644	3f2d47412e586a2392216da9c2d06b174dc55cb2	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/src/config.rs	-	-	100644	e7ecc0f029eb6388f9ffc893c7e1fc34cbb00dba	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/src/db.rs	-	-	100644	1c27202d616aabcf58889a5ca94b82f0d72e1b64	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/src/lib.rs	-	-	100644	0db667925a53db3e02eb8ea69f333ca9ccd15916	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/src/main.rs	-	-	100644	ec424b0d14161e5ee5f28869c98e16397e6fbba9	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/src/server.rs	-	-	100644	a49b564f907b68452e77d855e1934aafcb1ab2ee	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/src/state.rs	-	-	100644	0bafee81f9fa3afebe21612b8219d8dcbf453c49	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/src/ui.rs	-	-	100644	cd408564ea089141dd830d4524e027b1064b33d7	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/src/ui/types.rs	-	-	100644	0ab9d7a2bf713b79536854e74239097e2c569e77	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/crates/leptos-ui/style/main.scss	-	-	100644	7c4aa763b4bc1c3a110a2f247b291a960cf011b0	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/data/.gitignore	-	-	100644	3526732a10dfd38f2b060439322b86d53ed2fced	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/default.nix	-	-	100644	d945ceae70630dd73668aca4ac8e8a14755af491	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/flake.nix	-	-	100644	ba2ec635e9aa0d133a6ad2d98e7fea5e1508f863	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/sample_price_indexer.toml	-	-	100644	4b1ac10e9e8fd24d20caaeeba559d971f022ac12	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/skills-lock.json	-	-	100644	ad37a24876bcfb1e392711bee8e7891e78fb3fec	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/.cargo-ok	-	-	100644	5f8b795830acbab5961c1a28c76a7916c9631493	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/.cargo_vcs_info.json	-	-	100644	c36f1e5bef88e1d2c7827444dc657a93547d08ce	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/.github/workflows/build.yaml	-	-	100644	83b8cfd75408876f4dc8e426bf788f1431de3c56	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/.github/workflows/deploy.yaml	-	-	100644	36361940ba589a99bd30bd12291fa8c18d151301	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/.gitignore	-	-	100644	92603e120279ba482bbd0db3afefd5d6763398ac	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/Cargo.toml	-	-	100644	76506508f52399bcffb622d69f1648451f8c6cce	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/Cargo.toml.orig	-	-	100644	ba96af183823d73e9665f570f2ba7e06453cef9c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/LICENSE	-	-	100644	d645695673349e3947e8e5ae42332d0ac3164cd7	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/README.md	-	-	100644	f52e60912dae68205e3dff81196f8fe813d0577a	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/assets/area_chart.png	-	-	100644	ae76cab4e9e3f8a064ce257fccafef0c0e599555	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/assets/bar_chart.png	-	-	100644	229e46304dee237e2676dae99d54959abba6ec3c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/assets/column_chart.png	-	-	100644	6aa7928b99d4171f33f382e711d554ea157c601b	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/assets/line_chart.png	-	-	100644	1b03ee504c2c25197ee5e43bd2d3ab696f78cff7	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/assets/pie_chart.png	-	-	100644	fc9963490dfc48b119b23f0accaf58fa130090cb	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/src/bindings/chart.js	-	-	100644	38915cf6dd1d33c438dd426fcb26b776edbbadfc	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/src/bindings/mod.rs	-	-	100644	ac66310bb6ad4c1a8df7641cb6563587004d8870	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/src/leptos.rs	-	-	100644	d88cede88712a75133f05e47f9ea08ea7a348f0b	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/src/lib.rs	-	-	100644	e0115214d27ae0204c156e17dbef4280ca121548	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/src/options.rs	-	-	100644	89ff5a0c16b195746b8e8554eeb743b38d5ba7fd	z product, tool or supporting package; retain membership.
+abird-only	pkgs/labs/web3-price-indexer/vendor/apexcharts-rs/src/yew.rs	-	-	100644	a537799e661c5832927814e4839e7a0bc512be83	z product, tool or supporting package; retain membership.
+different	pkgs/manifest.nix	100644	ced36bde73fb1e7d80e561e5f2be8035b0b22727	100644	36ac0fb53ecec85ba5ddd114b3f8250addd7d4e8	Repository product membership, exported tools and examples.
+abird-only	pkgs/srv/README.md	-	-	100644	95d6326bfc26133f63b271ca092adb26742cbdc3	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/abird-agent/Cargo.toml	-	-	100644	57df8a225071f12cd0b921f90d4cefecd9cc0afd	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/README.md	-	-	100644	875d96f36a7d611877714aa2dfeeee3dae86b278	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/cell-image-package.nix	-	-	100644	ddabb8379f8fa88d07404d16309a2e1386c32fd9	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/cell-image.nix	-	-	100644	c4a3862991f751668a6654b5c3f7ef6c7a9c9ac2	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/default.nix	-	-	100644	0ac6ff020e2ce92988839780a07d7f43e4041fa0	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/evaluation-limits.nix	-	-	100644	466b684d08d8450284144e55905d8bb8b2bb90bb	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/evaluation/browser-seccomp.json	-	-	100644	c6986228f4166496960444117d8636cbe438291e	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/evaluation/enrollment.nix	-	-	100644	3f7318d6105b49a62cde4bb339acf254fa62bde1	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/evaluation/environment.nix	-	-	100644	b32913c37fc987b06372a8e42fea48f7c226f6ae	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/evaluation/nix_check.py	-	-	100644	237f4082b95762de6e9793dd66a9cff1ec660eca	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/evaluation/runner.py	-	-	100644	8b0ed7562dde93b0130e5cfe76b0abb34d3cb754	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/evaluation/test_supervisor.py	-	-	100644	061cbde6783766270e0381dff1c154117ae073a6	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/evaluation/tests/enrollment.nix	-	-	100644	247e2b42aeaa0e6307db2c5d4a1872281787610c	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/evaluation/tests/probe.json	-	-	100644	3048f6b5a6827867a15709dae4e4c4cf735eabb8	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/flake.nix	-	-	100644	2ad38345b7a041f8bdf4cf259efa8ad5c8277bb5	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/module.nix	-	-	100644	f8caac929c536d11428cb8008830edb30b812d9a	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/repository-image.nix	-	-	100644	5d217a671858d9ad34e12de65c48a219706e950c	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/repository-limits.nix	-	-	100644	5b32f94734189dcd71c4d5e865525973c88eef7d	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/repository-storage.nix	-	-	100644	06dc40cb08920e91c560512d682e304b7aa11e07	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/repository-storage.py	-	-	100644	33c5e9bce75cde6fbb8e58fd7dd915fe2f116087	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/auth.rs	-	-	100644	b6c5fe12c07dde6124048ee71a2bce32668c871f	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/auth/background.rs	-	-	100644	9644500bf7b8e7e0a45fd0a4f21c81dbe95ad0cb	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/aw_runtime.rs	-	-	100644	a903d46146da8d8ca46c8e57d2240a41d0c5f15d	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/backup.rs	-	-	100644	81d431c1ee1b55217837d1f81c658a604136f9ab	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/backup/bounds.rs	-	-	100644	255dafba9090d5276f15672cbd646b0a243ccdff	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/bin/abird-agent-cell.rs	-	-	100644	8c68b4136c2f83a01eb5105866cf7d7df38050a3	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/bin/abird-agent-repository-helper.rs	-	-	100644	7a9e90c0b4e370af39f8dbd96e1459c4129a77ca	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/cell/mod.rs	-	-	100644	b8cac43bd6f917fa87c603f4eb52926b19d21e74	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/cell/read_source.rs	-	-	100644	c21488da2fc99a8169eeaf56fc6687ec03965743	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/chatgpt.rs	-	-	100644	8acc6eddabe768c82fd7b55ab06d4650d7d4006b	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/chatgpt/api_key.rs	-	-	100644	90ab0ea76c9d3f638ced254f03f21977591579e8	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/chatgpt/responses.rs	-	-	100644	9cd06a057de035b076a8e1da76b045c7bdd1f176	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/delivery_mock.rs	-	-	100644	8b4d7b2ef5ae8a9cc79f473e13ecd305f5b9c8fa	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/doctor.rs	-	-	100644	848e32e983315c28f4c19d48d6c23c05d870fc03	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/enrollment.rs	-	-	100644	1b294e92329948354b2bc8491b28c21aac47726a	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/enrollment/revision.rs	-	-	100644	9762132bf61435af4a9ee27669df0ce55d7969e9	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/evaluation.rs	-	-	100644	f3c2c9babaf631fcc637e82478c1723db6d58840	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/events.rs	-	-	100644	9d6d6fa0ac91e315620a33e348053cb843dba636	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/execution.rs	-	-	100644	cdda3247285b4bf3ff11aff3ca560de054e87139	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/identity.rs	-	-	100644	69261806ee3863bac57e5a48d9a9e53503331c77	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/lib.rs	-	-	100644	885fc76d7a197c909589eda53d234a4fc62f03ff	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/main.rs	-	-	100644	0bc839586338ddc2747dcb1038e577012a203dc7	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/managed_backup.rs	-	-	100644	bdb9bb610279acd55bf202778d9dcf18fdeb7396	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/managed_provider.rs	-	-	100644	1534495f1713106299b48887a5a8371abbb1033d	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/no_swap.rs	-	-	100644	df864c759e67b2cee8908b1a6b1d470f1f439c82	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/orchestration.rs	-	-	100644	7f60276c44f9bc9500cf8b42802e2c6817600980	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/provider.rs	-	-	100644	5db027248e334483214c85219e9ceafbc20e612f	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/provider/ollama_cloud.rs	-	-	100644	770687b551bd121a17f8ea2a24408c8289614de2	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/provider_credentials.rs	-	-	100644	bbe060c0fb5a5833c1f0a974a101311b61062ece	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/provider_credentials/repository.rs	-	-	100644	3512c6df876e694b08cb4e387fb476a101c4b36e	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository.rs	-	-	100644	feab386a479ff9b85fb3274320916c07680e1a72	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/broker.rs	-	-	100644	187e74fd0ea9b34626b148417ba5fbf84e451729	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/broker/acquisition.rs	-	-	100644	b553ed6953e0cb8082b20168bc214e5189c2c1da	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/broker/conversation.rs	-	-	100644	d2df2f72e81f2d7b74c0177eb9053b61cbce0e84	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/broker/mutations.rs	-	-	100644	504229221af296f918f34e5daf309ed9ea5eab26	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/broker/readers.rs	-	-	100644	e07cac9fc3acad03b4e7818df2fbdbcb3b569562	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/broker/review.rs	-	-	100644	5dfbf527799134221f29bd1fe3496464e0c10765	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/broker/writer.rs	-	-	100644	77150d63f5b230f64110b54696e8240758848061	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/config.rs	-	-	100644	623246553e82fe504d22427b54ef5fdb4b895325	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/content_recovery.rs	-	-	100644	13a949f1832e3342512c9fd30250d556fe88d98c	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/git.rs	-	-	100644	62aa3213ac16946017293120e8a66d8bcbf15ff8	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/git/tests.rs	-	-	100644	7384049757c95f15d42bad52360f818450c75f1e	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/helper.rs	-	-	100644	ece2321d6fc461e9a0100fe6d9909c52bbe4f358	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/inspection.rs	-	-	100644	973a04696e321adf0d859ec9897426bcc80b5c1a	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/inventory.rs	-	-	100644	6a23cc35e6ea85b104bed691b8e97bb67c66f6dc	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/native.rs	-	-	100644	af9bca156e769ec6b55dce2d2ee9ccd3e81a3576	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/objects.rs	-	-	100644	b3604a2cf25a6616629b4a39fb970f982c27148d	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/patch.rs	-	-	100644	9c78cb3a2ccfe28a30e2e2b00aa4c88de21b8c84	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/patch/tests.rs	-	-	100644	3fb42d2fe58f06d037c9d86afc17f11e91892335	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/runtime.rs	-	-	100644	d43bcc5fde6bf6cf3b0a6a18519d6991cf3ab1a9	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/runtime/effort.rs	-	-	100644	3c0785005c9d72378c0a0381e5896448563ca2f1	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/runtime/object.rs	-	-	100644	2849a14b1486aaf0504e799c2315647d94131235	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/runtime/recovery.rs	-	-	100644	4eac9ad95eba60c73edf2b5d26683825baad9e1c	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/runtime/tests.rs	-	-	100644	da676e12a9c4d1fd6829484554c8cbb9b94d0836	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/runtime/writer.rs	-	-	100644	5112a0a5bc9a6ce1b4fd9124a3be57333f730033	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/source.rs	-	-	100644	3036ed5db20569790dea3983f4739f4e09a70dd2	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/source/registry.rs	-	-	100644	6e0d63b2e896f24d1c8379f8822a08a1a6666ce8	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/worktree.rs	-	-	100644	300548e56bd3634bd961c6cbdcdab374ac998b82	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/writer.rs	-	-	100644	3862b73b0d1d8d9f5bfacfb1c057920a592f9be6	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/repository/writer/tests.rs	-	-	100644	7bbb4c6020bff7e16ca5572dd48d8eb1b25112b1	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/routes/api_key.rs	-	-	100644	afbc1b07193343c4aa51e398a723652704a3fe66	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/routes/conversation.rs	-	-	100644	e67f2325449ccc6c54b04773ca197b480a12fdf0	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/routes/delivery.rs	-	-	100644	86ade2c8a79e397a418dc2c1e80774c6a6e88456	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/routes/evaluation.rs	-	-	100644	2d8c67043244a694b34620c1dd1a1f2022a041e3	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/routes/repository.rs	-	-	100644	c5fe9aa38939dbf95de27b81779c8ca6fff0a19f	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/routes/review.rs	-	-	100644	b3e169af599e582ee4f9a81589602663427213de	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/schedule.rs	-	-	100644	0d8c2923f158e752e5251c43adb87d30c1805cb7	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/standing_order.rs	-	-	100644	80633b281e13214d4f75a61213909f7d07ab2afb	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store.rs	-	-	100644	67e2d5119c3518616c7ac82421f674106dab8017	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/agency.rs	-	-	100644	04d3b2d5223a957ed0a38bbdafd34ba26fcbd4cb	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/audit.rs	-	-	100644	4121ec7c0149c7ff6755c3aebe00e5f06b08c219	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/background.rs	-	-	100644	da96db1f760d32226dc247d218d2f1f7827af51b	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/capacity.rs	-	-	100644	ff4c5125065c88b39bcf476ece048e980410060a	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/context-schema.sql	-	-	100644	575c9d8ab7b97a5de5a5986ea09b15ba3aa346ff	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/context.rs	-	-	100644	f4bf6b13f433162f5171741239672d63971f1047	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/context/engine.rs	-	-	100644	3d32be57bf5d2e329fea68fc5b1b6da85558de3d	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/context/lifecycle.rs	-	-	100644	1a2bddeffbc199964dee3c920529faa3e155d192	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/context/preparation.rs	-	-	100644	6692f68e77f05d4c7f9ea82fb50803cddddb5143	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/context/projection.rs	-	-	100644	c251febdd2c1b1b50696ceab2ea894b2462a333b	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/context/resume.rs	-	-	100644	f60202819851de456f454a70732dffdab3a45f2a	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/conversation-schema.sql	-	-	100644	541bcfbea8ed76d1751cebaa0d2159f26656b8a6	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/conversation.rs	-	-	100644	38be311a730071ab9dcb32c5f2009c27fe806d72	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/delivery-schema.sql	-	-	100644	9562cb2c62fe52dc4ebbc1e67dfce2f0ec012a73	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/delivery.rs	-	-	100644	5640808ff54d6000e2e5eb364d67fe0b2e2c6d31	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/delivery/execution.rs	-	-	100644	f79adf800f8c956880c20a4de692339f64202ef0	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/delivery/followup.rs	-	-	100644	b1adcb9945f59c1122562e60cfef3b0bb361f23a	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/delivery/policy.rs	-	-	100644	09a5b7a111e4b5fb85a7439ab85d2e8ffb2be704	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/delivery/policy/tests.rs	-	-	100644	9a544f3837a04615b9c17b42c82c28d1ebaac325	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/evaluation-schema.sql	-	-	100644	f70886244f2aeb265530f9708a0d41ec798c4625	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/extraction.rs	-	-	100644	60ae4acb758ab3832cecd5c5d1c9611c80f93bea	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/http.rs	-	-	100644	7b3cddc0456227f948c2a4ad96875b5f68f39519	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/memory-schema.sql	-	-	100644	60ee1077f0d2c8358b52c3fb84f34eb257006650	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/memory.rs	-	-	100644	3009c560d0eff88dc0352a26d278315ad36a45a7	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/memory/conversation_exchange.rs	-	-	100644	1ce833d28d7b6816f60f7829f81c878a3c4cd0a1	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/provider-connection-schema.sql	-	-	100644	c45f4544c7f0017409eca8ad59efc775bf027a12	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/provider_connection.rs	-	-	100644	0c937473384a8fad6767a2e077fcabfe3da7fd44	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/provider_connection/api_key.rs	-	-	100644	aaf059528416a8993e48bd00422df4619713d994	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository-schema.sql	-	-	100644	5909b553bb3f89dcb4799076b0d65dddfc0a2ec7	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository.rs	-	-	100644	2b84957e996bf7f65d905dffcd51522e15a60f4a	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/access.rs	-	-	100644	62b932ed348fc522f64c788ac2cc43d95b7cb65c	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/acquisition.rs	-	-	100644	dbcfa9aa6fa8dd1459d4071a4f4554809f1f205f	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/candidates.rs	-	-	100644	20771f3989d42e59eb723fce748c2d813747a474	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/credentials.rs	-	-	100644	5b8df9bf795e24e8f98fe52d4427e48ab424e7a9	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/erasure.rs	-	-	100644	a1a6773ff5dd45a5c1e48c2bd246f36abdbf8134	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/evaluation.rs	-	-	100644	61a3f5de196618b984ab2f973aa14937e4c34dac	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/evaluation/attempt.json	-	-	100644	27427623d00a8512697b24cbfe2abcea424e7e97	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/evaluation/capacity.rs	-	-	100644	f5753b6ddef6e9070b0825401127d85fb4377a0a	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/evaluation/materialization.rs	-	-	100644	dbae9d0f3ba35b66999e12af42387143fc4236e3	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/evaluation/payloads.rs	-	-	100644	7c8961c25c795a659ff149bcc333b2b61b32aea1	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/evaluation/tests.rs	-	-	100644	eb965755cd962a6099def37440197b2732d33d2e	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/evaluation/tests/enrollment.rs	-	-	100644	e89c5e5d730a5fbda7643718fd5185f67230c03b	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/execute.rs	-	-	100644	cc263c67239014058f04ac6116d7e72712e945d1	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/helpers.rs	-	-	100644	ae3a46bd6fedc2d63ed5682c3c1fd773ebb4ac1f	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/lineage.rs	-	-	100644	67b3b7042a130b9f2d5d3d92eb2645aab2f04676	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/maintenance.rs	-	-	100644	bcc0f0a5e87f2676bc9871722fa9a564312a8dd0	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/mutations.rs	-	-	100644	fe0aa22f0b505a607bd8903070b2c2999b6d74a6	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/mutations/tests.rs	-	-	100644	a18953c3f9140975785e04f282c42899808947e5	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/native_backup.rs	-	-	100644	21f838cf8c008aa56bdda5fbd54e5e5e7faf7d40	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/native_writer.rs	-	-	100644	00063a9f08e4ea868bdfb7857c16d14ddd667e66	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/native_writer/publication.rs	-	-	100644	585319187e2f70b964d184031f5c5136345dd14f	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/read_hold.rs	-	-	100644	3c085d46bcd51a4293d75deff9c188c7b7d825c3	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/readers.rs	-	-	100644	2a086e549f67f20f182e278126322e96f5edeca8	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/recovery.rs	-	-	100644	eb308aa3870b8ab9598e8309b966b78661e24ff2	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/registry.rs	-	-	100644	d7ef099d600125569f00a2a2ed1dbbc525b06687	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/reuse_recovery.rs	-	-	100644	4aa2bbfaaf7494e32d1c9f0ce808c830fe06df26	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/selections.rs	-	-	100644	5151e9f6b4f1fe03d92a2d93f541928f4d9b0969	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/tests.rs	-	-	100644	18bfea82f2fdda86af5f9ed21ee250a2f1d413c4	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/usage.rs	-	-	100644	85d9f826c3871fbc8fea83d0064c7f65514f1333	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/versions.rs	-	-	100644	4d99262918e9638500d466d49e285a609d88e414	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/repository/workflow_refs.rs	-	-	100644	166110aff2fce82e353354c4c310cdd9e001eac4	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review-schema.sql	-	-	100644	ac851073505b3b6e4a1a583410918245aab5c1f2	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review.rs	-	-	100644	99bb30ddac0ee86086b382d3bbdf87b6f211453f	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/actions.rs	-	-	100644	6281ee7d3562ee1ea2cddc20c376324201582d27	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/assembly.rs	-	-	100644	152c976ab436b8d700fb11aeaf10fbae9d9008ad	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/blockage.rs	-	-	100644	c545078ab65d525b2e6c42642ab14721a50e1f35	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/cleanup.rs	-	-	100644	83274424baeec9cfa8998b260f9e9a40ae97cbe6	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/commands.rs	-	-	100644	733967a1f9c657e0729499a6aaf0f06b1e7f7fb4	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/consumption.rs	-	-	100644	e22fb73563eb75859bcabfbe1efad49c83fa4f83	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/decisions.rs	-	-	100644	486c9b040aa495fe93c14c7eb121c0584a206141	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/evidence.rs	-	-	100644	29bbdf7015ccb9a4918ba7f63f13c1ef435bbbc3	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/operations.rs	-	-	100644	6f29e6893393ebc9ff0f2c90037edb243d211faa	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/preview.rs	-	-	100644	24692d0430ae93f4fdfed395310447ddebc6c68c	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/preview/tests.rs	-	-	100644	a164b4558e6064704ccebfe5546c0cd81775f66a	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/revision.rs	-	-	100644	c30112c5985bd139b126083db37519a3cd987ee9	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/source.rs	-	-	100644	5905bc5d072a296bbac1174ce532fd905cc4c235	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/state.rs	-	-	100644	b70876e8974c1092db202e7323a424e9be3a25eb	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/review/tests.rs	-	-	100644	42d0dbe9df943bdf099a0f3d488d7502d07ada01	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/sql.rs	-	-	100644	b55c2fe9090cb68e29091d1bd5cd633bf010918c	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/standing_order.rs	-	-	100644	427372900508e87d5faf4945337965e7f2b229ae	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/workflow-schema.sql	-	-	100644	98302df474c8564a813ec91f6d5d9fb594c3cbf2	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/workflow.rs	-	-	100644	01c4024f181bab708fbb2fa529506c83e00d73da	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/workflow/evaluation.rs	-	-	100644	1d0d5d6f8c871d18033b2b250c1bf3d11cbaf223	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/workflow/evaluation/tests.rs	-	-	100644	14239164652761f2867310190718a7d6bef07f56	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/store/workflow/evidence.rs	-	-	100644	a95e3a4423535b9dff1df1eb974d96b2014fdd66	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/testing.rs	-	-	100644	43f533cfe8d573d0a70cc1ddbf8aea6c2eb57b28	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/workflow.rs	-	-	100644	085830dbcf68f4e0ae81ff4eef82ee09ef7903b0	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/workflow/context.rs	-	-	100644	65443aa618d26e53d672b2d2eed0c1e778e43689	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/src/workflow/conversation.rs	-	-	100644	ed790c23efd298e21f28cad09ddc3805031a7024	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/contained-cell-manifest.json	-	-	100644	d615cbf08d5223564416c048296b83c1389f09c3	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/contained-cell.nix	-	-	100644	7a9c2d8bb2b8db981fbb500b8a77ee4a8e738031	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/contained-delivery.nix	-	-	100644	d4d8b698a873cd6d8aa1fefc6c16d839ad55c9a3	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/contained-diagnostic.nix	-	-	100644	11aea05ae212395ac1987f56929c8cea0d69e7b5	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/contained-evaluation.nix	-	-	100644	03a929ad6caf962e70ef6309512a6062dd26841c	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/contained-fixture.nix	-	-	100644	258bd6f33ff9457aa1a6e596e8e3346eaf3eb486	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/contained-repository.nix	-	-	100644	fe4cbb4f712e3d0938663f8387b06befd031392d	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/delivery-fixture.nix	-	-	100644	90314f9b51b53b63061fb8681c4ab2cf262452a1	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/evaluation-fixture/acceptance.py	-	-	100644	67947228d23e9cefafcb24d8e9c489cc30c3f417	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/evaluation-fixture/app.py	-	-	100644	0733f46b8aa816900d252a76e391b366d02a5e83	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/evaluation-fixture/browser.cjs	-	-	100644	b17c1b3a37fd5efd9d17cadb1f39c0ec7d75818a	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/evaluation-fixture/default.nix	-	-	100644	fc7fe185fffedf96402e6e3fc4486747d12a5d97	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/evaluation-test.py	-	-	100644	8fca446ea5cf83f413f59a5c2276916d233ac2d7	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/fake-provider.py	-	-	100644	b8117c449aa06cef9a89b6498a3f64570810d761	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/hosted_login_return_proof.cjs	-	-	100644	8dc46345301ba701d44513d08a5ae4e201b24660	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/hosted_login_return_proof.py	-	-	100644	b10279d6a30828c257533f435c5a1c7ecbb7f038	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/identity_browser_proof.cjs	-	-	100644	8a94b1acd51655add26c61a42ae613c49ae15814	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/identity_fixture.py	-	-	100644	ac19d850e48a895d7e4e5574a0fa30a981832c15	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/identity_proof.py	-	-	100644	2b69b2de8a2105093c0b06eeb97e2a1647ca4d94	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/managed-backup.nix	-	-	100644	4b164072ffd71e7175dbd7e2cde42bcabead0499	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/managed-cloud.nix	-	-	100644	c4090bdd4d542b692d6257d5822512045d47d645	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/ollama-cloud-v1-responses.json	-	-	100644	b90a9409e8271d20b3f1e9454875514a873153fb	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/operational_cli.rs	-	-	100644	cf1e015cd9a13e0a7e4d8f7fa5e011471050d666	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/phase2a_e2e.rs	-	-	100644	e829b35c2f282f3ff84ffeb90181af6aa1b64ee5	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/repository-fixture.nix	-	-	100644	4d35f95c9ff2c72b45e6f52e41a787ea3a99c66c	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/repository-objects.json	-	-	100644	85db71771aa38b0c7da983fc246eda7cd9119421	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/repository-reuse-fixture.nix	-	-	100644	ccc458ccd14d8cc4e73d723a69a86300062a2799	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/repository-server.py	-	-	100644	688ffd5ff119c93305db137d58f974946e075083	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/repository-source-http.py	-	-	100644	7610429ebac36e92b23501e4ae8d2b52658822c6	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/repository_storage_test.py	-	-	100644	e1d135bda867ad1dd157ead5d76c9cbbebac6bcb	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/abird-agent/tests/signal_shutdown.rs	-	-	100644	dbf93a5c9afbd368a6dee84966090fb10bdddcef	Abird product controller; PVL ships the separate host agent, not this service.
+abird-only	pkgs/srv/ingest/.envrc	-	-	100644	3550a30f2de389e537ee40ca5e64a77dc185c79b	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/ingest/Cargo.toml	-	-	100644	8214acc5200cb02e10f6127d7d72a1833e04ba5d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/ingest/README.md	-	-	100644	c5b7ce50266bcdc56a93dfb74e00805518633164	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/ingest/default.nix	-	-	100644	637cdc6bbb34c1fc19da1c0a08833fe034b1ff91	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/ingest/flake.nix	-	-	100644	a88a54f143133b76eadfacd22406071648a1196d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/ingest/src/main.rs	-	-	100644	5fb25cff08a63028d24b3ddeee4124cbafc97919	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/llm/.envrc	-	-	100644	3550a30f2de389e537ee40ca5e64a77dc185c79b	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/srv/llm/Cargo.toml	-	-	100644	b284e0795bf4c3c0aff57bf574bd009642213c96	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/srv/llm/README.md	-	-	100644	62b1f1c6e9afa71b3b893ba47eaa6e9b1347799b	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/srv/llm/default.nix	-	-	100644	178da18c2d3ac11e2ce42cc23f32ec1268392a51	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/srv/llm/flake.nix	-	-	100644	2eb6935af99615809dafbd2c430f386fa16b2e55	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/srv/llm/src/main.rs	-	-	100644	729758081ec9287090aaf127deec4b70c9b4bc6f	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/srv/search/Cargo.toml	-	-	100644	e558b2e1f019fd500965b2f2cab780c7b38d2d31	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/srv/search/README.md	-	-	100644	253e915e19ea7ddb849ee9149c193f300af3f606	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/srv/search/default.nix	-	-	100644	f80c3cdec6b8f4085ad1d0a737d5fb790cc10e64	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/srv/search/flake.nix	-	-	100644	5593119e66800d57a7ac6760b94857c4437daacf	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/srv/search/src/main.rs	-	-	100644	6e933d2ad1ec5a80f2819b299d0bd91f7a5d9156	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/srv/trading-api/.envrc	-	-	100644	3550a30f2de389e537ee40ca5e64a77dc185c79b	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-api/Cargo.toml	-	-	100644	f6dc5da43fab4847737a141765b6cbb4a54f0837	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-api/README.md	-	-	100644	c0d524afabe7d240d0bd776569d8a4efd3f33bf1	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-api/default.nix	-	-	100644	96cb05d7745e438c5afa527bc79c7aef234bb685	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-api/flake.nix	-	-	100644	3a5bdd00c0dc5bfe95a2bc1441996010735ba4eb	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-api/src/main.rs	-	-	100644	bb0d4965b29768b3785893595c5bdccfcf217ff7	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-processor/.envrc	-	-	100644	3550a30f2de389e537ee40ca5e64a77dc185c79b	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-processor/Cargo.toml	-	-	100644	c780a351d78c1c5f27cd639469f35d38fb6b7f05	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-processor/README.md	-	-	100644	d2888d1ee1d35e8186b87986a8bcbc6998eab125	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-processor/default.nix	-	-	100644	d00c5a2bbdb14cf1a48f1bcee8afa58739a52305	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-processor/flake.nix	-	-	100644	df87647f071c8db357074359bccb968ec0e2e43f	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-processor/src/main.rs	-	-	100644	336024fe5c53a6ce85832672e33f521d2c42cfce	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-transformer-excel/.envrc	-	-	100644	3550a30f2de389e537ee40ca5e64a77dc185c79b	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-transformer-excel/Cargo.toml	-	-	100644	a31e0ee28737408f22d0d33f705cf9b8b0aed58d	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-transformer-excel/README.md	-	-	100644	e54780aaa51ecf8f7cc1b7a9010e8559aad8258f	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-transformer-excel/default.nix	-	-	100644	054f7d5ef57d9ff2da29c8406a5110caef84a194	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-transformer-excel/flake.nix	-	-	100644	211562e176837cf86cd9188c5cb7ffd42f69818c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/trading-transformer-excel/src/main.rs	-	-	100644	e742b5c1c25ebff6dc47bca48c54d471f3cf8387	z product, tool or supporting package; retain membership.
+abird-only	pkgs/srv/uauth/Cargo.lock	-	-	100644	6091d62832a676241dad980eb9b8b1a8bb58112b	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/Cargo.toml	-	-	100644	9cb33ff2904101d977a4c246c98b381708312a12	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/LICENSE.upstream-MIT	-	-	100644	05f1ead88e3607ab609e17001ffac298d044bbe2	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/README.md	-	-	100644	ea33a006f9ca765f3ff57e88f3899d2d39ef9cf7	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/.gitignore	-	-	100644	ef42835d5e8886adbc8e6098885f859796d0d3e5	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/LICENSE.better-auth	-	-	100644	ddb5adb6065ba8c5042488c599db1b3fa278ac74	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/NOTICE	-	-	100644	87b951a5a55e817a913ae8d43551fe113b3b87cd	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/README.md	-	-	100644	2a3a70cced2c39eb49df47bd92255943918265ce	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/default.nix	-	-	100644	96a40026800d18139fcd98680b4aaad293ec576f	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/index.html	-	-	100644	02a2a4c4ae28e34fd7b3057d71f60d906b6bdadd	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/package-lock.json	-	-	100644	a07a50f0615e49dd43c65ac07e834d5163af5fc0	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/package.json	-	-	100644	e05ab753eb38202f8e817454bb66488af1d8d0dd	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/src/api.js	-	-	100644	76106306ee9a8074bbac721d080e611aadb26bc8	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/src/page.jsx	-	-	100644	2aa6ef643057663dd49a4828c229f9122bc95653	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/src/style.css	-	-	100644	8a95f81eac9229059d9cdc789cd5767e743cbc04	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/tests/api.test.js	-	-	100644	81b2bcf40d9f2aa3916982581634480b89b15463	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/tests/browser.mjs	-	-	100644	c9fd073c692ce8223f1b5e43a0a208a32c8d119a	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/admin-ui/vite.config.js	-	-	100644	4b6c1934b1ef25c86e3d1d21ec6b464c151c6728	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/default.nix	-	-	100644	2178d90ca56d9104ee0fbb2ab129ee1f8582d88c	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/docs/social-login.md	-	-	100644	a8f4515c3513d2e93ae7dcd36e9f9214cea6f839	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/migrations/001_core.sql	-	-	100644	9e5ed187ef680d3882ac2aa1d3d398e56e339c8c	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/migrations/002_social_identities.sql	-	-	100644	63b55a340bf9087a861639bd74bf9384189f1768	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/operator/create_approved_user.py	-	-	100644	4c75aaa68a43162f9a0addaec73ed0484fc09e70	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/operator/link_social_identity.py	-	-	100644	6641d670422b29f7f5334b3e7f94ac4da644b5c4	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/scripts/rehearse/README.md	-	-	100644	6bccd59f77a041db4a8465169d94b8e0bc18cdca	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/scripts/rehearse/cluster.py	-	-	100644	da5e9f5515527dabb56a1e4d0a2c4ad22ee04985	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/scripts/rehearse/http_checks.py	-	-	100644	c964b1950547e7f6fe4a7ddb2e699fb34388d220	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/scripts/rehearse/rehearse.py	-	-	100644	3a7948461b226f5e21852de751bfce1d32f31145	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/scripts/rehearse/run.sh	-	-	100755	51a5d1b071a7842081feba0dc0f23a15ef3bc33e	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/scripts/rehearse/runner.nix	-	-	100644	4056ea8bdd59bb150b5d757c99fd67f5f9022569	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/scripts/rehearse/social_db.py	-	-	100644	6ff4956e0a51f691fa64a69bf04fa5bcdc41d5e3	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/scripts/rehearse/social_http.py	-	-	100644	93cde26fc27de9d48b7ad1a562c3253976797ec9	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/src/boundary.rs	-	-	100644	55bc78af33b08240f27f47812ea25d2a2dc666f5	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/src/check_runtime.sql	-	-	100644	ff29a7c6165ab502857126b82a178ada357329ba	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/src/config.rs	-	-	100644	4e140e0941899659eda211556cb9f323f65723f4	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/src/http.rs	-	-	100644	33ed7a62834bcb44e460d55b9012790137f60595	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/src/http/tests.rs	-	-	100644	d82218a60eb1735c575787f4fb5ef4c1e9dce693	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/src/main.rs	-	-	100644	e3d78ca38d262b487de0f180acbd5444dc7cc436	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/src/social.rs	-	-	100644	cbedaee820dd31539f08af91e5a76c63d081878a	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/src/social/provider.rs	-	-	100644	e1b8204483dc5021be87bac81fb52766f99d6a8b	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/src/social/provider/id-token-vectors.json	-	-	100644	d98baa7423d508d2ed91197fd7dd307f8f2a2eda	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/src/social/provider/tests.rs	-	-	100644	8aaf0b1a74f3051d4bd55b7e7de43599a9b3cffc	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/src/social/tests.rs	-	-	100644	319c4c4be8f3e04f171de394451ac2edbb66bb1b	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/srv/uauth/src/social/tests/browser.rs	-	-	100644	bcd277a1262769977ac3441bc5074a5e768178c3	Abird authentication service and embedded admin UI; not a PVL product or workspace member.
+abird-only	pkgs/support/abird-protocol/Cargo.toml	-	-	100644	56c587cbff0e53fdfe0af4320c5fa3dfce615819	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/README.md	-	-	100644	4e99a170501507e4a4ff73b0fb325c8f275dee75	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/default.nix	-	-	100644	859680fa9ef76299318b39bce362fb2e1930ce56	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/flake.nix	-	-	100644	f98d2a0112ac829542a0e45f69d31998c269b639	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/agency.rs	-	-	100644	8dfb2440f5cd1a212950a589d9874d804fa34e62	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/context.rs	-	-	100644	0b923d8981550f7e1e9d20768d16bd8341f26f39	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/conversation.rs	-	-	100644	075d008ef69c862e08f3aedb0de8d5b2dd4c3405	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/delivery.rs	-	-	100644	a8adfe5015bca6e318cea7bf5ca230fc8ce165f9	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/evaluation.rs	-	-	100644	633830eccf37d323ede587ef9f6ac0c6d34694cb	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/evaluation/catalogue.rs	-	-	100644	a1aaadec14f56b43a8b2a7521b6a2daab2de2323	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/evaluation/manifest.rs	-	-	100644	0fdfc3ba759a8dbaad9b622c742c9bb0e90085e6	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/evaluation/receipts.rs	-	-	100644	ad0252cbdb3bd89d7ed76cf2e63839f62167b6c2	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/evaluation/resources.rs	-	-	100644	126387c28410cfe7ff1f3c05a70ff8b098bca731	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/evaluation/tests.rs	-	-	100644	4b9590e2368af5d56dd283aa84058c03a9f1bc9f	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/lib.rs	-	-	100644	4326ea0e782fc50ea9c93743caef9406578d1f59	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/memory.rs	-	-	100644	13933ead4683a5916db71448ac9dba23ef5b39fd	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/provider_connection.rs	-	-	100644	eef8e476e5ba20634b36b3585908a09797533dc1	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/repository.rs	-	-	100644	5e027e0594fa3703528671e2f1e4ae42e6c564e2	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/repository/diffs.rs	-	-	100644	f365f7921f403fb73883818b3c85c1dee43e455f	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/repository/registry.rs	-	-	100644	66e126e55c45523bfc44cef9e09f7d4df4cfb1bb	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/repository/registry_api.rs	-	-	100644	81e744d1b77cedd59c66f113fa6263045f01f3fb	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/repository/resources.rs	-	-	100644	9d6c82a9961ea499db8fc7083aaa01abe9e66574	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/review.rs	-	-	100644	dc40a5212ab51eca921edb2c145f1354614f8701	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/review/preview.rs	-	-	100644	fb75b1256e561fb557e3736a5638540032f52659	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/review/tests.rs	-	-	100644	ef7792a3ec6b53689291770a6deb3f6c76a74dd1	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/standing_order.rs	-	-	100644	b737ef325ae339dd6ff51e94fb956c1da176e344	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/abird-protocol/src/workflow.rs	-	-	100644	eef14b59213a7678e9a5d8ada822134821dbe9a5	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/nats-streams/chat-intelligence.nix	-	-	100644	7831f5d7fc59ab73ddd3fed27d5ee65b6411c888	z product, tool or supporting package; retain membership.
+abird-only	pkgs/support/nats-streams/specs/chat-intelligence.nix	-	-	100644	4655224a2f2aad5ffa860ce5a97c52a3cb4c33bc	z product, tool or supporting package; retain membership.
+pvl-only	pkgs/tools/codex-wrapper/codex-wrapper.sh	100644	fdd0c7ef223b7de072ae81dd4aec000af2cec086	-	-	Pvl personal Codex wrapper; intentionally outside z manifest.
+pvl-only	pkgs/tools/codex-wrapper/default.nix	100644	f649def1c6f055bab7cd95aae8e9efb990602149	-	-	Pvl personal Codex wrapper; intentionally outside z manifest.
+abird-only	pkgs/tools/kilo-cli/default.nix	-	-	100644	9f225995f2db412f451d11f1ac17738c89799c83	PVL deliberately removed KiloCLI in 47bb09380.
+abird-only	pkgs/tools/nixbot/tests/abird/TEST-DISPOSITION.md	-	-	100644	bc15ed24fbae4db81a4a802627ae3affad68dcff	z-specific Nixbot acceptance.
+abird-only	pkgs/tools/nixbot/tests/abird/__init__.py	-	-	100644	e69de29bb2d1d6434b8b29ae775ad8c2e48c5391	z-specific Nixbot acceptance.
+abird-only	pkgs/tools/nixbot/tests/abird/test_nixbot.py	-	-	100644	78891fa3691961e9a25ed97ebe1bd41034500abf	z-specific Nixbot acceptance.
+abird-only	pkgs/tools/postgres-queue/Cargo.toml	-	-	100644	ca5c66571638589f72d6e980ad177caa9c76431e	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/postgres-queue/README.md	-	-	100644	47a2f0d2fcd45f453519bc0372323d184057e482	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/postgres-queue/default.nix	-	-	100644	bfc0603224add329c42b38dd1fa02705219e951e	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/postgres-queue/flake.nix	-	-	100644	88eba6471520c1f4ce697451739ca69bdb4c5d53	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/postgres-queue/src/bin/consumer.rs	-	-	100644	cc1c2adf0a2c90818f154d5efe0a79038dfbb479	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/postgres-queue/src/bin/orchestrator.rs	-	-	100644	b858e2a5666c7ccc3d22c0ab72f92b20a2419fca	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/postgres-queue/src/bin/producer.rs	-	-	100644	8f567e1561d1f1d8009279779d21b683a5b410ef	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/postgres-queue/src/lib.rs	-	-	100644	ce23a25e549a15074e622781036bc4f211c88311	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/sqlite-queue/Cargo.toml	-	-	100644	e052309353616e37d81e5b3d6f8c3326997e31b6	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/sqlite-queue/README.md	-	-	100644	c9b55d9f676dbb8508751822b55d4db0721fc8e8	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/sqlite-queue/default.nix	-	-	100644	c9a31bfa16bb3dcb87683c00da652581cf01ded5	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/sqlite-queue/flake.nix	-	-	100644	d5d4ebd06bda0e0b9edb0b9e7b896f7555ed553a	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/sqlite-queue/src/bin/consumer.rs	-	-	100644	6f6b7c7da9842cbb585a5847b9060c45437dc36c	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/sqlite-queue/src/bin/orchestrator.rs	-	-	100644	e80b8b0247aac3aefeaf37523e1a24916d69d308	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/sqlite-queue/src/bin/producer.rs	-	-	100644	94daec70afb25ce4ec7255aa4d6ddd99b1cfd6dc	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/sqlite-queue/src/lib.rs	-	-	100644	22c091995e7892981711d3b2460ec789f9d63678	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/tools/sqlite-queue/src/parallel-impl-test.rs	-	-	100644	0c5e96c157286aebc3f454c68a193d01291cd529	Previously declined optional Abird tool/example/service; not selected by the PVL manifest. Not a missing change to a shared package.
+abird-only	pkgs/web/abird-ai/.gitignore	-	-	100644	4fd73106c49b8ca7787b4d48ac98fa807d0ea618	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/.npmrc	-	-	100644	0edab15acd641cb940bbc25a32a6a60eae98ced7	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/README.md	-	-	100644	17847caa02ff0e59feb5c39d3388db1f500e3020	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/Home.tsx	-	-	100644	10875769dccb9a76c6b4e36478c68ee17031cb5e	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/How.tsx	-	-	100644	bafe01a4adb98f103d1ea9847ee8c67529a780a5	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/Ownership.tsx	-	-	100644	aabca0910a5c41cb4b770926a48538fe10f92110	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/Whitepaper.tsx	-	-	100644	2d905223fdd0d460f0107c64778d69ec8d36bed0	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/Why.tsx	-	-	100644	62efcd4678a0648e97a35abc7a72144c0356c986	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/AgentConsole.tsx	-	-	100644	dc2981158cb58c20f4373a09b3eabaf3a03f6760	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/BuildGraphModes.ts	-	-	100644	8ced03c2dd79f26f4427fdaa7f87c0ba295d138e	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/BuildGraphSection.module.css	-	-	100644	09341abd6223371d6ac6b34d1fe6d6c153c4bc07	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/BuildGraphSection.tsx	-	-	100644	cc4affc841b0db21a4fabbb24375e1fdb1208b7f	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/HistateDiscovery.tsx	-	-	100644	8db085e9d7c3a8b00d1cebc59b513a441ca53319	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/OpeningSystemField.tsx	-	-	100644	e59548e72431af93ab6c44f45d47d6dacda37a1e	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/OperatingModesSpine.tsx	-	-	100644	df17fca9266dd7b21e702056b1e92d92f375730f	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/OperationsExplorer.module.css	-	-	100644	2ea7fe80427c39cacf84d1d9e2c129f11d338be6	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/OperationsExplorer.tsx	-	-	100644	fa344382aed7e45581720e4d5e79e54c49935e35	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/RootClosing.tsx	-	-	100644	c10989c7bcfa97a706a2aedcbab3b78b426023c9	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/RootFrame.tsx	-	-	100644	88a3eb7d612a817ccf72d518d288349d73330147	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/RootGraph.tsx	-	-	100644	b0d914c9b65b388eb277ce330d330e5fd24c473d	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/RootGraphNodes.tsx	-	-	100644	5589371011b62a4247821221c383cf20003458ac	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/RootHeader.tsx	-	-	100644	8fc392148114f3ab823aa055cc7aa2f605b7ce6a	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/RootHeroParrot.tsx	-	-	100644	d507e2363423e3ca8c5fc52f9a45b9ed166a9f5c	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/RotatingHeroWord.tsx	-	-	100644	0497136bafc2e3afdfccd849b59d41cd1c4c4677	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/StackField.tsx	-	-	100644	6908874a1c4dec04efa2fba0c3c50427fd666451	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/WholeBusinessGrid.tsx	-	-	100644	d9b39441ddf6d9b193916e46f4b7991db0513b6a	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/_root/components/useInViewport.ts	-	-	100644	370baa311569887547567ade2c9b311dbcd12e3f	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/how/page.tsx	-	-	100644	ea42bc6ea2d2be4ebd03accedd71b14f78a16ffc	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/ownership/page.tsx	-	-	100644	ac59f96104b93b49151e72557d53600a056eb761	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/page.tsx	-	-	100644	3d43375248ac2d045aee67a7b945e6810d840576	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/reset.css	-	-	100644	30c0619fd12ce1b158d4b33b8a3029c7b44366e6	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/root-desktop.css	-	-	100644	bac336f9bbe3cfb89bc0ee92657c90457615afd9	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/root-theme.css	-	-	100644	d71ad8d2f60c57bbb866852fc78450bc9c9ef459	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/site-base.css	-	-	100644	f5f1a37abfbb0c526652982f913771d160300798	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/site-components.css	-	-	100644	6912aa76658f854ce7a04e8318b1b97d407094e1	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/site-theme.css	-	-	100644	9641a0719ca31e3116a78257926cdad9d66d260a	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/whitepaper/page.tsx	-	-	100644	f9d2224a76585483cc5175c55a4257b84ca80725	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/why/page.tsx	-	-	100644	2276328b347c66ceb4a57b1a86938177610d8594	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1-components.css	-	-	100644	87f80271dd74e1d75d1a7cc5f53f6ae35f795c50	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1-theme.css	-	-	100644	349ffee0be53a02dbfa5c4e29dfe8fb1f6b74550	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/components/AuthorityLadder.tsx	-	-	100644	94073d9fc2dc693eb3867409c8d97498de966749	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/components/BuildGraphExplorer.tsx	-	-	100644	329e495c551da5ca74fe4fea65d8f2b62bef0297	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/components/HeroBuildGraph.tsx	-	-	100644	b9b12613f03fb305c41bdb8065988054f4a6e49d	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/components/HeroSystemsMap.tsx	-	-	100644	447beb0acf569c748e01f0b3028d66442091f465	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/components/LifecycleExplorer.tsx	-	-	100644	be0233e431a36b765ea9aec087b91e08f15e9e77	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/components/ModeSwitch.tsx	-	-	100644	165a4103e8e0003412fadff2e04ab52cab93aed7	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/components/SiteFooter.tsx	-	-	100644	c43a9e98b7485880c7e09482f41c6ab94e8bda4f	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/components/SiteHeader.tsx	-	-	100644	fa219290a461321c47e7cc355b80a36de0a47b18	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/components/SystemGraphExplorer.tsx	-	-	100644	5810aa1ac6d796355e2928bea4663ceddeb8366e	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/how/page.tsx	-	-	100644	58b2df13638292ce9f69a732855b902e06624ed6	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/ownership/page.tsx	-	-	100644	bc8d9c9b6634ace88e155f059580f4790895829e	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/page.tsx	-	-	100644	8f520fea422905e6a8d2129fc67d3e80fa0b579f	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/pages/Architecture.tsx	-	-	100644	adad71f9f6642fc92477707d3651bc72a4d9717a	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/pages/Company.tsx	-	-	100644	b00f0bfeae14fb1892bf65a2109eee6e2adaef71	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/pages/Home.tsx	-	-	100644	bbdb3423fe8de5ff98e05c97740b670f24015f91	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/pages/Ownership.tsx	-	-	100644	908688da98c42d4263d4002082da7d9b479813ce	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/pages/Papers.tsx	-	-	100644	8d69732f1f5bf2d761ddf4950560afa58eef409e	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/whitepaper/page.tsx	-	-	100644	219edd972d882f784770e0bdf527b1a3065c8e11	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/app/x1/why/page.tsx	-	-	100644	36f7c5c9fbb1fa096ae7065b193e84315a9836e1	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/db/postgres/schema.sql	-	-	100644	1caed21d386b2e357dd6026627822d8100613082	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/db/schema.ts	-	-	100644	89f56abe14a67e97c26fb5863ef447aae113ed62	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/default.nix	-	-	100644	5d9061cd39d692756f7f22d6a60ac284ab4c2507	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/docs/native-origin.md	-	-	100644	025016b5752a021a4325a0bd713c1e8db8f280aa	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/drizzle.config.ts	-	-	100644	c2b2f34376984744343453838ce66658ad9d9b6a	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/drizzle/0000_cynical_weapon_omega.sql	-	-	100644	f4b4cd52cae1cb912faa5dacaeb2cf809cf1253e	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/drizzle/meta/0000_snapshot.json	-	-	100644	ca829191bcadb361205acf2e6a355eedd08de6bd	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/drizzle/meta/_journal.json	-	-	100644	f6a3d9b202f0367916e952625ab5c6c2d1cbcd1f	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/index.html	-	-	100644	2472ee5bae83cd978df06422cf09f213ecfce4ca	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/origin/http.mjs	-	-	100644	aaf27318d1d7e7babb0408c37eb73956835ddc55	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/origin/postgres.mjs	-	-	100644	6e4909909328758d0e3da015bf529bf867bf6daf	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/origin/server.mjs	-	-	100644	337aea1122883ac73179ccfda93570a8a09676c4	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/package-lock.json	-	-	100644	c5aeacda24f5a6d0bea4e3240c112d11263679d3	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/package.json	-	-	100644	00e3c0ea6c5963c08e150ce602d1e78b50ceccd3	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/postcss.config.mjs	-	-	100644	61e36849cf7cfa9f1f71b4a3964a4953e3e243d3	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/.gitignore	-	-	100644	559e51537022552dd7d1ca9fd573e59609acecb5	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/README.md	-	-	100644	02d3a39a336974a5ea4fdeeefda9e27d64aaae8a	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/app/ProjectPreview.tsx	-	-	100644	2708a608d60ff67acd5d6a4b5863e5f9a0c3501e	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/app/data.ts	-	-	100644	6d3270f7d0fa1c517fc388ca9203a0965ae9e265	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/app/globals.css	-	-	100644	bce704f77c5702be62dcbc8cbfc35f3bcd0e844f	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/app/page.tsx	-	-	100644	e3722e7b08013d79df1145eb6e1599f79d99f256	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/index.html	-	-	100644	d73af2941058a2381fae8da9d45f0a72aba6cb0d	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/main.tsx	-	-	100644	97230aa8115be5d9c7a963f11b6dbbe7c5fc96cd	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/postcss.config.mjs	-	-	100644	61e36849cf7cfa9f1f71b4a3964a4953e3e243d3	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/public/abird-mark.svg	-	-	100644	3d90a3779c2be9bbc9495b57cb04e839f08b67ec	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/public/geist-variable.woff2	-	-	100644	991445d78ae619a7378ff219385588c7811c88ab	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/solid-ui.css	-	-	100644	cdd31a5fbe4d4f366eb3cd55b70099bfe3d6b664	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/solid-ui.tsx	-	-	100644	da2015e61101cc7c6e1d0bc8519adc4570839405	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/tsconfig.json	-	-	100644	f413965abdb7b2b3d2bc2b66b1d487bd9ea9c784	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/vendor/shadcn-tailwind-4.13.0.LICENSE.md	-	-	100644	fad4d887a681dd49233e5ed01ee2c7a1513089a0	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/vendor/shadcn-tailwind-4.13.0.css	-	-	100644	7807c58eb94de8b764b9b6b7b5d8cde6d012b17f	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/prototypes/2026-q4-6e41ac/vite.config.ts	-	-	100644	1ef2453f18cff00b1343181534183569d29680e4	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/.nojekyll	-	-	100644	8b137891791fe96927ad78e64b0aad7bded08bdc	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/README.txt	-	-	100644	adff6dee68ad43dbeb5ac1317c436d3a9008fa60	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/abird-mark.svg	-	-	100644	1f2e846e8653a8c95751b21d19163832fdf1edbf	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/abird-round-trip-mark.svg	-	-	100644	3d90a3779c2be9bbc9495b57cb04e839f08b67ec	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/apple-touch-icon.png	-	-	100644	ffad7193db9dff12ba9e6a340c4d98d228315420	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/browserconfig.xml	-	-	100644	61ab7f040de3c39a46d3b025a075184c2405d9f0	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/favicon-16x16.png	-	-	100644	aa8e32ec9637dab7cfae6cb818c2e9b145e374bf	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/favicon-32x32.png	-	-	100644	6b0cbecfc35c282491b54e2565a0fd8a30e89101	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/favicon-48x48.png	-	-	100644	2bb2db2a041bcabd34109e12651e6ca033bfbdfc	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/favicon.ico	-	-	100644	cee327a76e632829b248c1d419e745972d7bc5fa	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/favicon.svg	-	-	100644	e589ddb1e771f23f22cbdf90c97b416822aaa63d	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/file.svg	-	-	100644	004145cddf3f9db91b57b9cb596683c8eb420862	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/globe.svg	-	-	100644	567f17b0d7c7fb662c16d4357dd74830caf2dccb	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/icons/icon-1024x1024.png	-	-	100644	f993febf7b9648db90093832b5165867c3352032	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/icons/icon-192x192.png	-	-	100644	b67abed7eadd4041de210b6bb3f9c25aef6e8bdf	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/icons/icon-512x512.png	-	-	100644	54b1687a44ad2bad1eccbf4f1d12937802a2a69a	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/icons/icon-maskable-512x512.png	-	-	100644	41ea668d5c88473d41d9b75d26e3aa25b9d19799	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/icons/mstile-150x150.png	-	-	100644	a3c4882138f5f504cefe8044907e0bbad335a841	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/safari-pinned-tab.svg	-	-	100644	8695f61303a890d2657c0cc4a02dd9accb9cb888	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/site.webmanifest	-	-	100644	357a9477cf3651c0cbeab901e15ced332eed9947	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/public/window.svg	-	-	100644	b2b2a44f6ebc70c450043c05a002e7a93ba5d651	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/scripts/build-origin.mjs	-	-	100644	ebdbb493e41fbb9dedb67d2360c427b4800a4f9c	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/scripts/build-pages.mjs	-	-	100644	869d7477a94244dc07770f4d2f45e74c0da6b7fc	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/scripts/verify-copy-style.mjs	-	-	100644	f1b2b765a36d8d89ca10160931b8ae9778e2a037	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/EarlyAccess.tsx	-	-	100644	34276f72d643a053f8057cae874567d508608074	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/SignupBird.tsx	-	-	100644	df655a96fe35453ba496844a339016bf405b45a6	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/ThemeToggle.tsx	-	-	100644	8480d9c285a136afd162c43c0cdfb33ede8b0ce9	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/early-access.css	-	-	100644	20b1f31e931fbb53271e606da578c9e1b4ff0be9	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/histate-discovery.css	-	-	100644	b6f661623ac38b28cda9efa09728a91145c0fffc	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/main.tsx	-	-	100644	cf57f659f591202594ab6e8e2a6700589b4a3a23	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/prerender.tsx	-	-	100644	52eb96b10db02947937b5b08e2823a7f7e0366d7	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/routes.tsx	-	-	100644	b469ef760721c8e8d6280240fe93a76fee2f7255	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/scrollbars.css	-	-	100644	82c6171174b98a36602c746b821dfcdac076a5d1	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/scrollbars.ts	-	-	100644	1a18279442a05b104a62ca4dc8299ea66f0b7bc9	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/signup-bird.css	-	-	100644	0a56908335be0fa49cd5bd0ba1f40c91b023bb91	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/theme-controller.mjs	-	-	100644	2107a43b3960a96a4d24b7c8bf03fe06c254604a	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/theme-palette.css	-	-	100644	f391c8bf0ab172a87b10fd39b55ae10276368307	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/src/theme.css	-	-	100644	7e98466439f4041d3212e1c5c0f8ab0ff0436ba8	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/static-worker/index.js	-	-	100644	451eb321d2da81d194a2ca521d8f9960f3add9fc	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/static-worker/wrangler.json	-	-	100644	39d48397cb53a2395bcde48a4b4b083753aaa8b4	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/tests/early-access.test.mjs	-	-	100644	0f14e79412f3de401596cc569f4887f0591139e4	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/tests/origin/http-helpers.mjs	-	-	100644	dfb65319975bcc55ed6dddaf2040407fc8ad9196	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/tests/origin/release.test.mjs	-	-	100644	3c81408a243aea9ae6031d7361eb50246dfd4d5d	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/tests/origin/signup.test.mjs	-	-	100644	fc4d6fff08ef4d18e5811f9a17393601953627d8	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/tests/rendered-html.test.mjs	-	-	100644	caed71c36ba60960f1282633b1147aa962114da1	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/tests/theme.test.mjs	-	-	100644	5c681bedffe1b58dd307f9d35fe4181a27f5980b	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/tsconfig.json	-	-	100644	7166dd525ab9edb829c1c6e40f92a5ed1f21bec5	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/vite.config.ts	-	-	100644	841f33d9c3da27fa6c9f335e52f314beee26fb81	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-ai/worker/early-access.js	-	-	100644	245dc02a1867ff82c5f330f072b5e14782d782e8	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/abird-web/Cargo.toml	-	-	100644	3c0485c45bbeee301ef0a0eec73ecb4fa252dd1c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/README.md	-	-	100644	7109914b42510cd3beb3980bd330a8f80225137e	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/Trunk.toml	-	-	100644	f57d807f6dd157a1ca584a6ddcb4d7584b3700eb	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/default.nix	-	-	100644	ddc2c8dcc31917e39f7714ee278c8c1b40114e4b	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/flake.nix	-	-	100644	0b988078a82e13d914331bafac79d742c26046d6	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/index.html	-	-	100644	8d99391426e63812635881b02ffdf1e9cf50a413	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/public/favicon.svg	-	-	100644	366c55c70347af5ec5a4013bf67019efce40c37b	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/application.rs	-	-	100644	d69810952b30eae4b0812de0e779b308db3269fd	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/application/conversation.rs	-	-	100644	60ef23021527a473439bcd2b7880b1ad98e75526	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/application/repository.rs	-	-	100644	d558dfcff6748d61ca3b839965627fe1920e41b8	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/application/review.rs	-	-	100644	8b8d291d5b2a315566586b71e27118b68c61a5e8	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/controller.rs	-	-	100644	8ef8aa2440c2fa97847f1f4c022d2d53d1e2b656	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/main.rs	-	-	100644	0ab8149280096eca15285579d59c4e958fb4f361	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/ui/account.rs	-	-	100644	55c5882efe2975159b47fab7eb9feefc0f6cbf3c	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/ui/conversations.rs	-	-	100644	96110073c3863ee43655fb3ea83fc3b70fc32fc2	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/ui/diff.rs	-	-	100644	d00bf383e42a23799689652da72ce77775bb6643	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/ui/markdown.rs	-	-	100644	124a38fb3966aaf4d3b2f1e44253dee7eb586bca	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/ui/mod.rs	-	-	100644	f309d1ce331cb36bcfc7832c970bd00eb99a1483	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/ui/repositories.rs	-	-	100644	397f5c7e454a6d12b5c3a81405b812b8451edbe4	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/ui/review.rs	-	-	100644	68d2a0642da81b4af814dc2cd219c528e56db76f	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/ui/shell.rs	-	-	100644	acf1b6becde15b5c36654889eb469f8c93b7740f	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/ui/workflows.rs	-	-	100644	d47475c22809438dd91c284f871329e07c853dec	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/src/workflow_presentation.rs	-	-	100644	8b8aa8d90a132ee2529d7e777abda0c820399cf9	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/style.css	-	-	100644	d87e3ba17d9b6cb66ad970f7eb4415e7493ef86a	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/tests/browser/conversations.js	-	-	100644	11ed8763367e0582db737a410d10ffb9f3331c88	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/abird-web/tests/browser/phase2a.spec.js	-	-	100644	bf26893875877978e046724349f9b5a2cc3d06c0	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/gap3-hello/.envrc	-	-	100644	3550a30f2de389e537ee40ca5e64a77dc185c79b	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/gap3-hello/Cargo.toml	-	-	100644	1639b10fdb069640bc7816645983a9369723dc36	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/gap3-hello/README.md	-	-	100644	9f358f22d38433a0bd8799461d8a3c22ac78ccae	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/gap3-hello/Trunk.toml	-	-	100644	f57d807f6dd157a1ca584a6ddcb4d7584b3700eb	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/gap3-hello/default.nix	-	-	100644	4799d4ad8131f2a706aa7157a8a33accb9df3c77	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/gap3-hello/flake.nix	-	-	100644	a248950ccb710332828cf050feb33a4482ea84e4	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/gap3-hello/index.html	-	-	100644	2f5524ed90e1e218085b373465b7f02208cdc417	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/gap3-hello/src/animation.rs	-	-	100644	7a603720931526fc88118f9e22fd8d8917e86f3e	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/gap3-hello/src/main.rs	-	-	100644	213a23be12336fbeef4a0a3a6cf18483c460c6bd	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/gap3-hello/style.css	-	-	100644	ec9b21c25c80cdacbc8069f8c0bda74458e214c0	z product, tool or supporting package; retain membership.
+abird-only	pkgs/web/histate-ai/.gitignore	-	-	100644	2020f06e1bbea04255e18b6c813beabc9b8b050f	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/.npmrc	-	-	100644	9f274d6425b9792ae0a70cb0b96a29fd98ec6ed6	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/README.md	-	-	100644	497dda325caed07433f87ce6520784228cd5cce4	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/build/connector-preview-plugin.mjs	-	-	100644	f29e9953bdac6f25be5f1b58e5a02ef0457bafbe	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/build/connector-preview-worker.mjs	-	-	100644	f4d5f1974728c4b295d05a1422d7e2bce75635e5	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/build/sites-vite-plugin.LICENSE	-	-	100644	4243cb4a9aaa50f954498e54c850773e9ba13eea	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/build/sites-vite-plugin.ts	-	-	100644	db367febec5595eebcb6ba228bb5e998d9bdd846	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/cloudflare-env.d.ts	-	-	100644	856e090c902917b4e1cebee0e08ea1d398fd01c3	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/db/index.ts	-	-	100644	71461b5ea1892659c46717411ddd2dc19f34b389	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/db/postgres/schema.sql	-	-	100644	cb35843024a7afba146719d561c193880144cba5	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/db/schema.ts	-	-	100644	b91530f67a085b4da2665594f604d79e28c26fac	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/default.nix	-	-	100644	008c35d14078553079130b8c6befbe254ebbc4d9	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/drizzle.config.ts	-	-	100644	c2b2f34376984744343453838ce66658ad9d9b6a	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/drizzle/0000_glossy_george_stacy.sql	-	-	100644	e0b64c6c7bdabd728ea505c717026dcaad9776c1	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/drizzle/0001_broad_snowbird.sql	-	-	100644	883af6ad435b5963da51b24d55390cd7b2218ecb	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/drizzle/meta/0000_snapshot.json	-	-	100644	a107d0d4496ca2d109fb23e6d7d4a811248c91c7	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/drizzle/meta/0001_snapshot.json	-	-	100644	b4d3cc6c805bfee4c13099676f4f11741401f789	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/drizzle/meta/_journal.json	-	-	100644	fb640360622b6d14faaf15b7e570594006272619	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/eslint.config.mjs	-	-	100644	462dc92bb865feef0269f0ab14949063008aa099	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/examples/d1/app/api/notes/route.ts	-	-	100644	07f8318c3c290d68163e95aa3e170ad92a235f27	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/examples/d1/db/schema.ts	-	-	100644	7bb0c157110799b9b53c767517e0d192b7201f2e	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/index.html	-	-	100644	6a6c7a70b03dc329e34315bda66d1bb54ebc73a5	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/lib/connector-context.ts	-	-	100644	6cdeac72bf2df63e0a73159af25e0b4564ed1d43	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/lib/connector-contract.mts	-	-	100644	f146418508b4c272a4495ec5498b6f0554b1f966	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/lib/connector-errors.mts	-	-	100644	c9d2fe845ec965062d3724fd28a0892b4fbf5a9b	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/lib/connector-preview.d.ts	-	-	100644	bb3f498b67e3dfd93601626aa2675af07dfe711c	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/lib/connectors.ts	-	-	100644	30b85c0dd699e7236ec1694e03466b03caa2a7dc	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/lib/signup-options.ts	-	-	100644	e3d9f71f53778f8707da50bc87cb46a948c64058	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/lib/utils.ts	-	-	100644	b500fb167fdaa78785feb0ff03b51f8a182a44ae	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/lib/waitlist.ts	-	-	100644	ad114c299ef34b0321f02f37aa7cebcdbc8362ab	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/package.json	-	-	100644	ba024c1e4d53c8b724c4d531393a873c3b05536e	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/pnpm-lock.yaml	-	-	100644	49f9664f2dbf83721234712f5ef16cc53dd9e378	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/pnpm-workspace.yaml	-	-	100644	454dde77be0f122931de27f35b440c75b35bfbca	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/public/favicon.svg	-	-	100644	441f70ef05b38ebc6d8b7ae2725d640ca1bcb062	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/public/file.svg	-	-	100644	16fe3d3a3ab9bd42e1616ec00066faba7e4aabe0	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/public/globe.svg	-	-	100644	c7215fe0f2634ae9f51d15dacc09184f5343941a	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/public/theme-init.js	-	-	100644	d587fcfe721c07717d9ee7740ed8963ae6108133	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/public/window.svg	-	-	100644	d05e7a1bc066341298657dcc304dbadc4ddcab9d	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/scripts/build-origin.mjs	-	-	100644	60bfb91d3e2942af8959e1d528f4b5e7ec453021	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/scripts/build.mjs	-	-	100644	153ce0f28be57329cbaf1c8e5e11ca5fa0f777e7	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/scripts/connector-preview/connector-preview-session.mjs	-	-	100644	fd5f89356a48d643dfdee5ef88ec922de356d424	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/scripts/connector-preview/host-binding.mjs	-	-	100644	88e6efb56e6ceb044dd3c9127d26960b5bb9c5e9	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/scripts/connector-preview/protocol.mjs	-	-	100644	6476ba302de4ee408ba549fc0d790861185dd919	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/scripts/execution-profile.mjs	-	-	100644	f27aec211320d9a5fd0dbbb07f5c508222b2b8d4	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/scripts/install-pnpm.sh	-	-	100755	573ecdb89461a5922386ec9ccf5a83504fa9caae	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/scripts/pnpm-install.mjs	-	-	100644	524ef6ea4837b87f034d767d01de192a509394a3	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/scripts/run-framework.mjs	-	-	100644	4c55c99127a5d4649a6d8db5c2c8992403f57264	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/scripts/sites-env.mjs	-	-	100644	1eeedb5e13e4b9af70d89446d981dfd4cd92a3fd	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/scripts/sites-env.sh	-	-	100755	728416424d5d2f4c9a746d53621668225645356c	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/server/early-access.ts	-	-	100644	ed71854584b29d2fd7738ccaa7bea34df4b523f7	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/server/index.ts	-	-	100644	679850143edffe9694e083b383467288dc71ad1e	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/server/origin-assets.ts	-	-	100644	0ae27845f1aca44684fcc31d74f8aba89e5bdf25	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/server/origin.ts	-	-	100644	71f694cfb3e809d49eb1e75dbd2cb9551ca15ca1	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/server/postgres.ts	-	-	100644	7c1f3b186d5f1ae04febc491f81025120108d6e7	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/server/routes.ts	-	-	100644	46eb740eebcae2ee902c325bb93e57899cdacd66	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/App.tsx	-	-	100644	bfaa400b4b388f86519d5cf62ad11de763f68229	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/Home.tsx	-	-	100644	b9c63c688e5da2e1dc4877e8f54d90394418f514	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/OverlayScrollbar.tsx	-	-	100644	b863f9796ca059cf92b10d9f365bd632d333c22a	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/Signup.tsx	-	-	100644	dba34c6a0a95ce0f3a41a472246fa480bbd92f43	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/SignupBackdrop.tsx	-	-	100644	8613a826e3d3915ea7885d04670b48265e30a994	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/SiteCommand.tsx	-	-	100644	01e924588d620d8d9d73dd466df048c62af1c8f1	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/ThemeSwitch.tsx	-	-	100644	db71ca55164479e9bed8507882311128643fd906	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/WelcomeGraph.tsx	-	-	100644	6e7f60b87cd96f7d138bf0c9bc8c0f5713922409	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/home-content.html	-	-	100644	53c12293f895519140be626c3b3b1a98ee1066e6	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/main.tsx	-	-	100644	2563c89f3d54b088b5708a72f2431372d6e6f54b	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/navigation.ts	-	-	100644	0ff8b3d8c24fda030613c07385e3273006135760	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/styles.css	-	-	100644	8eca25ff8aa0efcb5e391c2eaf99a181a5dd0719	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/theme.ts	-	-	100644	ed767763bd1f66a01c64133ffa597a6d8e40a2f0	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/src/typography.ts	-	-	100644	cac9cf2dae2de1fdb5d37a68892fa6d9529dbd75	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/tests/frontend.mjs	-	-	100644	7626e2d544dc4f36b99a2e0f7c161cceae12813b	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/tests/origin.mjs	-	-	100644	fb54bf1d4cc53c011b9af3db517d5c389e2bbc77	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/tests/worker.mjs	-	-	100644	f83db5788a0c54a74d08a31e37273230e745e193	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/tsconfig.json	-	-	100644	f623ecacf966d0f54cc670c33aae03c2866a465e	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/vendor/shadcn-tailwind-4.13.0.LICENSE.md	-	-	100644	fad4d887a681dd49233e5ed01ee2c7a1513089a0	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/vendor/shadcn-tailwind-4.13.0.css	-	-	100644	7807c58eb94de8b764b9b6b7b5d8cde6d012b17f	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	pkgs/web/histate-ai/vite.config.ts	-	-	100644	9d6e80b6012ff730b52c23d6ce37e3fdc9a44ea4	Product website, build/origin and assets; no PVL consumer or independent shared helper.
+abird-only	scripts/ops/acme/rotate-wildcard.sh	-	-	100755	cdeb7322fa4cc2b5806ea174ca68a325011bf674	z operator/desktop/mail procedure.
+abird-only	scripts/ops/desktop/abird-desktop-forward.service	-	-	100644	f02a0dc653753fd998da0202c235b921c62cc6dd	z operator/desktop/mail procedure.
+abird-only	scripts/ops/desktop/publisher.py	-	-	100644	5532cc256714ea5bfd38bc8892bf99f3d99d13e1	z operator/desktop/mail procedure.
+abird-only	scripts/ops/desktop/tests/test_publisher.py	-	-	100644	8576e6057e0cd0316f29710670fa06f7d9a9664b	z operator/desktop/mail procedure.
+abird-only	scripts/ops/mail/check-discovery.sh	-	-	100755	626d77db05c694dd362bb090194135eb4b3312fb	z operator/desktop/mail procedure.
+abird-only	scripts/update/tests/abird/__init__.py	-	-	100644	e69de29bb2d1d6434b8b29ae775ad8c2e48c5391	z updater policy tests.
+abird-only	scripts/update/tests/abird/default.nix	-	-	100644	5c69d9f1f883635ee641c94c1b8377ca7cdf77c8	z updater policy tests.
+abird-only	scripts/update/tests/abird/test_update_helper.py	-	-	100644	7cee33cb18f20f955c05ef36b434a2b6a79e454a	z updater policy tests.
