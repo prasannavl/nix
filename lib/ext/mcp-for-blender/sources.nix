@@ -7,9 +7,9 @@
     repo = "mcp-for-blender";
     ref = "main";
     package = "mcp-for-blender";
-    version = "2.2.6";
-    rev = "992233bb258975a05eec8b5691465c50c2831e34";
-    url = "https://files.pythonhosted.org/packages/ed/d4/9ac23038e759ccbfd5fba899b61d7153f803f9f67dc8eb4f30906f9a1160/mcp_for_blender-2.2.6.tar.gz";
-    hash = "sha256-C08waAQme+gEzzFXRKpV0BBIXdbZGdS7cnDsP1G279k=";
+    version = "2.3.3";
+    rev = "7f31a4623cafac7441ba9b97e67a8787b9069ee2";
+    url = "https://files.pythonhosted.org/packages/06/65/2f0aeda4c09b0f17f64ee2ec93eb0f66d3cff8218834fd0c617be403db07/mcp_for_blender-2.3.3.tar.gz";
+    hash = "sha256-CUyq3roNmk0XC5ON37M3t0rjnKDdKq24K/tvuTyL7Cc=";
   };
 }

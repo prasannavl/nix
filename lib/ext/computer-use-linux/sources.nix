@@ -7,7 +7,7 @@
     owner = "agent-sh";
     repo = "computer-use-linux";
     tagPrefix = "v";
-    version = "0.7.35";
+    version = "0.7.64";
     binaries = [
       "computer-use-linux"
       "computer-use-linux-cosmic"
@@ -17,17 +17,17 @@
       x86_64-linux = {
         target = "x86_64-unknown-linux-gnu";
         hashes = {
-          computer-use-linux = "sha256-iUQ2j9BVwGl6Ni/fovU574dyoUbKgkbb7kj9PbqRwSU=";
-          computer-use-linux-cosmic = "sha256-svf/5sWwuvxs9yrZ5mxgSwp1uvQLDiqv6y9xOc3XmVA=";
-          computer-use-linux-indicator = "sha256-Iaa0OLNS14mGjomo1szHUk7LjI7mE1IIa+DEYjtc/z8=";
+          computer-use-linux = "sha256-JoqQlW+CB8/qsX9ZSxA4TJU9TC9dwBDQfoDY7nocqL4=";
+          computer-use-linux-cosmic = "sha256-3XXRfdwmZiBBTzvbQ1wsZQs5xMJrpPAG0e7FRZmP3ZY=";
+          computer-use-linux-indicator = "sha256-QqkoXjBM6Zcik4hqttEpqQecuPwg5/exu7tDZtg3RAc=";
         };
       };
       aarch64-linux = {
         target = "aarch64-unknown-linux-gnu";
         hashes = {
-          computer-use-linux = "sha256-VKHwrBHkA3Irif16/Wt2A0ioUDQtaztIGO8UFN2h1zY=";
-          computer-use-linux-cosmic = "sha256-Z2L/hsP1lPqvo/hwaFG5MyuW7dR4JuaUyKZy3TCVE8U=";
-          computer-use-linux-indicator = "sha256-2aE5Pn1t0IVML6K2c8PjtDkgSwoKarPe+lfs62wF0zQ=";
+          computer-use-linux = "sha256-nYPAuScNVdQAp/nz6PsmuysB+yDRzNmuS2BEvaaljuw=";
+          computer-use-linux-cosmic = "sha256-JorDmkYu/mjFMeTArvo+1KWkG5WO2o3BGi2Uk9tWiJU=";
+          computer-use-linux-indicator = "sha256-t2A9YIX1dBGhHgpC9x7SerzK+qOc67l9dIhZu/H/wuI=";
         };
       };
     };
