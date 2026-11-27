@@ -4,6 +4,14 @@
 > layout. The current device-class scheme is in
 > `.agents/docs/notes/hosts/pvl-ai-backend-port-convention-2026-09.md`.
 
+## Prism container port, 2026-11
+
+The ggml-org v1.1.0 images set `LLAMA_ARG_PORT=8080` even when the Prism binary
+replaces `/app`. Forwarding to the fork's default `9931` left the container
+running but the host API unreachable. Set `LLAMA_ARG_PORT` from the same Nix
+value as the published container port. Host ports `12001` and `13001` stay
+unchanged.
+
 ## Decision
 
 Two related changes landed together so the ternary Bonsai 2 27B preview can run

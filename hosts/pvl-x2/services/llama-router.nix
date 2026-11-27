@@ -6,6 +6,7 @@
   ai = config.services.ai;
   defaultCache = ai.backends.llamaRouter.deploymentsInfo.llama-rocm.cacheDir;
   prismCache = ai.backends.llamaRouter.deploymentsInfo.llama-prism-rocm.cacheDir;
+  prismContainerPort = 8080;
 in {
   # Container definitions only: image, devices, and cache bind. Model pulls,
   # models.ini, lifecycle, and the cache dirs are owned by services.ai.
@@ -98,13 +99,14 @@ in {
               - --models-max
               - "3"
             ports:
-              - "${toString exposedPorts.main.port}:9931"
+              - "${toString exposedPorts.main.port}:${toString prismContainerPort}"
             volumes:
               - ./models.ini:/etc/llama-router/models.ini:ro
               - ${prismCache}:/cache
               - ${pkgs.prism-llama-cpp-rocm}:/app:ro
             environment:
               - LLAMA_CACHE=/cache
+              - LLAMA_ARG_PORT=${toString prismContainerPort}
               - ROCR_VISIBLE_DEVICES=0
             devices:
               - "/dev/kfd:/dev/kfd"
