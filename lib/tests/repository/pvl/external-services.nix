@@ -22,6 +22,22 @@
     inherit system;
   };
 
+  # Exercise the public constructors with caller-supplied CLI packages; never run the helpers.
+  inherit (fixture.ab.services) kanidm stalwart;
+  kanidmProbe = kanidm.mkApplyScript {
+    name = "kanidm-probe";
+    kanidmPackage = fixture.pkgs.hello;
+    url = "https://auth.example.test";
+  };
+  stalwartProbe = stalwart.mkApplyScript {
+    name = "stalwart-probe";
+    cliPackage = fixture.pkgs.hello;
+    configHostPath = "/fixture/config.json";
+    dataDir = "/fixture/data";
+    image = "fixture/stalwart:unused";
+    planHostPath = "/fixture/plan.json";
+  };
+
   machineConfig = fixture.machineIdSystem.config;
   stateDir = machineConfig.services.machine-id.stateDir;
   machineIdUnit = machineConfig.systemd.services.machine-id-runtime-hostname;
@@ -38,6 +54,10 @@ in
   assert !(fixture.ab ? runtime);
   assert !(fixture.ab ? repo);
   assert !(builtins.hasAttr "abird-host-agent" fixture.pkgs);
+  assert (builtins.functionArgs kanidm.mkApplyScript).kanidmPackage == false;
+  assert (builtins.functionArgs stalwart.mkApplyScript).cliPackage == false;
+  assert fixture.pkgs.lib.hasSuffix "/bin/kanidm-probe" (fixture.pkgs.lib.getExe kanidmProbe);
+  assert fixture.pkgs.lib.hasSuffix "/bin/stalwart-probe" (fixture.pkgs.lib.getExe stalwartProbe);
   # Exercise a custom directory without freezing the fixture's spelling.
   assert stateDir != fixture.machineIdSystem.options.services.machine-id.stateDir.default;
   assert builtins.elem
