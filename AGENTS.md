@@ -38,6 +38,11 @@ follow the markers below.
   rewrite, `reset --hard`, branch deletion, or touching another agent's staged
   or uncommitted work — without explicit user confirmation for each action. A
   request to "commit" or "apply" is not authorization to push.
+- **Master pushes.** Never push `master`/`main` on your own initiative — not
+  after commit, merge, rebase, cherry-pick, worktree sync, or task completion.
+  Commit freely on your own branch; pushing any set to master is a handoff
+  awaiting human review of that set. Fresh, explicit approval each time; earlier
+  or blanket approval does not carry over.
 
 <!-- END common -->
 
